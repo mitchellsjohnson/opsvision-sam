@@ -86,7 +86,8 @@ func NewServer(d Deps) *Server {
 	return s
 }
 
-// NewHandler mounts the generated strict handler under /v1 behind authMW. It
+// NewHandler mounts the generated strict handler under /v1 behind authMW, with
+// gzip compression of large JSON responses outermost. It
 // panics if authMW is nil: an API without authentication must be a deliberate
 // act, not a missing argument.
 //
@@ -104,10 +105,10 @@ func NewHandler(s *Server, authMW func(http.Handler) http.Handler) http.Handler 
 		BaseURL:          "/v1",
 		ErrorHandlerFunc: requestErrorHandler,
 	})
-	return authMW(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return gzipMiddleware(authMW(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
 		api.ServeHTTP(w, r)
-	}))
+	})))
 }
 
 // principal returns the authenticated caller.

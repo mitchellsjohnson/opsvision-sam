@@ -691,6 +691,12 @@ type EntryRow struct {
 	MetricKeys []Key  `json:"metricKeys"`
 	NaReason   string `json:"naReason"`
 
+	// Period The period this row's data is for. It is the requested month for a
+	// monthly metric, or the quarter, half, or fiscal year that ends in
+	// the requested month for a coarser one. Send it back as the
+	// write's `period`.
+	Period Period `json:"period"`
+
 	// Revision Send back as `expectedRevision`. Zero when nothing is stored.
 	Revision int `json:"revision"`
 

@@ -1697,7 +1697,7 @@ components:
         revision: { type: integer, minimum: 0 }
     EntryRow:
       type: object
-      required: [measureKey, measureName, metricKeys, subjectId, subjectName, naReason, revision, canEdit]
+      required: [measureKey, measureName, metricKeys, subjectId, subjectName, period, naReason, revision, canEdit]
       properties:
         measureKey: { $ref: '#/components/schemas/Key' }
         measureName: { type: string }
@@ -1707,6 +1707,14 @@ components:
           items: { $ref: '#/components/schemas/Key' }
         subjectId: { $ref: '#/components/schemas/Id' }
         subjectName: { type: string }
+        period:
+          description: |
+            The period this row's data is for. It is the requested month for a
+            monthly metric, or the quarter, half, or fiscal year that ends in
+            the requested month for a coarser one. Send it back as the
+            write's `period`.
+          allOf:
+            - $ref: '#/components/schemas/Period'
         value: { $ref: '#/components/schemas/MeasureValue' }
         naReason: { type: string }
         revision:

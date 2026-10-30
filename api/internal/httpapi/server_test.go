@@ -23,11 +23,9 @@ func tenantWithFYStart(m int) domain.Tenant {
 func TestUnimplementedOperationReturns501Envelope(t *testing.T) {
 	e := newTestEnv(t)
 	for _, tc := range []struct{ method, path string }{
-		{"GET", "/scorecards/delivery/view?periods=2026-M10"},
-		{"GET", "/scorecards/delivery/history?measure=closed&subject=team&period=2026-M10"},
-		{"GET", "/scorecards/delivery/entry?period=2026-M10"},
 		{"GET", "/audit?from=2026-01-01T00:00:00Z&to=2026-12-01T00:00:00Z"},
 		{"POST", "/imports/uploads"},
+		{"GET", "/import-templates"},
 	} {
 		got := e.expectError(t, 501, "not_implemented", e.tokens["t1-admin"], tc.method, tc.path, nil)
 		if got.Error.Message == "" {

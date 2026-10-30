@@ -35,31 +35,3 @@ func (unimplemented) ApplyImport(context.Context, ApplyImportRequestObject) (App
 func (unimplemented) ParseImport(context.Context, ParseImportRequestObject) (ParseImportResponseObject, error) {
 	return nil, errNotImplemented
 }
-
-func (unimplemented) BatchSaveData(context.Context, BatchSaveDataRequestObject) (BatchSaveDataResponseObject, error) {
-	return nil, errNotImplemented
-}
-
-func (unimplemented) GetDataEntry(context.Context, GetDataEntryRequestObject) (GetDataEntryResponseObject, error) {
-	return nil, errNotImplemented
-}
-
-func (unimplemented) GetDataHistory(context.Context, GetDataHistoryRequestObject) (GetDataHistoryResponseObject, error) {
-	return nil, errNotImplemented
-}
-
-func (unimplemented) DeleteOverride(context.Context, DeleteOverrideRequestObject) (DeleteOverrideResponseObject, error) {
-	return nil, errNotImplemented
-}
-
-func (unimplemented) PutOverride(context.Context, PutOverrideRequestObject) (PutOverrideResponseObject, error) {
-	return nil, errNotImplemented
-}
-
-func (unimplemented) PreviewData(context.Context, PreviewDataRequestObject) (PreviewDataResponseObject, error) {
-	return nil, errNotImplemented
-}
-
-func (unimplemented) GetScorecardView(context.Context, GetScorecardViewRequestObject) (GetScorecardViewResponseObject, error) {
-	return nil, errNotImplemented
-}
