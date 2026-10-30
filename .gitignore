@@ -1,0 +1,10 @@
+.superpowers/
+.denylist
+node_modules/
+.aws-sam/
+dist/
+*.local.*
+/private/
+*.xlsx
+!api/internal/**/testdata/*.xlsx
+.DS_Store
