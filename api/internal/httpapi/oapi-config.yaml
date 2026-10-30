@@ -1,0 +1,7 @@
+# oapi-codegen configuration. Run from api/ (see `make gen`).
+package: httpapi
+output: internal/httpapi/gen.go
+generate:
+  models: true
+  std-http-server: true
+  strict-server: true

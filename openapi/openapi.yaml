@@ -1,0 +1,1839 @@
+openapi: 3.0.3
+info:
+  title: OpsVision API
+  version: 1.0.0
+  description: |
+    The OpsVision HTTP API. This file is the single source of truth for the
+    wire contract: Go server types and interfaces are generated from it
+    (`make gen`), and the TypeScript client is generated from it as well.
+
+    All paths are served under the `/v1` base path. The tenant is taken from
+    the bearer token (JWT); no endpoint accepts a tenant ID.
+
+    JSON field names mirror the domain model. Periods are strings such as
+    `2026-M10`, `2026-Q3`, `2026-H2`, or `2026-FY`.
+servers:
+  - url: /v1
+security:
+  - bearerAuth: []
+tags:
+  - name: Identity
+  - name: Operator
+  - name: Members
+  - name: Org
+  - name: Items
+  - name: Scorecards
+  - name: Methodology
+  - name: Data
+  - name: Imports
+  - name: Audit
+
+paths:
+  /me:
+    get:
+      operationId: getMe
+      tags: [Identity]
+      summary: Current user, active tenant, and accessible tenants
+      responses:
+        '200':
+          description: The caller's identity
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Me' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /operator/tenants:
+    get:
+      operationId: listOperatorTenants
+      tags: [Operator]
+      summary: List all tenants (operator only)
+      responses:
+        '200':
+          description: All tenants
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tenants]
+                properties:
+                  tenants:
+                    type: array
+                    items: { $ref: '#/components/schemas/Tenant' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      operationId: createOperatorTenant
+      tags: [Operator]
+      summary: Create a tenant and its first admin (operator only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateTenantRequest' }
+      responses:
+        '201':
+          description: The created tenant
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Tenant' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /members:
+    get:
+      operationId: listMembers
+      tags: [Members]
+      summary: List the tenant's members
+      responses:
+        '200':
+          description: Members
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [members]
+                properties:
+                  members:
+                    type: array
+                    items: { $ref: '#/components/schemas/Membership' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /members/{userId}:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+    patch:
+      operationId: updateMember
+      tags: [Members]
+      summary: Change a member's role and scope (admin only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateMemberRequest' }
+      responses:
+        '200':
+          description: The updated membership
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Membership' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /org/levels:
+    get:
+      operationId: listOrgLevels
+      tags: [Org]
+      summary: List org hierarchy levels
+      responses:
+        '200':
+          description: Levels, shallowest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [levels]
+                properties:
+                  levels:
+                    type: array
+                    items: { $ref: '#/components/schemas/Level' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    put:
+      operationId: putOrgLevels
+      tags: [Org]
+      summary: Replace the org hierarchy levels (admin only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [levels]
+              properties:
+                levels:
+                  type: array
+                  items: { $ref: '#/components/schemas/Level' }
+      responses:
+        '200':
+          description: The stored levels
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [levels]
+                properties:
+                  levels:
+                    type: array
+                    items: { $ref: '#/components/schemas/Level' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /org/units:
+    get:
+      operationId: listOrgUnits
+      tags: [Org]
+      summary: List org units
+      responses:
+        '200':
+          description: Org units
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [units]
+                properties:
+                  units:
+                    type: array
+                    items: { $ref: '#/components/schemas/OrgUnit' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      operationId: createOrgUnit
+      tags: [Org]
+      summary: Create an org unit (admin only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/OrgUnit' }
+      responses:
+        '201':
+          description: The created org unit
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrgUnit' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /org/units/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    patch:
+      operationId: updateOrgUnit
+      tags: [Org]
+      summary: Rename, re-key, or retire an org unit (admin only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateOrgUnitRequest' }
+      responses:
+        '200':
+          description: The updated org unit
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrgUnit' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /org/units/{id}/moves:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      operationId: createOrgMove
+      tags: [Org]
+      summary: Reparent an org unit effective from a month (admin only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateOrgMoveRequest' }
+      responses:
+        '201':
+          description: The recorded move
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrgMove' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /org/tree:
+    get:
+      operationId: getOrgTree
+      tags: [Org]
+      summary: The org tree as it stood in a month
+      parameters:
+        - name: month
+          in: query
+          required: false
+          description: Month to show; defaults to the current month.
+          schema: { $ref: '#/components/schemas/MonthPeriod' }
+      responses:
+        '200':
+          description: The org tree
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrgTree' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /item-kinds:
+    get:
+      operationId: listItemKinds
+      tags: [Items]
+      summary: List item kinds
+      responses:
+        '200':
+          description: Item kinds
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [itemKinds]
+                properties:
+                  itemKinds:
+                    type: array
+                    items: { $ref: '#/components/schemas/ItemKind' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      operationId: createItemKind
+      tags: [Items]
+      summary: Create an item kind (admin only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ItemKind' }
+      responses:
+        '201':
+          description: The created item kind
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ItemKind' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /items:
+    get:
+      operationId: listItems
+      tags: [Items]
+      summary: List tracked items
+      parameters:
+        - name: kind
+          in: query
+          required: false
+          description: Only items of this kind.
+          schema: { $ref: '#/components/schemas/Id' }
+      responses:
+        '200':
+          description: Tracked items
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/TrackedItem' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      operationId: createItem
+      tags: [Items]
+      summary: Create a tracked item (admin only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TrackedItem' }
+      responses:
+        '201':
+          description: The created item
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TrackedItem' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /items/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    patch:
+      operationId: updateItem
+      tags: [Items]
+      summary: Update a tracked item (admin only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateItemRequest' }
+      responses:
+        '200':
+          description: The updated item
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TrackedItem' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /scorecards:
+    get:
+      operationId: listScorecards
+      tags: [Scorecards]
+      summary: List scorecards
+      responses:
+        '200':
+          description: Scorecards
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [scorecards]
+                properties:
+                  scorecards:
+                    type: array
+                    items: { $ref: '#/components/schemas/Scorecard' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      operationId: createScorecard
+      tags: [Scorecards]
+      summary: Create a scorecard (admin only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Scorecard' }
+      responses:
+        '201':
+          description: The created scorecard
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Scorecard' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /scorecards/{sc}/versions:
+    parameters:
+      - $ref: '#/components/parameters/ScorecardId'
+    get:
+      operationId: listVersions
+      tags: [Methodology]
+      summary: List a scorecard's methodology versions
+      responses:
+        '200':
+          description: Versions, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [versions]
+                properties:
+                  versions:
+                    type: array
+                    items: { $ref: '#/components/schemas/MethodologyVersion' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      operationId: createVersion
+      tags: [Methodology]
+      summary: Create a draft methodology version, optionally cloned (admin only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateVersionRequest' }
+      responses:
+        '201':
+          description: The created draft
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MethodologyVersion' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /scorecards/{sc}/versions/{v}:
+    parameters:
+      - $ref: '#/components/parameters/ScorecardId'
+      - $ref: '#/components/parameters/VersionId'
+    get:
+      operationId: getVersion
+      tags: [Methodology]
+      summary: Get one methodology version
+      responses:
+        '200':
+          description: The version
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MethodologyVersion' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      operationId: putVersion
+      tags: [Methodology]
+      summary: Save a draft version's content (admin only)
+      description: |
+        Only drafts can be saved. `revision` must equal the stored revision;
+        otherwise the call fails with 409 `conflict`. Content is stored as
+        sent; use the validate operation to check it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PutVersionRequest' }
+      responses:
+        '200':
+          description: The saved version, with its new revision
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MethodologyVersion' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /scorecards/{sc}/versions/{v}/validate:
+    parameters:
+      - $ref: '#/components/parameters/ScorecardId'
+      - $ref: '#/components/parameters/VersionId'
+    post:
+      operationId: validateVersion
+      tags: [Methodology]
+      summary: Validate a version's content
+      description: |
+        200 when the content is valid. When it is not, the response is 400
+        `invalid` and `error.details` lists every problem as `{path, message}`.
+      responses:
+        '200':
+          description: The content is valid
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [valid]
+                properties:
+                  valid: { type: boolean }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /scorecards/{sc}/versions/{v}/publish:
+    parameters:
+      - $ref: '#/components/parameters/ScorecardId'
+      - $ref: '#/components/parameters/VersionId'
+    post:
+      operationId: publishVersion
+      tags: [Methodology]
+      summary: Publish a draft, effective from a period (admin only)
+      description: |
+        Validates first; invalid content fails with 400 `invalid` and
+        `error.details` lists every problem as `{path, message}`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PublishVersionRequest' }
+      responses:
+        '200':
+          description: The published version
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MethodologyVersion' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /scorecards/{sc}/versions/{v}/diff:
+    parameters:
+      - $ref: '#/components/parameters/ScorecardId'
+      - $ref: '#/components/parameters/VersionId'
+    get:
+      operationId: getVersionDiff
+      tags: [Methodology]
+      summary: Compare a version against another version
+      parameters:
+        - name: against
+          in: query
+          required: true
+          description: ID of the version to compare against.
+          schema: { $ref: '#/components/schemas/ServerId' }
+      responses:
+        '200':
+          description: The differences, from `against` to this version
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VersionDiff' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /scorecards/{sc}/view:
+    parameters:
+      - $ref: '#/components/parameters/ScorecardId'
+    get:
+      operationId: getScorecardView
+      tags: [Scorecards]
+      summary: Compute the scorecard table
+      description: |
+        Columns are `periods` (any grain) followed by `ytd` (fiscal
+        year-to-date, each given by the month it runs through).
+      parameters:
+        - name: periods
+          in: query
+          required: false
+          style: form
+          explode: true
+          schema:
+            type: array
+            items: { $ref: '#/components/schemas/Period' }
+        - name: ytd
+          in: query
+          required: false
+          description: Months that fiscal year-to-date columns run through.
+          style: form
+          explode: true
+          schema:
+            type: array
+            items: { $ref: '#/components/schemas/MonthPeriod' }
+        - name: subjects
+          in: query
+          required: false
+          description: Keep only rows for these subject IDs.
+          style: form
+          explode: true
+          schema:
+            type: array
+            items: { $ref: '#/components/schemas/Id' }
+        - name: restate
+          in: query
+          required: false
+          description: |
+            Methodology version ID (any status) to compute every column
+            under. Omit for the version in force in each column.
+          schema: { $ref: '#/components/schemas/ServerId' }
+        - name: structure
+          in: query
+          required: false
+          description: |
+            `as_of` (default) shows each period under that period's org
+            structure; `current` shows all periods under the latest
+            structure.
+          schema:
+            type: string
+            enum: [as_of, current]
+      responses:
+        '200':
+          description: The scorecard view
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScorecardView' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /scorecards/{sc}/entry:
+    parameters:
+      - $ref: '#/components/parameters/ScorecardId'
+    get:
+      operationId: getDataEntry
+      tags: [Data]
+      summary: The data-entry grid for one period
+      parameters:
+        - name: period
+          in: query
+          required: true
+          schema: { $ref: '#/components/schemas/Period' }
+      responses:
+        '200':
+          description: Entry rows
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EntryGrid' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /scorecards/{sc}/data:batch:
+    parameters:
+      - $ref: '#/components/parameters/ScorecardId'
+    post:
+      operationId: batchSaveData
+      tags: [Data]
+      summary: Save data points, all or nothing
+      description: |
+        Each write carries the revision the client last saw. If any write is
+        stale, nothing is saved and the response is 409 with the conflicting
+        writes and the current stored data points.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DataBatchRequest' }
+      responses:
+        '200':
+          description: The saved data points, with their new revisions
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [saved]
+                properties:
+                  saved:
+                    type: array
+                    items: { $ref: '#/components/schemas/DataPoint' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: One or more writes were based on a stale revision
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DataBatchConflicts' }
+
+  /scorecards/{sc}/preview:
+    parameters:
+      - $ref: '#/components/parameters/ScorecardId'
+    post:
+      operationId: previewData
+      tags: [Data]
+      summary: Compute the cells a batch would affect, without saving
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DataBatchRequest' }
+      responses:
+        '200':
+          description: The affected cells
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [cells]
+                properties:
+                  cells:
+                    type: array
+                    items: { $ref: '#/components/schemas/Cell' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /scorecards/{sc}/history:
+    parameters:
+      - $ref: '#/components/parameters/ScorecardId'
+    get:
+      operationId: getDataHistory
+      tags: [Data]
+      summary: Revision history of one data point
+      parameters:
+        - name: measure
+          in: query
+          required: true
+          schema: { $ref: '#/components/schemas/Key' }
+        - name: subject
+          in: query
+          required: true
+          schema: { $ref: '#/components/schemas/Id' }
+        - name: period
+          in: query
+          required: true
+          schema: { $ref: '#/components/schemas/Period' }
+      responses:
+        '200':
+          description: Stored revisions, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [history]
+                properties:
+                  history:
+                    type: array
+                    items: { $ref: '#/components/schemas/DataPoint' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /scorecards/{sc}/overrides:
+    parameters:
+      - $ref: '#/components/parameters/ScorecardId'
+    put:
+      operationId: putOverride
+      tags: [Data]
+      summary: Create or replace an override on a metric cell
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PutOverrideRequest' }
+      responses:
+        '200':
+          description: The stored override
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Override' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      operationId: deleteOverride
+      tags: [Data]
+      summary: Remove an override from a metric cell
+      description: The cell is identified by query parameters; DELETE has no body.
+      parameters:
+        - name: metricKey
+          in: query
+          required: true
+          schema: { $ref: '#/components/schemas/Key' }
+        - name: subjectId
+          in: query
+          required: true
+          schema: { $ref: '#/components/schemas/Id' }
+        - name: period
+          in: query
+          required: true
+          schema: { $ref: '#/components/schemas/Period' }
+      responses:
+        '204':
+          description: The override was removed
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /imports/uploads:
+    post:
+      operationId: createImportUpload
+      tags: [Imports]
+      summary: Start an import and get a URL to upload the file to
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                filename: { type: string }
+                contentType: { type: string }
+      responses:
+        '201':
+          description: The import and its upload URL
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ImportUpload' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /imports/{id}/parse:
+    parameters:
+      - $ref: '#/components/parameters/ServerIdPath'
+    post:
+      operationId: parseImport
+      tags: [Imports]
+      summary: Parse an uploaded file into a change set preview
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ParseImportRequest' }
+      responses:
+        '200':
+          description: The parsed change set; nothing has been applied
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChangeSetPreview' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /imports/{id}/apply:
+    parameters:
+      - $ref: '#/components/parameters/ServerIdPath'
+    post:
+      operationId: applyImport
+      tags: [Imports]
+      summary: Apply a parsed change set
+      responses:
+        '200':
+          description: The applied change set
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChangeSetPreview' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /import-templates:
+    get:
+      operationId: listImportTemplates
+      tags: [Imports]
+      summary: List import templates
+      responses:
+        '200':
+          description: Import templates
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [templates]
+                properties:
+                  templates:
+                    type: array
+                    items: { $ref: '#/components/schemas/ImportTemplate' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    put:
+      operationId: replaceImportTemplates
+      tags: [Imports]
+      summary: Replace all import templates (admin only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [templates]
+              properties:
+                templates:
+                  type: array
+                  items: { $ref: '#/components/schemas/ImportTemplate' }
+      responses:
+        '200':
+          description: The stored templates
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [templates]
+                properties:
+                  templates:
+                    type: array
+                    items: { $ref: '#/components/schemas/ImportTemplate' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /import-templates/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    put:
+      operationId: putImportTemplate
+      tags: [Imports]
+      summary: Create or replace one import template (admin only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ImportTemplate' }
+      responses:
+        '200':
+          description: The stored template
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ImportTemplate' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /audit:
+    get:
+      operationId: listAudit
+      tags: [Audit]
+      summary: List audit entries in a time range
+      parameters:
+        - name: from
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: Audit entries, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [entries]
+                properties:
+                  entries:
+                    type: array
+                    items: { $ref: '#/components/schemas/AuditEntry' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    Id:
+      name: id
+      in: path
+      required: true
+      description: Client-supplied identifier.
+      schema: { $ref: '#/components/schemas/Id' }
+    ServerIdPath:
+      name: id
+      in: path
+      required: true
+      description: Server-generated identifier.
+      schema: { $ref: '#/components/schemas/ServerId' }
+    UserId:
+      name: userId
+      in: path
+      required: true
+      description: User ID from the identity provider. It never contains `#`.
+      schema: { $ref: '#/components/schemas/UserId' }
+    ScorecardId:
+      name: sc
+      in: path
+      required: true
+      description: Scorecard ID.
+      schema: { $ref: '#/components/schemas/Id' }
+    VersionId:
+      name: v
+      in: path
+      required: true
+      description: Methodology version ID.
+      schema: { $ref: '#/components/schemas/ServerId' }
+
+  responses:
+    BadRequest:
+      description: The request is malformed or fails validation (`invalid`)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unauthorized:
+      description: Missing or invalid bearer token (`unauthorized`)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Forbidden:
+      description: The caller's role or scope does not allow this (`forbidden`)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: The resource does not exist (`not_found`)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Conflict:
+      description: The request conflicts with current state (`conflict`)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+  schemas:
+    # ---- Errors -----------------------------------------------------------
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum: [not_found, forbidden, conflict, invalid, unauthorized, not_implemented]
+            message: { type: string }
+            details:
+              type: array
+              items: { $ref: '#/components/schemas/ErrorDetail' }
+    ErrorDetail:
+      type: object
+      description: One validation problem. `path` looks like `metrics[0].formula`.
+      required: [path, message]
+      properties:
+        path: { type: string }
+        message: { type: string }
+
+    # ---- Scalars ----------------------------------------------------------
+    Id:
+      type: string
+      description: Client-supplied identifier.
+      pattern: '^[A-Za-z0-9_-]{1,64}$'
+      example: team-alpha
+    ServerId:
+      type: string
+      description: Server-generated identifier; treat as opaque.
+      minLength: 1
+      example: 01J9ZQ3K8W
+    UserId:
+      type: string
+      description: User ID from the identity provider. It never contains `#`.
+      minLength: 1
+      example: auth0|abc123
+    Key:
+      type: string
+      description: Measure or metric key.
+      pattern: '^[a-z][a-z0-9_]*$'
+      example: open_defects
+    Period:
+      type: string
+      description: A month, quarter, half, or fiscal year.
+      pattern: '^\d{4}-(M(0[1-9]|1[0-2])|Q[1-4]|H[12]|FY)$'
+      example: 2026-M10
+    MonthPeriod:
+      type: string
+      description: A month.
+      pattern: '^\d{4}-M(0[1-9]|1[0-2])$'
+      example: 2026-M10
+    OptionalPeriod:
+      type: string
+      description: A period, or the empty string when unset.
+      pattern: '^(\d{4}-(M(0[1-9]|1[0-2])|Q[1-4]|H[12]|FY))?$'
+      example: 2026-M10
+    Role:
+      type: string
+      enum: [admin, contributor, viewer]
+    MeasureValue:
+      type: number
+      format: double
+      nullable: true
+      description: The value, or null when not applicable.
+
+    # ---- Identity and tenants --------------------------------------------
+    Scope:
+      type: object
+      description: Restricts what a membership can see or edit. An empty list means everything.
+      required: [orgUnitIds, metricKeys]
+      properties:
+        orgUnitIds:
+          type: array
+          items: { $ref: '#/components/schemas/Id' }
+        metricKeys:
+          type: array
+          items: { $ref: '#/components/schemas/Key' }
+    StatusLevel:
+      type: object
+      description: One level of a tenant's status scale. A higher rank is worse.
+      required: [key, label, color, rank]
+      properties:
+        key: { type: string, example: G }
+        label: { type: string, example: Green }
+        color: { type: string, example: '#137A3A' }
+        rank: { type: integer }
+    Tenant:
+      type: object
+      required: [id, name, auth0OrgId, fiscalYearStartMonth, statusScale, defaultRole, createdAt]
+      properties:
+        id: { $ref: '#/components/schemas/ServerId' }
+        name: { type: string }
+        auth0OrgId: { type: string }
+        fiscalYearStartMonth: { type: integer, minimum: 1, maximum: 12 }
+        statusScale:
+          type: array
+          items: { $ref: '#/components/schemas/StatusLevel' }
+        defaultRole: { $ref: '#/components/schemas/Role' }
+        createdAt: { type: string, format: date-time }
+    TenantSummary:
+      type: object
+      required: [id, name]
+      properties:
+        id: { $ref: '#/components/schemas/ServerId' }
+        name: { type: string }
+    Me:
+      type: object
+      required: [userId, name, email, isOperator, tenants]
+      properties:
+        userId: { $ref: '#/components/schemas/UserId' }
+        name: { type: string }
+        email: { type: string }
+        isOperator: { type: boolean }
+        tenant:
+          description: The active tenant, when the token names one.
+          allOf:
+            - $ref: '#/components/schemas/Tenant'
+        role: { $ref: '#/components/schemas/Role' }
+        scope: { $ref: '#/components/schemas/Scope' }
+        tenants:
+          type: array
+          items: { $ref: '#/components/schemas/TenantSummary' }
+    CreateTenantRequest:
+      type: object
+      required: [name, auth0OrgId, fiscalYearStartMonth, adminEmail]
+      properties:
+        name: { type: string, minLength: 1 }
+        auth0OrgId: { type: string, minLength: 1 }
+        fiscalYearStartMonth: { type: integer, minimum: 1, maximum: 12 }
+        adminEmail: { type: string, minLength: 1, example: admin@example.com }
+    Membership:
+      type: object
+      required: [userId, email, name, role, scope, createdAt]
+      properties:
+        userId: { $ref: '#/components/schemas/UserId' }
+        email: { type: string }
+        name: { type: string }
+        role: { $ref: '#/components/schemas/Role' }
+        scope: { $ref: '#/components/schemas/Scope' }
+        createdAt: { type: string, format: date-time }
+    UpdateMemberRequest:
+      type: object
+      minProperties: 1
+      properties:
+        role: { $ref: '#/components/schemas/Role' }
+        scope: { $ref: '#/components/schemas/Scope' }
+
+    # ---- Org --------------------------------------------------------------
+    Level:
+      type: object
+      description: One tier of the org hierarchy. Depth 0 is the root tier.
+      required: [id, name, depth]
+      properties:
+        id: { $ref: '#/components/schemas/Id' }
+        name: { type: string, minLength: 1 }
+        depth: { type: integer, minimum: 0 }
+    OrgUnit:
+      type: object
+      required: [id, name, levelId, parentId, sourceKeys]
+      properties:
+        id: { $ref: '#/components/schemas/Id' }
+        name: { type: string, minLength: 1 }
+        levelId: { $ref: '#/components/schemas/Id' }
+        parentId:
+          type: string
+          description: Parent unit ID, or the empty string for a root.
+          pattern: '^([A-Za-z0-9_-]{1,64})?$'
+        sourceKeys:
+          type: array
+          description: Names this unit goes by in source systems, for imports.
+          items: { type: string }
+        retiredFrom:
+          allOf:
+            - $ref: '#/components/schemas/MonthPeriod'
+    UpdateOrgUnitRequest:
+      type: object
+      minProperties: 1
+      properties:
+        name: { type: string, minLength: 1 }
+        sourceKeys:
+          type: array
+          items: { type: string }
+        retiredFrom:
+          allOf:
+            - $ref: '#/components/schemas/MonthPeriod'
+    CreateOrgMoveRequest:
+      type: object
+      required: [newParentId, effectiveMonth]
+      properties:
+        newParentId: { $ref: '#/components/schemas/Id' }
+        effectiveMonth: { $ref: '#/components/schemas/MonthPeriod' }
+        note: { type: string }
+    OrgMove:
+      type: object
+      required: [unitId, newParentId, effectiveMonth, note]
+      properties:
+        unitId: { $ref: '#/components/schemas/Id' }
+        newParentId: { $ref: '#/components/schemas/Id' }
+        effectiveMonth: { $ref: '#/components/schemas/MonthPeriod' }
+        note: { type: string }
+    OrgTreeNode:
+      type: object
+      required: [id, name, levelId, children]
+      properties:
+        id: { $ref: '#/components/schemas/Id' }
+        name: { type: string }
+        levelId: { $ref: '#/components/schemas/Id' }
+        children:
+          type: array
+          items: { $ref: '#/components/schemas/OrgTreeNode' }
+    OrgTree:
+      type: object
+      required: [month, roots]
+      properties:
+        month: { $ref: '#/components/schemas/MonthPeriod' }
+        roots:
+          type: array
+          items: { $ref: '#/components/schemas/OrgTreeNode' }
+
+    # ---- Items ------------------------------------------------------------
+    ItemKind:
+      type: object
+      required: [id, name]
+      properties:
+        id: { $ref: '#/components/schemas/Id' }
+        name: { type: string, minLength: 1 }
+    TrackedItem:
+      type: object
+      required: [id, kindId, name, orgUnitId, sourceKeys]
+      properties:
+        id: { $ref: '#/components/schemas/Id' }
+        kindId: { $ref: '#/components/schemas/Id' }
+        name: { type: string, minLength: 1 }
+        orgUnitId:
+          type: string
+          description: The org unit this item belongs to, or the empty string when unattached.
+          pattern: '^([A-Za-z0-9_-]{1,64})?$'
+        sourceKeys:
+          type: array
+          items: { type: string }
+    UpdateItemRequest:
+      type: object
+      minProperties: 1
+      properties:
+        name: { type: string, minLength: 1 }
+        orgUnitId:
+          type: string
+          pattern: '^([A-Za-z0-9_-]{1,64})?$'
+        sourceKeys:
+          type: array
+          items: { type: string }
+
+    # ---- Methodology ------------------------------------------------------
+    Scorecard:
+      type: object
+      required: [id, name]
+      properties:
+        id: { $ref: '#/components/schemas/Id' }
+        name: { type: string, minLength: 1 }
+    VersionStatus:
+      type: string
+      enum: [draft, in_review, published, superseded]
+    Agg:
+      type: string
+      description: Aggregation across org units or across time.
+      enum: [sum, min, max, latest, average, none]
+    Direction:
+      type: string
+      enum: [higher_better, lower_better]
+    Frequency:
+      type: string
+      enum: [monthly, quarterly, biannual, annual]
+    MetricFormat:
+      type: string
+      enum: [percent0, percent1, percent2, number0, number1, number2, money_k, days0]
+    RuleType:
+      type: string
+      enum: [bands, change, scale]
+    Comparison:
+      type: string
+      enum: [prior_period, prior_year_average, baseline]
+    Category:
+      type: object
+      required: [id, name, order]
+      properties:
+        id: { $ref: '#/components/schemas/Id' }
+        name: { type: string }
+        order: { type: integer }
+    Measure:
+      type: object
+      required: [key, name, unit, orgAgg, timeAgg]
+      properties:
+        key: { $ref: '#/components/schemas/Key' }
+        name: { type: string }
+        unit: { type: string }
+        orgAgg: { $ref: '#/components/schemas/Agg' }
+        timeAgg: { $ref: '#/components/schemas/Agg' }
+    Subject:
+      type: object
+      description: What a metric is reported at. `kind` is `level` or `item_kind`.
+      required: [kind, id]
+      properties:
+        kind:
+          type: string
+          enum: [level, item_kind]
+        id: { $ref: '#/components/schemas/Id' }
+    Band:
+      type: object
+      description: |
+        Maps a value range to a status. Bands are evaluated in order and the
+        first match wins. `op` is one of `>=`, `>`, `<=`, `<`, or the empty
+        string for the final else band.
+      required: [status, op, value]
+      properties:
+        status: { type: string }
+        op: { type: string }
+        value: { type: number, format: double }
+    SubjectBands:
+      type: object
+      required: [subjectId, bands]
+      properties:
+        subjectId: { $ref: '#/components/schemas/Id' }
+        bands:
+          type: array
+          items: { $ref: '#/components/schemas/Band' }
+    ScaleStep:
+      type: object
+      required: [status, min]
+      properties:
+        status: { type: string }
+        min: { type: number, format: double }
+    StatusRule:
+      type: object
+      required: [type]
+      properties:
+        type: { $ref: '#/components/schemas/RuleType' }
+        bands:
+          type: array
+          items: { $ref: '#/components/schemas/Band' }
+        compare: { $ref: '#/components/schemas/Comparison' }
+        perSubject:
+          type: array
+          items: { $ref: '#/components/schemas/SubjectBands' }
+        scale:
+          type: array
+          items: { $ref: '#/components/schemas/ScaleStep' }
+    Target:
+      type: object
+      required: [label, from, to, value, subjectId]
+      properties:
+        label: { type: string }
+        from: { $ref: '#/components/schemas/OptionalPeriod' }
+        to: { $ref: '#/components/schemas/OptionalPeriod' }
+        value: { type: number, format: double }
+        subjectId:
+          type: string
+          description: Subject the target applies to, or the empty string for all subjects.
+    Metric:
+      type: object
+      required: [key, name, categoryId, formula, format, direction, frequency, reportedAt, rollItemsToOrg, rule, targets, definition, notes, example, source, link]
+      properties:
+        key: { $ref: '#/components/schemas/Key' }
+        name: { type: string }
+        categoryId: { $ref: '#/components/schemas/Id' }
+        formula: { type: string, example: 'closed / total' }
+        format: { $ref: '#/components/schemas/MetricFormat' }
+        direction: { $ref: '#/components/schemas/Direction' }
+        frequency: { $ref: '#/components/schemas/Frequency' }
+        reportedAt:
+          type: array
+          items: { $ref: '#/components/schemas/Subject' }
+        rollItemsToOrg: { type: boolean }
+        rule: { $ref: '#/components/schemas/StatusRule' }
+        targets:
+          type: array
+          items: { $ref: '#/components/schemas/Target' }
+        definition: { type: string }
+        notes: { type: string }
+        example: { type: string }
+        source: { type: string }
+        link: { type: string }
+    Methodology:
+      type: object
+      required: [categories, measures, metrics]
+      properties:
+        categories:
+          type: array
+          items: { $ref: '#/components/schemas/Category' }
+        measures:
+          type: array
+          items: { $ref: '#/components/schemas/Measure' }
+        metrics:
+          type: array
+          items: { $ref: '#/components/schemas/Metric' }
+    MethodologyVersion:
+      type: object
+      required: [id, scorecardId, name, status, effectiveFrom, revision, content]
+      properties:
+        id: { $ref: '#/components/schemas/ServerId' }
+        scorecardId: { $ref: '#/components/schemas/Id' }
+        name: { type: string }
+        status: { $ref: '#/components/schemas/VersionStatus' }
+        effectiveFrom: { $ref: '#/components/schemas/OptionalPeriod' }
+        publishedAt: { type: string, format: date-time }
+        revision: { type: integer, minimum: 0 }
+        content: { $ref: '#/components/schemas/Methodology' }
+    CreateVersionRequest:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, minLength: 1 }
+        cloneFrom:
+          description: ID of a version whose content seeds the new draft.
+          allOf:
+            - $ref: '#/components/schemas/ServerId'
+    PutVersionRequest:
+      type: object
+      required: [revision, content]
+      properties:
+        revision:
+          type: integer
+          minimum: 0
+          description: The revision the client loaded. A mismatch fails with 409.
+        name: { type: string, minLength: 1 }
+        content: { $ref: '#/components/schemas/Methodology' }
+    PublishVersionRequest:
+      type: object
+      required: [effectiveFrom]
+      properties:
+        effectiveFrom: { $ref: '#/components/schemas/Period' }
+    VersionDiff:
+      type: object
+      required: [from, to, changes]
+      properties:
+        from: { $ref: '#/components/schemas/ServerId' }
+        to: { $ref: '#/components/schemas/ServerId' }
+        changes:
+          type: array
+          items: { $ref: '#/components/schemas/VersionChange' }
+    VersionChange:
+      type: object
+      required: [path, kind]
+      properties:
+        path:
+          type: string
+          example: metrics[2].formula
+        kind:
+          type: string
+          enum: [added, removed, changed]
+        before:
+          description: The previous value; absent for added.
+        after:
+          description: The new value; absent for removed.
+
+    # ---- Scorecard view ---------------------------------------------------
+    Override:
+      type: object
+      description: Replaces a computed metric value and/or status, with a recorded reason.
+      required: [metricKey, subjectId, period, value, status, reason, by, at]
+      properties:
+        metricKey: { $ref: '#/components/schemas/Key' }
+        subjectId: { $ref: '#/components/schemas/Id' }
+        period: { $ref: '#/components/schemas/Period' }
+        value: { $ref: '#/components/schemas/MeasureValue' }
+        status:
+          type: string
+          description: Status key, or the empty string to keep the computed status.
+        reason: { type: string }
+        by: { $ref: '#/components/schemas/UserId' }
+        at: { type: string, format: date-time }
+    PutOverrideRequest:
+      type: object
+      required: [metricKey, subjectId, period]
+      properties:
+        metricKey: { $ref: '#/components/schemas/Key' }
+        subjectId: { $ref: '#/components/schemas/Id' }
+        period: { $ref: '#/components/schemas/Period' }
+        value: { $ref: '#/components/schemas/MeasureValue' }
+        status: { type: string }
+        reason: { type: string }
+    CellComputed:
+      type: object
+      description: The value and status the engine computed, set only when an override applied.
+      required: [value, status]
+      properties:
+        value: { $ref: '#/components/schemas/MeasureValue' }
+        status: { type: string }
+    Cell:
+      type: object
+      description: One metric's result for one subject and period.
+      required: [metricKey, subjectId, period, ytd, value, display, status, naReason, components, coverage, change, changeKind, target, versionId]
+      properties:
+        metricKey: { $ref: '#/components/schemas/Key' }
+        subjectId: { $ref: '#/components/schemas/Id' }
+        period:
+          type: string
+          description: The period; for a year-to-date cell, the month it runs through.
+          pattern: '^\d{4}-(M(0[1-9]|1[0-2])|Q[1-4]|H[12]|FY)$'
+        ytd: { type: boolean }
+        value:
+          type: number
+          format: double
+          nullable: true
+          description: Null when the cell is blank (missing input) or not applicable.
+        display: { type: string, example: '94.5%' }
+        status:
+          type: string
+          description: Status key, or the empty string when there is no outcome.
+        naReason:
+          type: string
+          description: Set only for not-applicable cells.
+        components:
+          type: object
+          description: Rolled-up value of each measure the formula references.
+          additionalProperties: { type: number, format: double }
+        coverage:
+          type: array
+          description: '[slots with data, slots expected]'
+          minItems: 2
+          maxItems: 2
+          items: { type: integer }
+        change:
+          type: number
+          format: double
+          nullable: true
+        changeKind:
+          type: string
+          description: |
+            How to read `change`: `improvement_pct` or `delta`; the empty
+            string when there is none.
+        target:
+          type: number
+          format: double
+          nullable: true
+        versionId:
+          type: string
+          description: The methodology version the cell was computed under; empty when none applied.
+        override: { $ref: '#/components/schemas/Override' }
+        computed: { $ref: '#/components/schemas/CellComputed' }
+    ViewRow:
+      type: object
+      description: One metric for one subject. `cells` has one entry per `periods` column, then one per `ytd` column.
+      required: [metricKey, metricName, categoryId, subjectId, subjectName, format, depth, direction, cells]
+      properties:
+        metricKey: { $ref: '#/components/schemas/Key' }
+        metricName: { type: string }
+        categoryId: { $ref: '#/components/schemas/Id' }
+        subjectId: { $ref: '#/components/schemas/Id' }
+        subjectName: { type: string }
+        format: { $ref: '#/components/schemas/MetricFormat' }
+        depth: { type: integer, minimum: 0 }
+        direction: { $ref: '#/components/schemas/Direction' }
+        cells:
+          type: array
+          items: { $ref: '#/components/schemas/Cell' }
+    ScorecardView:
+      type: object
+      required: [periods, ytd, categories, rows, versionByPeriod]
+      properties:
+        periods:
+          type: array
+          items: { $ref: '#/components/schemas/Period' }
+        ytd:
+          type: array
+          items: { $ref: '#/components/schemas/MonthPeriod' }
+        categories:
+          type: array
+          items: { $ref: '#/components/schemas/Category' }
+        rows:
+          type: array
+          items: { $ref: '#/components/schemas/ViewRow' }
+        versionByPeriod:
+          type: object
+          description: |
+            Methodology version ID used for each column, keyed by the period
+            string (`2026-M10`) or `YTD:<through>`. Columns with no version
+            are omitted.
+          additionalProperties: { $ref: '#/components/schemas/ServerId' }
+
+    # ---- Data entry -------------------------------------------------------
+    DataPoint:
+      type: object
+      description: A measure value for one subject in one period. A null value means not applicable.
+      required: [measureKey, subjectId, period, value, naReason, source, enteredBy, enteredAt, revision]
+      properties:
+        measureKey: { $ref: '#/components/schemas/Key' }
+        subjectId: { $ref: '#/components/schemas/Id' }
+        period: { $ref: '#/components/schemas/Period' }
+        value: { $ref: '#/components/schemas/MeasureValue' }
+        naReason: { type: string }
+        source:
+          type: string
+          enum: [grid, import, api, sam, legacy]
+        enteredBy: { $ref: '#/components/schemas/UserId' }
+        enteredAt: { type: string, format: date-time }
+        revision: { type: integer, minimum: 0 }
+    EntryRow:
+      type: object
+      required: [measureKey, measureName, metricKeys, subjectId, subjectName, naReason, revision, canEdit]
+      properties:
+        measureKey: { $ref: '#/components/schemas/Key' }
+        measureName: { type: string }
+        metricKeys:
+          type: array
+          description: Metrics that use this measure.
+          items: { $ref: '#/components/schemas/Key' }
+        subjectId: { $ref: '#/components/schemas/Id' }
+        subjectName: { type: string }
+        value: { $ref: '#/components/schemas/MeasureValue' }
+        naReason: { type: string }
+        revision:
+          type: integer
+          minimum: 0
+          description: Send back as `expectedRevision`. Zero when nothing is stored.
+        canEdit:
+          type: boolean
+          description: Whether the caller's role and scope allow editing this row.
+    EntryGrid:
+      type: object
+      required: [period, rows]
+      properties:
+        period: { $ref: '#/components/schemas/Period' }
+        rows:
+          type: array
+          items: { $ref: '#/components/schemas/EntryRow' }
+    DataWrite:
+      type: object
+      required: [measureKey, subjectId, period, expectedRevision]
+      properties:
+        measureKey: { $ref: '#/components/schemas/Key' }
+        subjectId: { $ref: '#/components/schemas/Id' }
+        period: { $ref: '#/components/schemas/Period' }
+        value: { $ref: '#/components/schemas/MeasureValue' }
+        naReason:
+          type: string
+          description: Why the value is not applicable; used when `value` is null or absent.
+        expectedRevision:
+          type: integer
+          minimum: 0
+          description: The revision the client last saw; 0 for a new data point.
+    DataBatchRequest:
+      type: object
+      required: [writes]
+      properties:
+        writes:
+          type: array
+          minItems: 1
+          maxItems: 500
+          items: { $ref: '#/components/schemas/DataWrite' }
+    DataConflict:
+      type: object
+      required: [write]
+      properties:
+        write: { $ref: '#/components/schemas/DataWrite' }
+        current:
+          description: The stored data point; absent when it no longer exists.
+          allOf:
+            - $ref: '#/components/schemas/DataPoint'
+    DataBatchConflicts:
+      type: object
+      required: [conflicts]
+      properties:
+        conflicts:
+          type: array
+          items: { $ref: '#/components/schemas/DataConflict' }
+
+    # ---- Imports ----------------------------------------------------------
+    ImportUpload:
+      type: object
+      required: [importId, uploadUrl]
+      properties:
+        importId: { $ref: '#/components/schemas/ServerId' }
+        uploadUrl:
+          type: string
+          description: Pre-signed URL to PUT the file to.
+    ParseImportRequest:
+      type: object
+      required: [profile]
+      properties:
+        profile:
+          type: string
+          enum: [legacy_workbook, csv]
+        templateId: { $ref: '#/components/schemas/Id' }
+    ImportTemplate:
+      type: object
+      required: [id, name, profile, mapping]
+      properties:
+        id: { $ref: '#/components/schemas/Id' }
+        name: { type: string, minLength: 1 }
+        profile:
+          type: string
+          enum: [legacy_workbook, csv]
+        mapping:
+          type: object
+          description: Maps a source column or cell header to a measure key.
+          additionalProperties: { $ref: '#/components/schemas/Key' }
+    ImportCounts:
+      type: object
+      required: [dataPoints, overrides, versionText, legacyNotes]
+      properties:
+        dataPoints: { type: integer, minimum: 0 }
+        overrides: { type: integer, minimum: 0 }
+        versionText: { type: integer, minimum: 0 }
+        legacyNotes: { type: integer, minimum: 0 }
+    ImportFinding:
+      type: object
+      required: [severity, sheet, cell, message]
+      properties:
+        severity:
+          type: string
+          enum: [info, warn, error]
+        sheet: { type: string }
+        cell: { type: string, example: B7 }
+        message: { type: string }
+    ImportChange:
+      type: object
+      description: One change the import would make. Which fields are set depends on `kind`.
+      required: [kind]
+      properties:
+        kind:
+          type: string
+          enum: [data_point, override, version_text]
+        measureKey: { $ref: '#/components/schemas/Key' }
+        metricKey: { $ref: '#/components/schemas/Key' }
+        subjectId: { $ref: '#/components/schemas/Id' }
+        period: { $ref: '#/components/schemas/Period' }
+        value: { type: number, format: double }
+        naReason: { type: string }
+        status: { type: string }
+        field: { type: string }
+        text: { type: string }
+    ChangeSetPreview:
+      type: object
+      required: [id, status, counts, findings, sample]
+      properties:
+        id: { $ref: '#/components/schemas/ServerId' }
+        status:
+          type: string
+          enum: [parsed, applied]
+        counts: { $ref: '#/components/schemas/ImportCounts' }
+        findings:
+          type: array
+          items: { $ref: '#/components/schemas/ImportFinding' }
+        sample:
+          type: array
+          maxItems: 50
+          description: Up to 50 of the changes, for review.
+          items: { $ref: '#/components/schemas/ImportChange' }
+
+    # ---- Audit ------------------------------------------------------------
+    AuditEntry:
+      type: object
+      required: [id, actorId, channel, action, targetType, targetId, at]
+      properties:
+        id: { $ref: '#/components/schemas/ServerId' }
+        actorId: { type: string }
+        channel: { type: string, example: api }
+        action: { type: string, example: update }
+        targetType: { type: string, example: org_unit }
+        targetId: { type: string }
+        before:
+          description: JSON of the target before the change; absent when it did not exist.
+        after:
+          description: JSON of the target after the change; absent when it was removed.
+        at: { type: string, format: date-time }
