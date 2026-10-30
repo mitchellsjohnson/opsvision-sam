@@ -49,6 +49,15 @@ type Index struct {
 	itemsByUnit map[string][]string
 	// points holds one data point per (measure, subject, period).
 	points map[pointKey]domain.DataPoint
+	// overrides holds the winning manual override per (metric, subject,
+	// period).
+	overrides map[overrideKey]domain.Override
+}
+
+type overrideKey struct {
+	metric  string
+	subject string
+	period  period.Period
 }
 
 // NewIndex indexes in.Data for O(1) lookup by (measure, subject, period).
@@ -62,6 +71,7 @@ func NewIndex(in *Input) *Index {
 		items:       map[string]domain.TrackedItem{},
 		itemsByUnit: map[string][]string{},
 		points:      map[pointKey]domain.DataPoint{},
+		overrides:   map[overrideKey]domain.Override{},
 	}
 	if in == nil {
 		return ix
@@ -99,6 +109,23 @@ func NewIndex(in *Input) *Index {
 			dp.Value = &v
 		}
 		ix.points[k] = dp
+	}
+	// If several overrides share a (metric, subject, period), the latest At
+	// wins; on a tie the later one in input order.
+	for _, ov := range in.Overrides {
+		if ov.Value != nil {
+			if math.IsNaN(*ov.Value) || math.IsInf(*ov.Value, 0) {
+				ov.Value = nil
+			} else {
+				val := *ov.Value
+				ov.Value = &val
+			}
+		}
+		k := overrideKey{ov.MetricKey, ov.SubjectID, ov.Period}
+		if prev, ok := ix.overrides[k]; ok && ov.At.Before(prev.At) {
+			continue
+		}
+		ix.overrides[k] = ov
 	}
 	return ix
 }
