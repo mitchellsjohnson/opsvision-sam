@@ -3,12 +3,14 @@ module opsvision
 go 1.27
 
 require (
+	github.com/auth0/go-jwt-middleware/v2 v2.3.1
 	github.com/aws/aws-sdk-go-v2/config v1.33.13
 	github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue v1.21.17
 	github.com/aws/aws-sdk-go-v2/service/dynamodb v1.72.3
 	github.com/expr-lang/expr v1.17.8
 	github.com/google/go-cmp v0.7.0
 	github.com/oapi-codegen/runtime v1.8.0
+	gopkg.in/go-jose/go-jose.v2 v2.6.3
 )
 
 require (
@@ -41,6 +43,7 @@ require (
 	github.com/speakeasy-api/openapi v1.24.0 // indirect
 	github.com/vmware-labs/yaml-jsonpath v0.3.2 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
+	golang.org/x/crypto v0.46.0 // indirect
 	golang.org/x/mod v0.38.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/text v0.40.0 // indirect
