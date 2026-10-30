@@ -158,11 +158,13 @@ func (a *authenticator) authenticate(r *http.Request) (Principal, *httpError) {
 // If an invitation exists for the token's email (a pending membership keyed
 // PendingUserPrefix+lowercase(email)) it is bound to the caller's user ID,
 // keeping its role, scope, and creation time. Otherwise the caller gets the
-// tenant's default role. The invitation is only honored when the token has an
-// email and does not mark it unverified.
+// tenant's default role. The invitation is honored only when the token has an
+// email and <ns>email_verified is present and true; an absent or false claim
+// falls through to the default role, because an unverified address proves
+// nothing about who holds it.
 func (a *authenticator) provision(ctx context.Context, tenant domain.Tenant, p Principal, c *tokenClaims) (domain.Membership, error) {
 	email := strings.ToLower(strings.TrimSpace(p.Email))
-	if email != "" && (c.EmailVerified == nil || *c.EmailVerified) {
+	if email != "" && c.EmailVerified != nil && *c.EmailVerified {
 		pendingID := store.PendingUserPrefix + email
 		pending, err := a.ts.GetMembership(ctx, tenant.ID, pendingID)
 		switch {

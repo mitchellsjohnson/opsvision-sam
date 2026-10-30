@@ -13,6 +13,8 @@ import (
 	"github.com/auth0/go-jwt-middleware/v3/core"
 	"github.com/auth0/go-jwt-middleware/v3/jwks"
 	"github.com/auth0/go-jwt-middleware/v3/validator"
+
+	"opsvision/internal/store"
 )
 
 // Auth modes.
@@ -61,6 +63,9 @@ type Config struct {
 	// mode (default https://<Domain>/). A trailing slash is added if missing.
 	// It exists so tests can point at an httptest JWKS server.
 	IssuerURL string
+
+	// now overrides the clock of the JWKS cache; tests only.
+	now func() time.Time
 }
 
 func (c Config) claimNamespace() string {
@@ -95,7 +100,7 @@ type tokenClaims struct {
 	Permissions   []string
 	Email         string
 	Name          string
-	EmailVerified *bool // nil when the claim is absent
+	EmailVerified *bool // nil when the claim is absent; only true allows invitation binding
 }
 
 // Validate implements validator.CustomClaims. All checks are done by the
@@ -184,11 +189,21 @@ func newValidator(cfg Config) (*validator.Validator, error) {
 		if err != nil {
 			return nil, fmt.Errorf("auth: invalid JWKS URL: %w", err)
 		}
-		provider, err := jwks.NewCachingProvider(
+		// The library's non-caching provider fetches; our fixed-TTL cache
+		// bounds key lifetime (the library's own cache would extend it to
+		// whatever Cache-Control max-age the JWKS endpoint sends).
+		fetcher, err := jwks.NewProvider(
 			jwks.WithIssuerURL(issuerURL),
 			jwks.WithCustomJWKSURI(jwksURL),
 			jwks.WithCustomClient(&http.Client{Timeout: jwksTimeout}),
-			jwks.WithCacheTTL(jwksCacheTTL),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("auth: JWKS provider: %w", err)
+		}
+		provider, err := jwks.NewCachingProvider(
+			jwks.WithIssuerURL(issuerURL),
+			jwks.WithCustomJWKSURI(jwksURL),
+			jwks.WithCache(newFixedTTLCache(fetcher.KeyFunc, jwksCacheTTL, cfg.now)),
 		)
 		if err != nil {
 			return nil, fmt.Errorf("auth: JWKS provider: %w", err)
@@ -258,6 +273,11 @@ func verify(ctx context.Context, v tokenValidator, tokenString string) (verified
 	}
 	if vc.RegisteredClaims.Subject == "" {
 		return verified{}, fmt.Errorf("%w: no sub claim", errInvalidToken)
+	}
+	// Membership IDs with this prefix are invitations awaiting a sign-in. A
+	// token must never be able to name one as its own identity.
+	if strings.HasPrefix(vc.RegisteredClaims.Subject, store.PendingUserPrefix) {
+		return verified{}, fmt.Errorf("%w: reserved sub prefix", errInvalidToken)
 	}
 	return verified{subject: vc.RegisteredClaims.Subject, claims: tc}, nil
 }

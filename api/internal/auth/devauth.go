@@ -42,6 +42,8 @@ func IssueDevTokenFor(cfg Config, userID, email, name, orgID string, operator bo
 		"exp":        now.Add(devTokenTTL).Unix(),
 		ns + "email": email,
 		ns + "name":  name,
+		// Dev identities are trusted by construction.
+		ns + "email_verified": true,
 	}
 	if orgID != "" {
 		claims["org_id"] = orgID

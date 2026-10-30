@@ -7,8 +7,10 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"math/big"
 	"net/http"
@@ -49,6 +51,8 @@ func newRSAFixture(t *testing.T, kid string) *rsaFixture {
 	mux.HandleFunc("/.well-known/jwks.json", func(w http.ResponseWriter, r *http.Request) {
 		f.hits.Add(1)
 		w.Header().Set("Content-Type", "application/json")
+		// A long max-age must not extend the cache beyond the fixed cap.
+		w.Header().Set("Cache-Control", "public, max-age=86400")
 		_ = json.NewEncoder(w).Encode(jwksFor(&key.PublicKey, kid))
 	})
 	f.server = httptest.NewServer(mux)
@@ -233,8 +237,14 @@ func orgClaims(extra map[string]any) map[string]any {
 		"org_id":         "org_1",
 		testNS + "email": "Jane.Doe@Example.test",
 		testNS + "name":  "Jane Doe",
+		// Verified by default; tests override or delete (nil) to vary it.
+		testNS + "email_verified": true,
 	}
 	for k, v := range extra {
+		if v == nil {
+			delete(m, k)
+			continue
+		}
 		m[k] = v
 	}
 	return m
@@ -266,26 +276,71 @@ func TestRS256ValidToken(t *testing.T) {
 	}
 }
 
-func TestJWKSIsCached(t *testing.T) {
-	f := newRSAFixture(t, "kid-1")
+func TestJWKSCacheIsCappedAtFiveMinutes(t *testing.T) {
+	f := newRSAFixture(t, "kid-1") // serves Cache-Control: max-age=86400
 	ts := newStore(t)
+	clock := time.Now()
 	cfg := auth0Config(f)
+	cfg.SetClock(func() time.Time { return clock })
 	mw, err := auth.Middleware(cfg, ts)
 	if err != nil {
 		t.Fatal(err)
 	}
 	h := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	for i := 0; i < 3; i++ {
+	call := func(label string) {
+		t.Helper()
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		req.Header.Set("Authorization", "Bearer "+f.token(t, tokOpts{extra: orgClaims(nil)}))
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {
-			t.Fatalf("request %d: status %d: %s", i, rec.Code, rec.Body.String())
+			t.Fatalf("%s: status %d: %s", label, rec.Code, rec.Body.String())
 		}
 	}
+	for i := 0; i < 3; i++ {
+		call("initial")
+	}
 	if n := f.hits.Load(); n != 1 {
-		t.Errorf("JWKS fetched %d times, want 1 (cached)", n)
+		t.Fatalf("JWKS fetched %d times, want 1 (cached)", n)
+	}
+	clock = clock.Add(5*time.Minute - time.Second)
+	call("just before cap")
+	if n := f.hits.Load(); n != 1 {
+		t.Fatalf("JWKS fetched %d times just before the cap, want 1", n)
+	}
+	clock = clock.Add(2 * time.Second)
+	call("just after cap")
+	if n := f.hits.Load(); n != 2 {
+		t.Fatalf("JWKS fetched %d times after the cap, want 2 (despite max-age=86400)", n)
+	}
+	call("cached again")
+	if n := f.hits.Load(); n != 2 {
+		t.Fatalf("JWKS fetched %d times, want 2", n)
+	}
+}
+
+func TestJWKSNoStaleKeysPastCap(t *testing.T) {
+	f := newRSAFixture(t, "kid-1")
+	clock := time.Now()
+	cfg := auth0Config(f)
+	cfg.SetClock(func() time.Time { return clock })
+	tok := f.token(t, tokOpts{extra: orgClaims(nil)})
+	mw, _ := auth.Middleware(cfg, newStore(t))
+	h := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	do := func() int {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Header.Set("Authorization", "Bearer "+tok)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	if c := do(); c != http.StatusOK {
+		t.Fatalf("status %d", c)
+	}
+	f.server.Close()
+	clock = clock.Add(6 * time.Minute)
+	if c := do(); c != http.StatusServiceUnavailable {
+		t.Fatalf("status %d past the cap with the JWKS endpoint down, want 503 (no stale keys)", c)
 	}
 }
 
@@ -610,6 +665,101 @@ func TestPendingBindingSkippedWhenEmailUnverified(t *testing.T) {
 	if _, err := ts.GetMembership(ctx, "t1", pendingID); err != nil {
 		t.Errorf("pending membership must remain: %v", err)
 	}
+}
+
+func TestPendingBindingSkippedWhenEmailVerifiedClaimMissing(t *testing.T) {
+	f := newRSAFixture(t, "kid-1")
+	ts := newStore(t)
+	ctx := context.Background()
+	pendingID := store.PendingUserPrefix + "jane.doe@example.test"
+	_ = ts.PutMembership(ctx, "t1", domain.Membership{UserID: pendingID, Role: domain.RoleAdmin})
+
+	tok := f.token(t, tokOpts{extra: orgClaims(map[string]any{testNS + "email_verified": nil})})
+	_, p := run(t, auth0Config(f), ts, tok)
+	if p == nil || p.Membership == nil || p.Membership.Role != domain.RoleViewer {
+		t.Fatalf("principal = %+v, want default viewer when email_verified is absent", p)
+	}
+	if _, err := ts.GetMembership(ctx, "t1", pendingID); err != nil {
+		t.Errorf("pending membership must remain: %v", err)
+	}
+}
+
+func TestDevTokenBindsPendingInvitation(t *testing.T) {
+	ts := newStore(t)
+	ctx := context.Background()
+	pendingID := store.PendingUserPrefix + "alice@example.test"
+	_ = ts.PutMembership(ctx, "t1", domain.Membership{UserID: pendingID, Role: domain.RoleAdmin})
+	tok, err := auth.IssueDevToken(devSecret, "dev|alice", "Alice@Example.test", "Alice", "org_1", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, p := run(t, auth.Config{Mode: "dev", DevSecret: devSecret}, ts, tok)
+	if p == nil || p.Membership == nil || p.Membership.Role != domain.RoleAdmin || p.Membership.UserID != "dev|alice" {
+		t.Fatalf("principal = %+v, want bound admin (dev tokens emit email_verified)", p)
+	}
+}
+
+func TestRejectsPendingPrefixedSubject(t *testing.T) {
+	f := newRSAFixture(t, "kid-1")
+	sub := store.PendingUserPrefix + "jane.doe@example.test"
+
+	rec, p := run(t, auth0Config(f), newStore(t), f.token(t, tokOpts{subject: sub, extra: orgClaims(nil)}))
+	wantError(t, rec, http.StatusUnauthorized, "unauthorized", "")
+	if p != nil {
+		t.Error("auth0 mode accepted a pending: subject")
+	}
+
+	dev, err := auth.IssueDevToken(devSecret, sub, "jane.doe@example.test", "J", "org_1", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, p = run(t, auth.Config{Mode: "dev", DevSecret: devSecret}, newStore(t), dev)
+	wantError(t, rec, http.StatusUnauthorized, "unauthorized", "")
+	if p != nil {
+		t.Error("dev mode accepted a pending: subject")
+	}
+}
+
+func TestRejectsHS256SignedWithRSAPublicKey(t *testing.T) {
+	f := newRSAFixture(t, "kid-1")
+	der, err := x509.MarshalPKIXPublicKey(&f.key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pemKey := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})
+	claims := tokOpts{issuer: f.issuer(), audience: testAudience, subject: "u", extra: orgClaims(nil)}.build()
+	for name, secret := range map[string][]byte{"pem": pemKey, "der": der, "modulus": f.key.PublicKey.N.Bytes()} {
+		for _, kid := range []string{"", f.kid} {
+			tok := sign(t, "HS256", secret, kid, claims)
+			rec, p := run(t, auth0Config(f), newStore(t), tok)
+			if rec.Code != http.StatusUnauthorized || p != nil {
+				t.Errorf("%s/kid=%q: status %d, handler reached=%v; want 401", name, kid, rec.Code, p != nil)
+			}
+		}
+	}
+}
+
+func TestRejectsUnknownKid(t *testing.T) {
+	f := newRSAFixture(t, "kid-1")
+	claims := tokOpts{issuer: f.issuer(), audience: testAudience, subject: "u", extra: orgClaims(nil)}.build()
+	tok := sign(t, "RS256", f.key, "kid-unknown", claims)
+	rec, p := run(t, auth0Config(f), newStore(t), tok)
+	wantError(t, rec, http.StatusUnauthorized, "unauthorized", "")
+	if p != nil {
+		t.Error("handler reached")
+	}
+}
+
+func TestAcceptsAudienceArrayContainingOurs(t *testing.T) {
+	f := newRSAFixture(t, "kid-1")
+	tok := f.token(t, tokOpts{extra: orgClaims(map[string]any{"aud": []string{"https://other.example.test", testAudience}})})
+	rec, p := run(t, auth0Config(f), newStore(t), tok)
+	if rec.Code != http.StatusNoContent || p == nil {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+	tok = f.token(t, tokOpts{extra: orgClaims(map[string]any{"aud": []string{"https://other.example.test"}})})
+	rec, _ = run(t, auth0Config(f), newStore(t), tok)
+	wantError(t, rec, http.StatusUnauthorized, "unauthorized", "")
 }
 
 func TestMissingEmailSkipsPendingLookup(t *testing.T) {
