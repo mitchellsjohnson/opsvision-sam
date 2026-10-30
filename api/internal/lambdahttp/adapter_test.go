@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/aws/aws-lambda-go/events"
@@ -19,6 +20,10 @@ import (
 type seen struct {
 	Method     string
 	Path       string
+	EscPath    string
+	Host       string
+	RequestURI string
+	RawQuery   string
 	Query      map[string][]string
 	Header     http.Header
 	Body       []byte
@@ -32,6 +37,10 @@ func capture(into *seen, respond func(w http.ResponseWriter)) http.Handler {
 		*into = seen{
 			Method:     r.Method,
 			Path:       r.URL.Path,
+			EscPath:    r.URL.EscapedPath(),
+			Host:       r.URL.Host,
+			RequestURI: r.RequestURI,
+			RawQuery:   r.URL.RawQuery,
 			Query:      r.URL.Query(),
 			Header:     r.Header.Clone(),
 			Body:       body,
@@ -260,5 +269,159 @@ func TestAdapterRecoversFromPanic(t *testing.T) {
 		events.APIGatewayProxyRequest{HTTPMethod: "GET", Path: "/v1/x"})
 	if resp.StatusCode != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", resp.StatusCode)
+	}
+}
+
+func TestAdapterURLHandling(t *testing.T) {
+	t.Run("double leading slash is a path, not a host", func(t *testing.T) {
+		var got seen
+		call(t, capture(&got, okJSON), events.APIGatewayProxyRequest{HTTPMethod: "GET", Path: "//v1/me"})
+		if got.Path != "//v1/me" || got.Host != "" {
+			t.Errorf("path = %q host = %q, want path //v1/me and no host", got.Path, got.Host)
+		}
+		if got.RequestURI != "//v1/me" {
+			t.Errorf("RequestURI = %q", got.RequestURI)
+		}
+	})
+
+	t.Run("percent-encoded path keeps its encoding", func(t *testing.T) {
+		var got seen
+		call(t, capture(&got, okJSON), events.APIGatewayProxyRequest{
+			HTTPMethod: "GET", Path: "/v1/org/units/a%20b",
+			MultiValueQueryStringParameters: map[string][]string{"q": {"x y"}},
+		})
+		if got.Path != "/v1/org/units/a b" {
+			t.Errorf("Path = %q, want decoded", got.Path)
+		}
+		if got.EscPath != "/v1/org/units/a%20b" {
+			t.Errorf("EscapedPath = %q, want the original encoding", got.EscPath)
+		}
+		if got.RequestURI != "/v1/org/units/a%20b?q=x+y" {
+			t.Errorf("RequestURI = %q", got.RequestURI)
+		}
+	})
+
+	t.Run("a literal percent that is not an escape stays literal", func(t *testing.T) {
+		var got seen
+		call(t, capture(&got, okJSON), events.APIGatewayProxyRequest{HTTPMethod: "GET", Path: "/v1/100%"})
+		if got.Path != "/v1/100%" {
+			t.Errorf("Path = %q", got.Path)
+		}
+	})
+
+	t.Run("query is encoded onto the URL", func(t *testing.T) {
+		var got seen
+		call(t, capture(&got, okJSON), events.APIGatewayProxyRequest{
+			HTTPMethod:                      "GET",
+			Path:                            "/v1/x",
+			MultiValueQueryStringParameters: map[string][]string{"periods": {"2026-M10", "2026-M09"}},
+		})
+		if got.RawQuery != "periods=2026-M10&periods=2026-M09" {
+			t.Errorf("RawQuery = %q", got.RawQuery)
+		}
+	})
+}
+
+func TestAdapterBadRequestMessages(t *testing.T) {
+	var got seen
+	resp := call(t, capture(&got, okJSON), events.APIGatewayProxyRequest{
+		HTTPMethod: "POST", Path: "/v1/x", Body: "!!!", IsBase64Encoded: true,
+	})
+	if resp.StatusCode != 400 || !strings.Contains(resp.Body, "base64") {
+		t.Errorf("bad base64: %d %s", resp.StatusCode, resp.Body)
+	}
+
+	resp = call(t, capture(&got, okJSON), events.APIGatewayProxyRequest{HTTPMethod: "BAD METHOD", Path: "/v1/x"})
+	if resp.StatusCode != 400 {
+		t.Fatalf("bad method: status %d", resp.StatusCode)
+	}
+	if strings.Contains(resp.Body, "base64") {
+		t.Errorf("a bad method must not be reported as a base64 error: %s", resp.Body)
+	}
+	if got.Method != "" {
+		t.Error("handler must not run")
+	}
+}
+
+func TestAdapterContentTypeSniffing(t *testing.T) {
+	t.Run("untyped text body stays plain and gets a sniffed type", func(t *testing.T) {
+		resp := call(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte("hello, world"))
+		}), events.APIGatewayProxyRequest{HTTPMethod: "GET", Path: "/v1/x"})
+		if resp.IsBase64Encoded || resp.Body != "hello, world" {
+			t.Errorf("b64=%v body=%q", resp.IsBase64Encoded, resp.Body)
+		}
+		if got := resp.MultiValueHeaders["Content-Type"]; len(got) != 1 || got[0] != "text/plain; charset=utf-8" {
+			t.Errorf("Content-Type = %v", got)
+		}
+	})
+
+	t.Run("untyped binary body is base64", func(t *testing.T) {
+		raw := []byte{0x00, 0x01, 0x02, 0xfe, 0xff}
+		resp := call(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write(raw)
+		}), events.APIGatewayProxyRequest{HTTPMethod: "GET", Path: "/v1/x"})
+		if !resp.IsBase64Encoded {
+			t.Fatal("binary sniffed body must be base64")
+		}
+		if got, _ := base64.StdEncoding.DecodeString(resp.Body); !bytes.Equal(got, raw) {
+			t.Errorf("body = %x", got)
+		}
+		if got := resp.MultiValueHeaders["Content-Type"]; len(got) != 1 || got[0] != "application/octet-stream" {
+			t.Errorf("Content-Type = %v", got)
+		}
+	})
+
+	t.Run("an explicit type is never overridden", func(t *testing.T) {
+		resp := call(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte("<html>"))
+		}), events.APIGatewayProxyRequest{HTTPMethod: "GET", Path: "/v1/x"})
+		if got := resp.MultiValueHeaders["Content-Type"]; len(got) != 1 || got[0] != "application/json" {
+			t.Errorf("Content-Type = %v", got)
+		}
+	})
+
+	t.Run("empty untyped body gets no type", func(t *testing.T) {
+		resp := call(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusAccepted)
+		}), events.APIGatewayProxyRequest{HTTPMethod: "POST", Path: "/v1/x"})
+		if resp.IsBase64Encoded || resp.Body != "" || len(resp.MultiValueHeaders["Content-Type"]) != 0 {
+			t.Errorf("resp = %+v", resp)
+		}
+	})
+}
+
+func TestAdapterDropsBodyWhereHTTPForbidsIt(t *testing.T) {
+	write := func(status int) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(`{"x":1}`))
+		})
+	}
+	for _, tc := range []struct {
+		name, method string
+		status       int
+		wantBody     bool
+	}{
+		{"HEAD", "HEAD", 200, false},
+		{"204", "GET", 204, false},
+		{"304", "GET", 304, false},
+		{"GET 200 keeps body", "GET", 200, true},
+		{"POST 201 keeps body", "POST", 201, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := call(t, write(tc.status), events.APIGatewayProxyRequest{HTTPMethod: tc.method, Path: "/v1/x"})
+			if (resp.Body != "") != tc.wantBody {
+				t.Errorf("body = %q, want body present = %v", resp.Body, tc.wantBody)
+			}
+			if resp.StatusCode != tc.status {
+				t.Errorf("status = %d", resp.StatusCode)
+			}
+			if tc.method == "HEAD" && len(resp.MultiValueHeaders["Content-Type"]) != 1 {
+				t.Errorf("HEAD must keep its headers: %v", resp.MultiValueHeaders)
+			}
+		})
 	}
 }

@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"mime"
@@ -39,13 +40,17 @@ func Handler(h http.Handler) func(context.Context, events.APIGatewayProxyRequest
 		req, err := newRequest(ctx, ev)
 		if err != nil {
 			slog.WarnContext(ctx, "lambdahttp: bad request event", "requestId", ev.RequestContext.RequestID, "err", err)
-			return jsonError(http.StatusBadRequest, "invalid", "request body is not valid base64"), nil
+			msg := "invalid request"
+			if errors.Is(err, errBadBase64) {
+				msg = "request body is not valid base64"
+			}
+			return jsonError(http.StatusBadRequest, "invalid", msg), nil
 		}
 
 		rec := &recorder{header: http.Header{}, status: http.StatusOK}
 		serve(h, rec, req)
 
-		resp := rec.response()
+		resp := rec.response(req.Method)
 		slog.InfoContext(ctx, "request",
 			"requestId", ev.RequestContext.RequestID,
 			"method", req.Method,
@@ -56,6 +61,9 @@ func Handler(h http.Handler) func(context.Context, events.APIGatewayProxyRequest
 		return resp, nil
 	}
 }
+
+// errBadBase64 marks a body flagged IsBase64Encoded that does not decode.
+var errBadBase64 = errors.New("body is not valid base64")
 
 type requestIDKey struct{}
 
@@ -108,7 +116,7 @@ func newRequest(ctx context.Context, ev events.APIGatewayProxyRequest) (*http.Re
 	if ev.IsBase64Encoded {
 		b, err := base64.StdEncoding.DecodeString(ev.Body)
 		if err != nil {
-			return nil, fmt.Errorf("decode body: %w", err)
+			return nil, fmt.Errorf("%w: %v", errBadBase64, err)
 		}
 		body = b
 	} else {
@@ -143,14 +151,13 @@ func newRequest(ctx context.Context, ev events.APIGatewayProxyRequest) (*http.Re
 	if method == "" {
 		method = http.MethodGet
 	}
-	u := &url.URL{
-		Path:     routePath(ev.Path, ev.RequestContext.Stage),
-		RawQuery: query.Encode(),
-	}
-	req, err := http.NewRequestWithContext(ctx, method, u.String(), bytes.NewReader(body))
+	// The URL is assembled by hand, never rendered to a string and parsed
+	// again: a path like //v1/x would re-parse as host "v1".
+	req, err := http.NewRequestWithContext(ctx, method, "/", bytes.NewReader(body))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("invalid request: %w", err)
 	}
+	req.URL, req.RequestURI = requestURL(routePath(ev.Path, ev.RequestContext.Stage), query.Encode())
 	req.Header = header
 	req.ContentLength = int64(len(body))
 	req.RemoteAddr = ev.RequestContext.Identity.SourceIP
@@ -158,6 +165,25 @@ func newRequest(ctx context.Context, ev events.APIGatewayProxyRequest) (*http.Re
 		req.Host = host
 	}
 	return req, nil
+}
+
+// requestURL returns the URL and RequestURI for a route path and an encoded
+// query. The path may arrive percent-encoded: a valid encoding is decoded into
+// Path and kept verbatim in RawPath so handlers see both forms. A path that is
+// not a valid encoding (a bare "%") is used literally.
+func requestURL(p, rawQuery string) (*url.URL, string) {
+	u := &url.URL{Path: p, RawQuery: rawQuery}
+	if dec, err := url.PathUnescape(p); err == nil {
+		u.Path = dec
+		if (&url.URL{Path: dec}).EscapedPath() != p {
+			u.RawPath = p
+		}
+	}
+	uri := u.EscapedPath()
+	if rawQuery != "" {
+		uri += "?" + rawQuery
+	}
+	return u, uri
 }
 
 // serve runs h, turning a panic into a 500 so one bad request cannot take the
@@ -196,17 +222,32 @@ func (r *recorder) Write(p []byte) (int, error) {
 	return r.body.Write(p)
 }
 
-// response converts the recorded response to a proxy response.
-func (r *recorder) response() events.APIGatewayProxyResponse {
+// bodyAllowed reports whether HTTP permits a body with status.
+func bodyAllowed(status int) bool {
+	return !(status >= 100 && status < 200) && status != http.StatusNoContent && status != http.StatusNotModified
+}
+
+// response converts the recorded response to a proxy response for a request
+// made with method. Like net/http, it sends no body for HEAD or for statuses
+// that forbid one, and it sniffs a Content-Type for an untyped body.
+func (r *recorder) response(method string) events.APIGatewayProxyResponse {
+	body := r.body.Bytes()
+	if method == http.MethodHead || !bodyAllowed(r.status) {
+		body = nil
+	}
+	h := r.header.Clone()
+	if h.Get("Content-Type") == "" && len(body) > 0 && h.Get("Content-Encoding") == "" {
+		h.Set("Content-Type", http.DetectContentType(body))
+	}
 	resp := events.APIGatewayProxyResponse{
 		StatusCode:        r.status,
-		MultiValueHeaders: map[string][]string(r.header.Clone()),
+		MultiValueHeaders: map[string][]string(h),
 	}
-	if isBinary(r.header, r.body.Len()) {
-		resp.Body = base64.StdEncoding.EncodeToString(r.body.Bytes())
+	if isBinary(h, len(body)) {
+		resp.Body = base64.StdEncoding.EncodeToString(body)
 		resp.IsBase64Encoded = true
 	} else {
-		resp.Body = r.body.String()
+		resp.Body = string(body)
 	}
 	return resp
 }
@@ -218,8 +259,7 @@ func isBinary(h http.Header, n int) bool {
 	}
 	ct := h.Get("Content-Type")
 	if ct == "" {
-		// Nothing to interpret: an empty body is text; an untyped body is
-		// treated as binary rather than risking corruption.
+		// Only an empty body is left untyped (response sniffed one already).
 		return n > 0
 	}
 	mt, _, err := mime.ParseMediaType(ct)

@@ -60,7 +60,7 @@ type options struct {
 func parseFlags(args []string, getenv func(string) string) (options, error) {
 	var o options
 	fs := flag.NewFlagSet("devserver", flag.ContinueOnError)
-	fs.StringVar(&o.addr, "addr", ":8080", "listen address")
+	fs.StringVar(&o.addr, "addr", "127.0.0.1:8080", "listen address (loopback by default; dev auth is for local use only)")
 	fs.StringVar(&o.store, "store", "memory", "data store: memory or dynamo")
 	fs.StringVar(&o.table, "table", "", "DynamoDB table (with -store dynamo)")
 	fs.StringVar(&o.auth, "auth", "dev", "authentication: dev (shared-secret tokens, /dev/login) or auth0")
@@ -204,6 +204,22 @@ func devLogin(secret string) http.HandlerFunc {
 	}
 }
 
+// nonLoopback reports whether addr could be reached from another machine: it
+// has no host (all interfaces), an unspecified or non-loopback IP, or a host
+// name other than localhost. An address that cannot be parsed counts as
+// non-loopback.
+func nonLoopback(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return true
+	}
+	if host == "localhost" {
+		return false
+	}
+	ip := net.ParseIP(host)
+	return ip == nil || !ip.IsLoopback()
+}
+
 // banner warns, loudly, that dev auth is on.
 func banner(o options) {
 	lines := []string{
@@ -218,10 +234,8 @@ func banner(o options) {
 	}
 	fmt.Fprintln(os.Stderr, strings.Join(lines, "\n"))
 	slog.Warn("dev auth mode enabled", "addr", o.addr, "store", o.store)
-	if host, _, err := net.SplitHostPort(o.addr); err == nil {
-		if ip := net.ParseIP(host); host != "localhost" && (ip == nil || !ip.IsLoopback()) {
-			slog.Warn("listening on all or non-loopback interfaces with dev auth; use -addr 127.0.0.1:8080 unless you need remote access", "addr", o.addr)
-		}
+	if o.auth == "dev" && nonLoopback(o.addr) {
+		slog.Warn("dev auth on a non-loopback address: anyone who can reach it can sign in as any demo user; use -addr 127.0.0.1:8080 unless you need remote access", "addr", o.addr)
 	}
 	if o.store == "dynamo" {
 		slog.Warn("dev auth with a DynamoDB store: any demo data is written to the table", "table", o.table)

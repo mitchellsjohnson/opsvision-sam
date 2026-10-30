@@ -209,8 +209,8 @@ func seedMethodology(ctx context.Context, st store.Store) error {
 		return fmt.Errorf("demo: scorecard: %w", err)
 	}
 	for _, v := range []domain.MethodologyVersion{
-		version("v2025", "2025 v1.0", 2025, published2025, 85, 70),
-		version("v2026", "2026 v1.0", 2026, published2026, 90, 70),
+		version("v2025", "2025 v1.0", 2025, published2025, 85),
+		version("v2026", "2026 v1.0", 2026, published2026, 90),
 	} {
 		if err := st.PutVersion(ctx, TenantID, v, store.MustNotExist); err != nil {
 			return fmt.Errorf("demo: version %s: %w", v.ID, err)
@@ -219,7 +219,7 @@ func seedMethodology(ctx context.Context, st store.Store) error {
 	return nil
 }
 
-func version(id, name string, fy int, at time.Time, onTimeGreen, trainingYellow float64) domain.MethodologyVersion {
+func version(id, name string, fy int, at time.Time, onTimeGreen float64) domain.MethodologyVersion {
 	at = at.UTC()
 	return domain.MethodologyVersion{
 		ID:            id,
@@ -228,7 +228,7 @@ func version(id, name string, fy int, at time.Time, onTimeGreen, trainingYellow 
 		Status:        domain.VersionPublished,
 		EffectiveFrom: month(fy, 1),
 		PublishedAt:   &at,
-		Content:       methodology(fy, onTimeGreen, trainingYellow),
+		Content:       methodology(fy, onTimeGreen),
 	}
 }
 
@@ -249,10 +249,10 @@ func lowerBands(g, y float64) []domain.Band {
 }
 
 // methodology returns the scorecard definition for a fiscal year. The years
-// differ in two thresholds: the on-time green line (and its goal) and the
-// security training yellow line, so restating one year under the other
-// visibly changes statuses.
-func methodology(fy int, onTimeGreen, trainingYellow float64) domain.Methodology {
+// differ in one threshold: the on-time green line (and the annual goal that
+// follows it), 85 in 2025 and 90 in 2026, so restating one year under the
+// other visibly changes statuses.
+func methodology(fy int, onTimeGreen float64) domain.Methodology {
 	atProduct := []domain.Subject{{Kind: domain.SubjectLevel, ID: "product"}}
 	atSegment := []domain.Subject{{Kind: domain.SubjectLevel, ID: "segment"}}
 	atService := []domain.Subject{{Kind: domain.SubjectItemKind, ID: "services"}}
@@ -369,7 +369,7 @@ func methodology(fy int, onTimeGreen, trainingYellow float64) domain.Methodology
 				Key: "security_training", Name: "Security training completion", CategoryID: "security",
 				Formula: "trained_count / headcount * 100", Format: domain.FormatPercent0,
 				Direction: domain.DirectionHigherBetter, Frequency: domain.FrequencyMonthly, ReportedAt: atProduct,
-				Rule:       domain.StatusRule{Type: domain.RuleBands, Bands: bands(90, trainingYellow)},
+				Rule:       domain.StatusRule{Type: domain.RuleBands, Bands: bands(90, 70)},
 				Definition: "People who completed the current security training, as a share of headcount at period end.",
 				Source:     "Learning platform",
 			},

@@ -59,7 +59,7 @@ func TestParseFlagsDefaultsAndValidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if o.addr != ":8080" || o.store != "memory" || o.auth != "dev" || o.seed != "demo" || o.allowedOrigin != "http://localhost:5173" {
+	if o.addr != "127.0.0.1:8080" || o.store != "memory" || o.auth != "dev" || o.seed != "demo" || o.allowedOrigin != "http://localhost:5173" {
 		t.Errorf("defaults = %+v", o)
 	}
 	for _, args := range [][]string{
@@ -186,5 +186,22 @@ func TestDevEndpointsOnlyInDevAuth(t *testing.T) {
 	}
 	if w := serve(h, "POST", "/dev/login", `{"userId":"dev|admin"}`, ""); w.Code == 200 {
 		t.Errorf("/dev/login answered 200 in auth0 mode")
+	}
+}
+
+func TestNonLoopbackAddr(t *testing.T) {
+	for addr, want := range map[string]bool{
+		"127.0.0.1:8080": false,
+		"localhost:8080": false,
+		"[::1]:8080":     false,
+		":8080":          true,
+		"0.0.0.0:8080":   true,
+		"192.168.1.5:80": true,
+		"example.test:1": true,
+		"garbage":        true,
+	} {
+		if got := nonLoopback(addr); got != want {
+			t.Errorf("nonLoopback(%q) = %v, want %v", addr, got, want)
+		}
 	}
 }

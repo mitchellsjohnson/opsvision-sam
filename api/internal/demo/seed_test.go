@@ -274,10 +274,9 @@ func TestSeedComputes(t *testing.T) {
 		if c.Status == "" && c.NAReason == "" {
 			t.Errorf("%s / %s (%s): blank cell for %s (value %v)", r.MetricName, r.SubjectName, freq[r.MetricKey], c.Period, c.Value)
 		}
-		for _, cell := range r.Cells {
-			if cell.Status != "" {
-				status[cell.Status] = true
-			}
+		// The mix must show in the 2026-M10 column itself.
+		if s := r.Cells[0].Status; s != "" {
+			status[s] = true
 		}
 		// YTD through M10 is judged for every row of every grain.
 		if y := r.Cells[3]; y.Status == "" && y.NAReason == "" {
