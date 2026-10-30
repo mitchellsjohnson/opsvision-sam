@@ -21,18 +21,20 @@ type threshold struct {
 }
 
 var (
-	bandNum  = `(\d+(?:\.\d+)?|\.\d+)`
-	cmpRe    = regexp.MustCompile(`^(>=|<=|>|<)\s*` + bandNum + `\s*%?`)
-	rangeRe  = regexp.MustCompile(`^-\s*` + bandNum + `\s*%?`)
-	bareRe   = regexp.MustCompile(`^` + bandNum + `\s*%?\s*(?:uptime)?$`)
+	bandNum = `(\d+(?:\.\d+)?|\.\d+)`
+	cmpRe   = regexp.MustCompile(`^(>=|<=|>|<)\s*` + bandNum + `\s*%?`)
+	rangeRe = regexp.MustCompile(`^-\s*` + bandNum + `\s*%?`)
+	// A bare number is only understood with the word "uptime" ("99.9% uptime").
+	bareRe   = regexp.MustCompile(`^` + bandNum + `\s*%?\s*uptime$`)
 	rangeAbs = regexp.MustCompile(`^` + bandNum + `\s*%?\s*-\s*` + bandNum + `\s*%?$`)
 	plusRe   = regexp.MustCompile(`^` + bandNum + `\s*%?\s*\+$`)
 )
 
 // parseThreshold parses one threshold text. The whole text must be consumed.
 func parseThreshold(text string) (threshold, error) {
-	s := strings.ToLower(strings.TrimSpace(text))
+	s := strings.ToLower(strings.TrimSpace(cellNormalizer.Replace(text)))
 	s = strings.NewReplacer("≥", ">=", "≤", "<=").Replace(s)
+	s = strings.Join(strings.Fields(s), " ")
 	var t threshold
 	if s == "" {
 		return t, fmt.Errorf("empty threshold text")
@@ -105,12 +107,6 @@ func ParseBandText(green, yellow, red string) ([]domain.Band, domain.Direction, 
 	if err != nil {
 		return nil, "", fmt.Errorf("yellow: %w", err)
 	}
-	if strings.TrimSpace(red) != "" {
-		if _, err := parseThreshold(red); err != nil {
-			return nil, "", fmt.Errorf("red: %w", err)
-		}
-	}
-
 	dir := domain.DirectionHigherBetter
 	gb, yb := g.lo, y.lo
 	if g.hi != nil {
@@ -120,9 +116,33 @@ func ParseBandText(green, yellow, red string) ([]domain.Band, domain.Direction, 
 	if yb == nil {
 		return nil, "", fmt.Errorf("yellow: %q has no bound on the far side of green", yellow)
 	}
+	if !beyond(dir, *yb, *gb) {
+		return nil, "", fmt.Errorf("yellow %q is not on the far side of green %q", yellow, green)
+	}
+	// Red is the else band, so free text is fine. Text that does parse must
+	// agree with the bands above it.
+	if r, err := parseThreshold(red); err == nil {
+		if dir == domain.DirectionHigherBetter && (r.hi == nil || r.hi.val > yb.val) ||
+			dir == domain.DirectionLowerBetter && (r.lo == nil || r.lo.val < yb.val) {
+			return nil, "", fmt.Errorf("red %q contradicts yellow %q", red, yellow)
+		}
+	}
 	return []domain.Band{
 		{Status: "G", Op: gb.op, Value: gb.val},
 		{Status: "Y", Op: yb.op, Value: yb.val},
 		{Status: "R", Op: "", Value: 0},
 	}, dir, nil
+}
+
+// beyond reports whether y lies strictly beyond g, away from the good side:
+// below g for higher-is-better, above g for lower-is-better. Equal values
+// count only when green's comparison is strict and yellow's is inclusive.
+func beyond(dir domain.Direction, y, g bound) bool {
+	if y.val == g.val {
+		return (g.op == ">" || g.op == "<") && (y.op == ">=" || y.op == "<=")
+	}
+	if dir == domain.DirectionHigherBetter {
+		return y.val < g.val
+	}
+	return y.val > g.val
 }

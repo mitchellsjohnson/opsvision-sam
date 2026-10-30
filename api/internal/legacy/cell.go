@@ -5,6 +5,7 @@
 package legacy
 
 import (
+	"math"
 	"regexp"
 	"strconv"
 	"strings"
@@ -61,15 +62,14 @@ type Parsed struct {
 	Raw      string
 }
 
-// numPat matches one number: optional sign, digits with optional thousands
-// commas, optional decimals (or leading-dot decimals).
-const numPat = `-?(?:\d[\d,]*(?:\.\d+)?|\.\d+)`
+// numPat matches one number: optional sign, digits (with well-formed thousands
+// commas: groups of exactly three), optional decimals, or leading-dot decimals.
+const numPat = `-?(?:(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?|\.\d+)`
 
 var (
 	// trailing status token: "| Y", "|Y", "! R" (typo for the pipe), "/ G"
 	// (slash used as the separator) or a bare " G".
 	statusRe = regexp.MustCompile(`(?i)(\s*[|!/]\s*|\s+)([GYR])\s*$`)
-	slashRe  = regexp.MustCompile(`\s*/\s*`)
 	// "<num>[%] | <num>[%] | <num>[%]" or "<num>[k] | <num>[k]" with k suffix.
 	pipeRatioRe = regexp.MustCompile(`^\$?(` + numPat + `)\s*k?\s*\|\s*\$?(` + numPat + `)\s*k?\s*(?:\|\s*|\s+)` + numPat + `\s*%?$`)
 	// two-part pipe where either side carries the k (thousands) suffix.
@@ -78,25 +78,28 @@ var (
 	// The ratio may use "|" for the slash and may carry a trailing note
 	// after ";" or ",".
 	pctParenRatioRe = regexp.MustCompile(`(?i)^(?:` + numPat + `\s*%?|n/a)\s*\(\s*\$?(` + numPat + `)\s*k?\s*[/|]\s*\$?(` + numPat + `)\s*k?\s*(?:[;,][^)]*)?\)?$`)
-	// "<n>/<d> [(<pct>[%])]" or "<n>/<d> | <pct>%".
-	slashRatioRe = regexp.MustCompile(`^\$?(` + numPat + `)\s*k?\s*/\s*\$?(` + numPat + `)\s*k?\s*(?:(?:\(\s*|\|\s*)` + numPat + `\s*%?\s*\)?)?$`)
+	// "<n>/<d> [(<pct>[%])]" or "<n>/<d> | <pct>%". No spaces around the slash:
+	// "350 / 100" is ambiguous (a score and a count) and stays unparsed.
+	slashRatioRe = regexp.MustCompile(`^\$?(` + numPat + `)k?/\$?(` + numPat + `)k?\s*(?:(?:\(\s*|\|\s*)` + numPat + `\s*%?\s*\)?)?$`)
 	// "<score> | <pct>% <words> Increase|Improvement|Decline|Decrease",
 	// "No Change", or "New ..." (no baseline, so no change).
 	scoreChangeRe = regexp.MustCompile(`(?i)^(` + numPat + `)\s*\|\s*(?:(` + numPat + `)\s*%?\s*)?(?:[a-z]+\s+)*?(increase|improvement|decline|decrease|decine|no\s+change|new)(?:\s+[a-z]+)*$`)
 	// "<score> | <pct>%" or "<score> | (<pct>%)": the direction is unstated,
-	// so the percent is kept as written.
+	// so the percent is not kept (Change stays nil).
 	scoreChangePctRe = regexp.MustCompile(`^(` + numPat + `)\s*\|\s*\(?\s*(` + numPat + `)\s*%\s*\)?$`)
 	// "<pct>% | <count>": a percent with an extra count, which is dropped.
 	pctCountRe = regexp.MustCompile(`^(` + numPat + `)\s*%\s*\|\s*` + numPat + `$`)
-	// "<n>M | <delta>M | <pct>%": an amount in millions, its change, and the
-	// percent change.
-	moneyMRe = regexp.MustCompile(`(?i)^\$?(` + numPat + `)\s*m\s*\|\s*\$?` + numPat + `\s*m\s*\|\s*(` + numPat + `)\s*%$`)
+	// "$<n>M | <delta>M | <pct>%": an amount in millions, its change, and the
+	// percent change. The "$" is required.
+	moneyMRe = regexp.MustCompile(`(?i)^\$(` + numPat + `)\s*m\s*\|\s*\$?` + numPat + `\s*m\s*\|\s*(` + numPat + `)\s*%$`)
 	// "<score> | <max>".
 	scoreOfMaxRe = regexp.MustCompile(`^(` + numPat + `)\s*\|\s*(` + numPat + `)$`)
-	// "$<n>k", "<n>k", "$<n>".
-	moneyRe = regexp.MustCompile(`(?i)^(?:\$\s*(` + numPat + `)\s*k?|(` + numPat + `)\s*k)$`)
-	// "$<n>M": millions, stored in thousands.
-	moneyMOnlyRe = regexp.MustCompile(`(?i)^\$?\s*(` + numPat + `)\s*m$`)
+	// "$<n>k" or "<n>k": thousands. A bare "$<n>" has no unit marker and is
+	// not parsed.
+	moneyRe = regexp.MustCompile(`(?i)^(?:\$\s*(` + numPat + `)\s*k|(` + numPat + `)\s*k)$`)
+	// "$<n>M": millions, stored in thousands. The "$" is required ("5m" alone
+	// could be minutes).
+	moneyMOnlyRe = regexp.MustCompile(`(?i)^\$\s*(` + numPat + `)\s*m$`)
 	// "<n>%".
 	percentRe = regexp.MustCompile(`^(` + numPat + `)\s*%$`)
 	// "<n>".
@@ -119,49 +122,47 @@ func parseNum(s string) *float64 {
 	return &f
 }
 
-// ParseCell parses the text of one legacy workbook cell.
+// cellNormalizer maps typographic variants to the ASCII forms the patterns use.
+var cellNormalizer = strings.NewReplacer(
+	"\u00a0", " ", // no-break space
+	"\u202f", " ", // narrow no-break space
+	"\u2013", "-", // en dash
+	"\u2014", "-", // em dash
+	"\u2212", "-", // minus sign
+)
+
+// ParseCell parses the text of one legacy workbook cell. Text that is
+// ambiguous or matches no pattern comes back as Unparsed with only Raw set.
 func ParseCell(raw string) Parsed {
-	p := Parsed{Raw: raw}
-	s := strings.TrimSpace(raw)
+	unparsed := Parsed{Kind: Unparsed, Raw: raw}
+	s := strings.TrimSpace(cellNormalizer.Replace(raw))
 	if s == "" {
-		p.Kind = Empty
-		return p
+		return Parsed{Kind: Empty, Raw: raw}
 	}
 	if strings.HasPrefix(s, "#") {
-		p.Kind = Unparsed
-		return p
+		return unparsed
 	}
 	if !digitRe.MatchString(s) {
-		p.Kind = NotApplicable
-		p.NAReason = s
-		return p
+		return Parsed{Kind: NotApplicable, NAReason: strings.TrimSpace(raw), Raw: raw}
 	}
 
-	body := s
+	body, status := s, ""
 	if m := statusRe.FindStringSubmatchIndex(s); m != nil {
-		p.Status = strings.ToUpper(s[m[4]:m[5]])
+		status = strings.ToUpper(s[m[4]:m[5]])
 		body = strings.TrimSpace(s[:m[0]])
-		// A slash used as the status separator is used between the other
-		// parts too: "80% / 5 / G" reads as "80% | 5 | G".
-		if strings.Contains(s[m[2]:m[3]], "/") && !strings.Contains(body, "(") {
-			body = slashRe.ReplaceAllString(body, " | ")
-		}
 	}
 
+	p := Parsed{Raw: raw, Status: status}
 	if matchCell(&p, body) {
 		return p
 	}
-	p.Status = ""
 	if naPrefixRe.MatchString(s) {
 		rest := strings.TrimLeft(s[3:], " \t")
 		if strings.HasPrefix(rest, "-") || rest == "" || !strings.ContainsAny(rest[:1], "0123456789($") {
-			p.Kind = NotApplicable
-			p.NAReason = s
-			return p
+			return Parsed{Kind: NotApplicable, NAReason: strings.TrimSpace(raw), Raw: raw}
 		}
 	}
-	p.Kind = Unparsed
-	return p
+	return unparsed
 }
 
 // matchCell tries each pattern in order against body and fills p on a match.
@@ -196,9 +197,10 @@ func matchCell(p *Parsed, body string) bool {
 		return setScoreChange(p, m)
 	}
 	if m := scoreChangePctRe.FindStringSubmatch(body); m != nil {
+		// Direction unstated ("(10%)" is often a decline): keep the score only.
 		p.Kind = ScoreChange
-		p.Value, p.Change = parseNum(m[1]), parseNum(m[2])
-		return p.Value != nil && p.Change != nil
+		p.Value = parseNum(m[1])
+		return p.Value != nil
 	}
 	if m := pctCountRe.FindStringSubmatch(body); m != nil {
 		p.Kind = Percent
@@ -270,7 +272,8 @@ func setScoreChange(p *Parsed, m []string) bool {
 			// Direction without a size ("Quality Decline"): no change value.
 			return true
 		}
-		change := *pct
+		// The direction word decides the sign; a typed sign is ignored.
+		change := math.Abs(*pct)
 		if strings.HasPrefix(word, "dec") {
 			change = -change
 		}

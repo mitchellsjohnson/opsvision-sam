@@ -25,6 +25,10 @@ func TestParseBandText(t *testing.T) {
 		{"variant zero", "<= 0%", ">0% - 10%", ">10%", []domain.Band{b("G", "<=", 0), b("Y", "<=", 10), b("R", "", 0)}, lo},
 		{"unicode ops", "≥90%", "≥80% <90%", "<80%", []domain.Band{b("G", ">=", 90), b("Y", ">=", 80), b("R", "", 0)}, hi},
 		{"empty red", ">=90%", ">=80%", "", []domain.Band{b("G", ">=", 90), b("Y", ">=", 80), b("R", "", 0)}, hi},
+		{"free text red", ">=90%", ">=80% < 90%", "anything below that", []domain.Band{b("G", ">=", 90), b("Y", ">=", 80), b("R", "", 0)}, hi},
+		{"en dash range", "<= 14", "14 \u2013 17", "18+", []domain.Band{b("G", "<=", 14), b("Y", "<=", 17), b("R", "", 0)}, lo},
+		{"nbsp thresholds", ">=90%\u00a0", ">=80%\u00a0< 90%", "< 80%", []domain.Band{b("G", ">=", 90), b("Y", ">=", 80), b("R", "", 0)}, hi},
+		{"strict green equal yellow", ">90%", ">=90%", "<90%", []domain.Band{b("G", ">", 90), b("Y", ">=", 90), b("R", "", 0)}, hi},
 		{"plus green", "18+", "14 - 17", "<14", []domain.Band{b("G", ">=", 18), b("Y", ">=", 14), b("R", "", 0)}, hi},
 	}
 	for _, tc := range tests {
@@ -52,7 +56,13 @@ func TestParseBandTextErrors(t *testing.T) {
 		{"grade scale", "5.26 - 5.84 - B", "4.0 - 5.25 - C", "< 4.0"},
 		{"yellow wrong side", ">=90%", "< 90%", "<80%"},
 		{"green two bounds", ">=80% < 90%", ">=70%", "<70%"},
-		{"bad red", ">=90%", ">=80%", "who knows"},
+		{"bare number green", "99.9%", "<99.9% >99.8%", "< 99.8%"},
+		{"yellow beyond green", ">=90%", ">=95%", "<80%"},
+		{"yellow equals green", ">=90%", ">=90%", "<80%"},
+		{"yellow beyond green lower better", "<=110%", ">100% <= 105%", "> 120%"},
+		{"red wrong side", ">=90%", ">=80% < 90%", ">=95%"},
+		{"red overlaps yellow", ">=90%", ">=80% < 90%", "<85%"},
+		{"red wrong side lower better", "<=110%", ">110% <= 120%", "<100%"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

@@ -65,10 +65,6 @@ func TestParseCell(t *testing.T) {
 		{name: "number status tight", in: "17|Y", kind: Number, value: fp(17), status: "Y"},
 		{name: "score of max", in: "4.8 | 7 | Y", kind: ScoreOfMax, value: fp(4.8), max: fp(7), status: "Y"},
 		{name: "score of max tight", in: "4.4| 7 | Y", kind: ScoreOfMax, value: fp(4.4), max: fp(7), status: "Y"},
-		{name: "slash separator pct count", in: "80% / 5 / G", kind: Percent, value: fp(80), status: "G"},
-		{name: "slash separator tight", in: "99.5%/3 /r", kind: Percent, value: fp(99.5), status: "R"},
-		{name: "slash separator pct only", in: "99.5% / Y", kind: Percent, value: fp(99.5), status: "Y"},
-		{name: "slash separator two numbers", in: "350 / 100 / G", kind: ScoreOfMax, value: fp(350), max: fp(100), status: "G"},
 		{name: "space separated status", in: "3/4 R", kind: Ratio, num: fp(3), den: fp(4), status: "R"},
 		{name: "space separated status pct", in: "99.5% G", kind: Percent, value: fp(99.5), status: "G"},
 		{name: "pct paren pipe ratio", in: "75% (3|4)", kind: Ratio, num: fp(3), den: fp(4)},
@@ -76,15 +72,38 @@ func TestParseCell(t *testing.T) {
 		{name: "pipe ratio space pct", in: "4|5 80%", kind: Ratio, num: fp(4), den: fp(5)},
 		{name: "slash ratio pipe pct", in: "4/12 | 33% | R", kind: Ratio, num: fp(4), den: fp(12), status: "R"},
 		{name: "money millions only", in: "$2m", kind: Money, value: fp(2000)},
-		{name: "money millions triple", in: "0.38M | -0.43M | -53% | G", kind: Money, value: fp(380), change: fp(-53), status: "G"},
-		{name: "score pct unsigned", in: "1869 | 14%", kind: ScoreChange, value: fp(1869), change: fp(14)},
-		{name: "score pct paren", in: "2824 | (10%)", kind: ScoreChange, value: fp(2824), change: fp(10)},
-		{name: "score pct status", in: "1901 | 24% | G", kind: ScoreChange, value: fp(1901), change: fp(24), status: "G"},
 		{name: "score decline no pct", in: "2 | Quality Decline | R", kind: ScoreChange, value: fp(2), status: "R"},
 		{name: "score decrease typo", in: "2656 | 3% Quality Decine | R", kind: ScoreChange, value: fp(2656), change: fp(-3), status: "R"},
 		{name: "score new", in: "8 | New Addition | Y", kind: ScoreChange, value: fp(8), status: "Y"},
 		{name: "multi-line breakdown", in: "Team A - 52k | 9k | 20% | R \n Team B - 30k | 2k | 6% | Y", kind: Unparsed},
 		{name: "sum shape", in: "4/2=6", kind: Unparsed},
+		{name: "slash separator ratio", in: "3/4 / G", kind: Ratio, num: fp(3), den: fp(4), status: "G"},
+		{name: "slash separator tight ratio", in: "3/4/y", kind: Ratio, num: fp(3), den: fp(4), status: "Y"},
+		{name: "slash separator pct", in: "99.5% / Y", kind: Percent, value: fp(99.5), status: "Y"},
+		{name: "slash inside value pct count", in: "80% / 5 / G", kind: Unparsed},
+		{name: "slash inside value two numbers", in: "350 / 100 / G", kind: Unparsed},
+		{name: "money millions triple", in: "$0.38M | -0.43M | -53% | G", kind: Money, value: fp(380), change: fp(-53), status: "G"},
+		{name: "money millions triple no dollar", in: "0.38M | -0.43M | -53% | G", kind: Unparsed},
+		{name: "minutes not money", in: "5m", kind: Unparsed},
+		{name: "minutes not money 15", in: "15m", kind: Unparsed},
+		{name: "dollar without unit", in: "$500", kind: Unparsed},
+		{name: "dollar without unit status", in: "$500 | G", kind: Unparsed},
+		{name: "score pct no direction", in: "1869 | 14%", kind: ScoreChange, value: fp(1869)},
+		{name: "score pct paren no direction", in: "2824 | (10%)", kind: ScoreChange, value: fp(2824)},
+		{name: "score pct status no direction", in: "1901 | 24% | G", kind: ScoreChange, value: fp(1901), status: "G"},
+		{name: "decline typed sign", in: "10 | -17% Decline | R", kind: ScoreChange, value: fp(10), change: fp(-17), status: "R"},
+		{name: "increase typed sign", in: "10 | -17% Increase | G", kind: ScoreChange, value: fp(10), change: fp(17), status: "G"},
+		{name: "comma thousands", in: "12,345.6", kind: Number, value: fp(12345.6)},
+		{name: "comma groups", in: "1,234,567", kind: Number, value: fp(1234567)},
+		{name: "bad comma 3,4", in: "3,4", kind: Unparsed},
+		{name: "bad comma 1,2,3", in: "1,2,3", kind: Unparsed},
+		{name: "trailing comma", in: "5,", kind: Unparsed},
+		{name: "double comma", in: "1,,2", kind: Unparsed},
+		{name: "nbsp separators", in: "14\u00a0|\u00a05\u00a0|\u00a0Y", kind: ScoreOfMax, value: fp(14), max: fp(5), status: "Y"},
+		{name: "narrow nbsp", in: "16\u202f|\u202fY", kind: Number, value: fp(16), status: "Y"},
+		{name: "unicode minus", in: "10 | \u221217% Decline | R", kind: ScoreChange, value: fp(10), change: fp(-17), status: "R"},
+		{name: "em dash na", in: "N/A \u2014 Migrated", kind: NotApplicable, na: "N/A \u2014 Migrated"},
+		{name: "en dash na", in: "N/A \u2013 Migrated", kind: NotApplicable, na: "N/A \u2013 Migrated"},
 		{name: "na phrase 1", in: "No big initiatives", kind: NotApplicable, na: "No big initiatives"},
 		{name: "na phrase 2", in: "No epics", kind: NotApplicable, na: "No epics"},
 		{name: "na phrase 3", in: "Measured Quarterly", kind: NotApplicable, na: "Measured Quarterly"},
@@ -117,8 +136,8 @@ func TestParseCell(t *testing.T) {
 			if got.NAReason != tc.na {
 				t.Errorf("naReason = %q, want %q", got.NAReason, tc.na)
 			}
-			if tc.kind == Unparsed && got.Raw != tc.in {
-				t.Errorf("raw = %q, want %q", got.Raw, tc.in)
+			if tc.kind == Unparsed && got != (Parsed{Kind: Unparsed, Raw: tc.in}) {
+				t.Errorf("unparsed result has stray fields: %+v", got)
 			}
 		})
 	}
