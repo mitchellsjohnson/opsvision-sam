@@ -1,6 +1,7 @@
 package period
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -182,5 +183,38 @@ func TestParseErrors(t *testing.T) {
 		if _, err := Parse(s); err == nil {
 			t.Errorf("Parse(%q) expected error", s)
 		}
+	}
+}
+
+func TestPeriodJSON(t *testing.T) {
+	type wrap struct {
+		P  Period  `json:"p"`
+		Pp *Period `json:"pp,omitempty"`
+	}
+	in := wrap{P: mustParse(t, "2026-Q3"), Pp: &Period{Grain: Month, FY: 2026, Index: 10}}
+	b, err := json.Marshal(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"p":"2026-Q3","pp":"2026-M10"}`; string(b) != want {
+		t.Fatalf("Marshal = %s, want %s", b, want)
+	}
+	var out wrap
+	if err := json.Unmarshal(b, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.P != in.P || out.Pp == nil || *out.Pp != *in.Pp {
+		t.Errorf("round trip = %+v, want %+v", out, in)
+	}
+	// The zero Period round-trips as the empty string.
+	b, err = json.Marshal(wrap{})
+	if err != nil || string(b) != `{"p":""}` {
+		t.Fatalf("zero Marshal = %s, %v", b, err)
+	}
+	if err := json.Unmarshal(b, &out); err != nil || out.P != (Period{}) {
+		t.Errorf("zero Unmarshal = %+v, %v", out.P, err)
+	}
+	if err := json.Unmarshal([]byte(`{"p":"2026-M13"}`), &out); err == nil {
+		t.Error("expected error for invalid period")
 	}
 }

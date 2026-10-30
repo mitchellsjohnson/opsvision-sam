@@ -49,6 +49,30 @@ func (p Period) String() string {
 	return fmt.Sprintf("%d-?%d", p.FY, p.Index)
 }
 
+// MarshalText encodes a Period as its String form. The zero Period encodes as
+// the empty string so that unset Period fields round-trip through JSON.
+func (p Period) MarshalText() ([]byte, error) {
+	if p == (Period{}) {
+		return []byte{}, nil
+	}
+	return []byte(p.String()), nil
+}
+
+// UnmarshalText decodes the String form of a Period. The empty string decodes
+// to the zero Period.
+func (p *Period) UnmarshalText(b []byte) error {
+	if len(b) == 0 {
+		*p = Period{}
+		return nil
+	}
+	v, err := Parse(string(b))
+	if err != nil {
+		return err
+	}
+	*p = v
+	return nil
+}
+
 // Parse parses the String form of a Period.
 func Parse(s string) (Period, error) {
 	i := strings.IndexByte(s, '-')
