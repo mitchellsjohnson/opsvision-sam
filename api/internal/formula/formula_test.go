@@ -167,6 +167,73 @@ func TestNonFiniteResultIsError(t *testing.T) {
 	}
 }
 
+func TestRejectsOversizedAndDeeplyNested(t *testing.T) {
+	cases := map[string]string{
+		"deep parens":          strings.Repeat("(", 500000) + "a" + strings.Repeat(")", 500000),
+		"deep parens unclosed": strings.Repeat("(", 500000),
+		"moderately deep":      strings.Repeat("(", 65) + "a" + strings.Repeat(")", 65),
+		"deep calls":           strings.Repeat("abs(", 100) + "a" + strings.Repeat(")", 100),
+		"long source":          strings.Repeat("a + ", MaxSourceLen) + "a",
+		"long unary chain":     strings.Repeat("-", 1<<20) + "a",
+	}
+	for name, src := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Identifiers(src); err == nil {
+				t.Fatal("Identifiers: expected error")
+			}
+			if _, err := Compile(src, []string{"a"}); err == nil {
+				t.Fatal("Compile: expected error")
+			}
+		})
+	}
+
+	// At the limit still works.
+	ok := strings.Repeat("(", MaxParenDepth) + "a" + strings.Repeat(")", MaxParenDepth)
+	got, err := mustCompile(t, ok, "a").Eval(map[string]float64{"a": 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	approx(t, got, 2)
+}
+
+func TestMeasureNamesDoNotCollideWithInternals(t *testing.T) {
+	measures := []string{"a", "b", "div", "min", "max", "abs", "_div"}
+	vars := map[string]float64{"a": 6, "b": 3, "div": 10, "min": 20, "max": 30, "abs": 40}
+
+	cases := []struct {
+		src  string
+		want float64
+	}{
+		{"a / b", 2},
+		{"min(a, b)", 3},
+		{"max(a, b)", 6},
+		{"abs(a - 10)", 4},
+		{"div / b", 10.0 / 3}, // measure literally named div
+		{"a / div", 0.6},
+	}
+	for _, c := range cases {
+		t.Run(c.src, func(t *testing.T) {
+			f, err := Compile(c.src, measures)
+			if err != nil {
+				t.Fatalf("Compile: %v", err)
+			}
+			got, err := f.Eval(vars)
+			if err != nil {
+				t.Fatal(err)
+			}
+			approx(t, got, c.want)
+		})
+	}
+
+	// The internal division function must not be callable by users, and the
+	// function names cannot be used as bare measure values.
+	for _, src := range []string{"_div(a, b)", "div(a, b)", "_div", "min * 2", "abs / a"} {
+		if _, err := Compile(src, measures); err == nil {
+			t.Errorf("Compile(%q) succeeded, want error", src)
+		}
+	}
+}
+
 func TestEvalIsRepeatable(t *testing.T) {
 	f := mustCompile(t, "a / b", "a", "b")
 	for i := 1; i <= 3; i++ {

@@ -50,12 +50,46 @@ type Formula struct {
 // funcArity lists the whitelisted functions and their required argument count.
 var funcArity = map[string]int{"min": 2, "max": 2, "abs": 1}
 
-// divFunc is the name of the internal checked-division function. Users cannot
-// call it: the whitelist rejects any function not in funcArity, and the
-// rewrite to divFunc happens only after validation.
-const divFunc = "div"
+// divFunc is the name of the internal checked-division function. It starts
+// with an underscore so identRe can never match it: users cannot call it or
+// shadow it with a measure, and it cannot collide with any measure name.
+const divFunc = "_div"
+
+// Limits on formula source. Formulas are short; these caps keep the
+// recursive-descent parser (whose stack use grows with nesting, and which
+// creates no AST nodes for parentheses) from being driven to a fatal,
+// unrecoverable stack overflow by hostile input.
+const (
+	// MaxSourceLen is the maximum formula length in bytes.
+	MaxSourceLen = 2048
+	// MaxParenDepth is the maximum parenthesis nesting depth.
+	MaxParenDepth = 64
+)
 
 var identRe = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+
+// checkLimits rejects oversized or deeply nested source before it reaches
+// the parser.
+func checkLimits(src string) error {
+	if len(src) > MaxSourceLen {
+		return fmt.Errorf("formula: too long (%d bytes, max %d)", len(src), MaxSourceLen)
+	}
+	depth := 0
+	for i := 0; i < len(src); i++ {
+		switch src[i] {
+		case '(', '[', '{':
+			depth++
+			if depth > MaxParenDepth {
+				return fmt.Errorf("formula: nesting too deep (max %d)", MaxParenDepth)
+			}
+		case ')', ']', '}':
+			if depth > 0 {
+				depth--
+			}
+		}
+	}
+	return nil
+}
 
 // Compile validates src against the whitelist and measures, and returns a
 // Formula ready for Eval. Every identifier in src must appear in measures.
@@ -65,15 +99,18 @@ func Compile(src string, measures []string) (*Formula, error) {
 		return nil, err
 	}
 	known := make(map[string]bool, len(measures))
-	env := make(map[string]any, len(measures))
 	for _, m := range measures {
 		known[m] = true
-		env[m] = float64(0)
 	}
+	// The compile env holds only identifiers that the validated source
+	// actually references (already regex-checked, never min/max/abs), so
+	// measure names in the wider list cannot shadow internals.
+	env := make(map[string]any, len(idents))
 	for _, id := range idents {
 		if !known[id] {
 			return nil, fmt.Errorf("formula: unknown measure %q", id)
 		}
+		env[id] = float64(0)
 	}
 
 	prog, err := expr.Compile(src,
@@ -93,6 +130,9 @@ func Compile(src string, measures []string) (*Formula, error) {
 // returns an error if src is unparseable or uses anything outside the
 // whitelist.
 func Identifiers(src string) ([]string, error) {
+	if err := checkLimits(src); err != nil {
+		return nil, err
+	}
 	tree, err := parser.Parse(src)
 	if err != nil {
 		return nil, fmt.Errorf("formula: %w", err)
