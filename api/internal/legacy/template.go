@@ -183,6 +183,12 @@ func (t Template) Validate() []changeset.Finding {
 			headers[[2]string{norm(rm.Sheet), norm(rm.Label)}] = true
 		}
 	}
+	headerIdx := map[[2]string]int{}
+	for i, rm := range t.Rows {
+		if rm.Metric == "" {
+			headerIdx[[2]string{norm(rm.Sheet), norm(rm.Label)}] = i + 1
+		}
+	}
 	for i, rm := range t.Rows {
 		where := fmt.Sprintf("row mapping %d (%q)", i+1, rm.Label)
 		if !sheets[norm(rm.Sheet)] {
@@ -198,6 +204,9 @@ func (t Template) Validate() []changeset.Finding {
 			bad(rm.Sheet, "%s is listed twice in the same section", where)
 		}
 		seen[k] = true
+		if h, clash := headerIdx[[2]string{norm(rm.Sheet), norm(rm.Label)}]; clash && rm.Metric != "" {
+			bad(rm.Sheet, "%s has the same label as section header mapping %d (%q), so the row would be read as a section header", where, h, t.Rows[h-1].Label)
+		}
 		if rm.Section != "" && !headers[[2]string{norm(rm.Sheet), norm(rm.Section)}] {
 			bad(rm.Sheet, "%s names section %q, which is not a section header row mapping", where, rm.Section)
 		}

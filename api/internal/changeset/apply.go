@@ -28,13 +28,19 @@ var (
 // applying version text (for example a metric missing from the draft); those
 // changes were skipped.
 type ApplyResult struct {
+	// Status is StatusApplied on success. Apply does not modify the change
+	// set it is given: the caller stores this status on its copy (Task 20 does
+	// so when it saves the import), which is what makes a second Apply refuse.
+	Status      string    `json:"status"`
 	DataPoints  int       `json:"dataPoints"`
 	Overrides   int       `json:"overrides"`
 	VersionText int       `json:"versionText"`
 	Findings    []Finding `json:"findings"`
 }
 
-// Apply stores a change set for one scorecard: all data writes, all overrides,
+// Apply stores a change set for one scorecard. The change set must have
+// status "parsed" and no error findings; otherwise Apply returns an error and
+// writes nothing. It stores: all data writes, all overrides,
 // then the version text (into draft versions only), and finally one audit
 // entry. LegacyNotes are not stored in phase 1; they are only counted in the
 // audit entry.
@@ -49,6 +55,16 @@ type ApplyResult struct {
 // stamped with actor and the current time.
 func Apply(ctx context.Context, st store.Store, tenantID, scorecardID string, cs ChangeSet, actor string) (ApplyResult, error) {
 	res := ApplyResult{Findings: []Finding{}}
+
+	// Only a parsed change set with no error findings may be applied.
+	if cs.Status != StatusParsed {
+		return res, fmt.Errorf("change set %q has status %q: only a %q change set can be applied", cs.ID, cs.Status, StatusParsed)
+	}
+	for _, f := range cs.Findings {
+		if f.Severity == SeverityError {
+			return res, fmt.Errorf("change set %q has error findings and cannot be applied (first: %s)", cs.ID, f.Message)
+		}
+	}
 
 	// Check every referenced version before writing anything.
 	var versionOrder []string
@@ -134,6 +150,7 @@ func Apply(ctx context.Context, st store.Store, tenantID, scorecardID string, cs
 	if err := st.AppendAudit(ctx, tenantID, entry); err != nil {
 		return res, fmt.Errorf("recording audit entry: %w", err)
 	}
+	res.Status = StatusApplied
 	return res, nil
 }
 

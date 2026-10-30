@@ -63,10 +63,17 @@ func single(role string, v float64, p Parsed) convOut {
 
 func convRatio(in convIn) (convOut, error) {
 	p := in.p
-	if p.Kind != Ratio {
+	var num, den float64
+	switch p.Kind {
+	case Ratio:
+		num, den = *p.Num, *p.Den
+	case ScoreOfMax:
+		// A bare "3|4" or "0|0" is read as a score out of a maximum; in a ratio
+		// row it is a numerator and a denominator.
+		num, den = *p.Value, *p.Max
+	default:
 		return convOut{}, mismatch("a ratio like 48|66", p)
 	}
-	num, den := *p.Num, *p.Den
 	switch {
 	case den == 0 && num == 0:
 		return convOut{na: zeroOverZero, status: p.Status}, nil
@@ -123,7 +130,8 @@ func convUptimeFraction(in convIn) (convOut, error) {
 	if v < 0 || v > 1 {
 		return convOut{}, fmt.Errorf("uptime fraction %v is outside 0..1", v)
 	}
-	return uptimeOut(in, v, v), nil
+	// reported is in percent (0..100), like uptime_percent and the metric.
+	return uptimeOut(in, v, v*100), nil
 }
 
 func convScoreOfMax(in convIn) (convOut, error) {

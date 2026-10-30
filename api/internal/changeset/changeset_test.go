@@ -87,6 +87,9 @@ func TestApplyWritesEverything(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
+	if res.Status != changeset.StatusApplied {
+		t.Errorf("result status = %q, want %q", res.Status, changeset.StatusApplied)
+	}
 	if res.DataPoints != 2 || res.Overrides != 1 || res.VersionText != 3 || len(res.Findings) != 0 {
 		t.Fatalf("result = %+v", res)
 	}
@@ -140,7 +143,7 @@ func TestApplyRejectsPublishedVersionText(t *testing.T) {
 	st := seed(t, version("pub1", domain.VersionPublished), version("draft1", domain.VersionDraft))
 	ctx := context.Background()
 	cs := changeset.ChangeSet{
-		ID: "cs1",
+		ID: "cs1", Status: changeset.StatusParsed,
 		Data: []store.DataWrite{
 			{Point: domain.DataPoint{MeasureKey: "up", SubjectID: "u1", Period: m(1), Value: f(5)}, ExpectedRevision: store.Unconditional},
 		},
@@ -169,7 +172,7 @@ func TestApplyRejectsPublishedVersionText(t *testing.T) {
 
 func TestApplyMissingVersion(t *testing.T) {
 	st := seed(t)
-	cs := changeset.ChangeSet{VersionText: []changeset.VersionTextChange{{VersionID: "nope", MetricKey: "uptime", Field: "definition", Value: "x"}}}
+	cs := changeset.ChangeSet{Status: changeset.StatusParsed, VersionText: []changeset.VersionTextChange{{VersionID: "nope", MetricKey: "uptime", Field: "definition", Value: "x"}}}
 	_, err := changeset.Apply(context.Background(), st, tenant, scorecard, cs, "a")
 	if !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("err = %v, want ErrNotFound", err)
@@ -179,7 +182,7 @@ func TestApplyMissingVersion(t *testing.T) {
 func TestApplyMissingMetricIsFinding(t *testing.T) {
 	st := seed(t, version("draft1", domain.VersionDraft))
 	ctx := context.Background()
-	cs := changeset.ChangeSet{VersionText: []changeset.VersionTextChange{
+	cs := changeset.ChangeSet{Status: changeset.StatusParsed, VersionText: []changeset.VersionTextChange{
 		{VersionID: "draft1", MetricKey: "ghost", Field: changeset.FieldDefinition, Value: "x"},
 		{VersionID: "draft1", MetricKey: "uptime", Field: "colour", Value: "x"},
 		{VersionID: "draft1", MetricKey: "uptime", Field: changeset.FieldFrequency, Value: "sometimes"},
@@ -206,7 +209,7 @@ func TestApplyMissingMetricIsFinding(t *testing.T) {
 
 func TestApplyEmptyChangeSetStillAudits(t *testing.T) {
 	st := seed(t)
-	res, err := changeset.Apply(context.Background(), st, tenant, scorecard, changeset.ChangeSet{ID: "cs0"}, "a")
+	res, err := changeset.Apply(context.Background(), st, tenant, scorecard, changeset.ChangeSet{ID: "cs0", Status: changeset.StatusParsed}, "a")
 	if err != nil || res.DataPoints != 0 {
 		t.Fatalf("res %+v err %v", res, err)
 	}
@@ -222,5 +225,88 @@ func TestHasErrors(t *testing.T) {
 	}
 	if !changeset.HasErrors([]changeset.Finding{{Severity: changeset.SeverityInfo}, {Severity: changeset.SeverityError}}) {
 		t.Error("error not counted")
+	}
+}
+
+func oneWriteChangeSet(status string, findings ...changeset.Finding) changeset.ChangeSet {
+	return changeset.ChangeSet{
+		ID: "cs1", Status: status, Findings: findings,
+		Data: []store.DataWrite{
+			{Point: domain.DataPoint{MeasureKey: "up", SubjectID: "u1", Period: m(1), Value: f(5)}, ExpectedRevision: store.Unconditional},
+		},
+		Overrides:   []domain.Override{{MetricKey: "uptime", SubjectID: "u1", Period: m(1), Status: "R"}},
+		VersionText: []changeset.VersionTextChange{{VersionID: "draft1", MetricKey: "uptime", Field: changeset.FieldDefinition, Value: "x"}},
+	}
+}
+
+func assertNothingWritten(t *testing.T, st *memstore.Store) {
+	t.Helper()
+	ctx := context.Background()
+	pts, ovs, _ := st.ListData(ctx, tenant, scorecard, []int{2025})
+	if len(pts) != 0 || len(ovs) != 0 {
+		t.Errorf("wrote %d points, %d overrides", len(pts), len(ovs))
+	}
+	d, _ := st.GetVersion(ctx, tenant, scorecard, "draft1")
+	if d.Content.Metrics[0].Definition != "old definition" {
+		t.Errorf("draft changed: %q", d.Content.Metrics[0].Definition)
+	}
+	audit, _ := st.ListAudit(ctx, tenant, time.Unix(0, 0), time.Now().Add(time.Hour))
+	if len(audit) != 0 {
+		t.Errorf("audit entries = %d", len(audit))
+	}
+}
+
+func TestApplyRefusesChangeSetNotParsed(t *testing.T) {
+	for _, status := range []string{"", "applied", "discarded"} {
+		st := seed(t, version("draft1", domain.VersionDraft))
+		if _, err := changeset.Apply(context.Background(), st, tenant, scorecard, oneWriteChangeSet(status), "a"); err == nil {
+			t.Errorf("status %q: Apply succeeded", status)
+		}
+		assertNothingWritten(t, st)
+	}
+}
+
+func TestApplyRefusesChangeSetWithErrorFindings(t *testing.T) {
+	st := seed(t, version("draft1", domain.VersionDraft))
+	cs := oneWriteChangeSet(changeset.StatusParsed,
+		changeset.Finding{Severity: changeset.SeverityWarn, Message: "fine"},
+		changeset.Finding{Severity: changeset.SeverityError, Sheet: "S", Cell: "A1", Message: "bad"})
+	if _, err := changeset.Apply(context.Background(), st, tenant, scorecard, cs, "a"); err == nil {
+		t.Fatal("Apply succeeded with an error finding")
+	}
+	assertNothingWritten(t, st)
+
+	// Warnings and info findings do not block.
+	st = seed(t, version("draft1", domain.VersionDraft))
+	cs = oneWriteChangeSet(changeset.StatusParsed,
+		changeset.Finding{Severity: changeset.SeverityWarn}, changeset.Finding{Severity: changeset.SeverityInfo})
+	if _, err := changeset.Apply(context.Background(), st, tenant, scorecard, cs, "a"); err != nil {
+		t.Fatalf("Apply with warnings: %v", err)
+	}
+}
+
+func TestApplyTwiceIsRefused(t *testing.T) {
+	st := seed(t, version("draft1", domain.VersionDraft))
+	ctx := context.Background()
+	cs := oneWriteChangeSet(changeset.StatusParsed)
+	res, err := changeset.Apply(ctx, st, tenant, scorecard, cs, "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Apply does not mutate its argument; the caller records the new status.
+	if cs.Status != changeset.StatusParsed {
+		t.Fatalf("Apply mutated the change set: status %q", cs.Status)
+	}
+	cs.Status = res.Status
+	if _, err := changeset.Apply(ctx, st, tenant, scorecard, cs, "a"); err == nil {
+		t.Fatal("second Apply succeeded")
+	}
+	audit, _ := st.ListAudit(ctx, tenant, time.Unix(0, 0), time.Now().Add(time.Hour))
+	if len(audit) != 1 {
+		t.Errorf("audit entries = %d, want 1", len(audit))
+	}
+	v, _ := st.GetVersion(ctx, tenant, scorecard, "draft1")
+	if v.Revision != 2 {
+		t.Errorf("draft revision = %d, want 2", v.Revision)
 	}
 }

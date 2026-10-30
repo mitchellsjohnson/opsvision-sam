@@ -287,12 +287,16 @@ func (p *parser) importRow(sh *xlsx.Sheet, sm SheetMap, rm RowMap, r int, cols [
 	var last rowYTD
 	for _, cp := range cols {
 		cref := ref(cp.col, r)
-		p.noteComments(sh, rm, cp.p, cref)
 		cell, ok := sh.Cells[cref]
 		if !ok {
 			continue
 		}
-		if ic, ok := p.importCell(sh.Name, rm, cp, cref, cell); ok && cp.p.Grain == period.Month && ic.reported != nil && cp.p.Index >= last.month {
+		ic, ok := p.importCell(sh.Name, rm, cp, cref, cell)
+		if !ok {
+			continue // notes are kept only for cells that were imported
+		}
+		p.noteComments(sh, rm, cp.p, cref)
+		if cp.p.Grain == period.Month && ic.reported != nil && cp.p.Index >= last.month {
 			last = rowYTD{ok: true, month: cp.p.Index, ic: ic}
 		}
 	}
@@ -541,7 +545,7 @@ func (p *parser) unmappedComments() {
 			}
 		}
 		if n > 0 {
-			p.find(changeset.SeverityInfo, sh.Name, "", "%d comment(s) outside the mapped data cells were not imported", n)
+			p.find(changeset.SeverityInfo, sh.Name, "", "%d comment(s) not on an imported data cell were not imported", n)
 		}
 	}
 }

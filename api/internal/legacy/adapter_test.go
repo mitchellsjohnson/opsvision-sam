@@ -628,28 +628,36 @@ func TestPctSlashCountConverter(t *testing.T) {
 }
 
 func TestConverters(t *testing.T) {
+	const uptimeFormula = "(1 - down / per) * 100"
 	tests := []struct {
 		name    string
 		convert string
 		measure map[string]string
 		cell    string
+		formula string
+		format  string
 		want    map[string]float64
 	}{
-		{"value percent", "value", map[string]string{"value": "val"}, "72%", map[string]float64{"val": 72}},
-		{"value score with change", "value", map[string]string{"value": "val"}, "75 | 12% Increase", map[string]float64{"val": 75}},
-		{"money_k", "money_k", map[string]string{"value": "val"}, "$8,234k", map[string]float64{"val": 8234}},
-		{"ratio with k", "ratio", map[string]string{"num": "num", "den": "den"}, "8234k|10471k | 79% | G", map[string]float64{"num": 8234, "den": 10471}},
-		{"uptime_percent 100", "uptime_percent", map[string]string{"down": "down", "period": "per"}, "100%", map[string]float64{"down": 0, "per": 2678400}},
-		{"uptime_fraction", "uptime_fraction", map[string]string{"down": "down", "period": "per"}, "0.9964", map[string]float64{"down": 9642, "per": 2678400}},
-		{"score_of_max", "score_of_max", map[string]string{"value": "val", "max": "mx"}, "7 | 10", map[string]float64{"val": 7, "mx": 10}},
-		{"daily_average", "daily_average", map[string]string{"sum": "sum", "days": "days"}, "4.5", map[string]float64{"sum": 139.5, "days": 31}},
+		{"value percent", "value", map[string]string{"value": "val"}, "72%", "val", domain.FormatPercent0, map[string]float64{"val": 72}},
+		{"value score with change", "value", map[string]string{"value": "val"}, "75 | 12% Increase", "val", domain.FormatNumber0, map[string]float64{"val": 75}},
+		{"money_k", "money_k", map[string]string{"value": "val"}, "$8,234k", "val", domain.FormatMoneyK, map[string]float64{"val": 8234}},
+		{"ratio with k", "ratio", map[string]string{"num": "num", "den": "den"}, "8234k|10471k | 79% | G", "num / den * 100", domain.FormatPercent0, map[string]float64{"num": 8234, "den": 10471}},
+		{"ratio from two-number shape", "ratio", map[string]string{"num": "num", "den": "den"}, "3|4", "num / den * 100", domain.FormatPercent0, map[string]float64{"num": 3, "den": 4}},
+		{"uptime_percent 100", "uptime_percent", map[string]string{"down": "down", "period": "per"}, "100%", uptimeFormula, domain.FormatPercent2, map[string]float64{"down": 0, "per": 2678400}},
+		{"uptime_percent", "uptime_percent", map[string]string{"down": "down", "period": "per"}, "99.64%", uptimeFormula, domain.FormatPercent2, map[string]float64{"down": 9642, "per": 2678400}},
+		{"uptime_fraction", "uptime_fraction", map[string]string{"down": "down", "period": "per"}, "0.9964", uptimeFormula, domain.FormatPercent2, map[string]float64{"down": 9642, "per": 2678400}},
+		{"score_of_max", "score_of_max", map[string]string{"value": "val", "max": "mx"}, "7 | 10", "val / mx * 100", domain.FormatPercent0, map[string]float64{"val": 7, "mx": 10}},
+		{"daily_average", "daily_average", map[string]string{"sum": "sum", "days": "days"}, "4.5", "sum / days", domain.FormatNumber2, map[string]float64{"sum": 139.5, "days": 31}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			base := baseInput(t, versions(allMeasures, []domain.Metric{valueMetric("m")}))
+			m := metric("m", tt.formula, tt.format, domain.FrequencyMonthly, bands(50, 20, true))
+			base := baseInput(t, versions(allMeasures, []domain.Metric{m}))
 			tpl := dataTemplate(row("M", "m", "north", tt.convert, tt.measure))
 			cs := parse(t, dataSheet([]any{"M", tt.cell}), tpl, base)
-			noErrors(t, cs)
+			if len(cs.Findings) != 0 { // no errors and no warnings, in particular no false value mismatch
+				t.Errorf("unexpected findings: %+v", cs.Findings)
+			}
 			if len(cs.Data) != len(tt.want) {
 				t.Errorf("writes = %d, want %d: %+v", len(cs.Data), len(tt.want), cs.Data)
 			}
@@ -657,6 +665,44 @@ func TestConverters(t *testing.T) {
 				wantValue(t, cs, k, "north", mon(1), v)
 			}
 		})
+	}
+}
+
+func TestUptimeFractionYTDHasNoFalseWarnings(t *testing.T) {
+	m := metric("up", "(1 - down / per) * 100", domain.FormatPercent2, domain.FrequencyMonthly, bands(99.9, 99.5, true))
+	base := baseInput(t, versions(allMeasures, []domain.Metric{m}))
+	tpl := dataTemplate(row("Up", "up", "north", "uptime_fraction", map[string]string{"down": "down", "period": "per"}))
+	cs := parse(t, dataSheet([]any{"Up", 0.9964, 0.9964, nil, 0.9964}), tpl, base)
+	if len(cs.Findings) != 0 {
+		t.Errorf("findings = %+v, want none", cs.Findings)
+	}
+	// A YTD that really differs still warns, in percent units.
+	cs = parse(t, dataSheet([]any{"Up", 0.9964, 0.9964, nil, 0.99}), tpl, base)
+	if !hasFinding(cs, changeset.SeverityWarn, "Data", "E2", "99.00%") {
+		t.Errorf("no YTD warning for a real difference: %+v", cs.Findings)
+	}
+}
+
+func TestRatioAcceptsTwoNumberShape(t *testing.T) {
+	// A bare "0|0" or "3|4" is read by the cell parser as a score out of a
+	// maximum; under the ratio converter it is a numerator and denominator.
+	m := metric("m", "num / den * 100", domain.FormatPercent0, domain.FrequencyMonthly, bands(80, 60, true))
+	base := baseInput(t, versions(allMeasures, []domain.Metric{m}))
+	tpl := dataTemplate(row("M", "m", "north", "ratio", map[string]string{"num": "num", "den": "den"}))
+	cs := parse(t, dataSheet([]any{"M", "0|0", "3|4 | G", "5|0"}), tpl, base)
+	for _, k := range []string{"num", "den"} {
+		if dp, ok := point(cs, k, "north", mon(1)); !ok || dp.Value != nil || dp.NAReason == "" {
+			t.Errorf("0|0 %s = %+v, %v; want an NA point", k, dp, ok)
+		}
+	}
+	wantValue(t, cs, "num", "north", mon(2), 3)
+	wantValue(t, cs, "den", "north", mon(2), 4)
+	// 3/4 is 75%, judged Y; the recorded G is an override.
+	if len(cs.Overrides) != 1 || cs.Overrides[0].Period != mon(2) || cs.Overrides[0].Status != "G" {
+		t.Errorf("overrides = %+v", cs.Overrides)
+	}
+	if !hasFinding(cs, changeset.SeverityWarn, "Data", "D2", "") { // 5/0 is still refused
+		t.Errorf("no warning for 5|0: %+v", cs.Findings)
 	}
 }
 
@@ -905,6 +951,10 @@ func TestTemplateValidation(t *testing.T) {
 		{"no fiscal year", func(t *Template) { t.Sheets[0].FiscalYear = 0 }, "fiscalYear"},
 		{"unknown sheet", func(t *Template) { t.Rows[1].Sheet = "Nowhere" }, "Nowhere"},
 		{"unknown section", func(t *Template) { t.Rows[1].Section = "No such section" }, "No such section"},
+		{"data row named like a section header", func(t *Template) {
+			t.Rows = append(t.Rows, RowMap{Sheet: "Scorecard", Section: "Uptime", Label: " epics ON time ", Metric: "uptime", Subject: "north",
+				Convert: "value", Measures: map[string]string{"value": "x"}})
+		}, "section header"},
 		{"duplicate row", func(t *Template) { t.Rows = append(t.Rows, t.Rows[1]) }, "twice"},
 		{"no subject", func(t *Template) { t.Rows[1].Subject = "" }, "subject"},
 		{"section header with metric fields", func(t *Template) { t.Rows[0].Convert = "ratio" }, "section header"},
@@ -947,4 +997,100 @@ func cloneTemplate(t *testing.T, in Template) Template {
 		t.Fatal(err)
 	}
 	return out
+}
+
+// ---- review fixes: notes, section rules, mutation ------------------------------------
+
+func TestNotesOnlyForImportedCells(t *testing.T) {
+	q := metric("retention", "val", domain.FormatPercent0, domain.FrequencyQuarterly, bands(90, 80, true))
+	m := valueMetric("m")
+	base := baseInput(t, versions(allMeasures, []domain.Metric{q, m}))
+	meas := map[string]string{"value": "val"}
+	tpl := dataTemplate(
+		row("Good", "m", "north", "value", meas),
+		row("Quarterly", "retention", "south", "value", meas),
+		row("Ghost", "m", "nowhere", "value", meas),
+	)
+	sheets := dataSheet(
+		[]any{"Good", "40", "not a number 12", nil},
+		[]any{"Quarterly", "85%"}, // monthly column for a quarterly metric: rejected
+		[]any{"Ghost", "10"},      // unknown subject: rejected
+	)
+	at := time.Date(2025, 2, 1, 9, 0, 0, 0, utc)
+	sheets[0].Comments = []xlsxtest.Comment{
+		{Ref: "B2", Author: "Pat Example", Text: "kept", At: at},       // imported
+		{Ref: "C2", Author: "Pat Example", Text: "unparsed", At: at},   // unparsed cell
+		{Ref: "D2", Author: "Pat Example", Text: "empty", At: at},      // empty cell
+		{Ref: "B3", Author: "Pat Example", Text: "grain", At: at},      // grain mismatch
+		{Ref: "B4", Author: "Pat Example", Text: "no subject", At: at}, // unknown subject
+	}
+	cs := parse(t, sheets, tpl, base)
+	if len(cs.Notes) != 1 || cs.Notes[0].Text != "kept" || cs.Notes[0].Period != mon(1) {
+		t.Errorf("notes = %+v, want only the one on the imported cell", cs.Notes)
+	}
+	if !hasFinding(cs, changeset.SeverityInfo, "Data", "", "4 comment") {
+		t.Errorf("the other four comments should be counted as not imported: %+v", cs.Findings)
+	}
+}
+
+func TestBlankRowsAndRepeatedSectionHeader(t *testing.T) {
+	base := baseInput(t, versions(allMeasures, []domain.Metric{valueMetric("m1"), valueMetric("m2")}))
+	meas := map[string]string{"value": "val"}
+	tpl := dataTemplate(
+		RowMap{Label: "Section A"},
+		RowMap{Label: "Section B"},
+		RowMap{Section: "Section A", Label: "Item", Metric: "m1", Subject: "north", Convert: "value", Measures: meas},
+		RowMap{Section: "Section B", Label: "Item", Metric: "m2", Subject: "south", Convert: "value", Measures: meas},
+		RowMap{Section: "Section A", Label: "Other", Metric: "m1", Subject: "svc-1", Convert: "value", Measures: meas},
+	)
+	for i := range tpl.Rows {
+		tpl.Rows[i].Sheet = "Data"
+	}
+	cs := parse(t, dataSheet(
+		[]any{"Section A"},
+		[]any{}, []any{}, // blank rows between the header and its rows
+		[]any{"Item", "11"},
+		[]any{"Section B"},
+		[]any{},
+		[]any{"item", "22"}, // same label, other section, other case
+		[]any{"section a"},  // the header repeats: Section A starts again
+		[]any{"Other", "33"},
+	), tpl, base)
+	if len(cs.Findings) != 0 {
+		t.Errorf("findings: %+v", cs.Findings)
+	}
+	wantValue(t, cs, "val", "north", mon(1), 11)
+	wantValue(t, cs, "val", "south", mon(1), 22)
+	wantValue(t, cs, "val", "svc-1", mon(1), 33)
+}
+
+func TestParseWorkbookDoesNotMutateBase(t *testing.T) {
+	base := sampleBase(t)
+	base.Data = []domain.DataPoint{
+		{MeasureKey: "epics_done", SubjectID: "north", Period: mon(1), Value: ptr(1), Revision: 3},
+		{MeasureKey: "epics_total", SubjectID: "north", Period: mon(1), Value: ptr(2), Revision: 3},
+	}
+	base.Overrides = []domain.Override{{MetricKey: "epics_on_time", SubjectID: "north", Period: mon(1), Status: "R", Reason: "manual"}}
+	snap := func() string {
+		b, err := json.Marshal([]any{base.Data, base.Overrides, base.Versions, base.Items, base.Cal})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	before := snap()
+	f, err := os.Open(sampleFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	st, _ := f.Stat()
+	wb, err := xlsx.Open(f, st.Size())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ParseWorkbook(wb, sampleTemplate(), base)
+	if after := snap(); after != before {
+		t.Errorf("ParseWorkbook changed base:\nbefore %s\nafter  %s", before, after)
+	}
 }

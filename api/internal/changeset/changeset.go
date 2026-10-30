@@ -26,6 +26,8 @@ const (
 const (
 	// StatusParsed is a change set that has been built but not yet applied.
 	StatusParsed = "parsed"
+	// StatusApplied is the status of a change set that Apply has stored.
+	StatusApplied = "applied"
 )
 
 // Finding severities.
