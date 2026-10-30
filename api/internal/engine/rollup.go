@@ -3,6 +3,7 @@ package engine
 import (
 	"math"
 	"sort"
+	"sync"
 	"time"
 
 	"opsvision/internal/domain"
@@ -52,6 +53,9 @@ type Index struct {
 	// overrides holds the winning manual override per (metric, subject,
 	// period).
 	overrides map[overrideKey]domain.Override
+	// compiled caches each metric's compiled formula per (version, metric);
+	// see compiledFor. sync.Map keeps the Index safe for concurrent use.
+	compiled sync.Map
 }
 
 type overrideKey struct {

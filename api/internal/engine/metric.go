@@ -261,20 +261,11 @@ func (ix *Index) base(v domain.MethodologyVersion, m domain.Metric, subjectID st
 	if len(slots) == 0 {
 		return c
 	}
-	defs := make(map[string]domain.Measure, len(v.Content.Measures))
-	keys := make([]string, 0, len(v.Content.Measures))
-	for _, def := range v.Content.Measures {
-		defs[def.Key] = def
-		keys = append(keys, def.Key)
-	}
-	f, err := formula.Compile(m.Formula, keys)
-	if err != nil {
+	cm := ix.compiledFor(v, m)
+	if cm.err != nil {
 		return c // an uncomputable metric is blank, never a wrong number
 	}
-	idents, err := formula.Identifiers(m.Formula)
-	if err != nil {
-		return c
-	}
+	f, defs, idents := cm.f, cm.defs, cm.idents
 
 	vars := make(map[string]float64, len(idents))
 	have := len(slots)
@@ -331,6 +322,47 @@ func (ix *Index) base(v domain.MethodologyVersion, m domain.Metric, subjectID st
 	c.Value = &res
 	c.Display = Format(m.Format, res)
 	return c
+}
+
+// compiledMetric is a metric's formula compiled against its version's
+// measures, with the pieces base needs on every call.
+type compiledMetric struct {
+	f      *formula.Formula
+	defs   map[string]domain.Measure
+	idents []string
+	err    error
+}
+
+// compiledKey identifies a compiled metric. The formula text is part of the
+// key so a metric edited under an unchanged version ID cannot reuse a stale
+// compilation.
+type compiledKey struct {
+	version string
+	metric  string
+	formula string
+}
+
+// compiledFor returns m's compiled formula under v, compiling at most once per
+// (version ID, metric key) for the life of the Index. Failures are cached too.
+// A version ID is assumed to name immutable content within one Index; the
+// stored compiledMetric is read-only.
+func (ix *Index) compiledFor(v domain.MethodologyVersion, m domain.Metric) *compiledMetric {
+	k := compiledKey{v.ID, m.Key, m.Formula}
+	if c, ok := ix.compiled.Load(k); ok {
+		return c.(*compiledMetric)
+	}
+	cm := &compiledMetric{}
+	cm.defs = make(map[string]domain.Measure, len(v.Content.Measures))
+	keys := make([]string, 0, len(v.Content.Measures))
+	for _, def := range v.Content.Measures {
+		cm.defs[def.Key] = def
+		keys = append(keys, def.Key)
+	}
+	if cm.f, cm.err = formula.Compile(m.Formula, keys); cm.err == nil {
+		cm.idents, cm.err = formula.Identifiers(m.Formula)
+	}
+	actual, _ := ix.compiled.LoadOrStore(k, cm)
+	return actual.(*compiledMetric)
 }
 
 // isBaseline reports whether a target is the reference for change rules

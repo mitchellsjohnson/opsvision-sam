@@ -222,6 +222,16 @@ func (t *Tree) Unit(id string) (domain.OrgUnit, bool) {
 	return u, true
 }
 
+// UnitIDs returns the ID of every unit, including retired ones, sorted.
+func (t *Tree) UnitIDs() []string {
+	ids := make([]string, 0, len(t.units))
+	for id := range t.units {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
 // ParentAt returns the parent of unitID at month ("" for a root). The bool is
 // false if the unit is unknown or month is not a Month-grain period. ParentAt
 // still answers for a retired unit (it returns the parent the unit had).

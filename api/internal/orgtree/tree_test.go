@@ -359,3 +359,19 @@ func TestConcurrentReads(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestUnitIDsSortedAndIncludesRetired(t *testing.T) {
+	gone := mp(t, "2026-M03")
+	tr, err := New([]domain.OrgUnit{
+		{ID: "b", Name: "B"},
+		{ID: "a", Name: "A", ParentID: "b", RetiredFrom: &gone},
+		{ID: "c", Name: "C"},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := tr.UnitIDs()
+	if len(got) != 3 || got[0] != "a" || got[1] != "b" || got[2] != "c" {
+		t.Errorf("UnitIDs = %v, want [a b c]", got)
+	}
+}
