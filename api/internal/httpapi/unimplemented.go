@@ -36,14 +36,6 @@ func (unimplemented) ParseImport(context.Context, ParseImportRequestObject) (Par
 	return nil, errNotImplemented
 }
 
-func (unimplemented) ListScorecards(context.Context, ListScorecardsRequestObject) (ListScorecardsResponseObject, error) {
-	return nil, errNotImplemented
-}
-
-func (unimplemented) CreateScorecard(context.Context, CreateScorecardRequestObject) (CreateScorecardResponseObject, error) {
-	return nil, errNotImplemented
-}
-
 func (unimplemented) BatchSaveData(context.Context, BatchSaveDataRequestObject) (BatchSaveDataResponseObject, error) {
 	return nil, errNotImplemented
 }
@@ -65,34 +57,6 @@ func (unimplemented) PutOverride(context.Context, PutOverrideRequestObject) (Put
 }
 
 func (unimplemented) PreviewData(context.Context, PreviewDataRequestObject) (PreviewDataResponseObject, error) {
-	return nil, errNotImplemented
-}
-
-func (unimplemented) ListVersions(context.Context, ListVersionsRequestObject) (ListVersionsResponseObject, error) {
-	return nil, errNotImplemented
-}
-
-func (unimplemented) CreateVersion(context.Context, CreateVersionRequestObject) (CreateVersionResponseObject, error) {
-	return nil, errNotImplemented
-}
-
-func (unimplemented) GetVersion(context.Context, GetVersionRequestObject) (GetVersionResponseObject, error) {
-	return nil, errNotImplemented
-}
-
-func (unimplemented) PutVersion(context.Context, PutVersionRequestObject) (PutVersionResponseObject, error) {
-	return nil, errNotImplemented
-}
-
-func (unimplemented) GetVersionDiff(context.Context, GetVersionDiffRequestObject) (GetVersionDiffResponseObject, error) {
-	return nil, errNotImplemented
-}
-
-func (unimplemented) PublishVersion(context.Context, PublishVersionRequestObject) (PublishVersionResponseObject, error) {
-	return nil, errNotImplemented
-}
-
-func (unimplemented) ValidateVersion(context.Context, ValidateVersionRequestObject) (ValidateVersionResponseObject, error) {
 	return nil, errNotImplemented
 }
 

@@ -524,20 +524,24 @@ paths:
     post:
       operationId: validateVersion
       tags: [Methodology]
-      summary: Validate a version's content
+      summary: Validate a version's content (admin only)
       description: |
-        200 when the content is valid. When it is not, the response is 400
-        `invalid` and `error.details` lists every problem as `{path, message}`.
+        Always 200 for an existing version. `valid` is false when the content
+        has problems, and `errors` lists every one as `{path, message}`; it is
+        empty when `valid` is true. Validation uses the tenant's status scale.
       responses:
         '200':
-          description: The content is valid
+          description: The validation result
           content:
             application/json:
               schema:
                 type: object
-                required: [valid]
+                required: [valid, errors]
                 properties:
                   valid: { type: boolean }
+                  errors:
+                    type: array
+                    items: { $ref: '#/components/schemas/ErrorDetail' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -582,8 +586,11 @@ paths:
       parameters:
         - name: against
           in: query
-          required: true
-          description: ID of the version to compare against.
+          required: false
+          description: |
+            ID of the version to compare against; it must belong to the same
+            scorecard. Defaults to the published version currently in force
+            (the one with the latest effective period).
           schema: { $ref: '#/components/schemas/ServerId' }
       responses:
         '200':

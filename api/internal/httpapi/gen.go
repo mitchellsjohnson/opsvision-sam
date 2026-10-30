@@ -1440,8 +1440,10 @@ type DeleteOverrideParams struct {
 
 // GetVersionDiffParams defines parameters for GetVersionDiff.
 type GetVersionDiffParams struct {
-	// Against ID of the version to compare against.
-	Against ServerId `form:"against" json:"against"`
+	// Against ID of the version to compare against; it must belong to the same
+	// scorecard. Defaults to the published version currently in force
+	// (the one with the latest effective period).
+	Against *ServerId `form:"against,omitempty" json:"against,omitempty"`
 }
 
 // GetScorecardViewParams defines parameters for GetScorecardView.
@@ -1647,7 +1649,7 @@ type ServerInterface interface {
 	// PublishVersion Publish a draft, effective from a period (admin only)
 	// (POST /scorecards/{sc}/versions/{v}/publish)
 	PublishVersion(w http.ResponseWriter, r *http.Request, sc ScorecardId, v VersionId)
-	// ValidateVersion Validate a version's content
+	// ValidateVersion Validate a version's content (admin only)
 	// (POST /scorecards/{sc}/versions/{v}/validate)
 	ValidateVersion(w http.ResponseWriter, r *http.Request, sc ScorecardId, v VersionId)
 	// GetScorecardView Compute the scorecard table
@@ -2587,9 +2589,9 @@ func (siw *ServerInterfaceWrapper) GetVersionDiff(w http.ResponseWriter, r *http
 	// Parameter object where we will unmarshal all parameters from the context
 	var params GetVersionDiffParams
 
-	// ------------- Required query parameter "against" -------------
+	// ------------- Optional query parameter "against" -------------
 
-	err = runtime.BindQueryParameterWithOptions("form", true, true, "against", r.URL.Query(), &params.Against, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "against", r.URL.Query(), &params.Against, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
 	if err != nil {
 		var requiredError *runtime.RequiredParameterError
 		if errors.As(err, &requiredError) {
@@ -5693,7 +5695,8 @@ type ValidateVersionResponseObject interface {
 }
 
 type ValidateVersion200JSONResponse struct {
-	Valid bool `json:"valid"`
+	Errors []ErrorDetail `json:"errors"`
+	Valid  bool          `json:"valid"`
 }
 
 func (response ValidateVersion200JSONResponse) VisitValidateVersionResponse(w http.ResponseWriter) error {
@@ -5959,7 +5962,7 @@ type StrictServerInterface interface {
 	// PublishVersion Publish a draft, effective from a period (admin only)
 	// (POST /scorecards/{sc}/versions/{v}/publish)
 	PublishVersion(ctx context.Context, request PublishVersionRequestObject) (PublishVersionResponseObject, error)
-	// ValidateVersion Validate a version's content
+	// ValidateVersion Validate a version's content (admin only)
 	// (POST /scorecards/{sc}/versions/{v}/validate)
 	ValidateVersion(ctx context.Context, request ValidateVersionRequestObject) (ValidateVersionResponseObject, error)
 	// GetScorecardView Compute the scorecard table
