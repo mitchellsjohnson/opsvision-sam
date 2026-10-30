@@ -33,6 +33,12 @@ const (
 	MaxSheets = 200
 	// MaxCellsPerSheet is the maximum number of <c> elements in one sheet.
 	MaxCellsPerSheet = 2_000_000
+	// MaxCellsPerWorkbook is the maximum number of <c> elements across all
+	// sheets of a workbook.
+	MaxCellsPerWorkbook = 3_000_000
+	// MaxXMLDepth is the maximum element nesting depth in any XML part. Real
+	// OOXML nests fewer than ~15 levels.
+	MaxXMLDepth = 64
 )
 
 // Workbook is the parsed content of an .xlsx file.
@@ -50,7 +56,7 @@ type Sheet struct {
 }
 
 // Cell is a single cell. Text is always set: shared/inline/formula strings
-// verbatim, numbers in strconv 'g' shortest form, booleans as TRUE/FALSE, and
+// verbatim, numbers in shortest plain decimal form (no exponent), booleans as TRUE/FALSE, and
 // errors (e.g. #N/A) as their text. Number is non-nil only for numeric cells.
 // Formula holds the formula text (without a leading '='), if any; Text/Number
 // are the cached result.
@@ -73,13 +79,15 @@ type limits struct {
 	maxPart, maxTotal int64
 	maxSheets         int
 	maxCells          int
+	maxWbCells        int
 }
 
 var defaultLimits = limits{
-	maxPart:   MaxPartBytes,
-	maxTotal:  MaxTotalBytes,
-	maxSheets: MaxSheets,
-	maxCells:  MaxCellsPerSheet,
+	maxPart:    MaxPartBytes,
+	maxTotal:   MaxTotalBytes,
+	maxSheets:  MaxSheets,
+	maxCells:   MaxCellsPerSheet,
+	maxWbCells: MaxCellsPerWorkbook,
 }
 
 // Open reads the workbook in r (an .xlsx zip of the given size).
@@ -127,6 +135,7 @@ func openWithLimits(r io.ReaderAt, size int64, lim limits) (*Workbook, error) {
 	}
 
 	wb := &Workbook{Sheets: make([]Sheet, 0, len(sheetRefs))}
+	wbCells := 0
 	for i, sr := range sheetRefs {
 		rel, ok := wbRels.byID[sr.rid]
 		if !ok || rel.external {
@@ -147,7 +156,7 @@ func openWithLimits(r io.ReaderAt, size int64, lim limits) (*Workbook, error) {
 			if err != nil {
 				return nil, err
 			}
-			sh.Cells, err = parseSheet(sheetPath, data, sst, lim.maxCells)
+			sh.Cells, err = parseSheet(sheetPath, data, sst, lim.maxCells, &wbCells, lim.maxWbCells)
 			if err != nil {
 				return nil, err
 			}
@@ -435,7 +444,7 @@ func parseLegacyComments(name string, data []byte) ([]refComment, error) {
 			if id, err := strconv.Atoi(a["authorId"]); err == nil && id >= 0 && id < len(authors) {
 				c.Author = authors[id]
 			}
-			out = append(out, refComment{ref: a["ref"], c: c})
+			out = append(out, refComment{ref: canonicalRef(a["ref"]), c: c})
 		}
 	}
 }
@@ -495,7 +504,7 @@ func parseThreaded(name string, data []byte, persons map[string]string) (map[str
 				break
 			}
 		}
-		ref := a["ref"]
+		ref := canonicalRef(a["ref"])
 		if _, seen := byRef[ref]; !seen {
 			refOrder = append(refOrder, ref)
 		}
@@ -628,7 +637,9 @@ func parseSharedStrings(name string, data []byte) ([]string, error) {
 	}
 }
 
-func parseSheet(name string, data []byte, sst []string, maxCells int) (map[string]Cell, error) {
+// parseSheet parses one worksheet. wbCells is the running count of <c>
+// elements across all sheets of the workbook, capped at maxWbCells.
+func parseSheet(name string, data []byte, sst []string, maxCells int, wbCells *int, maxWbCells int) (map[string]Cell, error) {
 	dec := newDecoder(data)
 	cells := map[string]Cell{}
 	rowNum, colNum, count := 0, 0, 0
@@ -650,8 +661,8 @@ func parseSheet(name string, data []byte, sst []string, maxCells int) (map[strin
 			colNum = 0
 			for _, a := range se.Attr {
 				if a.Name.Local == "r" {
-					n, err := strconv.Atoi(a.Value)
-					if err != nil || n < 1 || n > maxRow {
+					n, ok := parseIndex(a.Value, maxRow)
+					if !ok {
 						return nil, fmt.Errorf("xlsx: %s: invalid row number %q", name, a.Value)
 					}
 					rowNum = n
@@ -661,6 +672,10 @@ func parseSheet(name string, data []byte, sst []string, maxCells int) (map[strin
 			count++
 			if count > maxCells {
 				return nil, fmt.Errorf("xlsx: %s has more than MaxCellsPerSheet (%d) cells", name, maxCells)
+			}
+			*wbCells++
+			if *wbCells > maxWbCells {
+				return nil, fmt.Errorf("xlsx: %s: workbook has more than MaxCellsPerWorkbook (%d) cells", name, maxWbCells)
 			}
 			var ref, typ string
 			for _, a := range se.Attr {
@@ -685,8 +700,9 @@ func parseSheet(name string, data []byte, sst []string, maxCells int) (map[strin
 				if colNum > maxCol {
 					return nil, fmt.Errorf("xlsx: %s: too many cells in a row", name)
 				}
-				ref = colName(colNum) + strconv.Itoa(rowNum)
 			}
+			// Canonical key: upper-case letters, no padding, built from (col,row).
+			ref = colName(colNum) + strconv.Itoa(rowNum)
 			cell, has, err := parseCell(dec, ref, typ, sst)
 			if err != nil {
 				return nil, parseErr(name, err)
@@ -766,7 +782,7 @@ done:
 			f, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
 			if err == nil && !math.IsNaN(f) && !math.IsInf(f, 0) {
 				c.Number = &f
-				c.Text = strconv.FormatFloat(f, 'g', -1, 64)
+				c.Text = strconv.FormatFloat(f, 'f', -1, 64)
 			} else {
 				c.Text = v
 			}
@@ -871,11 +887,39 @@ func splitRef(ref string) (col, row int, ok bool) {
 	if i == 0 || i == len(ref) {
 		return 0, 0, false
 	}
-	n, err := strconv.Atoi(ref[i:])
-	if err != nil || n < 1 || n > maxRow {
+	n, ok := parseIndex(ref[i:], maxRow)
+	if !ok {
 		return 0, 0, false
 	}
 	return col, n, true
+}
+
+// parseIndex parses a canonical positive decimal in [1, max]: ASCII digits
+// only, no sign, no leading zero.
+func parseIndex(s string, max int) (int, bool) {
+	if s == "" || s[0] == '0' || len(s) > 9 {
+		return 0, false
+	}
+	n := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return 0, false
+		}
+		n = n*10 + int(s[i]-'0')
+	}
+	if n < 1 || n > max {
+		return 0, false
+	}
+	return n, true
+}
+
+// canonicalRef returns ref upper-cased and normalised when it is a valid cell
+// reference, otherwise ref unchanged.
+func canonicalRef(ref string) string {
+	if col, row, ok := splitRef(ref); ok {
+		return colName(col) + strconv.Itoa(row)
+	}
+	return ref
 }
 
 // colName converts a 1-based column number to letters (1 -> A, 27 -> AA).
@@ -921,12 +965,58 @@ type (
 	startElement = xml.StartElement
 	endElement   = xml.EndElement
 	charData     = xml.CharData
-	decoder      = *xml.Decoder
+	decoder      = *depthDecoder
 )
+
+// depthDecoder wraps xml.Decoder and fails once element nesting exceeds
+// MaxXMLDepth, so a tiny but deeply nested part cannot exhaust memory.
+type depthDecoder struct {
+	d     *xml.Decoder
+	depth int
+}
 
 // newDecoder returns a strict streaming decoder over data. encoding/xml does
 // not expand custom entities or fetch external resources, so it is safe for
 // untrusted input; non-UTF-8 charsets are rejected (no CharsetReader).
 func newDecoder(data []byte) decoder {
-	return xml.NewDecoder(bytes.NewReader(data))
+	return &depthDecoder{d: xml.NewDecoder(bytes.NewReader(data))}
+}
+
+// Token returns the next token, tracking element depth.
+func (d *depthDecoder) Token() (xml.Token, error) {
+	tok, err := d.d.Token()
+	if err != nil {
+		return tok, err
+	}
+	switch tok.(type) {
+	case xml.StartElement:
+		d.depth++
+		if d.depth > MaxXMLDepth {
+			return nil, fmt.Errorf("XML nesting exceeds MaxXMLDepth (%d)", MaxXMLDepth)
+		}
+	case xml.EndElement:
+		d.depth--
+	}
+	return tok, nil
+}
+
+// Skip consumes tokens through the end of the element whose start tag was
+// just returned by Token.
+func (d *depthDecoder) Skip() error {
+	n := 0
+	for {
+		tok, err := d.Token()
+		if err != nil {
+			return err
+		}
+		switch tok.(type) {
+		case xml.StartElement:
+			n++
+		case xml.EndElement:
+			if n == 0 {
+				return nil
+			}
+			n--
+		}
+	}
 }

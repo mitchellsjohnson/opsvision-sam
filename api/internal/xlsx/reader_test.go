@@ -488,7 +488,9 @@ func TestRejectsTooManySheets(t *testing.T) {
 
 func TestRejectsTooManyCells(t *testing.T) {
 	b := minimal(t, `<row r="1"><c r="A1"><v>1</v></c><c r="B1"><v>2</v></c><c r="C1"><v>3</v></c></row>`)
-	_, err := openWithLimits(bytes.NewReader(b), int64(len(b)), limits{maxPart: MaxPartBytes, maxTotal: MaxTotalBytes, maxSheets: MaxSheets, maxCells: 2})
+	lim := defaultLimits
+	lim.maxCells = 2
+	_, err := openWithLimits(bytes.NewReader(b), int64(len(b)), lim)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -497,7 +499,9 @@ func TestRejectsTooManyCells(t *testing.T) {
 
 func TestRejectsTotalBytesOverLimit(t *testing.T) {
 	b := minimal(t, `<row r="1"><c r="A1"><v>1</v></c></row>`)
-	_, err := openWithLimits(bytes.NewReader(b), int64(len(b)), limits{maxPart: MaxPartBytes, maxTotal: 200, maxSheets: MaxSheets, maxCells: MaxCellsPerSheet})
+	lim := defaultLimits
+	lim.maxTotal = 200
+	_, err := openWithLimits(bytes.NewReader(b), int64(len(b)), lim)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -505,8 +509,150 @@ func TestRejectsTotalBytesOverLimit(t *testing.T) {
 }
 
 func TestLimitConstants(t *testing.T) {
-	if MaxPartBytes != 20<<20 || MaxTotalBytes != 200<<20 || MaxSheets != 200 || MaxCellsPerSheet != 2_000_000 {
+	if MaxPartBytes != 20<<20 || MaxTotalBytes != 200<<20 || MaxSheets != 200 || MaxCellsPerSheet != 2_000_000 ||
+		MaxCellsPerWorkbook != 3_000_000 || MaxXMLDepth != 64 {
 		t.Fatal("limit constants changed")
+	}
+}
+
+func TestNumberTextIsPlainDecimal(t *testing.T) {
+	data := `<row r="1"><c r="A1"><v>1234567</v></c><c r="B1"><v>0.9989</v></c>` +
+		`<c r="C1"><v>1E+21</v></c><c r="D1"><v>1.5e-5</v></c><c r="E1"><v>-42.25</v></c></row>`
+	s := mustOpen(t, minimal(t, data)).Sheets[0]
+	want := map[string]string{
+		"A1": "1234567", "B1": "0.9989", "C1": "1000000000000000000000", "D1": "0.000015", "E1": "-42.25",
+	}
+	for ref, text := range want {
+		if c := cell(t, s, ref); c.Text != text || c.Number == nil {
+			t.Errorf("%s = %+v, want text %q", ref, c, text)
+		}
+	}
+}
+
+func TestRejectsDeeplyNestedXML(t *testing.T) {
+	deep := strings.Repeat("<a>", MaxXMLDepth+10) + strings.Repeat("</a>", MaxXMLDepth+10)
+	t.Run("in sheet data", func(t *testing.T) {
+		err := openErr(t, minimal(t, deep))
+		mustContain(t, err, "xl/worksheets/sheet1.xml", "MaxXMLDepth")
+	})
+	t.Run("inside skipped cell child", func(t *testing.T) {
+		err := openErr(t, minimal(t, `<row r="1"><c r="A1"><x>`+deep+`</x></c></row>`))
+		mustContain(t, err, "xl/worksheets/sheet1.xml", "MaxXMLDepth")
+	})
+	t.Run("in shared strings", func(t *testing.T) {
+		rels := xmlHdr + `<Relationships xmlns="` + nsPkg + `">` +
+			`<Relationship Id="rId1" Type="` + nsRel + `/worksheet" Target="worksheets/sheet1.xml"/>` +
+			`<Relationship Id="rId2" Type="` + nsRel + `/sharedStrings" Target="sharedStrings.xml"/></Relationships>`
+		parts := workbookParts("worksheets/sheet1.xml")
+		parts[1].body = rels
+		parts = append(parts, part{"xl/worksheets/sheet1.xml", sheetXML("")},
+			part{"xl/sharedStrings.xml", xmlHdr + `<sst xmlns="` + nsMain + `"><si>` + deep + `</si></sst>`})
+		err := openErr(t, zipParts(t, parts...))
+		mustContain(t, err, "xl/sharedStrings.xml", "MaxXMLDepth")
+	})
+	t.Run("at the limit is fine", func(t *testing.T) {
+		// worksheet > sheetData occupy two levels.
+		n := MaxXMLDepth - 2
+		ok := strings.Repeat("<a>", n) + strings.Repeat("</a>", n)
+		mustOpen(t, minimal(t, ok))
+	})
+}
+
+func TestRejectsTooManyCellsPerWorkbook(t *testing.T) {
+	b := xlsxtest.Build(t, []xlsxtest.Sheet{
+		{Name: "A", Rows: [][]any{{1, 2}}},
+		{Name: "B", Rows: [][]any{{3, 4}}},
+	})
+	lim := defaultLimits
+	lim.maxWbCells = 3 // each sheet (2 cells) is under maxCells; the workbook (4) is over.
+	_, err := openWithLimits(bytes.NewReader(b), int64(len(b)), lim)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	mustContain(t, err, "MaxCellsPerWorkbook")
+
+	lim.maxWbCells = 4
+	if _, err := openWithLimits(bytes.NewReader(b), int64(len(b)), lim); err != nil {
+		t.Fatalf("at the limit should pass: %v", err)
+	}
+}
+
+func TestCellRefsAreCanonicalised(t *testing.T) {
+	data := `<row r="5"><c r="a5"><v>1</v></c><c r="aB5"><v>2</v></c><c r="XFD5"><v>3</v></c></row>` +
+		`<row r="6"><c><v>4</v></c></row>`
+	s := mustOpen(t, minimal(t, data)).Sheets[0]
+	for ref, text := range map[string]string{"A5": "1", "AB5": "2", "XFD5": "3", "A6": "4"} {
+		if c := cell(t, s, ref); c.Text != text || c.Ref != ref {
+			t.Errorf("%s = %+v", ref, c)
+		}
+	}
+	if _, ok := s.Cells["a5"]; ok || len(s.Cells) != 4 {
+		t.Errorf("non-canonical keys present: %v", s.Cells)
+	}
+}
+
+func TestCommentRefsAreCanonicalised(t *testing.T) {
+	cm := xmlHdr + `<comments xmlns="` + nsMain + `"><authors><author>Dana</author></authors><commentList>` +
+		`<comment ref="b2" authorId="0"><text><t>hi</t></text></comment></commentList></comments>`
+	rels := xmlHdr + `<Relationships xmlns="` + nsPkg + `"><Relationship Id="rId1" Type="` + nsRel +
+		`/comments" Target="../comments1.xml"/></Relationships>`
+	b := minimal(t, "", part{"xl/worksheets/_rels/sheet1.xml.rels", rels}, part{"xl/comments1.xml", cm})
+	got := mustOpen(t, b).Sheets[0].Comments
+	if len(got["B2"]) != 1 || len(got) != 1 {
+		t.Errorf("comments = %+v", got)
+	}
+}
+
+func TestRejectsInvalidCellRefs(t *testing.T) {
+	refs := []string{
+		"A+5", "A05", "A0", "+A5", "A-5", "5A", "A", "5", "A5 ", "A 5", "XFE1", "ZZZZZZZZZZZZZZZZ1",
+		"A1048577", "A99999999999999999999", "A1.5", "$A$1",
+	}
+	for _, ref := range refs {
+		t.Run(ref, func(t *testing.T) {
+			err := openErr(t, minimal(t, `<row r="1"><c r="`+ref+`"><v>1</v></c></row>`))
+			mustContain(t, err, "xl/worksheets/sheet1.xml", "invalid cell reference")
+		})
+	}
+	for _, r := range []string{"+5", "05", "0", "-1", "1048577", "x", "99999999999999999999"} {
+		t.Run("row "+r, func(t *testing.T) {
+			err := openErr(t, minimal(t, `<row r="`+r+`"><c><v>1</v></c></row>`))
+			mustContain(t, err, "xl/worksheets/sheet1.xml", "invalid row number")
+		})
+	}
+}
+
+func TestRejectsOutOfRangeSharedStringIndex(t *testing.T) {
+	for _, idx := range []string{"0", "5", "-1", "x", ""} {
+		t.Run("idx "+idx, func(t *testing.T) {
+			// No sharedStrings part at all, so every index is out of range.
+			err := openErr(t, minimal(t, `<row r="1"><c r="A1" t="s"><v>`+idx+`</v></c></row>`))
+			mustContain(t, err, "xl/worksheets/sheet1.xml", "shared string index")
+		})
+	}
+}
+
+func TestThreadedCommentZonelessAndBadTimestamps(t *testing.T) {
+	tc := xmlHdr + `<ThreadedComments xmlns="http://schemas.microsoft.com/office/spreadsheetml/2018/threadedcomments">` +
+		`<threadedComment ref="A1" dT="2026-01-05T14:30:00.00" personId="p1" id="a"><text>zoneless</text></threadedComment>` +
+		`<threadedComment ref="A1" dT="2026-01-05T14:30:00+02:00" personId="p1" id="b"><text>zoned</text></threadedComment>` +
+		`<threadedComment ref="A1" dT="not a time" personId="p1" id="c"><text>bad</text></threadedComment>` +
+		`</ThreadedComments>`
+	rels := xmlHdr + `<Relationships xmlns="` + nsPkg + `"><Relationship Id="rId1" ` +
+		`Type="http://schemas.microsoft.com/office/2017/10/relationships/threadedComment" Target="../threadedComments/t1.xml"/></Relationships>`
+	b := minimal(t, "", part{"xl/worksheets/_rels/sheet1.xml.rels", rels}, part{"xl/threadedComments/t1.xml", tc})
+	got := mustOpen(t, b).Sheets[0].Comments["A1"]
+	if len(got) != 3 {
+		t.Fatalf("comments = %+v", got)
+	}
+	if want := time.Date(2026, 1, 5, 14, 30, 0, 0, time.UTC); got[0].At == nil || !got[0].At.Equal(want) {
+		t.Errorf("zoneless At = %v, want %v UTC", got[0].At, want)
+	}
+	if want := time.Date(2026, 1, 5, 12, 30, 0, 0, time.UTC); got[1].At == nil || !got[1].At.Equal(want) {
+		t.Errorf("zoned At = %v, want %v", got[1].At, want)
+	}
+	if got[2].At != nil {
+		t.Errorf("bad dT should give nil At, got %v", got[2].At)
 	}
 }
 
