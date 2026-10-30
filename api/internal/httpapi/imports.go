@@ -1,0 +1,653 @@
+package httpapi
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"slices"
+	"strings"
+
+	"opsvision/internal/changeset"
+	"opsvision/internal/domain"
+	"opsvision/internal/legacy"
+	"opsvision/internal/objects"
+	"opsvision/internal/period"
+	"opsvision/internal/store"
+	"opsvision/internal/xlsx"
+)
+
+// Import statuses (store.Import.Status).
+const (
+	importUploaded = "uploaded"
+	importParsed   = "parsed"
+	importApplied  = "applied"
+)
+
+// Import profiles.
+const (
+	profileLegacyWorkbook = "legacy_workbook"
+	profileCSV            = "csv"
+)
+
+const (
+	csvUnavailable = "csv import is not available yet"
+	// previewSampleSize is the most changes a preview shows.
+	previewSampleSize = 50
+)
+
+// uploadKey is the object key of an import's uploaded workbook.
+func uploadKey(tenantID, importID string) string {
+	return "t/" + tenantID + "/imports/" + importID + ".xlsx"
+}
+
+// changeSetKey is the object key of an import's parsed change set.
+func changeSetKey(tenantID, importID string) string {
+	return "t/" + tenantID + "/imports/" + importID + ".changeset.json"
+}
+
+// storedChangeSet is the document saved at changeSetKey: the change set and
+// the scorecard it was parsed for, so apply writes where parse looked even if
+// the template changed in between. A change set is too large for the import's
+// database item (the item limit is 400 KB), so it lives in the object store.
+type storedChangeSet struct {
+	ScorecardID string              `json:"scorecardId"`
+	ChangeSet   changeset.ChangeSet `json:"changeSet"`
+}
+
+// objectStore returns the configured object store.
+func (s *Server) objectStore() (objects.Store, error) {
+	if s.objects == nil {
+		return nil, errors.New("httpapi: Deps.Objects is not configured")
+	}
+	return s.objects, nil
+}
+
+// loadImport reads an import of the caller's tenant. An ID that does not exist
+// there, including one that belongs to another tenant, is a 404.
+func (s *Server) loadImport(ctx context.Context, tenantID, id string) (store.Import, error) {
+	if !validID(id) {
+		return store.Import{}, notFound("import not found")
+	}
+	im, err := s.store.GetImport(ctx, tenantID, id)
+	if errors.Is(err, store.ErrNotFound) {
+		return store.Import{}, notFound("import not found")
+	}
+	return im, err
+}
+
+// ---- upload ---------------------------------------------------------------------
+
+// CreateImportUpload starts an import and returns a URL to upload the
+// workbook to. Admins only.
+func (s *Server) CreateImportUpload(ctx context.Context, req CreateImportUploadRequestObject) (CreateImportUploadResponseObject, error) {
+	p, err := tenantAdmin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	objs, err := s.objectStore()
+	if err != nil {
+		return nil, err
+	}
+	if req.Body != nil && req.Body.ContentType != nil && *req.Body.ContentType != objects.ContentTypeXLSX {
+		return nil, badRequest("only .xlsx workbooks can be imported", detail{Path: "contentType", Message: "must be " + objects.ContentTypeXLSX})
+	}
+	tenantID := p.Tenant.ID
+	id := s.newID()
+	key := uploadKey(tenantID, id)
+	url, err := objs.PresignPut(ctx, key, objects.ContentTypeXLSX, objects.MaxUploadBytes, objects.UploadTTL)
+	if err != nil {
+		return nil, err
+	}
+	im := store.Import{ID: id, Status: importUploaded, ObjectKey: key, CreatedBy: p.UserID, CreatedAt: s.now()}
+	if err := s.store.PutImport(ctx, tenantID, im); err != nil {
+		return nil, err
+	}
+	if err := s.audit(ctx, p, tenantID, "import.create", "import", id, nil, im); err != nil {
+		return nil, err
+	}
+	return CreateImportUpload201JSONResponse{ImportId: id, UploadUrl: url}, nil
+}
+
+// ---- parse ----------------------------------------------------------------------
+
+// ParseImport parses the uploaded workbook with a saved template into a change
+// set and returns its preview. Nothing is applied. An import that is parsed
+// may be parsed again, with the same or another template. Admins only.
+func (s *Server) ParseImport(ctx context.Context, req ParseImportRequestObject) (ParseImportResponseObject, error) {
+	p, err := tenantAdmin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	objs, err := s.objectStore()
+	if err != nil {
+		return nil, err
+	}
+	tenantID := p.Tenant.ID
+	im, err := s.loadImport(ctx, tenantID, req.Id)
+	if err != nil {
+		return nil, err
+	}
+	if req.Body == nil {
+		return nil, badRequest("request body is required")
+	}
+	b := *req.Body
+
+	switch string(b.Profile) {
+	case profileLegacyWorkbook:
+	case profileCSV:
+		return nil, badRequest(csvUnavailable)
+	default:
+		return nil, badRequest("request validation failed", detail{Path: "profile", Message: "must be legacy_workbook"})
+	}
+	if b.TemplateId == nil || !validID(*b.TemplateId) {
+		return nil, badRequest("request validation failed", detail{Path: "templateId", Message: "a stored template is required: " + idRule})
+	}
+	templateID := *b.TemplateId
+	tpls, err := s.store.ListTemplates(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	var tpl *store.Template
+	for i := range tpls {
+		if tpls[i].ID == templateID {
+			tpl = &tpls[i]
+		}
+	}
+	if tpl == nil {
+		return nil, badRequest("request validation failed", detail{Path: "templateId", Message: fmt.Sprintf("template %q does not exist", templateID)})
+	}
+	if tpl.Profile != profileLegacyWorkbook {
+		return nil, badRequest("request validation failed", detail{Path: "templateId", Message: fmt.Sprintf("template %q is not a legacy_workbook template", templateID)})
+	}
+	if im.Status != importUploaded && im.Status != importParsed {
+		return nil, conflict(fmt.Sprintf("import is %s; only an uploaded or parsed import can be parsed", im.Status))
+	}
+	tb, problemList := decodeTemplateBody(tpl.Body)
+	if len(problemList) > 0 {
+		return nil, badRequest("template is not valid", problemList...)
+	}
+
+	scorecardID, err := s.importScorecard(ctx, tenantID, tb.ScorecardID)
+	if err != nil {
+		return nil, err
+	}
+
+	wb, err := readWorkbook(ctx, objs, im.ObjectKey)
+	if err != nil {
+		return nil, err
+	}
+
+	years := templateYears(tb.Template)
+	base, err := s.loadInput(ctx, *p.Tenant, scorecardID, years)
+	if err != nil {
+		return nil, err
+	}
+	cs := legacy.ParseWorkbook(wb, tb.Template, base)
+	cs.ID = im.ID
+	cs.CreatedBy = p.UserID
+	cs.CreatedAt = s.now()
+
+	raw, err := json.Marshal(storedChangeSet{ScorecardID: scorecardID, ChangeSet: cs})
+	if err != nil {
+		return nil, err
+	}
+	if err := objs.Put(ctx, changeSetKey(tenantID, im.ID), "application/json", raw); err != nil {
+		return nil, err
+	}
+	im.Status = importParsed
+	im.Profile = profileLegacyWorkbook
+	im.TemplateID = templateID
+	im.ChangeSet = nil
+	if err := s.store.PutImport(ctx, tenantID, im); err != nil {
+		return nil, err
+	}
+
+	pv := previewOf(cs, countsOf(cs), cs.Findings)
+	if err := s.audit(ctx, p, tenantID, "import.parse", "import", im.ID, nil, map[string]any{
+		"profile": profileLegacyWorkbook, "templateId": templateID, "scorecardId": scorecardID,
+		"counts": pv.Counts, "findings": len(pv.Findings),
+	}); err != nil {
+		return nil, err
+	}
+	return ParseImport200JSONResponse(pv), nil
+}
+
+// importScorecard picks the scorecard an import writes to: the one the
+// template names, else the tenant's only one.
+func (s *Server) importScorecard(ctx context.Context, tenantID, named string) (string, error) {
+	if named != "" {
+		if _, err := s.store.GetScorecard(ctx, tenantID, named); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return "", badRequest("request validation failed", detail{Path: "body.scorecardId", Message: fmt.Sprintf("scorecard %q does not exist", named)})
+			}
+			return "", err
+		}
+		return named, nil
+	}
+	scs, err := s.store.ListScorecards(ctx, tenantID)
+	if err != nil {
+		return "", err
+	}
+	switch len(scs) {
+	case 1:
+		return scs[0].ID, nil
+	case 0:
+		return "", badRequest("the tenant has no scorecard to import into")
+	default:
+		return "", badRequest("the tenant has several scorecards; set scorecardId in the template body")
+	}
+}
+
+// readWorkbook loads and opens an uploaded workbook. The size limit is checked
+// twice: against the size the store reports, and while reading, because a
+// store may report no size at all.
+func readWorkbook(ctx context.Context, objs objects.Store, key string) (*xlsx.Workbook, error) {
+	tooLarge := badRequest(fmt.Sprintf("the file is larger than %d MiB", objects.MaxUploadBytes>>20))
+	rc, size, err := objs.Get(ctx, key)
+	if errors.Is(err, objects.ErrNotFound) {
+		return nil, notFound("no file has been uploaded for this import")
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rc.Close()
+	if size > objects.MaxUploadBytes {
+		return nil, tooLarge
+	}
+	data, err := io.ReadAll(io.LimitReader(rc, objects.MaxUploadBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > objects.MaxUploadBytes {
+		return nil, tooLarge
+	}
+	wb, err := xlsx.Open(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return nil, badRequest(err.Error())
+	}
+	return wb, nil
+}
+
+// templateYears lists the fiscal years of data a parse compares against: those
+// the template's sheets name, and the year before each.
+func templateYears(t legacy.Template) []int {
+	var ps []period.Period
+	for _, sm := range t.Sheets {
+		ps = append(ps, period.Period{FY: sm.FiscalYear})
+		for _, text := range sm.PeriodColumns {
+			if per, err := period.Parse(text); err == nil {
+				ps = append(ps, per)
+			}
+		}
+	}
+	return fiscalYears(true, ps...)
+}
+
+// ---- apply ----------------------------------------------------------------------
+
+// ApplyImport applies a parsed change set. An import can be applied once.
+// Admins only.
+func (s *Server) ApplyImport(ctx context.Context, req ApplyImportRequestObject) (ApplyImportResponseObject, error) {
+	p, err := tenantAdmin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	objs, err := s.objectStore()
+	if err != nil {
+		return nil, err
+	}
+	tenantID := p.Tenant.ID
+	im, err := s.loadImport(ctx, tenantID, req.Id)
+	if err != nil {
+		return nil, err
+	}
+	if im.Status != importParsed {
+		return nil, conflict(fmt.Sprintf("import is %s; only a parsed import can be applied", im.Status))
+	}
+
+	rc, _, err := objs.Get(ctx, changeSetKey(tenantID, im.ID))
+	if errors.Is(err, objects.ErrNotFound) {
+		return nil, conflict("the parsed change set is missing; parse the import again")
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rc.Close()
+	var stored storedChangeSet
+	if err := json.NewDecoder(io.LimitReader(rc, objects.MaxUploadBytes*4)).Decode(&stored); err != nil {
+		return nil, fmt.Errorf("httpapi: decode change set of import %s: %w", im.ID, err)
+	}
+	cs := stored.ChangeSet
+	if cs.ID != im.ID || stored.ScorecardID == "" {
+		return nil, fmt.Errorf("httpapi: change set stored for import %s is for %q", im.ID, cs.ID)
+	}
+
+	var problemList []detail
+	for _, f := range cs.Findings {
+		if f.Severity == changeset.SeverityError {
+			problemList = append(problemList, detail{Path: findingPath(f), Message: f.Message})
+		}
+	}
+	if len(problemList) > 0 {
+		return nil, badRequest("the change set has error findings and cannot be applied", problemList...)
+	}
+	if problemList, err = s.checkDraftVersions(ctx, tenantID, stored.ScorecardID, cs); err != nil {
+		return nil, err
+	}
+	if len(problemList) > 0 {
+		return nil, badRequest("the change set no longer fits the methodology; parse the import again", problemList...)
+	}
+
+	res, err := changeset.Apply(ctx, s.store, tenantID, stored.ScorecardID, cs, p.UserID)
+	if err != nil {
+		return nil, fmt.Errorf("httpapi: apply import %s: %w", im.ID, err)
+	}
+	im.Status = importApplied
+	if err := s.store.PutImport(ctx, tenantID, im); err != nil {
+		return nil, err
+	}
+	// changeset.Apply records the import.apply audit entry itself.
+
+	counts := ImportCounts{DataPoints: res.DataPoints, Overrides: res.Overrides, VersionText: res.VersionText, LegacyNotes: len(cs.Notes)}
+	findings := append(slices.Clone(cs.Findings), res.Findings...)
+	pv := previewOf(cs, counts, findings)
+	pv.Status = ChangeSetPreviewStatus(res.Status)
+	return ApplyImport200JSONResponse(pv), nil
+}
+
+// checkDraftVersions reports every methodology version a change set writes
+// text to that is gone or no longer a draft. Parsing saw the version as a
+// draft; it may have been published since.
+func (s *Server) checkDraftVersions(ctx context.Context, tenantID, scorecardID string, cs changeset.ChangeSet) ([]detail, error) {
+	var out []detail
+	seen := map[string]bool{}
+	for _, c := range cs.VersionText {
+		if seen[c.VersionID] {
+			continue
+		}
+		seen[c.VersionID] = true
+		v, err := s.store.GetVersion(ctx, tenantID, scorecardID, c.VersionID)
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			out = append(out, detail{Path: "versionText", Message: fmt.Sprintf("version %q no longer exists", c.VersionID)})
+		case err != nil:
+			return nil, err
+		case v.Status != domain.VersionDraft:
+			out = append(out, detail{Path: "versionText", Message: fmt.Sprintf("version %q is %s; legacy text can only be applied to a draft version", c.VersionID, v.Status)})
+		}
+	}
+	return out, nil
+}
+
+func findingPath(f changeset.Finding) string {
+	switch {
+	case f.Sheet != "" && f.Cell != "":
+		return f.Sheet + "!" + f.Cell
+	default:
+		return f.Sheet
+	}
+}
+
+// ---- preview --------------------------------------------------------------------
+
+func countsOf(cs changeset.ChangeSet) ImportCounts {
+	return ImportCounts{DataPoints: len(cs.Data), Overrides: len(cs.Overrides), VersionText: len(cs.VersionText), LegacyNotes: len(cs.Notes)}
+}
+
+// previewOf builds the API view of a change set. The sample takes changes
+// round-robin from data points, overrides and version text so a reviewer sees
+// every kind present, up to previewSampleSize in all.
+func previewOf(cs changeset.ChangeSet, counts ImportCounts, findings []changeset.Finding) ChangeSetPreview {
+	pv := ChangeSetPreview{
+		Id:       cs.ID,
+		Status:   ChangeSetPreviewStatus(cs.Status),
+		Counts:   counts,
+		Findings: make([]ImportFinding, 0, len(findings)),
+		Sample:   []ImportChange{},
+	}
+	for _, f := range findings {
+		pv.Findings = append(pv.Findings, ImportFinding{Severity: ImportFindingSeverity(f.Severity), Sheet: f.Sheet, Cell: f.Cell, Message: f.Message})
+	}
+
+	str := func(s string) *string {
+		if s == "" {
+			return nil
+		}
+		return &s
+	}
+	var lists [3][]ImportChange
+	for _, w := range cs.Data {
+		dp := w.Point
+		per, key, subj := dp.Period.String(), dp.MeasureKey, dp.SubjectID
+		lists[0] = append(lists[0], ImportChange{Kind: ImportChangeKindDataPoint, MeasureKey: &key, SubjectId: &subj, Period: &per, Value: dp.Value, NaReason: str(dp.NAReason)})
+	}
+	for _, o := range cs.Overrides {
+		per, key, subj := o.Period.String(), o.MetricKey, o.SubjectID
+		lists[1] = append(lists[1], ImportChange{Kind: ImportChangeKindOverride, MetricKey: &key, SubjectId: &subj, Period: &per, Value: o.Value, Status: str(o.Status)})
+	}
+	for _, v := range cs.VersionText {
+		key, field, text := v.MetricKey, v.Field, v.Value
+		lists[2] = append(lists[2], ImportChange{Kind: ImportChangeKindVersionText, MetricKey: &key, Field: &field, Text: &text})
+	}
+	for i := 0; len(pv.Sample) < previewSampleSize; i++ {
+		added := false
+		for k := range lists {
+			if i < len(lists[k]) && len(pv.Sample) < previewSampleSize {
+				pv.Sample = append(pv.Sample, lists[k][i])
+				added = true
+			}
+		}
+		if !added {
+			break
+		}
+	}
+	return pv
+}
+
+// ---- templates -------------------------------------------------------------------
+
+// templateBody is the stored document of a legacy_workbook template: the
+// legacy mapping plus the scorecard to import into.
+type templateBody struct {
+	legacy.Template
+	// ScorecardID names the scorecard the import writes to. Without it the
+	// tenant's only scorecard is used.
+	ScorecardID string `json:"scorecardId,omitempty"`
+}
+
+// decodeTemplateBody decodes a template body strictly (unknown fields and
+// trailing data are errors) and validates the mapping. The returned details
+// are empty when the template is usable.
+func decodeTemplateBody(raw []byte) (templateBody, []detail) {
+	var tb templateBody
+	if len(raw) > legacy.MaxTemplateBytes {
+		return tb, []detail{{Path: "body", Message: fmt.Sprintf("is larger than %d bytes", legacy.MaxTemplateBytes)}}
+	}
+	if len(bytes.TrimSpace(raw)) == 0 {
+		raw = []byte("{}")
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&tb); err != nil {
+		return templateBody{}, []detail{{Path: "body", Message: "is not a valid template: " + err.Error()}}
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return templateBody{}, []detail{{Path: "body", Message: "has data after the JSON document"}}
+	}
+	var out []detail
+	if tb.ScorecardID != "" && !validID(tb.ScorecardID) {
+		out = append(out, detail{Path: "body.scorecardId", Message: idRule})
+	}
+	for _, f := range tb.Template.Validate() {
+		out = append(out, detail{Path: "body", Message: strings.TrimPrefix(f.Message, "template: ")})
+	}
+	return tb, out
+}
+
+// validateTemplate checks one template of a request; path prefixes the
+// problem paths (for example "templates[2]").
+func validateTemplate(pr *problems, path string, t ImportTemplate) (store.Template, bool) {
+	before := len(pr.list)
+	if path != "" {
+		path += "."
+	}
+	pr.id(path+"id", t.Id)
+	pr.nonEmpty(path+"name", t.Name)
+	switch string(t.Profile) {
+	case profileLegacyWorkbook:
+	case profileCSV:
+		pr.add(path+"profile", "%s", csvUnavailable)
+	default:
+		pr.add(path+"profile", "must be legacy_workbook")
+	}
+	raw, err := json.Marshal(t.Body)
+	if err != nil {
+		pr.add(path+"body", "is not valid JSON")
+	} else if string(t.Profile) == profileLegacyWorkbook {
+		if _, ds := decodeTemplateBody(raw); len(ds) > 0 {
+			for _, d := range ds {
+				pr.add(path+d.Path, "%s", d.Message)
+			}
+		}
+	}
+	if len(pr.list) > before {
+		return store.Template{}, false
+	}
+	return store.Template{ID: t.Id, Name: strings.TrimSpace(t.Name), Profile: string(t.Profile), Body: raw}, true
+}
+
+func apiTemplate(t store.Template) ImportTemplate {
+	body := map[string]interface{}{}
+	if len(t.Body) > 0 {
+		_ = json.Unmarshal(t.Body, &body)
+	}
+	if body == nil {
+		body = map[string]interface{}{}
+	}
+	return ImportTemplate{Id: t.ID, Name: t.Name, Profile: ImportTemplateProfile(t.Profile), Body: body}
+}
+
+func apiTemplates(ts []store.Template) []ImportTemplate {
+	out := make([]ImportTemplate, len(ts))
+	for i, t := range ts {
+		out[i] = apiTemplate(t)
+	}
+	return out
+}
+
+// ListImportTemplates lists the tenant's import templates. Admins only.
+func (s *Server) ListImportTemplates(ctx context.Context, _ ListImportTemplatesRequestObject) (ListImportTemplatesResponseObject, error) {
+	p, err := tenantAdmin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	ts, err := s.store.ListTemplates(ctx, p.Tenant.ID)
+	if err != nil {
+		return nil, err
+	}
+	return ListImportTemplates200JSONResponse{Templates: apiTemplates(ts)}, nil
+}
+
+// PutImportTemplate creates or replaces one template. Admins only.
+func (s *Server) PutImportTemplate(ctx context.Context, req PutImportTemplateRequestObject) (PutImportTemplateResponseObject, error) {
+	p, err := tenantAdmin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if req.Body == nil {
+		return nil, badRequest("request body is required")
+	}
+	b := *req.Body
+	tenantID := p.Tenant.ID
+
+	var pr problems
+	pr.id("id", req.Id)
+	if b.Id != req.Id {
+		pr.add("id", "must equal the id in the path (%q)", req.Id)
+	}
+	t, _ := validateTemplate(&pr, "", b)
+	if err := pr.err(); err != nil {
+		return nil, err
+	}
+
+	existing, err := s.store.ListTemplates(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	var before any
+	for _, e := range existing {
+		if e.ID == t.ID {
+			before = apiTemplate(e)
+		}
+	}
+	if err := s.store.PutTemplate(ctx, tenantID, t); err != nil {
+		return nil, err
+	}
+	after := apiTemplate(t)
+	if err := s.audit(ctx, p, tenantID, "import_template.put", "import_template", t.ID, before, after); err != nil {
+		return nil, err
+	}
+	return PutImportTemplate200JSONResponse(after), nil
+}
+
+// ReplaceImportTemplates replaces the whole set of templates. Every template
+// is validated before any is written. Admins only.
+func (s *Server) ReplaceImportTemplates(ctx context.Context, req ReplaceImportTemplatesRequestObject) (ReplaceImportTemplatesResponseObject, error) {
+	p, err := tenantAdmin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if req.Body == nil {
+		return nil, badRequest("request body is required")
+	}
+	tenantID := p.Tenant.ID
+
+	var pr problems
+	next := make([]store.Template, 0, len(req.Body.Templates))
+	seen := map[string]int{}
+	for i, in := range req.Body.Templates {
+		path := fmt.Sprintf("templates[%d]", i)
+		if j, dup := seen[in.Id]; dup {
+			pr.add(path+".id", "duplicate template id %q (also templates[%d])", in.Id, j)
+			continue
+		}
+		seen[in.Id] = i
+		if t, ok := validateTemplate(&pr, path, in); ok {
+			next = append(next, t)
+		}
+	}
+	if err := pr.err(); err != nil {
+		return nil, err
+	}
+
+	before, err := s.store.ListTemplates(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	// Write the new set first and delete the rest last: a failure part-way
+	// leaves too many templates, never too few.
+	for _, t := range next {
+		if err := s.store.PutTemplate(ctx, tenantID, t); err != nil {
+			return nil, err
+		}
+	}
+	for _, old := range before {
+		if _, keep := seen[old.ID]; keep {
+			continue
+		}
+		if err := s.store.DeleteTemplate(ctx, tenantID, old.ID); err != nil && !errors.Is(err, store.ErrNotFound) {
+			return nil, err
+		}
+	}
+	stored, err := s.store.ListTemplates(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.audit(ctx, p, tenantID, "import_templates.replace", "import_templates", "templates", apiTemplates(before), apiTemplates(stored)); err != nil {
+		return nil, err
+	}
+	return ReplaceImportTemplates200JSONResponse{Templates: apiTemplates(stored)}, nil
+}

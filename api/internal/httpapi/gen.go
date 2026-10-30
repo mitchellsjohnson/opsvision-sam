@@ -791,18 +791,20 @@ type ImportFindingSeverity string
 
 // ImportTemplate defines model for ImportTemplate.
 type ImportTemplate struct {
+	// Body The mapping document for the profile. For `legacy_workbook` it has `sheets`, `rows` and `methodology`, and an optional `scorecardId` naming the scorecard the import writes to (default: the tenant's only scorecard). Unknown fields and invalid mappings are rejected with 400.
+	Body map[string]interface{} `json:"body"`
+
 	// Id Client-supplied identifier.
 	//
 	// Example: team-alpha
-	Id Id `json:"id"`
+	Id   Id     `json:"id"`
+	Name string `json:"name"`
 
-	// Mapping Maps a source column or cell header to a measure key.
-	Mapping map[string]Key        `json:"mapping"`
-	Name    string                `json:"name"`
+	// Profile Only `legacy_workbook` can be stored today; `csv` is rejected.
 	Profile ImportTemplateProfile `json:"profile"`
 }
 
-// ImportTemplateProfile defines model for ImportTemplate.Profile.
+// ImportTemplateProfile Only `legacy_workbook` can be stored today; `csv` is rejected.
 type ImportTemplateProfile string
 
 // ImportUpload defines model for ImportUpload.
@@ -1393,8 +1395,11 @@ type Unauthorized = Error
 
 // ListAuditParams defines parameters for ListAudit.
 type ListAuditParams struct {
-	From *time.Time `form:"from,omitempty" json:"from,omitempty"`
-	To   *time.Time `form:"to,omitempty" json:"to,omitempty"`
+	// From Start of the range, inclusive (RFC 3339).
+	From time.Time `form:"from" json:"from"`
+
+	// To End of the range, exclusive (RFC 3339). At most 31 days after `from`.
+	To time.Time `form:"to" json:"to"`
 }
 
 // ReplaceImportTemplatesJSONBody defines parameters for ReplaceImportTemplates.
@@ -1681,9 +1686,9 @@ func (siw *ServerInterfaceWrapper) ListAudit(w http.ResponseWriter, r *http.Requ
 	// Parameter object where we will unmarshal all parameters from the context
 	var params ListAuditParams
 
-	// ------------- Optional query parameter "from" -------------
+	// ------------- Required query parameter "from" -------------
 
-	err = runtime.BindQueryParameterWithOptions("form", true, false, "from", r.URL.Query(), &params.From, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "from", r.URL.Query(), &params.From, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
 	if err != nil {
 		var requiredError *runtime.RequiredParameterError
 		if errors.As(err, &requiredError) {
@@ -1694,9 +1699,9 @@ func (siw *ServerInterfaceWrapper) ListAudit(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// ------------- Optional query parameter "to" -------------
+	// ------------- Required query parameter "to" -------------
 
-	err = runtime.BindQueryParameterWithOptions("form", true, false, "to", r.URL.Query(), &params.To, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "to", r.URL.Query(), &params.To, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
 	if err != nil {
 		var requiredError *runtime.RequiredParameterError
 		if errors.As(err, &requiredError) {

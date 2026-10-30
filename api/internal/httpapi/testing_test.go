@@ -14,6 +14,7 @@ import (
 
 	"opsvision/internal/auth"
 	"opsvision/internal/domain"
+	"opsvision/internal/objects"
 	"opsvision/internal/store/memstore"
 )
 
@@ -28,6 +29,7 @@ var testNow = time.Date(2026, time.October, 15, 12, 0, 0, 0, time.UTC)
 type testEnv struct {
 	srv    *httptest.Server
 	store  *memstore.Store
+	objs   *objects.Mem
 	tokens map[string]string
 }
 
@@ -92,14 +94,16 @@ func newTestEnv(t *testing.T) *testEnv {
 		t.Fatal(err)
 	}
 	var n atomic.Int64
+	objs := objects.NewMem("http://objects.test", objects.Signer(testSecret))
 	s := NewServer(Deps{
-		Store: st,
-		Now:   func() time.Time { return testNow },
-		NewID: func() string { return fmt.Sprintf("id-%04d", n.Add(1)) },
+		Store:   st,
+		Objects: objs,
+		Now:     func() time.Time { return testNow },
+		NewID:   func() string { return fmt.Sprintf("id-%04d", n.Add(1)) },
 	})
 	srv := httptest.NewServer(NewHandler(s, authMW))
 	t.Cleanup(srv.Close)
-	return &testEnv{srv: srv, store: st, tokens: tokens}
+	return &testEnv{srv: srv, store: st, objs: objs, tokens: tokens}
 }
 
 // call sends a request to the API under /v1. body may be nil, a string (sent

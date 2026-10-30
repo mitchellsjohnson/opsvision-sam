@@ -5,6 +5,7 @@
 //
 //	OPSVISION_AUTH_MODE  must be "auth0"; anything else refuses to start
 //	TABLE_NAME           DynamoDB table
+//	UPLOADS_BUCKET       S3 bucket for uploaded workbooks and parsed change sets
 //	AUTH0_DOMAIN         Auth0 tenant domain, e.g. example.us.auth0.com
 //	AUTH0_AUDIENCE       API audience the access tokens are issued for
 //	CLAIM_NAMESPACE      prefix of the email/name claims (default https://opsvision/)
@@ -26,6 +27,7 @@ import (
 	"opsvision/internal/auth"
 	"opsvision/internal/httpapi"
 	"opsvision/internal/lambdahttp"
+	"opsvision/internal/objects"
 	"opsvision/internal/store"
 	"opsvision/internal/store/dynamostore"
 )
@@ -37,6 +39,7 @@ var errNotAuth0 = errors.New("refusing to start: OPSVISION_AUTH_MODE must be aut
 
 type appConfig struct {
 	Table          string
+	UploadsBucket  string
 	Auth0Domain    string
 	Auth0Audience  string
 	ClaimNamespace string
@@ -51,6 +54,7 @@ func loadConfig(getenv func(string) string) (appConfig, error) {
 	}
 	c := appConfig{
 		Table:          getenv("TABLE_NAME"),
+		UploadsBucket:  getenv("UPLOADS_BUCKET"),
 		Auth0Domain:    getenv("AUTH0_DOMAIN"),
 		Auth0Audience:  getenv("AUTH0_AUDIENCE"),
 		ClaimNamespace: getenv("CLAIM_NAMESPACE"),
@@ -58,6 +62,7 @@ func loadConfig(getenv func(string) string) (appConfig, error) {
 	}
 	for _, r := range []struct{ name, value string }{
 		{"TABLE_NAME", c.Table},
+		{"UPLOADS_BUCKET", c.UploadsBucket},
 		{"AUTH0_DOMAIN", c.Auth0Domain},
 		{"AUTH0_AUDIENCE", c.Auth0Audience},
 	} {
@@ -74,7 +79,7 @@ func loadConfig(getenv func(string) string) (appConfig, error) {
 // newHandler assembles the API: CORS outermost (so preflights are answered
 // before authentication), then compression and Auth0 token validation around
 // the /v1 routes.
-func newHandler(cfg appConfig, st store.Store) (http.Handler, error) {
+func newHandler(cfg appConfig, st store.Store, objs objects.Store) (http.Handler, error) {
 	authMW, err := auth.Middleware(auth.Config{
 		Mode:           auth.ModeAuth0,
 		Domain:         cfg.Auth0Domain,
@@ -84,7 +89,7 @@ func newHandler(cfg appConfig, st store.Store) (http.Handler, error) {
 	if err != nil {
 		return nil, fmt.Errorf("auth: %w", err)
 	}
-	srv := httpapi.NewServer(httpapi.Deps{Store: st})
+	srv := httpapi.NewServer(httpapi.Deps{Store: st, Objects: objs})
 	return httpapi.CORS(cfg.AllowedOrigin)(httpapi.NewHandler(srv, authMW)), nil
 }
 
@@ -101,7 +106,8 @@ func run(ctx context.Context) error {
 		return fmt.Errorf("load AWS config: %w", err)
 	}
 	st := dynamostore.New(dynamodb.NewFromConfig(awsCfg), cfg.Table)
-	h, err := newHandler(cfg, st)
+	objs := objects.NewS3(objects.NewS3Client(awsCfg), cfg.UploadsBucket)
+	h, err := newHandler(cfg, st, objs)
 	if err != nil {
 		return err
 	}

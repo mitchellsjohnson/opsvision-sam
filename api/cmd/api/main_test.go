@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"opsvision/internal/objects"
 	"opsvision/internal/store/memstore"
 )
 
@@ -17,6 +18,7 @@ func validEnv() map[string]string {
 	return map[string]string{
 		"OPSVISION_AUTH_MODE": "auth0",
 		"TABLE_NAME":          "opsvision-test",
+		"UPLOADS_BUCKET":      "opsvision-uploads-test",
 		"AUTH0_DOMAIN":        "opsvision-demo.us.auth0.com",
 		"AUTH0_AUDIENCE":      "https://api.opsvision.test",
 		"ALLOWED_ORIGIN":      "https://app.opsvision.test",
@@ -46,7 +48,7 @@ func TestLoadConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Table != "opsvision-test" || cfg.Auth0Domain != "opsvision-demo.us.auth0.com" ||
+	if cfg.Table != "opsvision-test" || cfg.UploadsBucket != "opsvision-uploads-test" || cfg.Auth0Domain != "opsvision-demo.us.auth0.com" ||
 		cfg.Auth0Audience != "https://api.opsvision.test" || cfg.AllowedOrigin != "https://app.opsvision.test" {
 		t.Errorf("cfg = %+v", cfg)
 	}
@@ -61,7 +63,7 @@ func TestLoadConfig(t *testing.T) {
 		t.Errorf("custom namespace: %q, %v", cfg.ClaimNamespace, err)
 	}
 
-	for _, missing := range []string{"TABLE_NAME", "AUTH0_DOMAIN", "AUTH0_AUDIENCE"} {
+	for _, missing := range []string{"TABLE_NAME", "UPLOADS_BUCKET", "AUTH0_DOMAIN", "AUTH0_AUDIENCE"} {
 		e := validEnv()
 		delete(e, missing)
 		if _, err := loadConfig(env(e)); err == nil || !strings.Contains(err.Error(), missing) {
@@ -75,7 +77,7 @@ func TestHandlerCORSAndAuth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h, err := newHandler(cfg, memstore.New())
+	h, err := newHandler(cfg, memstore.New(), objects.NewMem("", nil))
 	if err != nil {
 		t.Fatal(err)
 	}

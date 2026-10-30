@@ -718,6 +718,18 @@ func (s *Store) PutTemplate(_ context.Context, tenantID string, t store.Template
 	return nil
 }
 
+// DeleteTemplate implements store.ImportStore.
+func (s *Store) DeleteTemplate(_ context.Context, tenantID, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t := s.tenant(tenantID)
+	if _, ok := t.templates[id]; !ok {
+		return store.ErrNotFound
+	}
+	delete(t.templates, id)
+	return nil
+}
+
 // ListTemplates implements store.ImportStore.
 func (s *Store) ListTemplates(_ context.Context, tenantID string) ([]store.Template, error) {
 	s.mu.RLock()

@@ -999,11 +999,13 @@ paths:
       parameters:
         - name: from
           in: query
-          required: false
+          required: true
+          description: Start of the range, inclusive (RFC 3339).
           schema: { type: string, format: date-time }
         - name: to
           in: query
-          required: false
+          required: true
+          description: End of the range, exclusive (RFC 3339). At most 31 days after `from`.
           schema: { type: string, format: date-time }
       responses:
         '200':
@@ -1792,17 +1794,22 @@ components:
         templateId: { $ref: '#/components/schemas/Id' }
     ImportTemplate:
       type: object
-      required: [id, name, profile, mapping]
+      required: [id, name, profile, body]
       properties:
         id: { $ref: '#/components/schemas/Id' }
         name: { type: string, minLength: 1 }
         profile:
           type: string
+          description: Only `legacy_workbook` can be stored today; `csv` is rejected.
           enum: [legacy_workbook, csv]
-        mapping:
+        body:
           type: object
-          description: Maps a source column or cell header to a measure key.
-          additionalProperties: { $ref: '#/components/schemas/Key' }
+          description: >-
+            The mapping document for the profile. For `legacy_workbook` it has
+            `sheets`, `rows` and `methodology`, and an optional `scorecardId` naming the scorecard the import
+            writes to (default: the tenant's only scorecard). Unknown fields and
+            invalid mappings are rejected with 400.
+          additionalProperties: true
     ImportCounts:
       type: object
       required: [dataPoints, overrides, versionText, legacyNotes]

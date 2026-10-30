@@ -840,6 +840,14 @@ func importsAndTemplates(t *testing.T, s store.Store) {
 	list, err := s.ListTemplates(ctx, tn)
 	must(t, err)
 	wantEq(t, "templates", list, []store.Template{tpls[1], tpls[0]})
+
+	// DeleteTemplate removes one template; a missing one is ErrNotFound.
+	must(t, s.DeleteTemplate(ctx, tn, "t-a"))
+	list, err = s.ListTemplates(ctx, tn)
+	must(t, err)
+	wantEq(t, "templates after delete", list, []store.Template{tpls[0]})
+	wantErr(t, s.DeleteTemplate(ctx, tn, "t-a"), store.ErrNotFound)
+	wantErr(t, s.DeleteTemplate(ctx, newTenant(t, s), "t-b"), store.ErrNotFound)
 }
 
 // --- isolation -------------------------------------------------------------

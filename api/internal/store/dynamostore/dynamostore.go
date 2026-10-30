@@ -1125,6 +1125,22 @@ func (s *Store) PutTemplate(ctx context.Context, tenantID string, t store.Templa
 	return s.putPlain(ctx, newTemplateItem(tenantID, t))
 }
 
+// DeleteTemplate implements store.ImportStore.
+func (s *Store) DeleteTemplate(ctx context.Context, tenantID, id string) error {
+	_, err := s.client.DeleteItem(ctx, &dynamodb.DeleteItemInput{
+		TableName:           &s.table,
+		Key:                 s.keyOf(tenantPK(tenantID), templateSK(id)),
+		ConditionExpression: ptrTo("attribute_exists(PK)"),
+	})
+	if isConditionFailed(err) {
+		return store.ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("dynamostore: delete template: %w", err)
+	}
+	return nil
+}
+
 // ListTemplates implements store.ImportStore.
 func (s *Store) ListTemplates(ctx context.Context, tenantID string) ([]store.Template, error) {
 	items, err := listPrefix[templateItem](ctx, s, tenantPK(tenantID), prefixTemplate)

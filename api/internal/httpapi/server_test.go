@@ -20,20 +20,16 @@ func tenantWithFYStart(m int) domain.Tenant {
 	return domain.Tenant{FiscalYearStartMonth: time.Month(m)}
 }
 
-func TestUnimplementedOperationReturns501Envelope(t *testing.T) {
+func TestEveryRouteIsBehindAuthentication(t *testing.T) {
 	e := newTestEnv(t)
 	for _, tc := range []struct{ method, path string }{
-		{"GET", "/audit?from=2026-01-01T00:00:00Z&to=2026-12-01T00:00:00Z"},
+		{"GET", "/scorecards"},
+		{"GET", "/audit?from=2026-01-01T00:00:00Z&to=2026-02-01T00:00:00Z"},
 		{"POST", "/imports/uploads"},
 		{"GET", "/import-templates"},
 	} {
-		got := e.expectError(t, 501, "not_implemented", e.tokens["t1-admin"], tc.method, tc.path, nil)
-		if got.Error.Message == "" {
-			t.Errorf("%s %s: empty message", tc.method, tc.path)
-		}
+		e.expectError(t, 401, "unauthorized", "", tc.method, tc.path, nil)
 	}
-	// Still behind authentication.
-	e.expectError(t, 401, "unauthorized", "", "GET", "/scorecards", nil)
 }
 
 func TestMalformedJSONIsInvalidEnvelope(t *testing.T) {

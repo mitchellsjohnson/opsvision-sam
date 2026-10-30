@@ -5,8 +5,8 @@
 // Layout: server.go holds construction, routing and shared helpers; errors.go
 // the error envelope; validate.go shared validators; mapping.go the
 // domain-to-API conversions; one file per resource group holds its handlers
-// (operator.go, members.go, org.go, ...). unimplemented.go answers 501 for
-// every operation no task has implemented yet.
+// (operator.go, members.go, org.go, imports.go, audit.go, ...). Server
+// implements every operation of the spec.
 package httpapi
 
 import (
@@ -19,6 +19,7 @@ import (
 
 	"opsvision/internal/auth"
 	"opsvision/internal/domain"
+	"opsvision/internal/objects"
 	"opsvision/internal/period"
 	"opsvision/internal/store"
 )
@@ -33,9 +34,9 @@ const channelUI = "ui"
 // Deps are the server's collaborators. Only Store is required.
 type Deps struct {
 	Store store.Store
-	// Objects is the object store used by imports. Task 20 replaces this
-	// field's type with objects.Store; until then it stays nil.
-	Objects any
+	// Objects holds uploaded workbooks and parsed change sets. The import
+	// endpoints answer 500 without it.
+	Objects objects.Store
 	// Calendar returns the fiscal calendar of a tenant. The default is built
 	// from Tenant.FiscalYearStartMonth.
 	Calendar func(domain.Tenant) period.Calendar
@@ -47,11 +48,8 @@ type Deps struct {
 
 // Server implements StrictServerInterface.
 type Server struct {
-	// unimplemented supplies 501 stubs; methods on *Server shadow them.
-	unimplemented
-
 	store    store.Store
-	objects  any
+	objects  objects.Store
 	calendar func(domain.Tenant) period.Calendar
 	now      func() time.Time
 	newID    func() string

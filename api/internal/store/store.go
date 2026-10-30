@@ -188,6 +188,8 @@ type ImportStore interface {
 	PutTemplate(ctx context.Context, tenantID string, t Template) error
 	// ListTemplates returns templates sorted by ID.
 	ListTemplates(ctx context.Context, tenantID string) ([]Template, error)
+	// DeleteTemplate removes a template; ErrNotFound if it does not exist.
+	DeleteTemplate(ctx context.Context, tenantID, id string) error
 }
 
 // Store is the full persistence surface.

@@ -5,14 +5,22 @@
 //
 // By default it keeps data in memory, signs in with shared-secret dev tokens,
 // and seeds the fictional Acme Demo tenant. In dev auth mode it also serves
-// two endpoints outside /v1 and outside authentication:
+// three endpoints outside /v1 and outside authentication:
 //
 //	GET  /dev/users                      the demo users
 //	POST /dev/login {"userId": "..."}    {"token": "..."} for one of them
+//	PUT  /dev/objects/{key...}           import uploads (see below)
 //
-// Those endpoints let anyone who can reach the server become any demo user.
+// The first two let anyone who can reach the server become any demo user.
 // They exist only with -auth dev; never expose a dev server to a network you
 // do not trust.
+//
+// Imports keep uploaded workbooks in memory (-objects mem, the default). The
+// upload URLs the API hands out point at PUT /dev/objects/{key...}?exp=<unix>&sig=<hex>,
+// signed with the dev secret (HMAC-SHA256 of "key|exp") and valid for 15
+// minutes; the endpoint accepts only the .xlsx content type and 20 MiB. With
+// -objects s3 (and -uploads-bucket or $UPLOADS_BUCKET) uploads go to S3 with
+// presigned URLs, as in production.
 package main
 
 import (
@@ -21,6 +29,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -36,6 +45,7 @@ import (
 	"opsvision/internal/auth"
 	"opsvision/internal/demo"
 	"opsvision/internal/httpapi"
+	"opsvision/internal/objects"
 	"opsvision/internal/period"
 	"opsvision/internal/store"
 	"opsvision/internal/store/dynamostore"
@@ -46,6 +56,8 @@ type options struct {
 	addr          string
 	store         string // memory | dynamo
 	table         string
+	objects       string // mem | s3
+	uploadsBucket string // S3 bucket (with -objects s3)
 	auth          string // dev | auth0
 	seed          string // demo | none
 	devSecret     string
@@ -63,6 +75,8 @@ func parseFlags(args []string, getenv func(string) string) (options, error) {
 	fs.StringVar(&o.addr, "addr", "127.0.0.1:8080", "listen address (loopback by default; dev auth is for local use only)")
 	fs.StringVar(&o.store, "store", "memory", "data store: memory or dynamo")
 	fs.StringVar(&o.table, "table", "", "DynamoDB table (with -store dynamo)")
+	fs.StringVar(&o.objects, "objects", "mem", "import file storage: mem (in memory, dev uploads) or s3 (presigned S3 uploads)")
+	fs.StringVar(&o.uploadsBucket, "uploads-bucket", "", "S3 bucket for import files (with -objects s3; default $UPLOADS_BUCKET)")
 	fs.StringVar(&o.auth, "auth", "dev", "authentication: dev (shared-secret tokens, /dev/login) or auth0")
 	fs.StringVar(&o.seed, "seed", "demo", "seed the store: demo (Acme Demo tenant) or none")
 	fs.StringVar(&o.devSecret, "dev-secret", "", "dev token signing secret, at least 32 bytes (default $OPSVISION_DEV_SECRET)")
@@ -74,6 +88,9 @@ func parseFlags(args []string, getenv func(string) string) (options, error) {
 	}
 	if o.devSecret == "" {
 		o.devSecret = getenv("OPSVISION_DEV_SECRET")
+	}
+	if o.uploadsBucket == "" {
+		o.uploadsBucket = getenv("UPLOADS_BUCKET")
 	}
 	if o.auth0Domain == "" {
 		o.auth0Domain = getenv("AUTH0_DOMAIN")
@@ -93,6 +110,15 @@ func (o options) validate() error {
 		}
 	default:
 		return fmt.Errorf("invalid -store %q (want memory or dynamo)", o.store)
+	}
+	switch o.objects {
+	case "", "mem": // options built without the flag default to memory
+	case "s3":
+		if o.uploadsBucket == "" {
+			return errors.New("-objects s3 requires -uploads-bucket (or UPLOADS_BUCKET)")
+		}
+	default:
+		return fmt.Errorf("invalid -objects %q (want mem or s3)", o.objects)
 	}
 	switch o.seed {
 	case "demo", "none":
@@ -126,20 +152,59 @@ func openStore(ctx context.Context, o options) (store.Store, error) {
 	return dynamostore.New(dynamodb.NewFromConfig(cfg), o.table), nil
 }
 
+// openObjects returns the configured import file store. The in-memory store
+// signs its upload URLs with the dev secret and points them at this server.
+func openObjects(ctx context.Context, o options) (objects.Store, error) {
+	if o.objects == "s3" {
+		cfg, err := config.LoadDefaultConfig(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("load AWS config: %w", err)
+		}
+		return objects.NewS3(objects.NewS3Client(cfg), o.uploadsBucket), nil
+	}
+	return objects.NewMem(originOf(o.addr), objects.Signer(o.devSecret)), nil
+}
+
+// originOf returns the origin clients reach a server listening on addr by.
+// An address without a host, or on all interfaces, is reached as localhost.
+func originOf(addr string) string {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil || port == "" {
+		return "http://localhost:8080"
+	}
+	if ip := net.ParseIP(host); host == "" || (ip != nil && ip.IsUnspecified()) {
+		host = "localhost"
+	}
+	return "http://" + net.JoinHostPort(host, port)
+}
+
 // newHandler builds the server from validated-or-not options; it validates
 // them itself so no caller can skip the dev secret check.
 func newHandler(ctx context.Context, o options) (http.Handler, error) {
+	h, _, err := newHandlerObjects(ctx, o)
+	return h, err
+}
+
+// newHandlerObjects is newHandler that also returns the import file store.
+func newHandlerObjects(ctx context.Context, o options) (http.Handler, objects.Store, error) {
 	if err := o.validate(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	st, err := openStore(ctx, o)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+	objs, err := openObjects(ctx, o)
+	if err != nil {
+		return nil, nil, err
+	}
+	if _, mem := objs.(*objects.Mem); mem && o.auth != "dev" {
+		slog.Warn("in-memory import uploads are only served with -auth dev; use -objects s3 to import files")
 	}
 	if o.seed == "demo" {
 		id, err := demo.Seed(ctx, st, period.Calendar{FiscalYearStartMonth: 1})
 		if err != nil {
-			return nil, fmt.Errorf("seed demo data: %w", err)
+			return nil, nil, fmt.Errorf("seed demo data: %w", err)
 		}
 		slog.Info("demo tenant ready", "tenant", id)
 	}
@@ -150,17 +215,57 @@ func newHandler(ctx context.Context, o options) (http.Handler, error) {
 	}
 	authMW, err := auth.Middleware(authCfg, st)
 	if err != nil {
-		return nil, fmt.Errorf("auth: %w", err)
+		return nil, nil, fmt.Errorf("auth: %w", err)
 	}
-	api := httpapi.NewHandler(httpapi.NewServer(httpapi.Deps{Store: st}), authMW)
+	api := httpapi.NewHandler(httpapi.NewServer(httpapi.Deps{Store: st, Objects: objs}), authMW)
 
 	mux := http.NewServeMux()
 	if o.auth == "dev" {
 		mux.HandleFunc("GET /dev/users", devUsers)
 		mux.HandleFunc("POST /dev/login", devLogin(o.devSecret))
+		if mem, ok := objs.(*objects.Mem); ok {
+			mux.HandleFunc("PUT "+objects.DevObjectsPath+"{key...}", devPutObject(mem, o.devSecret, func() time.Time { return time.Now() }))
+		}
 	}
 	mux.Handle("/", api)
-	return httpapi.CORS(o.allowedOrigin)(mux), nil
+	return httpapi.CORS(o.allowedOrigin)(mux), objs, nil
+}
+
+// devPutObject accepts an import upload at a URL signed by objects.Mem. The
+// signature is the only credential: it binds the key and an expiry. Only the
+// .xlsx content type is accepted, up to objects.MaxUploadBytes.
+func devPutObject(mem *objects.Mem, secret string, now func() time.Time) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		key := r.PathValue("key")
+		q := r.URL.Query()
+		switch err := objects.Verify(secret, key, q.Get("exp"), q.Get("sig"), now()); {
+		case errors.Is(err, objects.ErrExpired):
+			devError(w, http.StatusForbidden, "forbidden", "upload URL expired; start the import again")
+			return
+		case err != nil:
+			devError(w, http.StatusForbidden, "forbidden", "invalid upload signature")
+			return
+		}
+		if r.Header.Get("Content-Type") != objects.ContentTypeXLSX {
+			devError(w, http.StatusUnsupportedMediaType, "invalid", "Content-Type must be "+objects.ContentTypeXLSX)
+			return
+		}
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, objects.MaxUploadBytes))
+		if err != nil {
+			var tooBig *http.MaxBytesError
+			if errors.As(err, &tooBig) {
+				devError(w, http.StatusRequestEntityTooLarge, "invalid", fmt.Sprintf("the file is larger than %d MiB", objects.MaxUploadBytes>>20))
+				return
+			}
+			devError(w, http.StatusBadRequest, "invalid", "cannot read the upload")
+			return
+		}
+		if err := mem.Put(r.Context(), key, objects.ContentTypeXLSX, body); err != nil {
+			devError(w, http.StatusInternalServerError, "internal", "cannot store the upload")
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
