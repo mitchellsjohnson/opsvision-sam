@@ -313,23 +313,35 @@ func Compute(in *Input, req ViewRequest) (View, error) {
 		keep[id] = true
 	}
 
+	type rowSpec struct {
+		key string
+		s   subject
+	}
+	var specs []rowSpec
 	for _, k := range keys {
-		ref := refs[k]
-		for _, s := range subjectsFor(ref.m, org, in.Items) {
+		for _, s := range subjectsFor(refs[k].m, org, in.Items) {
 			if len(keep) > 0 && !keep[s.id] {
 				continue
 			}
-			row := Row{
-				MetricKey: k, MetricName: ref.m.Name, CategoryID: ref.m.CategoryID,
-				SubjectID: s.id, SubjectName: s.name, Format: ref.m.Format,
-				Depth: s.depth, Direction: ref.m.Direction,
-				Cells: make([]Cell, 0, len(cols)),
-			}
-			for _, c := range cols {
-				row.Cells = append(row.Cells, cellFor(ix, c, used, metricsBy, k, s.id))
-			}
-			view.Rows = append(view.Rows, row)
+			specs = append(specs, rowSpec{k, s})
 		}
+	}
+	ix.reserve(len(specs) * len(cols))
+	view.Rows = make([]Row, 0, len(specs))
+	// All cells share one backing array: one allocation instead of one per row.
+	cells := make([]Cell, len(specs)*len(cols))
+	for i, sp := range specs {
+		ref := refs[sp.key]
+		row := Row{
+			MetricKey: sp.key, MetricName: ref.m.Name, CategoryID: ref.m.CategoryID,
+			SubjectID: sp.s.id, SubjectName: sp.s.name, Format: ref.m.Format,
+			Depth: sp.s.depth, Direction: ref.m.Direction,
+			Cells: cells[i*len(cols) : (i+1)*len(cols) : (i+1)*len(cols)],
+		}
+		for j, c := range cols {
+			row.Cells[j] = cellFor(ix, c, used, metricsBy, sp.key, sp.s.id)
+		}
+		view.Rows = append(view.Rows, row)
 	}
 	return view, nil
 }

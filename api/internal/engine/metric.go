@@ -185,13 +185,12 @@ func copyFloat(p *float64) *float64 {
 // valueOf returns the displayed value of metric m over sp (override included
 // for non-YTD spans), without computing status or change.
 func (ix *Index) valueOf(v domain.MethodologyVersion, m domain.Metric, subjectID string, sp span) *float64 {
-	c := ix.base(v, m, subjectID, sp)
 	if !sp.ytd {
 		if ov, ok := ix.overrides[overrideKey{m.Key, subjectID, sp.period}]; ok && ov.Value != nil {
 			return copyFloat(ov.Value)
 		}
 	}
-	return c.Value
+	return ix.baseValue(v, m, subjectID, sp)
 }
 
 // comparison returns the reference value for a change rule, or nil when it is
@@ -218,7 +217,7 @@ func (ix *Index) comparison(v domain.MethodologyVersion, m domain.Metric, subjec
 // quarter, half or YTD), so sums and ratios are compared like for like.
 func (ix *Index) priorYearValue(v domain.MethodologyVersion, m domain.Metric, subjectID string, sp span) *float64 {
 	last := period.Period{Grain: period.Month, FY: sp.period.FY - 1, Index: 12}
-	return ix.base(v, m, subjectID, ix.ytdSpan(last)).Value
+	return ix.baseValue(v, m, subjectID, ix.ytdSpan(last))
 }
 
 // grainOf maps a metric's reporting frequency to the grain its data is
@@ -241,6 +240,58 @@ func grainOf(f domain.Frequency) (period.Grain, bool) {
 // or overrides: identity, value, display, not-applicable reason, components,
 // coverage and target.
 func (ix *Index) base(v domain.MethodologyVersion, m domain.Metric, subjectID string, sp span) Cell {
+	c := ix.baseUncached(v, m, subjectID, sp)
+	ix.storeBaseValue(v, m, subjectID, sp, c.Value)
+	return c
+}
+
+// baseKey identifies a memoized base value. The formula text is included for
+// the same reason as in compiledKey; the span is identified by its period and
+// whether it is year-to-date.
+type baseKey struct {
+	version string
+	metric  string
+	formula string
+	subject string
+	period  period.Period
+	ytd     bool
+}
+
+type baseVal struct {
+	v  float64
+	ok bool
+}
+
+func (ix *Index) storeBaseValue(v domain.MethodologyVersion, m domain.Metric, subjectID string, sp span, val *float64) {
+	bv := baseVal{}
+	if val != nil {
+		bv = baseVal{*val, true}
+	}
+	ix.memoMu.Lock()
+	ix.baseVals[baseKey{v.ID, m.Key, m.Formula, subjectID, sp.period, sp.ytd}] = bv
+	ix.memoMu.Unlock()
+}
+
+// baseValue returns the computed (pre-override) value of metric m over sp,
+// from the memo when this (version, metric, subject, span) was computed
+// before. Prior-period and prior-year lookups hit it because the same cells
+// are computed as columns of the view. The result is a fresh pointer.
+func (ix *Index) baseValue(v domain.MethodologyVersion, m domain.Metric, subjectID string, sp span) *float64 {
+	k := baseKey{v.ID, m.Key, m.Formula, subjectID, sp.period, sp.ytd}
+	ix.memoMu.RLock()
+	bv, ok := ix.baseVals[k]
+	ix.memoMu.RUnlock()
+	if !ok {
+		return ix.base(v, m, subjectID, sp).Value
+	}
+	if !bv.ok {
+		return nil
+	}
+	val := bv.v
+	return &val
+}
+
+func (ix *Index) baseUncached(v domain.MethodologyVersion, m domain.Metric, subjectID string, sp span) Cell {
 	c := Cell{
 		MetricKey: m.Key,
 		SubjectID: subjectID,
@@ -257,7 +308,10 @@ func (ix *Index) base(v domain.MethodologyVersion, m domain.Metric, subjectID st
 	if !ok {
 		return c
 	}
-	slots := Slots(ix.cal, grain, sp.months)
+	slots := sp.months // month slots are the span's months; Measure only reads them
+	if grain != period.Month {
+		slots = Slots(ix.cal, grain, sp.months)
+	}
 	if len(slots) == 0 {
 		return c
 	}
@@ -293,10 +347,7 @@ func (ix *Index) base(v domain.MethodologyVersion, m domain.Metric, subjectID st
 	}
 	c.Coverage = [2]int{have, len(slots)}
 	if len(vars) > 0 {
-		c.Components = make(map[string]float64, len(vars))
-		for id, val := range vars {
-			c.Components[id] = val
-		}
+		c.Components = vars // owned by the cell; Eval below only reads it
 	}
 	if missing {
 		return c

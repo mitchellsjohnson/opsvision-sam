@@ -56,6 +56,11 @@ type Index struct {
 	// compiled caches each metric's compiled formula per (version, metric);
 	// see compiledFor. sync.Map keeps the Index safe for concurrent use.
 	compiled sync.Map
+	// memo caches rolled-up slot values; see slotValue.
+	memoMu sync.RWMutex
+	memo   map[slotKey]slotVal
+	// baseVals caches computed metric values; see baseValue.
+	baseVals map[baseKey]baseVal
 }
 
 type overrideKey struct {
@@ -76,6 +81,8 @@ func NewIndex(in *Input) *Index {
 		itemsByUnit: map[string][]string{},
 		points:      map[pointKey]domain.DataPoint{},
 		overrides:   map[overrideKey]domain.Override{},
+		memo:        map[slotKey]slotVal{},
+		baseVals:    map[baseKey]baseVal{},
 	}
 	if in == nil {
 		return ix
@@ -140,6 +147,12 @@ func supersedes(a, b domain.DataPoint) bool {
 		return a.Revision > b.Revision
 	}
 	return !a.EnteredAt.Before(b.EnteredAt)
+}
+
+// reserve pre-sizes the base-value memo for about n cells, avoiding repeated
+// map growth during a large view. It must be called before concurrent use.
+func (ix *Index) reserve(n int) {
+	ix.baseVals = make(map[baseKey]baseVal, n+n/8)
 }
 
 func (ix *Index) isUnit(id string) bool {
@@ -252,21 +265,18 @@ func (ix *Index) Measure(m domain.Measure, subjectID string, slots []period.Peri
 	if !ix.known(subjectID) || len(slots) == 0 {
 		return Value{}, false
 	}
-	vals := make([]slotVal, 0, len(slots))
-	for _, s := range slots {
-		sv := ix.slotValue(m, subjectID, s, rollItems)
-		if sv.st != stNone {
-			vals = append(vals, sv)
-		}
-	}
-	if len(vals) == 0 {
-		return Value{}, false
-	}
 	agg := m.TimeAgg
 	if agg == domain.AggNone && len(slots) == 1 {
 		agg = domain.AggSum
 	}
-	out := combine(agg, vals, true)
+	var a accum
+	for _, sl := range slots {
+		a.add(ix.slotValue(m, subjectID, sl, rollItems))
+	}
+	if a.empty() {
+		return Value{}, false
+	}
+	out := a.result(agg, true)
 	if out.st == stNone {
 		return Value{}, false
 	}
@@ -277,15 +287,27 @@ func (ix *Index) Measure(m domain.Measure, subjectID string, slots []period.Peri
 	}
 	res.V = out.v
 	res.Direct = out.direct
-	for _, sv := range vals {
-		if sv.st == stValue {
-			res.Have++
-		}
-	}
+	res.Have = a.nNum
 	return res, true
 }
 
-// slotValue computes the value of subject in one slot.
+// slotKey identifies a memoized slot value. A slot value depends only on
+// these fields (and the Index's immutable data), not on the metric or version
+// asking: the measure key stands for its definition, OrgAgg is included
+// because versions may define the same measure key with different rollups,
+// and rollItems is chosen per metric.
+type slotKey struct {
+	measure   string
+	orgAgg    domain.Agg
+	subject   string
+	slot      period.Period
+	rollItems bool
+}
+
+// slotValue computes the value of subject in one slot. Results that need a
+// rollup are memoized for the life of the Index; the same (measure, subject,
+// month) is otherwise recomputed by every metric, period grain and prior
+// period that touches it.
 func (ix *Index) slotValue(m domain.Measure, subject string, slot period.Period, rollItems bool) slotVal {
 	if sv, ok := ix.direct(m.Key, subject, slot); ok {
 		return sv
@@ -298,29 +320,42 @@ func (ix *Index) slotValue(m domain.Measure, subject string, slot period.Period,
 	default:
 		return slotVal{} // none (or invalid): no rollup
 	}
+	k := slotKey{m.Key, m.OrgAgg, subject, slot, rollItems}
+	ix.memoMu.RLock()
+	sv, ok := ix.memo[k]
+	ix.memoMu.RUnlock()
+	if ok {
+		return sv
+	}
+	sv = ix.rollup(m, subject, slot, rollItems)
+	ix.memoMu.Lock()
+	ix.memo[k] = sv // concurrent callers compute identical values
+	ix.memoMu.Unlock()
+	return sv
+}
+
+// rollup computes subject's slot value from its children (and attached items).
+func (ix *Index) rollup(m domain.Measure, subject string, slot period.Period, rollItems bool) slotVal {
 	months := ix.cal.Months(slot)
 	if len(months) == 0 || ix.tree == nil {
 		return slotVal{}
 	}
 	last := months[len(months)-1]
-	children := ix.tree.ChildrenAt(subject, last)
-	var contrib []slotVal
-	for _, c := range children {
-		if sv := ix.slotValue(m, c, slot, rollItems); sv.st != stNone {
-			contrib = append(contrib, sv)
-		}
+	var a accum
+	for _, c := range ix.tree.ChildrenAt(subject, last) {
+		a.add(ix.slotValue(m, c, slot, rollItems))
 	}
 	if rollItems {
 		for _, id := range ix.itemsByUnit[subject] {
 			if sv, ok := ix.direct(m.Key, id, slot); ok {
-				contrib = append(contrib, sv)
+				a.add(sv)
 			}
 		}
 	}
-	if len(contrib) == 0 {
+	if a.empty() {
 		return slotVal{}
 	}
-	out := combine(m.OrgAgg, contrib, false)
+	out := a.result(m.OrgAgg, false)
 	out.direct = false
 	return out
 }
@@ -341,76 +376,82 @@ func (ix *Index) direct(measure, subject string, slot period.Period) (slotVal, b
 	return slotVal{st: stValue, v: *dp.Value, direct: true, at: dp.EnteredAt}, true
 }
 
-// combine aggregates vals (none of which is stNone) with agg. Values win over
-// not-applicable entries; if there are no values the result is not
+// accum aggregates slot values in a single pass without allocating. Values
+// win over not-applicable entries; if there are no values the result is not
 // applicable, with the shared reason or NotApplicable when reasons differ.
-// byOrder selects what AggLatest means: the last entry (time) or the entry
-// with the newest EnteredAt (org). The result is Direct only if every value
-// that contributed was direct.
-func combine(agg domain.Agg, vals []slotVal, byOrder bool) slotVal {
-	var nums []slotVal
-	var nas []slotVal
-	for _, sv := range vals {
-		switch sv.st {
-		case stValue:
-			nums = append(nums, sv)
-		case stNA:
-			nas = append(nas, sv)
+type accum struct {
+	nNum, nNA int
+	sum       float64
+	min, max  float64
+	first     slotVal // first value added
+	last      slotVal // last value added
+	newest    slotVal // value with the newest EnteredAt (first on ties)
+	allDirect bool
+	naReason  string
+	naDiffer  bool
+}
+
+func (a *accum) empty() bool { return a.nNum == 0 && a.nNA == 0 }
+
+func (a *accum) add(sv slotVal) {
+	switch sv.st {
+	case stValue:
+		if a.nNum == 0 {
+			a.sum, a.min, a.max = sv.v, sv.v, sv.v
+			a.first, a.newest = sv, sv
+			a.allDirect = sv.direct
+		} else {
+			a.sum += sv.v
+			a.min = math.Min(a.min, sv.v)
+			a.max = math.Max(a.max, sv.v)
+			if sv.at.After(a.newest.at) {
+				a.newest = sv
+			}
+			a.allDirect = a.allDirect && sv.direct
 		}
+		a.last = sv
+		a.nNum++
+	case stNA:
+		if a.nNA == 0 {
+			a.naReason = sv.na
+		} else if sv.na != a.naReason {
+			a.naDiffer = true
+		}
+		a.nNA++
 	}
-	if len(nums) == 0 {
-		if len(nas) == 0 {
+}
+
+// result aggregates what was added with agg. byOrder selects what AggLatest
+// means: the last entry added (time) or the entry with the newest EnteredAt
+// (org). The result is Direct only if every value that contributed was
+// direct.
+func (a *accum) result(agg domain.Agg, byOrder bool) slotVal {
+	if a.nNum == 0 {
+		if a.nNA == 0 {
 			return slotVal{}
 		}
-		reason := nas[0].na
-		for _, n := range nas[1:] {
-			if n.na != reason {
-				reason = NotApplicable
-				break
-			}
+		reason := a.naReason
+		if a.naDiffer {
+			reason = NotApplicable
 		}
 		return slotVal{st: stNA, na: reason}
 	}
-	out := slotVal{st: stValue, direct: true}
-	for _, sv := range nums {
-		if !sv.direct {
-			out.direct = false
-		}
-		if sv.at.After(out.at) {
-			out.at = sv.at
-		}
-	}
+	out := slotVal{st: stValue, direct: a.allDirect, at: a.newest.at}
 	switch agg {
-	case domain.AggSum, domain.AggAverage:
-		var sum float64
-		for _, sv := range nums {
-			sum += sv.v
-		}
-		if agg == domain.AggAverage {
-			sum /= float64(len(nums))
-		}
-		out.v = sum
+	case domain.AggSum:
+		out.v = a.sum
+	case domain.AggAverage:
+		out.v = a.sum / float64(a.nNum)
 	case domain.AggMin:
-		out.v = nums[0].v
-		for _, sv := range nums[1:] {
-			out.v = math.Min(out.v, sv.v)
-		}
+		out.v = a.min
 	case domain.AggMax:
-		out.v = nums[0].v
-		for _, sv := range nums[1:] {
-			out.v = math.Max(out.v, sv.v)
-		}
+		out.v = a.max
 	case domain.AggLatest:
-		pick := nums[len(nums)-1]
-		if !byOrder {
-			pick = nums[0]
-			for _, sv := range nums[1:] {
-				if sv.at.After(pick.at) {
-					pick = sv
-				}
-			}
+		if byOrder {
+			out.v = a.last.v
+		} else {
+			out.v = a.newest.v
 		}
-		out.v = pick.v
 	default:
 		return slotVal{} // none or invalid aggregation: nothing to combine
 	}

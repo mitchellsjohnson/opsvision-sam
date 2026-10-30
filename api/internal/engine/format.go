@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"math"
 	"strconv"
 	"strings"
@@ -63,6 +64,9 @@ func displayDecimals(format string) (int, bool) {
 	return 0, false
 }
 
+// pow10 holds 10^d for the decimals Format can show.
+var pow10 = [...]float64{1, 10, 100}
+
 // roundForDisplay rounds v to the precision Format shows for the format code,
 // using the same half-away-from-zero rule, so that what a status was judged on
 // is what the reader sees. Unknown formats and non-finite values are returned
@@ -72,14 +76,29 @@ func roundForDisplay(format string, v float64) float64 {
 	if !ok || math.IsNaN(v) || math.IsInf(v, 0) {
 		return v
 	}
-	digits := roundedDigits(math.Abs(v), d)
-	s := digits[:len(digits)-d]
-	if d > 0 {
-		s += "." + digits[len(digits)-d:]
+	var tmp [64]byte
+	digits := appendRoundedDigits(tmp[:0], math.Abs(v), d)
+	var r float64
+	if len(digits) <= 15 {
+		// An integer below 2^53 over an exact power of ten is correctly
+		// rounded, so this equals parsing the decimal string.
+		n := 0
+		for _, c := range digits {
+			n = n*10 + int(c-'0')
+		}
+		r = float64(n) / pow10[d]
+	} else {
+		s := string(digits[:len(digits)-d])
+		if d > 0 {
+			s += "." + string(digits[len(digits)-d:])
+		}
+		var err error
+		if r, err = strconv.ParseFloat(s, 64); err != nil {
+			return 0
+		}
 	}
-	r, err := strconv.ParseFloat(s, 64)
-	if err != nil || r == 0 {
-		return 0 * r // 0, never -0
+	if r == 0 {
+		return 0 // 0, never -0
 	}
 	if v < 0 {
 		return -r
@@ -91,38 +110,57 @@ func roundForDisplay(format string, v float64) float64 {
 // sign in front of the whole thing for negative values that do not round to
 // zero.
 func signed(v float64, d int, prefix, suffix string) string {
-	digits := roundedDigits(math.Abs(v), d)
-	neg := v < 0 && strings.Trim(digits, "0") != ""
-	var b strings.Builder
+	var tmp [64]byte
+	digits := appendRoundedDigits(tmp[:0], math.Abs(v), d)
+	neg := false
+	if v < 0 {
+		for _, c := range digits {
+			if c != '0' {
+				neg = true
+				break
+			}
+		}
+	}
+	var out [96]byte
+	b := out[:0]
 	if neg {
-		b.WriteByte('-')
+		b = append(b, '-')
 	}
-	b.WriteString(prefix)
-	intPart, frac := digits[:len(digits)-d], digits[len(digits)-d:]
-	b.WriteString(groupThousands(intPart))
+	b = append(b, prefix...)
+	n := len(digits) - d
+	b = appendGrouped(b, digits[:n])
 	if d > 0 {
-		b.WriteByte('.')
-		b.WriteString(frac)
+		b = append(b, '.')
+		b = append(b, digits[n:]...)
 	}
-	b.WriteString(suffix)
-	return b.String()
+	b = append(b, suffix...)
+	return string(b)
 }
 
-// roundedDigits returns abs (>= 0) scaled by 10^d and rounded half up, as a
-// string of decimal digits with at least d+1 digits (so the last d digits are
-// the fraction and the rest the integer part).
-func roundedDigits(abs float64, d int) string {
-	s := strconv.FormatFloat(abs, 'f', -1, 64)
-	intPart, frac, _ := strings.Cut(s, ".")
+// appendRoundedDigits appends abs (>= 0) scaled by 10^d and rounded half up,
+// as decimal digits: at least d+1 of them (FormatFloat always emits an
+// integer digit), the last d being the fraction and the rest the integer
+// part. It works on the shortest decimal representation of abs.
+func appendRoundedDigits(dst []byte, abs float64, d int) []byte {
+	var tmp [64]byte
+	b := strconv.AppendFloat(tmp[:0], abs, 'f', -1, 64)
+	intPart, frac := b, []byte(nil)
+	if dot := bytes.IndexByte(b, '.'); dot >= 0 {
+		intPart, frac = b[:dot], b[dot+1:]
+	}
+	start := len(dst)
+	dst = append(dst, intPart...)
 	roundUp := false
 	if len(frac) > d {
 		roundUp = frac[d] >= '5'
 		frac = frac[:d]
-	} else {
-		frac += strings.Repeat("0", d-len(frac))
 	}
-	digits := []byte(intPart + frac)
+	dst = append(dst, frac...)
+	for i := len(frac); i < d; i++ {
+		dst = append(dst, '0')
+	}
 	if roundUp {
+		digits := dst[start:]
 		i := len(digits) - 1
 		for ; i >= 0; i-- {
 			if digits[i] == '9' {
@@ -132,33 +170,33 @@ func roundedDigits(abs float64, d int) string {
 			digits[i]++
 			break
 		}
-		if i < 0 {
-			digits = append([]byte{'1'}, digits...)
+		if i < 0 { // carried out of the top digit: 99.9 -> 100.0
+			dst = append(dst, 0)
+			digits = dst[start:]
+			copy(digits[1:], digits)
+			digits[0] = '1'
 		}
 	}
-	// Guarantee an integer digit ("0.5" at d=2 is "050", but ".5" never occurs
-	// because FormatFloat always emits a leading digit).
-	for len(digits) < d+1 {
-		digits = append([]byte{'0'}, digits...)
-	}
-	return string(digits)
+	return dst
 }
 
-// groupThousands inserts commas into a string of digits.
-func groupThousands(s string) string {
+// appendGrouped appends a string of digits with commas inserted.
+func appendGrouped(b []byte, s []byte) []byte {
 	if len(s) <= 3 {
-		return s
+		return append(b, s...)
 	}
-	var b strings.Builder
+	wrote := false
 	first := len(s) % 3
 	if first > 0 {
-		b.WriteString(s[:first])
+		b = append(b, s[:first]...)
+		wrote = true
 	}
 	for i := first; i < len(s); i += 3 {
-		if b.Len() > 0 {
-			b.WriteByte(',')
+		if wrote {
+			b = append(b, ',')
 		}
-		b.WriteString(s[i : i+3])
+		b = append(b, s[i:i+3]...)
+		wrote = true
 	}
-	return b.String()
+	return b
 }

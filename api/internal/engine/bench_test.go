@@ -95,11 +95,13 @@ func BenchmarkComputeYear(b *testing.B) {
 	if len(v.Rows) != 50*60 || len(v.Rows[0].Cells) != 13 {
 		b.Fatalf("rows = %d, cells = %d; want 3000 x 13", len(v.Rows), len(v.Rows[0].Cells))
 	}
-	b.ReportAllocs()
+	cells := len(v.Rows) * len(v.Rows[0].Cells)
+	b.ReportAllocs() // allocation regressions must be visible in every run
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		if _, err := Compute(in, req); err != nil {
 			b.Fatal(err)
 		}
 	}
+	b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N)/float64(cells), "ns/cell")
 }
