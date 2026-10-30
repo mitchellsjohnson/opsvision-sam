@@ -72,6 +72,22 @@ func TestRollupAsOfMove(t *testing.T) {
 	if got := mustMeasure(t, ix, onTime, "company", year, false); got.V != 12*5 {
 		t.Errorf("company FY = %v, want 60", got.V)
 	}
+
+	// Ranges that cross the move must sum as-of monthly rollups, not resolve
+	// the tree once at the end of the range.
+	// Data: M01-M06 Analytics 4 + Warehouse 1 = 30, M07-M12 Warehouse 1 = 6.
+	if got := mustMeasure(t, ix, onTime, "data", year, false); got.V != 36 || got.Have != 12 || got.Expected != 12 {
+		t.Errorf("data FY = %+v, want V=36 Have=12 Expected=12", got)
+	}
+	// Platform: Analytics only from M07 = 6 months * 4.
+	if got := mustMeasure(t, ix, onTime, "platform", year, false); got.V != 24 || got.Have != 6 || got.Expected != 12 {
+		t.Errorf("platform FY = %+v, want V=24 Have=6 Expected=12", got)
+	}
+	// Data YTD through M09: 30 + 3 Warehouse months = 33.
+	ytd := cal.YTD(month(2026, 9))
+	if got := mustMeasure(t, ix, onTime, "data", Slots(cal, period.Month, ytd), false); got.V != 33 {
+		t.Errorf("data YTD-M09 = %v, want 33", got.V)
+	}
 }
 
 func TestRollupUsesLastMonthOfSlot(t *testing.T) {
