@@ -479,7 +479,8 @@ type Cell struct {
 	// string when there is none.
 	ChangeKind string `json:"changeKind"`
 
-	// Components Rolled-up value of each measure the formula references.
+	// Components Rolled-up value of each measure the formula references. Always
+	// an object, never null: `{}` for blank or not-applicable cells.
 	Components map[string]float64 `json:"components"`
 
 	// Computed The value and status the engine computed, set only when an override applied.
@@ -502,8 +503,10 @@ type Cell struct {
 	// Override Replaces a computed metric value and/or status, with a recorded reason.
 	Override *Override `json:"override,omitempty"`
 
-	// Period The period; for a year-to-date cell, the month it runs through.
-	Period string `json:"period"`
+	// Period A month, quarter, half, or fiscal year.
+	//
+	// Example: 2026-M10
+	Period Period `json:"period"`
 
 	// Status Status key, or the empty string when there is no outcome.
 	Status string `json:"status"`
@@ -519,7 +522,9 @@ type Cell struct {
 
 	// VersionId The methodology version the cell was computed under; empty when none applied.
 	VersionId string `json:"versionId"`
-	Ytd       bool   `json:"ytd"`
+
+	// Ytd True for a year-to-date cell; `period` is then the month it runs through.
+	Ytd bool `json:"ytd"`
 }
 
 // CellComputed The value and status the engine computed, set only when an override applied.
@@ -1438,12 +1443,16 @@ type GetVersionDiffParams struct {
 
 // GetScorecardViewParams defines parameters for GetScorecardView.
 type GetScorecardViewParams struct {
+	// Periods Period columns, of any grain. At most 24. At least one column
+	// is required across `periods` and `ytd`; the server returns 400
+	// `invalid` for an empty request or one over the limits.
 	Periods *[]Period `form:"periods,omitempty" json:"periods,omitempty"`
 
-	// Ytd Months that fiscal year-to-date columns run through.
+	// Ytd Months that fiscal year-to-date columns run through. At most 2.
+	// Counts toward the at-least-one-column rule with `periods`.
 	Ytd *[]MonthPeriod `form:"ytd,omitempty" json:"ytd,omitempty"`
 
-	// Subjects Keep only rows for these subject IDs.
+	// Subjects Keep only rows for these subject IDs. At most 200.
 	Subjects *[]Id `form:"subjects,omitempty" json:"subjects,omitempty"`
 
 	// Restate Methodology version ID (any status) to compute every column

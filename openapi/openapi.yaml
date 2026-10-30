@@ -12,6 +12,10 @@ info:
 
     JSON field names mirror the domain model. Periods are strings such as
     `2026-M10`, `2026-Q3`, `2026-H2`, or `2026-FY`.
+
+    Required arrays and objects in responses are never null: an empty list
+    is `[]` and an empty map is `{}`. Only fields marked `nullable` (for
+    example a data value) can be null.
 servers:
   - url: /v1
 security:
@@ -606,28 +610,37 @@ paths:
         - name: periods
           in: query
           required: false
+          description: |
+            Period columns, of any grain. At most 24. At least one column
+            is required across `periods` and `ytd`; the server returns 400
+            `invalid` for an empty request or one over the limits.
           style: form
           explode: true
           schema:
             type: array
+            maxItems: 24
             items: { $ref: '#/components/schemas/Period' }
         - name: ytd
           in: query
           required: false
-          description: Months that fiscal year-to-date columns run through.
+          description: |
+            Months that fiscal year-to-date columns run through. At most 2.
+            Counts toward the at-least-one-column rule with `periods`.
           style: form
           explode: true
           schema:
             type: array
+            maxItems: 2
             items: { $ref: '#/components/schemas/MonthPeriod' }
         - name: subjects
           in: query
           required: false
-          description: Keep only rows for these subject IDs.
+          description: Keep only rows for these subject IDs. At most 200.
           style: form
           explode: true
           schema:
             type: array
+            maxItems: 200
             items: { $ref: '#/components/schemas/Id' }
         - name: restate
           in: query
@@ -1566,11 +1579,10 @@ components:
       properties:
         metricKey: { $ref: '#/components/schemas/Key' }
         subjectId: { $ref: '#/components/schemas/Id' }
-        period:
-          type: string
-          description: The period; for a year-to-date cell, the month it runs through.
-          pattern: '^\d{4}-(M(0[1-9]|1[0-2])|Q[1-4]|H[12]|FY)$'
-        ytd: { type: boolean }
+        period: { $ref: '#/components/schemas/Period' }
+        ytd:
+          type: boolean
+          description: True for a year-to-date cell; `period` is then the month it runs through.
         value:
           type: number
           format: double
@@ -1585,7 +1597,9 @@ components:
           description: Set only for not-applicable cells.
         components:
           type: object
-          description: Rolled-up value of each measure the formula references.
+          description: |
+            Rolled-up value of each measure the formula references. Always
+            an object, never null: `{}` for blank or not-applicable cells.
           additionalProperties: { type: number, format: double }
         coverage:
           type: array
