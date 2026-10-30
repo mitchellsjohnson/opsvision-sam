@@ -1284,6 +1284,9 @@ type UpdateMemberRequest struct {
 
 // UpdateOrgUnitRequest defines model for UpdateOrgUnitRequest.
 type UpdateOrgUnitRequest struct {
+	// LevelId Move the unit to another level. Its level depth must stay strictly
+	// greater than its parent's and strictly less than its children's.
+	LevelId     *Id          `json:"levelId,omitempty"`
 	Name        *string      `json:"name,omitempty"`
 	RetiredFrom *MonthPeriod `json:"retiredFrom,omitempty"`
 	SourceKeys  *[]string    `json:"sourceKeys,omitempty"`
@@ -1596,7 +1599,7 @@ type ServerInterface interface {
 	// CreateOrgUnit Create an org unit (admin only)
 	// (POST /org/units)
 	CreateOrgUnit(w http.ResponseWriter, r *http.Request)
-	// UpdateOrgUnit Rename, re-key, or retire an org unit (admin only)
+	// UpdateOrgUnit Rename, re-key, change the level of, or retire an org unit (admin only)
 	// (PATCH /org/units/{id})
 	UpdateOrgUnit(w http.ResponseWriter, r *http.Request, id Id)
 	// CreateOrgMove Reparent an org unit effective from a month (admin only)
@@ -5908,7 +5911,7 @@ type StrictServerInterface interface {
 	// CreateOrgUnit Create an org unit (admin only)
 	// (POST /org/units)
 	CreateOrgUnit(ctx context.Context, request CreateOrgUnitRequestObject) (CreateOrgUnitResponseObject, error)
-	// UpdateOrgUnit Rename, re-key, or retire an org unit (admin only)
+	// UpdateOrgUnit Rename, re-key, change the level of, or retire an org unit (admin only)
 	// (PATCH /org/units/{id})
 	UpdateOrgUnit(ctx context.Context, request UpdateOrgUnitRequestObject) (UpdateOrgUnitResponseObject, error)
 	// CreateOrgMove Reparent an org unit effective from a month (admin only)

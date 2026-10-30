@@ -36,26 +36,6 @@ func (unimplemented) ParseImport(context.Context, ParseImportRequestObject) (Par
 	return nil, errNotImplemented
 }
 
-func (unimplemented) ListItemKinds(context.Context, ListItemKindsRequestObject) (ListItemKindsResponseObject, error) {
-	return nil, errNotImplemented
-}
-
-func (unimplemented) CreateItemKind(context.Context, CreateItemKindRequestObject) (CreateItemKindResponseObject, error) {
-	return nil, errNotImplemented
-}
-
-func (unimplemented) ListItems(context.Context, ListItemsRequestObject) (ListItemsResponseObject, error) {
-	return nil, errNotImplemented
-}
-
-func (unimplemented) CreateItem(context.Context, CreateItemRequestObject) (CreateItemResponseObject, error) {
-	return nil, errNotImplemented
-}
-
-func (unimplemented) UpdateItem(context.Context, UpdateItemRequestObject) (UpdateItemResponseObject, error) {
-	return nil, errNotImplemented
-}
-
 func (unimplemented) ListScorecards(context.Context, ListScorecardsRequestObject) (ListScorecardsResponseObject, error) {
 	return nil, errNotImplemented
 }

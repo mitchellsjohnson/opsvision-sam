@@ -224,7 +224,7 @@ paths:
     patch:
       operationId: updateOrgUnit
       tags: [Org]
-      summary: Rename, re-key, or retire an org unit (admin only)
+      summary: Rename, re-key, change the level of, or retire an org unit (admin only)
       requestBody:
         required: true
         content:
@@ -1264,6 +1264,12 @@ components:
       minProperties: 1
       properties:
         name: { type: string, minLength: 1 }
+        levelId:
+          description: |
+            Move the unit to another level. Its level depth must stay strictly
+            greater than its parent's and strictly less than its children's.
+          allOf:
+            - $ref: '#/components/schemas/Id'
         sourceKeys:
           type: array
           items: { type: string }

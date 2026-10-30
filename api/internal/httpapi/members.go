@@ -9,10 +9,10 @@ import (
 	"opsvision/internal/store"
 )
 
-// ListMembers lists the tenant's members, including pending invitations. Any
-// member of the tenant may read it.
+// ListMembers lists the tenant's members, including pending invitations.
+// Admins only: it exposes every member's email address.
 func (s *Server) ListMembers(ctx context.Context, _ ListMembersRequestObject) (ListMembersResponseObject, error) {
-	p, err := member(ctx)
+	p, err := tenantAdmin(ctx)
 	if err != nil {
 		return nil, err
 	}

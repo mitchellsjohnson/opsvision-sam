@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -47,12 +48,59 @@ func (o orgState) unit(id string) (domain.OrgUnit, bool) {
 }
 
 func (o orgState) hasLevel(id string) bool {
-	for _, l := range o.levels {
+	_, ok := levelDepth(o.levels, id)
+	return ok
+}
+
+// levelDepth returns the depth of the level with the given ID.
+func levelDepth(levels []domain.Level, id string) (int, bool) {
+	for _, l := range levels {
 		if l.ID == id {
-			return true
+			return l.Depth, true
 		}
 	}
-	return false
+	return 0, false
+}
+
+// depthViolations lists every parent/child pair, involving unit `only` (or
+// any unit when only is ""), whose levels are not strictly deeper below than
+// above. A pair is a unit and one of its parents: the one it was created
+// with or any it moves to. Pairs whose level is unknown are skipped; the
+// level checks report those.
+func depthViolations(levels []domain.Level, units []domain.OrgUnit, moves []domain.OrgMove, only string) []string {
+	byID := make(map[string]domain.OrgUnit, len(units))
+	for _, u := range units {
+		byID[u.ID] = u
+	}
+	var out []string
+	seen := map[[2]string]bool{}
+	check := func(child, parent string) {
+		if parent == "" || seen[[2]string{child, parent}] {
+			return
+		}
+		seen[[2]string{child, parent}] = true
+		if only != "" && child != only && parent != only {
+			return
+		}
+		c, cok := byID[child]
+		p, pok := byID[parent]
+		if !cok || !pok {
+			return
+		}
+		cd, cok := levelDepth(levels, c.LevelID)
+		pd, pok := levelDepth(levels, p.LevelID)
+		if cok && pok && cd <= pd {
+			out = append(out, fmt.Sprintf("org unit %s (level %s, depth %d) must be deeper than its parent %s (level %s, depth %d)",
+				child, c.LevelID, cd, parent, p.LevelID, pd))
+		}
+	}
+	for _, u := range units {
+		check(u.ID, u.ParentID)
+	}
+	for _, m := range moves {
+		check(m.UnitID, m.NewParentID)
+	}
+	return out
 }
 
 // candidate builds the tree that would result from units and moves, turning
@@ -114,6 +162,7 @@ func (s *Server) PutOrgLevels(ctx context.Context, req PutOrgLevelsRequestObject
 	var pr problems
 	levels := make([]domain.Level, 0, len(req.Body.Levels))
 	seen := map[string]bool{}
+	depths := map[int]string{}
 	for i, l := range req.Body.Levels {
 		path := "levels[" + strconv.Itoa(i) + "]"
 		pr.id(path+".id", l.Id)
@@ -125,6 +174,10 @@ func (s *Server) PutOrgLevels(ctx context.Context, req PutOrgLevelsRequestObject
 			pr.add(path+".id", "duplicate level id %q", l.Id)
 		}
 		seen[l.Id] = true
+		if other, dup := depths[l.Depth]; dup && l.Depth >= 0 {
+			pr.add(path+".depth", "depth %d is already used by level %q", l.Depth, other)
+		}
+		depths[l.Depth] = l.Id
 		levels = append(levels, domain.Level{ID: l.Id, Name: strings.TrimSpace(l.Name), Depth: l.Depth})
 	}
 	if err := pr.err(); err != nil {
@@ -139,6 +192,13 @@ func (s *Server) PutOrgLevels(ctx context.Context, req PutOrgLevelsRequestObject
 		if !seen[u.LevelID] {
 			return nil, conflict("level " + u.LevelID + " is still used by org unit " + u.ID)
 		}
+	}
+
+	if vs := depthViolations(levels, before.units, before.moves, ""); len(vs) > 0 {
+		for _, v := range vs {
+			pr.add("levels", "%s", v)
+		}
+		return nil, pr.err()
 	}
 
 	if err := s.store.PutLevels(ctx, tenantID, levels); err != nil {
@@ -184,7 +244,7 @@ func (s *Server) CreateOrgUnit(ctx context.Context, req CreateOrgUnitRequestObje
 	pr.nonEmpty("name", b.Name)
 	pr.id("levelId", b.LevelId)
 	pr.optionalID("parentId", b.ParentId)
-	keys := sourceKeys(&pr, "sourceKeys", b.SourceKeys)
+	keys := trimKeys(&pr, "sourceKeys", b.SourceKeys)
 	var retired *period.Period
 	if b.RetiredFrom != nil {
 		if m, ok := pr.month("retiredFrom", *b.RetiredFrom); ok {
@@ -199,6 +259,11 @@ func (s *Server) CreateOrgUnit(ctx context.Context, req CreateOrgUnitRequestObje
 	if err != nil {
 		return nil, err
 	}
+	owners, err := s.sourceKeyOwners(ctx, tenantID, st.units, "", "")
+	if err != nil {
+		return nil, err
+	}
+	checkKeyConflicts(&pr, "sourceKeys", keys, owners)
 	if _, exists := st.unit(b.Id); exists {
 		return nil, conflict("org unit " + b.Id + " already exists")
 	}
@@ -206,8 +271,13 @@ func (s *Server) CreateOrgUnit(ctx context.Context, req CreateOrgUnitRequestObje
 		pr.add("levelId", "level %q does not exist", b.LevelId)
 	}
 	if b.ParentId != "" {
-		if _, ok := st.unit(b.ParentId); !ok {
+		parent, ok := st.unit(b.ParentId)
+		if !ok {
 			pr.add("parentId", "org unit %q does not exist", b.ParentId)
+		} else if cd, ok := levelDepth(st.levels, b.LevelId); ok {
+			if pd, ok := levelDepth(st.levels, parent.LevelID); ok && cd <= pd {
+				pr.add("levelId", "level depth %d must be greater than the parent's level depth %d", cd, pd)
+			}
 		}
 	}
 	if err := pr.err(); err != nil {
@@ -255,15 +325,18 @@ func (s *Server) UpdateOrgUnit(ctx context.Context, req UpdateOrgUnitRequestObje
 
 	var pr problems
 	pr.id("id", req.Id)
-	if b.Name == nil && b.SourceKeys == nil && b.RetiredFrom == nil {
-		pr.add("", "name, sourceKeys, or retiredFrom is required")
+	if b.Name == nil && b.LevelId == nil && b.SourceKeys == nil && b.RetiredFrom == nil {
+		pr.add("", "name, levelId, sourceKeys, or retiredFrom is required")
 	}
 	if b.Name != nil {
 		pr.nonEmpty("name", *b.Name)
 	}
+	if b.LevelId != nil {
+		pr.id("levelId", *b.LevelId)
+	}
 	var keys []string
 	if b.SourceKeys != nil {
-		keys = sourceKeys(&pr, "sourceKeys", *b.SourceKeys)
+		keys = trimKeys(&pr, "sourceKeys", *b.SourceKeys)
 	}
 	var retired *period.Period
 	if b.RetiredFrom != nil {
@@ -284,9 +357,26 @@ func (s *Server) UpdateOrgUnit(ctx context.Context, req UpdateOrgUnitRequestObje
 		return nil, notFound("org unit not found")
 	}
 
+	if b.LevelId != nil && !st.hasLevel(*b.LevelId) {
+		pr.add("levelId", "level %q does not exist", *b.LevelId)
+	}
+	if b.SourceKeys != nil {
+		owners, err := s.sourceKeyOwners(ctx, tenantID, st.units, current.ID, "")
+		if err != nil {
+			return nil, err
+		}
+		checkKeyConflicts(&pr, "sourceKeys", keys, owners)
+	}
+	if err := pr.err(); err != nil {
+		return nil, err
+	}
+
 	updated := current
 	if b.Name != nil {
 		updated.Name = strings.TrimSpace(*b.Name)
+	}
+	if b.LevelId != nil {
+		updated.LevelID = *b.LevelId
 	}
 	if b.SourceKeys != nil {
 		updated.SourceKeys = keys
@@ -308,6 +398,14 @@ func (s *Server) UpdateOrgUnit(ctx context.Context, req UpdateOrgUnitRequestObje
 	}
 	if retired != nil && strandsChildren(tree, st.moves, updated.ID) {
 		return nil, badRequest(msgChildrenFirst)
+	}
+	if b.LevelId != nil && updated.LevelID != current.LevelID {
+		if vs := depthViolations(st.levels, units, st.moves, updated.ID); len(vs) > 0 {
+			for _, v := range vs {
+				pr.add("levelId", "%s", v)
+			}
+			return nil, pr.err()
+		}
 	}
 
 	if err := s.store.PutOrgUnit(ctx, tenantID, updated); err != nil {
@@ -362,6 +460,13 @@ func (s *Server) CreateOrgMove(ctx context.Context, req CreateOrgMoveRequestObje
 	}
 	if _, ok := st.unit(b.NewParentId); !ok {
 		return nil, badRequest("new parent does not exist", detail{Path: "newParentId", Message: "org unit " + b.NewParentId + " does not exist"})
+	}
+
+	if vs := depthViolations(st.levels, st.units, []domain.OrgMove{{UnitID: req.Id, NewParentID: b.NewParentId}}, req.Id); len(vs) > 0 {
+		// Only the new move's pair can be reported here: the stored pairs
+		// were valid when written.
+		last := vs[len(vs)-1]
+		return nil, badRequest("new parent is not at a shallower level", detail{Path: "newParentId", Message: last})
 	}
 
 	move := domain.OrgMove{UnitID: req.Id, NewParentID: b.NewParentId, EffectiveMonth: month, Note: note}
@@ -443,17 +548,16 @@ func (s *Server) GetOrgTree(ctx context.Context, req GetOrgTreeRequestObject) (G
 // maxNoteBytes bounds a move's free-text note.
 const maxNoteBytes = 1000
 
-// sourceKeys validates and normalizes source-system names: trimmed, none
-// blank. It always returns a non-nil slice.
-func sourceKeys(pr *problems, path string, in []string) []string {
-	out := make([]string, 0, len(in))
+// trimKeys trims source-system names and reports blank ones. The result has
+// the same length and order as in (blank entries stay "" and are errors), so
+// indexes in later messages match the request.
+func trimKeys(pr *problems, path string, in []string) []string {
+	out := make([]string, len(in))
 	for i, k := range in {
-		k = strings.TrimSpace(k)
-		if k == "" {
+		out[i] = strings.TrimSpace(k)
+		if out[i] == "" {
 			pr.add(path+"["+strconv.Itoa(i)+"]", "must not be empty")
-			continue
 		}
-		out = append(out, k)
 	}
 	return out
 }

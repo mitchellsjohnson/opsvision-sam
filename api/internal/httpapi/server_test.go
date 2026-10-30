@@ -24,7 +24,6 @@ func TestUnimplementedOperationReturns501Envelope(t *testing.T) {
 	e := newTestEnv(t)
 	for _, tc := range []struct{ method, path string }{
 		{"GET", "/scorecards"},
-		{"GET", "/items"},
 		{"GET", "/audit?from=2026-01-01T00:00:00Z&to=2026-12-01T00:00:00Z"},
 		{"POST", "/imports/uploads"},
 	} {

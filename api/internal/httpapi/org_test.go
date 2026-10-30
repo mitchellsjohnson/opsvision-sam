@@ -285,6 +285,7 @@ func TestOrgUnitValidation(t *testing.T) {
 	e.expect(t, 200, admin, "PATCH", "/org/units/seg-b", map[string]any{"retiredFrom": "2026-M01"}, nil)
 	u := base()
 	u.ID = "late"
+	u.LevelID = "product"
 	u.ParentID = "seg-b"
 	e.expectError(t, 400, "invalid", admin, "POST", "/org/units", u)
 
@@ -463,4 +464,107 @@ func TestAuditOnWrite(t *testing.T) {
 	if got := len(e.audits(t, "t2")); got != 0 {
 		t.Fatalf("t2 audit entries = %d", got)
 	}
+}
+
+func TestHierarchyDepthRules(t *testing.T) {
+	e := newTestEnv(t)
+	seedOrg(t, e)
+	admin := e.tokens["t1-admin"]
+	unit := func(id, level, parent string) unitJSON {
+		return unitJSON{ID: id, Name: id, LevelID: level, ParentID: parent, SourceKeys: []string{}}
+	}
+	depthErr := func(path string, got apiErrorBody) {
+		t.Helper()
+		for _, d := range got.Error.Details {
+			if d.Path == path {
+				return
+			}
+		}
+		t.Fatalf("no detail at %q in %+v", path, got.Error.Details)
+	}
+
+	// Create: the level must be strictly deeper than the parent's.
+	depthErr("levelId", e.expectError(t, 400, "invalid", admin, "POST", "/org/units", unit("same", "segment", "seg-a")))
+	depthErr("levelId", e.expectError(t, 400, "invalid", admin, "POST", "/org/units", unit("up", "company", "seg-a")))
+	// A deeper level may skip tiers (product directly under company).
+	e.expect(t, 201, admin, "POST", "/org/units", unit("skip", "product", "acme"), nil)
+	// Root units may sit at any level.
+	e.expect(t, 201, admin, "POST", "/org/units", unit("root-product", "product", ""), nil)
+	e.expect(t, 201, admin, "POST", "/org/units", unit("root-segment", "segment", ""), nil)
+
+	// Moves: the unit must be deeper than its new parent.
+	for _, mv := range []struct{ unit, parent string }{
+		{"prod-1", "skip"},        // product under product
+		{"seg-b", "root-product"}, // segment under product
+		{"seg-b", "seg-a"},        // segment under segment
+		{"acme", "root-segment"},  // company under segment
+	} {
+		got := e.expectError(t, 400, "invalid", admin, "POST", "/org/units/"+mv.unit+"/moves", map[string]any{
+			"newParentId": mv.parent, "effectiveMonth": "2026-M07",
+		})
+		depthErr("newParentId", got)
+	}
+	e.expect(t, 201, admin, "POST", "/org/units/prod-1/moves", map[string]any{"newParentId": "seg-b", "effectiveMonth": "2026-M07"}, nil)
+	e.expect(t, 201, admin, "POST", "/org/units/seg-b/moves", map[string]any{"newParentId": "acme", "effectiveMonth": "2026-M08"}, nil)
+
+	// PATCH levelId: against the parent and against children.
+	depthErr("levelId", e.expectError(t, 400, "invalid", admin, "PATCH", "/org/units/seg-a", map[string]any{"levelId": "company"})) // not deeper than acme
+	depthErr("levelId", e.expectError(t, 400, "invalid", admin, "PATCH", "/org/units/acme", map[string]any{"levelId": "segment"}))  // seg-a is no deeper
+	depthErr("levelId", e.expectError(t, 400, "invalid", admin, "PATCH", "/org/units/seg-b", map[string]any{"levelId": "product"})) // prod-1 (moved under seg-b) is no deeper
+	depthErr("levelId", e.expectError(t, 400, "invalid", admin, "PATCH", "/org/units/seg-a", map[string]any{"levelId": "nowhere"})) // unknown level
+	var got unitJSON
+	e.expect(t, 200, admin, "PATCH", "/org/units/seg-a", map[string]any{"levelId": "segment", "name": "Segment A2"}, &got)
+	if got.LevelID != "segment" || got.Name != "Segment A2" {
+		t.Fatalf("patched = %+v", got)
+	}
+	// Historical parents count: prod-1 was created under seg-a, so seg-a
+	// cannot drop to prod-1's level even though prod-1 has moved away.
+	depthErr("levelId", e.expectError(t, 400, "invalid", admin, "PATCH", "/org/units/seg-a", map[string]any{"levelId": "product"}))
+	// A unit with no relations can change level within the rules.
+	e.expect(t, 200, admin, "PATCH", "/org/units/skip", map[string]any{"levelId": "segment"}, &got)
+	if got.LevelID != "segment" {
+		t.Fatalf("patched = %+v", got)
+	}
+	depthErr("levelId", e.expectError(t, 400, "invalid", admin, "PATCH", "/org/units/skip", map[string]any{"levelId": "company"}))
+}
+
+func TestPutOrgLevelsDepthRules(t *testing.T) {
+	e := newTestEnv(t)
+	seedOrg(t, e)
+	admin := e.tokens["t1-admin"]
+	lv := func(depths ...int) map[string]any {
+		ids := []string{"company", "segment", "product"}
+		var ls []map[string]any
+		for i, d := range depths {
+			ls = append(ls, map[string]any{"id": ids[i], "name": ids[i], "depth": d})
+		}
+		return map[string]any{"levels": ls}
+	}
+	// Duplicate depth values.
+	got := e.expectError(t, 400, "invalid", admin, "PUT", "/org/levels", lv(0, 1, 1))
+	if len(got.Error.Details) == 0 || got.Error.Details[0].Path != "levels[2].depth" {
+		t.Fatalf("details = %+v", got.Error.Details)
+	}
+	// Changes that invalidate existing units: segment deeper than product
+	// puts prod-1 (product) under seg-a (segment) the wrong way round.
+	got = e.expectError(t, 400, "invalid", admin, "PUT", "/org/levels", lv(0, 3, 2))
+	if len(got.Error.Details) == 0 {
+		t.Fatalf("no details: %+v", got)
+	}
+	// Flattening depths below a parent likewise.
+	e.expectError(t, 400, "invalid", admin, "PUT", "/org/levels", lv(5, 1, 2))
+	// Order-preserving changes are fine, and nothing was stored by the failures.
+	var out struct {
+		Levels []struct {
+			ID    string
+			Depth int
+		}
+	}
+	e.expect(t, 200, admin, "PUT", "/org/levels", lv(0, 10, 20), &out)
+	if len(out.Levels) != 3 || out.Levels[2].Depth != 20 {
+		t.Fatalf("levels = %+v", out)
+	}
+	// Moves count too: a move that is valid today constrains later changes.
+	e.expect(t, 201, admin, "POST", "/org/units/prod-1/moves", map[string]any{"newParentId": "seg-b", "effectiveMonth": "2026-M07"}, nil)
+	e.expectError(t, 400, "invalid", admin, "PUT", "/org/levels", lv(0, 25, 20))
 }

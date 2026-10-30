@@ -25,6 +25,7 @@ func TestMembersAdminOnly(t *testing.T) {
 	e := newTestEnv(t)
 	for _, role := range []string{"t1-contributor", "t1-viewer"} {
 		e.expectError(t, 403, "forbidden", e.tokens[role], "PATCH", "/members/u-t1-viewer", map[string]any{"role": "admin"})
+		e.expectError(t, 403, "forbidden", e.tokens[role], "GET", "/members", nil)
 	}
 	// Nothing changed.
 	var list struct{ Members []membershipJSON }
@@ -36,26 +37,32 @@ func TestMembersAdminOnly(t *testing.T) {
 	}
 	// An operator without an organization is not a tenant admin.
 	e.expectError(t, 403, "forbidden", e.tokens["operator"], "PATCH", "/members/u-t1-viewer", map[string]any{"role": "admin"})
+	e.expectError(t, 403, "forbidden", e.tokens["operator"], "GET", "/members", nil)
+	e.expectError(t, 401, "unauthorized", "", "GET", "/members", nil)
 }
 
 func TestListMembers(t *testing.T) {
 	e := newTestEnv(t)
-	for _, role := range []string{"t1-admin", "t1-contributor", "t1-viewer"} {
-		var list struct{ Members []membershipJSON }
-		e.expect(t, 200, e.tokens[role], "GET", "/members", nil, &list)
-		if len(list.Members) != 3 {
-			t.Fatalf("%s sees %d members, want 3", role, len(list.Members))
+	var list struct{ Members []membershipJSON }
+	e.expect(t, 200, e.tokens["t1-admin"], "GET", "/members", nil, &list)
+	if len(list.Members) != 3 {
+		t.Fatalf("admin sees %d members, want 3", len(list.Members))
+	}
+	for _, m := range list.Members {
+		if !strings.HasPrefix(m.UserID, "u-t1-") {
+			t.Fatalf("admin sees foreign member %s", m.UserID)
 		}
-		for _, m := range list.Members {
-			if !strings.HasPrefix(m.UserID, "u-t1-") {
-				t.Fatalf("%s sees foreign member %s", role, m.UserID)
-			}
-			if m.Scope.OrgUnitIDs == nil || m.Scope.MetricKeys == nil {
-				t.Fatalf("member %s has null scope arrays", m.UserID)
-			}
+		if m.Scope.OrgUnitIDs == nil || m.Scope.MetricKeys == nil {
+			t.Fatalf("member %s has null scope arrays", m.UserID)
 		}
 	}
-	e.expectError(t, 403, "forbidden", e.tokens["operator"], "GET", "/members", nil)
+	// Admin of another tenant sees only its own members.
+	e.expect(t, 200, e.tokens["t2-admin"], "GET", "/members", nil, &list)
+	for _, m := range list.Members {
+		if !strings.HasPrefix(m.UserID, "u-t2-") {
+			t.Fatalf("t2 admin sees foreign member %s", m.UserID)
+		}
+	}
 }
 
 func TestUpdateMemberRoleAndScope(t *testing.T) {
