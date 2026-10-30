@@ -66,7 +66,7 @@ type TenantStore interface {
 type OrgStore interface {
 	// PutLevels replaces the full set of levels.
 	PutLevels(ctx context.Context, tenantID string, ls []domain.Level) error
-	// ListLevels returns levels sorted by Depth.
+	// ListLevels returns levels sorted by Depth, then ID.
 	ListLevels(ctx context.Context, tenantID string) ([]domain.Level, error)
 
 	PutOrgUnit(ctx context.Context, tenantID string, u domain.OrgUnit) error

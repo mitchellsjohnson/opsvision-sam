@@ -11,11 +11,13 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 
 	"opsvision/internal/domain"
 	"opsvision/internal/period"
@@ -62,6 +64,7 @@ func Run(t *testing.T, newStore func(t *testing.T) store.Store) {
 		{"DeleteMissing", deleteMissing},
 		{"ListsAreSorted", listsAreSorted},
 		{"ReturnedValuesAreCopies", returnedValuesAreCopies},
+		{"ConcurrentWritersOneWins", concurrentWritersOneWins},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) { c.fn(t, newStore(t)) })
@@ -84,9 +87,11 @@ func wantErr(t *testing.T, err, target error) {
 	}
 }
 
+// wantEq compares with cmpopts.EquateEmpty: a nil and an empty slice or map
+// are equal, because stores are not required to preserve that distinction.
 func wantEq[T any](t *testing.T, what string, got, want T) {
 	t.Helper()
-	if d := cmp.Diff(want, got); d != "" {
+	if d := cmp.Diff(want, got, cmpopts.EquateEmpty()); d != "" {
 		t.Fatalf("%s mismatch (-want +got):\n%s", what, d)
 	}
 }
@@ -712,9 +717,12 @@ func listDataByFiscalYear(t *testing.T, s store.Store) {
 	}
 	_, err := s.PutDataPoints(ctx, tn, "sc", writes)
 	must(t, err)
-	// A different scorecard's data must not appear.
-	_, err = s.PutDataPoints(ctx, tn, "sc-other", []store.DataWrite{{Point: point("m1", "u1", month(2026, 1), 999), ExpectedRevision: 0}})
+	// A different scorecard's data must not appear, even for a fiscal year
+	// that is in the queried set (2027).
+	otherPoint := point("m1", "u1", month(2027, 1), 999)
+	_, err = s.PutDataPoints(ctx, tn, "sc-other", []store.DataWrite{{Point: otherPoint, ExpectedRevision: 0}})
 	must(t, err)
+	must(t, s.PutOverride(ctx, tn, "sc-other", domain.Override{MetricKey: "x", SubjectID: "u1", Period: month(2027, 2), Status: "R", Reason: "other scorecard", By: "u", At: at(1)}))
 
 	for _, fy := range []int{2025, 2026, 2027} {
 		must(t, s.PutOverride(ctx, tn, "sc", domain.Override{MetricKey: "x", SubjectID: "u1", Period: month(fy, 2), Status: "Y", Reason: "r", By: "u", At: at(1)}))
@@ -739,6 +747,16 @@ func listDataByFiscalYear(t *testing.T, s store.Store) {
 		if o.Period.FY != 2025 && o.Period.FY != 2027 {
 			t.Fatalf("override outside requested fiscal years: %+v", o)
 		}
+		if o.Reason == "other scorecard" {
+			t.Fatalf("override from another scorecard leaked: %+v", o)
+		}
+	}
+
+	// The other scorecard sees only its own data.
+	pts, ovs, err = s.ListData(ctx, tn, "sc-other", []int{2025, 2027})
+	must(t, err)
+	if len(pts) != 1 || *pts[0].Value != 999 || len(ovs) != 1 || ovs[0].Reason != "other scorecard" {
+		t.Fatalf("sc-other data = %+v / %+v, want its own point and override only", pts, ovs)
 	}
 
 	pts, ovs, err = s.ListData(ctx, tn, "sc", []int{2030})
@@ -1057,6 +1075,16 @@ func listsAreSorted(t *testing.T, s store.Store) {
 	must(t, err)
 	wantEq(t, "level depths", []int{ls[0].Depth, ls[1].Depth, ls[2].Depth}, []int{0, 1, 2})
 
+	// Levels with equal depth are ordered by ID.
+	must(t, s.PutLevels(ctx, tn, []domain.Level{{ID: "z", Depth: 1}, {ID: "m", Depth: 0}, {ID: "b", Depth: 1}, {ID: "a", Depth: 1}}))
+	ls, err = s.ListLevels(ctx, tn)
+	must(t, err)
+	var lids []string
+	for _, l := range ls {
+		lids = append(lids, l.ID)
+	}
+	wantEq(t, "level order with ties", lids, []string{"m", "a", "b", "z"})
+
 	for _, id := range []string{"u3", "u1", "u2"} {
 		must(t, s.PutOrgUnit(ctx, tn, domain.OrgUnit{ID: id}))
 		must(t, s.PutItemKind(ctx, tn, domain.ItemKind{ID: id}))
@@ -1207,5 +1235,119 @@ func returnedValuesAreCopies(t *testing.T, s store.Store) {
 	must(t, err)
 	if gv.Content.Metrics[0].Targets[0].Value != 95 || gv.Content.Measures[0].Key != "m1" {
 		t.Fatalf("version changed through output mutation: %+v", gv.Content)
+	}
+}
+
+// --- concurrency -----------------------------------------------------------
+
+const writers = 8
+
+// race runs fn on writers goroutines at once and returns each call's error.
+func race(fn func(i int) error) []error {
+	errs := make([]error, writers)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := range writers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			errs[i] = fn(i)
+		}()
+	}
+	close(start)
+	wg.Wait()
+	return errs
+}
+
+// oneWinner requires exactly one nil error and ErrConflict for all the rest,
+// and returns the index of the winner.
+func oneWinner(t *testing.T, what string, errs []error) int {
+	t.Helper()
+	winner := -1
+	for i, err := range errs {
+		switch {
+		case err == nil:
+			if winner >= 0 {
+				t.Fatalf("%s: writers %d and %d both succeeded, want exactly one", what, winner, i)
+			}
+			winner = i
+		case !errors.Is(err, store.ErrConflict):
+			t.Fatalf("%s: writer %d error = %v, want nil or ErrConflict", what, i, err)
+		}
+	}
+	if winner < 0 {
+		t.Fatalf("%s: no writer succeeded, want exactly one", what)
+	}
+	return winner
+}
+
+// concurrentWritersOneWins checks that create-if-absent is atomic: writers
+// racing to create the same data point, version, or tenant produce exactly
+// one success and ErrConflict for the others, and the loser leaves no trace.
+func concurrentWritersOneWins(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	tn := newTenant(t, s)
+
+	// Data point at revision 1 / must-not-exist.
+	p := month(2026, 10)
+	errs := race(func(i int) error {
+		_, err := s.PutDataPoints(ctx, tn, "sc", []store.DataWrite{{Point: point("m1", "u1", p, float64(i+1)), ExpectedRevision: store.MustNotExist}})
+		return err
+	})
+	w := oneWinner(t, "data point", errs)
+	hist, err := s.History(ctx, tn, "sc", "m1", "u1", p)
+	must(t, err)
+	if len(hist) != 1 || hist[0].Revision != 1 || *hist[0].Value != float64(w+1) {
+		t.Fatalf("history = %+v, want exactly the winner's value %d at revision 1", hist, w+1)
+	}
+	cur := current(t, s, tn, "sc", 2026)
+	if len(cur) != 1 || cur[0].Revision != 1 || *cur[0].Value != float64(w+1) {
+		t.Fatalf("current = %+v, want exactly the winner's value %d at revision 1", cur, w+1)
+	}
+	for i, err := range errs {
+		if i == w {
+			continue
+		}
+		var ce *store.ConflictError
+		if !errors.As(err, &ce) || len(ce.Conflicts) != 1 {
+			t.Fatalf("loser %d error = %v, want a *ConflictError with one conflict", i, err)
+		}
+	}
+
+	// Methodology version create.
+	errs = race(func(i int) error {
+		return s.PutVersion(ctx, tn, version("sc", "v-race", fmt.Sprintf("writer-%d", i), month(2026, 1)), 0)
+	})
+	w = oneWinner(t, "version", errs)
+	got, err := s.GetVersion(ctx, tn, "sc", "v-race")
+	must(t, err)
+	if got.Revision != 1 || got.Name != fmt.Sprintf("writer-%d", w) {
+		t.Fatalf("version = rev %d %q, want rev 1 writer-%d", got.Revision, got.Name, w)
+	}
+
+	// Tenant create with a duplicate ID (distinct Auth0 orgs).
+	id := uid("tenant")
+	orgs := make([]string, writers)
+	for i := range orgs {
+		orgs[i] = uid("org")
+	}
+	errs = race(func(i int) error {
+		return s.CreateTenant(ctx, domain.Tenant{ID: id, Name: fmt.Sprintf("writer-%d", i), Auth0OrgID: orgs[i], DefaultRole: domain.RoleViewer})
+	})
+	w = oneWinner(t, "tenant", errs)
+	gt, err := s.GetTenant(ctx, id)
+	must(t, err)
+	if gt.Name != fmt.Sprintf("writer-%d", w) || gt.Auth0OrgID != orgs[w] {
+		t.Fatalf("tenant = %q org %q, want the winner's (writer-%d)", gt.Name, gt.Auth0OrgID, w)
+	}
+	for i, org := range orgs {
+		bt, err := s.TenantByAuth0Org(ctx, org)
+		if i == w {
+			must(t, err)
+			wantEq(t, "winner's org lookup", bt.ID, id)
+			continue
+		}
+		wantErr(t, err, store.ErrNotFound) // a losing create must not claim its org
 	}
 }

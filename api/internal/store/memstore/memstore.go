@@ -364,7 +364,9 @@ func (s *Store) ListLevels(_ context.Context, tenantID string) ([]domain.Level, 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := append([]domain.Level{}, s.read(tenantID).levels...)
-	slices.SortStableFunc(out, func(a, b domain.Level) int { return cmp.Compare(a.Depth, b.Depth) })
+	slices.SortFunc(out, func(a, b domain.Level) int {
+		return cmp.Or(cmp.Compare(a.Depth, b.Depth), strings.Compare(a.ID, b.ID))
+	})
 	return out, nil
 }
 
