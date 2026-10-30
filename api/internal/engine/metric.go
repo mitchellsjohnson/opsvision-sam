@@ -100,22 +100,44 @@ func (ix *Index) CellYTD(v domain.MethodologyVersion, m domain.Metric, subjectID
 
 func (ix *Index) cell(v domain.MethodologyVersion, m domain.Metric, subjectID string, sp span) Cell {
 	c := ix.base(v, m, subjectID, sp)
-
-	// Reference value for change rules. A prior cell's value is read as
-	// displayed (overrides included), here and for deltas below. Status is
-	// always judged on the engine's own value.
-	var cmp *float64
 	isChange := m.Rule.Type == domain.RuleChange
-	if c.Value != nil && isChange {
+
+	var ov *domain.Override
+	if !sp.ytd {
+		if o, ok := ix.overrides[overrideKey{m.Key, subjectID, sp.period}]; ok {
+			ov = &o
+		}
+	}
+	// The value the cell will show: the override's, if it sets one.
+	final := c.Value
+	if ov != nil && ov.Value != nil {
+		final = ov.Value
+	}
+
+	// Reference value for change rules, fetched whenever there is a value to
+	// judge. A prior cell's value is read as displayed (overrides included),
+	// here and for deltas below.
+	var cmp *float64
+	if isChange && final != nil {
 		cmp = ix.comparison(v, m, subjectID, sp)
 	}
-	if c.Value != nil {
-		c.Status, _ = EvalStatus(m.Rule, m.Direction, subjectID, *c.Value, cmp)
-	}
+	engineStatus := judge(m, subjectID, c.Value, cmp)
+	c.Status = engineStatus
 
-	if !sp.ytd {
-		if ov, ok := ix.overrides[overrideKey{m.Key, subjectID, sp.period}]; ok {
-			c = applyOverride(c, ov, m)
+	if ov != nil {
+		c.Computed = &Computed{Value: copyFloat(c.Value), Status: engineStatus}
+		o := *ov
+		o.Value = copyFloat(ov.Value)
+		c.Override = &o
+		if ov.Value != nil {
+			c.Value = copyFloat(ov.Value)
+			c.Display = Format(m.Format, *ov.Value)
+			c.NAReason = ""
+			// A new value is re-judged through the normal rule path.
+			c.Status = judge(m, subjectID, c.Value, cmp)
+		}
+		if ov.Status != "" {
+			c.Status = ov.Status
 		}
 	}
 
@@ -135,21 +157,21 @@ func (ix *Index) cell(v domain.MethodologyVersion, m domain.Metric, subjectID st
 	return c
 }
 
-// applyOverride applies ov to c, keeping the engine's result in Computed.
-func applyOverride(c Cell, ov domain.Override, m domain.Metric) Cell {
-	c.Computed = &Computed{Value: copyFloat(c.Value), Status: c.Status}
-	o := ov
-	o.Value = copyFloat(ov.Value)
-	c.Override = &o
-	if ov.Value != nil {
-		c.Value = copyFloat(ov.Value)
-		c.Display = Format(m.Format, *ov.Value)
-		c.NAReason = ""
+// judge derives a status for value val under m's rule. Bands and scale rules
+// are judged on the value rounded to the metric's display precision, so a
+// status always agrees with the number shown. Change rules use the unrounded
+// value and reference, because improvement percentages are computed from the
+// underlying numbers.
+func judge(m domain.Metric, subjectID string, val, cmp *float64) string {
+	if val == nil {
+		return ""
 	}
-	if ov.Status != "" {
-		c.Status = ov.Status
+	x := *val
+	if m.Rule.Type != domain.RuleChange {
+		x = roundForDisplay(m.Format, x)
 	}
-	return c
+	status, _ := EvalStatus(m.Rule, m.Direction, subjectID, x, cmp)
+	return status
 }
 
 func copyFloat(p *float64) *float64 {
@@ -179,7 +201,7 @@ func (ix *Index) comparison(v domain.MethodologyVersion, m domain.Metric, subjec
 	case domain.ComparePriorPeriod:
 		return ix.valueOf(v, m, subjectID, ix.prior(sp))
 	case domain.ComparePriorYearAverage:
-		return ix.priorYearAverage(v, m, subjectID, sp)
+		return ix.priorYearValue(v, m, subjectID, sp)
 	case domain.CompareBaseline:
 		if t, ok := ix.pickTarget(m.Targets, subjectID, sp.months, true); ok {
 			val := t.Value
@@ -189,34 +211,14 @@ func (ix *Index) comparison(v domain.MethodologyVersion, m domain.Metric, subjec
 	return nil
 }
 
-// priorYearAverage is the mean of the metric's values at its reporting grain
-// (months for a monthly metric) across the fiscal year before sp's, counting
-// only periods that have a value.
-func (ix *Index) priorYearAverage(v domain.MethodologyVersion, m domain.Metric, subjectID string, sp span) *float64 {
-	grain, ok := grainOf(m.Frequency)
-	if !ok {
-		return nil
-	}
-	prevYear := period.Period{Grain: period.Year, FY: sp.period.FY - 1}
-	var sum float64
-	var n int
-	seen := map[period.Period]bool{}
-	for _, mo := range ix.cal.Months(prevYear) {
-		pp := ix.cal.Parent(mo, grain)
-		if seen[pp] {
-			continue
-		}
-		seen[pp] = true
-		if val := ix.valueOf(v, m, subjectID, ix.monthSpan(pp)); val != nil {
-			sum += *val
-			n++
-		}
-	}
-	if n == 0 {
-		return nil
-	}
-	mean := sum / float64(n)
-	return &mean
+// priorYearValue is the metric's own value over the whole previous fiscal
+// year: the formula applied to full-year rolled-up measures, which is the base
+// value of the year-to-date cell through the last month of that year. It is
+// the same reference whatever the grain of the cell being judged (month,
+// quarter, half or YTD), so sums and ratios are compared like for like.
+func (ix *Index) priorYearValue(v domain.MethodologyVersion, m domain.Metric, subjectID string, sp span) *float64 {
+	last := period.Period{Grain: period.Month, FY: sp.period.FY - 1, Index: 12}
+	return ix.base(v, m, subjectID, ix.ytdSpan(last)).Value
 }
 
 // grainOf maps a metric's reporting frequency to the grain its data is

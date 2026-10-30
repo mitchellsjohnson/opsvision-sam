@@ -66,3 +66,28 @@ func TestFormatNonFinite(t *testing.T) {
 		}
 	}
 }
+
+func TestRoundForDisplay(t *testing.T) {
+	tests := []struct {
+		format string
+		v      float64
+		want   float64
+	}{
+		{domain.FormatPercent1, 89.96, 90},
+		{domain.FormatPercent1, 89.94, 89.9},
+		{domain.FormatPercent0, 89.5, 90},
+		{domain.FormatNumber0, -2.5, -3},
+		{domain.FormatNumber2, 1.005, 1.01},
+		{domain.FormatMoneyK, 8234.5, 8235},
+		{domain.FormatDays0, 1.4, 1},
+		{domain.FormatPercent0, -0.4, 0},
+		{domain.FormatNumber1, 1587.25, 1587.3},
+		{"unknown", 1.234, 1.234},
+	}
+	for _, tt := range tests {
+		got := roundForDisplay(tt.format, tt.v)
+		if got != tt.want || math.Signbit(got) != math.Signbit(tt.want) {
+			t.Errorf("roundForDisplay(%q, %v) = %v, want %v", tt.format, tt.v, got, tt.want)
+		}
+	}
+}

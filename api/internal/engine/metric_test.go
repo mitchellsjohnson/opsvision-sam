@@ -150,26 +150,43 @@ func TestChangeRulePriorYearAverage(t *testing.T) {
 	m := metricOf("defect_score", "defect_score", domain.FormatNumber0, domain.DirectionLowerBetter,
 		changeRule(domain.ComparePriorYearAverage, band("G", ">", 0), band("Y", ">=", -5), band("R", "", 0)))
 	v := versionOf(defects)
-	// Prior FY has values in only three months: 100, 200, 300 => average 200.
+	// Prior FY has values in only three months: 100 + 200 + 300. The reference
+	// is the metric over the whole prior year (600), not a per-month mean.
 	data := []domain.DataPoint{
 		pt("defect_score", "gateway", month(2025, 2), 100),
 		pt("defect_score", "gateway", month(2025, 7), 200),
 		pt("defect_score", "gateway", month(2025, 12), 300),
-		pt("defect_score", "gateway", month(2026, 4), 150),
-		pt("defect_score", "gateway", month(2026, 5), 202),
-		pt("defect_score", "gateway", month(2026, 6), 230),
+		pt("defect_score", "gateway", month(2026, 1), 400),
+		pt("defect_score", "gateway", month(2026, 2), 150),
+		pt("defect_score", "gateway", month(2026, 3), 630),
+		pt("defect_score", "gateway", month(2026, 4), 700),
 	}
 	ix := newIndexT(t, data...)
-	c := ix.Cell(v, m, "gateway", month(2026, 4))
+
+	// Monthly cell vs the prior-year value.
+	c := ix.Cell(v, m, "gateway", month(2026, 2))
 	if c.Status != "G" || c.ChangeKind != "improvement_pct" {
-		t.Errorf("M04: Status=%q Kind=%q, want G improvement_pct", c.Status, c.ChangeKind)
+		t.Errorf("M02: Status=%q Kind=%q, want G improvement_pct", c.Status, c.ChangeKind)
 	}
-	approx(t, "M04 Change", c.Change, 25)
-	if got := ix.Cell(v, m, "gateway", month(2026, 5)).Status; got != "Y" {
-		t.Errorf("M05 (202 vs avg 200): %q, want Y", got)
+	approx(t, "M02 Change", c.Change, 75) // (600-150)/600
+	if got := ix.Cell(v, m, "gateway", month(2026, 3)).Status; got != "Y" {
+		t.Errorf("M03 (630 vs 600 = -5%%): %q, want Y", got)
 	}
-	if got := ix.Cell(v, m, "gateway", month(2026, 6)).Status; got != "R" {
-		t.Errorf("M06 (230 vs avg 200): %q, want R", got)
+	if got := ix.Cell(v, m, "gateway", month(2026, 4)).Status; got != "R" {
+		t.Errorf("M04 (700 vs 600): %q, want R", got)
+	}
+
+	// YTD cell vs the same prior-year value: 400+150 = 550 through M02.
+	y := ix.CellYTD(v, m, "gateway", month(2026, 2))
+	approx(t, "YTD value", y.Value, 550)
+	approx(t, "YTD Change", y.Change, (600.0-550)/600*100)
+	if y.Status != "G" {
+		t.Errorf("YTD M02: %q, want G", y.Status)
+	}
+	// YTD through M04 totals 1880: far worse than the whole prior year.
+	y = ix.CellYTD(v, m, "gateway", month(2026, 4))
+	if y.Status != "R" {
+		t.Errorf("YTD M04 (1880 vs 600): %q, want R", y.Status)
 	}
 
 	// No data at all in the prior fiscal year => no status.
@@ -177,6 +194,56 @@ func TestChangeRulePriorYearAverage(t *testing.T) {
 	c = ix.Cell(v, m, "gateway", month(2026, 4))
 	if c.Status != "" || c.Change != nil || c.ChangeKind != "" {
 		t.Errorf("no prior-year data: %+v", c)
+	}
+}
+
+// A summed metric's YTD total must be compared with a full prior year, not a
+// monthly average (which would make every YTD total look like a regression).
+func TestPriorYearReferenceSummedYTD(t *testing.T) {
+	m := metricOf("defect_score", "defect_score", domain.FormatNumber0, domain.DirectionLowerBetter,
+		changeRule(domain.ComparePriorYearAverage, band("G", ">", 0), band("Y", ">=", -5), band("R", "", 0)))
+	var data []domain.DataPoint
+	for i := 1; i <= 12; i++ {
+		data = append(data, pt("defect_score", "gateway", month(2025, i), 100)) // year total 1200
+	}
+	for i := 1; i <= 6; i++ {
+		data = append(data, pt("defect_score", "gateway", month(2026, i), 90)) // YTD 540
+	}
+	c := newIndexT(t, data...).CellYTD(versionOf(defects), m, "gateway", month(2026, 6))
+	approx(t, "Value", c.Value, 540)
+	if c.Status != "G" {
+		t.Errorf("Status = %q, want G (540 vs 1200)", c.Status)
+	}
+	approx(t, "Change", c.Change, 55)
+}
+
+// For a ratio metric the reference is the ratio of prior-year totals, not an
+// average of monthly ratios.
+func TestPriorYearReferenceRatioMetric(t *testing.T) {
+	m := metricOf("daily_score", "points / days", domain.FormatNumber2, domain.DirectionHigherBetter,
+		changeRule(domain.ComparePriorYearAverage, band("G", ">", 0), band("R", "", 0)))
+	v := versionOf(points, days)
+	ix := newIndexT(t,
+		// Prior year: 100/10 = 10 and 300/20 = 15 (mean of ratios 12.5);
+		// year totals 400/30.
+		pt("points", "gateway", month(2025, 1), 100), pt("days", "gateway", month(2025, 1), 10),
+		pt("points", "gateway", month(2025, 6), 300), pt("days", "gateway", month(2025, 6), 20),
+		pt("points", "gateway", month(2026, 1), 40), pt("days", "gateway", month(2026, 1), 3),
+	)
+	ref := 400.0 / 30
+	c := ix.Cell(v, m, "gateway", month(2026, 1))
+	approx(t, "Value", c.Value, 40.0/3)
+	approx(t, "Change", c.Change, (40.0/3-ref)/ref*100)
+	y := ix.CellYTD(v, m, "gateway", month(2026, 1))
+	approx(t, "YTD Change", y.Change, (40.0/3-ref)/ref*100)
+	// 13.0 would beat the mean of ratios (12.5) but not the true reference.
+	ix = newIndexT(t,
+		pt("points", "gateway", month(2025, 1), 100), pt("days", "gateway", month(2025, 1), 10),
+		pt("points", "gateway", month(2025, 6), 300), pt("days", "gateway", month(2025, 6), 20),
+		pt("points", "gateway", month(2026, 1), 39), pt("days", "gateway", month(2026, 1), 3),
+	)
+	if got := ix.Cell(v, m, "gateway", month(2026, 1)).Status; got != "R" {
+		t.Errorf("13.0 vs 13.33: %q, want R", got)
 	}
 }
 
@@ -399,10 +466,11 @@ func TestOverrideReplacesValue(t *testing.T) {
 	if c.Display != "95.0%" {
 		t.Errorf("Display = %q, want 95.0%%", c.Display)
 	}
-	// Status was not overridden, so it stays the engine's.
-	if c.Status != "Y" {
-		t.Errorf("Status = %q, want Y (engine)", c.Status)
+	// Status was not overridden, so it is re-evaluated from the new value.
+	if c.Status != "G" {
+		t.Errorf("Status = %q, want G (re-evaluated from 95)", c.Status)
 	}
+	// Computed keeps the engine's own result.
 	if c.Computed == nil || c.Computed.Status != "Y" {
 		t.Fatalf("Computed = %+v", c.Computed)
 	}
@@ -410,6 +478,113 @@ func TestOverrideReplacesValue(t *testing.T) {
 	if c.Override == nil {
 		t.Error("Override not set")
 	}
+}
+
+// An override that sets both keeps its explicit status.
+func TestOverrideValueAndStatus(t *testing.T) {
+	m := metricOf("on_time_pct", "on_time / committed * 100", domain.FormatPercent1, domain.DirectionHigherBetter,
+		bandsRule(band("G", ">=", 90), band("Y", ">=", 80), band("R", "", 0)))
+	in := fixtureInput(t, pt("on_time", "gateway", month(2026, 3), 440), pt("committed", "gateway", month(2026, 3), 522))
+	in.Overrides = []domain.Override{{MetricKey: "on_time_pct", SubjectID: "gateway", Period: month(2026, 3), Value: f(95), Status: "R", Reason: "Manual"}}
+	c := NewIndex(in).Cell(versionOf(onTime, committed), m, "gateway", month(2026, 3))
+	approx(t, "Value", c.Value, 95)
+	if c.Status != "R" {
+		t.Errorf("Status = %q, want the override's R", c.Status)
+	}
+	if c.Computed == nil || c.Computed.Status != "Y" {
+		t.Errorf("Computed = %+v", c.Computed)
+	}
+}
+
+// Overriding the value of a change-rule metric re-derives status and change.
+func TestOverrideValueChangeRule(t *testing.T) {
+	m := metricOf("defect_score", "defect_score", domain.FormatNumber0, domain.DirectionLowerBetter,
+		changeRule(domain.ComparePriorPeriod, band("G", ">", 0), band("Y", ">=", -5), band("R", "", 0)))
+	in := fixtureInput(t, pt("defect_score", "gateway", month(2026, 5), 100), pt("defect_score", "gateway", month(2026, 6), 130))
+	in.Overrides = []domain.Override{{MetricKey: "defect_score", SubjectID: "gateway", Period: month(2026, 6), Value: f(80), Reason: "Corrected"}}
+	c := NewIndex(in).Cell(versionOf(defects), m, "gateway", month(2026, 6))
+	if c.Status != "G" || c.ChangeKind != "improvement_pct" {
+		t.Errorf("Status=%q Kind=%q, want G improvement_pct", c.Status, c.ChangeKind)
+	}
+	approx(t, "Change", c.Change, 20)
+	if c.Computed == nil || c.Computed.Status != "R" {
+		t.Errorf("Computed = %+v, want engine status R", c.Computed)
+	}
+	approx(t, "Computed.Value", c.Computed.Value, 130)
+}
+
+// Overriding the value of a cell the engine could not judge supplies a status
+// and, for a change rule, the comparison is fetched for the new value.
+func TestOverrideValueOnBlankChangeCell(t *testing.T) {
+	m := metricOf("pct", "measured / within * 100", domain.FormatNumber0, domain.DirectionHigherBetter,
+		changeRule(domain.ComparePriorPeriod, band("G", ">", 0), band("R", "", 0)))
+	in := fixtureInput(t,
+		pt("measured", "gateway", month(2026, 2), 50), pt("within", "gateway", month(2026, 2), 100),
+		pt("measured", "gateway", month(2026, 3), 0), pt("within", "gateway", month(2026, 3), 0),
+	)
+	in.Overrides = []domain.Override{{MetricKey: "pct", SubjectID: "gateway", Period: month(2026, 3), Value: f(60), Reason: "Manual"}}
+	c := NewIndex(in).Cell(versionOf(measured, within), m, "gateway", month(2026, 3))
+	if c.Status != "G" {
+		t.Errorf("Status = %q, want G (60 vs 50)", c.Status)
+	}
+	approx(t, "Change", c.Change, 20)
+}
+
+// Status is judged on the value as displayed.
+func TestStatusUsesDisplayPrecision(t *testing.T) {
+	rule := bandsRule(band("G", ">=", 90), band("Y", ">=", 80), band("R", "", 0))
+	health := domain.Measure{Key: "health", OrgAgg: domain.AggAverage, TimeAgg: domain.AggAverage}
+	v := versionOf(health)
+	tests := []struct {
+		format string
+		val    float64
+		disp   string
+		want   string
+	}{
+		{domain.FormatPercent1, 89.96, "90.0%", "G"},
+		{domain.FormatPercent1, 89.94, "89.9%", "Y"},
+		{domain.FormatPercent1, 89.95, "90.0%", "G"},
+		{domain.FormatPercent0, 89.5, "90%", "G"},
+		{domain.FormatPercent0, 89.49, "89%", "Y"},
+		{domain.FormatPercent2, 89.996, "90.00%", "G"},
+		{domain.FormatPercent2, 89.994, "89.99%", "Y"},
+		{domain.FormatNumber0, 79.5, "80", "Y"},
+	}
+	for _, tt := range tests {
+		m := metricOf("h", "health", tt.format, domain.DirectionHigherBetter, rule)
+		c := newIndexT(t, pt("health", "gateway", month(2026, 3), tt.val)).Cell(v, m, "gateway", month(2026, 3))
+		if c.Display != tt.disp || c.Status != tt.want {
+			t.Errorf("%s %v: Display=%q Status=%q, want %q %q", tt.format, tt.val, c.Display, c.Status, tt.disp, tt.want)
+		}
+		approx(t, "Value stays unrounded", c.Value, tt.val)
+	}
+	// Lower-is-better bands and scale rules round the same way.
+	low := metricOf("s", "spend / budget * 100", domain.FormatPercent1, domain.DirectionLowerBetter,
+		bandsRule(band("G", "<=", 110), band("R", "", 0)))
+	c := newIndexT(t, pt("spend", "gateway", month(2026, 3), 110.04), pt("budget", "gateway", month(2026, 3), 100)).
+		Cell(versionOf(spend, budget), low, "gateway", month(2026, 3))
+	if c.Display != "110.0%" || c.Status != "G" {
+		t.Errorf("lower: %q %q, want 110.0%% G", c.Display, c.Status)
+	}
+	sc := metricOf("sc", "health", domain.FormatNumber1, domain.DirectionHigherBetter,
+		domain.StatusRule{Type: domain.RuleScale, Scale: []domain.ScaleStep{{Status: "G", Min: 4}, {Status: "R", Min: 0}}})
+	c = newIndexT(t, pt("health", "gateway", month(2026, 3), 3.96)).Cell(v, sc, "gateway", month(2026, 3))
+	if c.Display != "4.0" || c.Status != "G" {
+		t.Errorf("scale: %q %q, want 4.0 G", c.Display, c.Status)
+	}
+}
+
+// Change rules compute improvement from unrounded values.
+func TestChangeRuleUsesUnroundedValues(t *testing.T) {
+	m := metricOf("defect_score", "defect_score", domain.FormatNumber0, domain.DirectionLowerBetter,
+		changeRule(domain.ComparePriorPeriod, band("G", ">", 0), band("Y", ">=", -5), band("R", "", 0)))
+	// Both display as 100, but the value did improve by 0.4%.
+	ix := newIndexT(t, pt("defect_score", "gateway", month(2026, 5), 100.2), pt("defect_score", "gateway", month(2026, 6), 99.8))
+	c := ix.Cell(versionOf(defects), m, "gateway", month(2026, 6))
+	if c.Display != "100" || c.Status != "G" {
+		t.Errorf("Display=%q Status=%q, want 100 G", c.Display, c.Status)
+	}
+	approx(t, "Change", c.Change, (100.2-99.8)/100.2*100)
 }
 
 // An override can supply a value where the engine has none.

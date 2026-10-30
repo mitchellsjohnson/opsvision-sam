@@ -50,6 +50,43 @@ func Format(format string, v float64) string {
 	return strconv.FormatFloat(v, 'f', -1, 64)
 }
 
+// displayDecimals returns how many decimals Format shows for a format code.
+func displayDecimals(format string) (int, bool) {
+	switch format {
+	case domain.FormatPercent0, domain.FormatNumber0, domain.FormatMoneyK, domain.FormatDays0:
+		return 0, true
+	case domain.FormatPercent1, domain.FormatNumber1:
+		return 1, true
+	case domain.FormatPercent2, domain.FormatNumber2:
+		return 2, true
+	}
+	return 0, false
+}
+
+// roundForDisplay rounds v to the precision Format shows for the format code,
+// using the same half-away-from-zero rule, so that what a status was judged on
+// is what the reader sees. Unknown formats and non-finite values are returned
+// unchanged.
+func roundForDisplay(format string, v float64) float64 {
+	d, ok := displayDecimals(format)
+	if !ok || math.IsNaN(v) || math.IsInf(v, 0) {
+		return v
+	}
+	digits := roundedDigits(math.Abs(v), d)
+	s := digits[:len(digits)-d]
+	if d > 0 {
+		s += "." + digits[len(digits)-d:]
+	}
+	r, err := strconv.ParseFloat(s, 64)
+	if err != nil || r == 0 {
+		return 0 * r // 0, never -0
+	}
+	if v < 0 {
+		return -r
+	}
+	return r
+}
+
 // signed formats v with d decimals as prefix+number+suffix, putting a minus
 // sign in front of the whole thing for negative values that do not round to
 // zero.
