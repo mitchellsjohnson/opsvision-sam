@@ -2,20 +2,21 @@ package auth_test
 
 import (
 	"context"
+	"crypto"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"gopkg.in/go-jose/go-jose.v2"
-	"gopkg.in/go-jose/go-jose.v2/jwt"
 
 	"opsvision/internal/auth"
 	"opsvision/internal/domain"
@@ -47,11 +48,8 @@ func newRSAFixture(t *testing.T, kid string) *rsaFixture {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/.well-known/jwks.json", func(w http.ResponseWriter, r *http.Request) {
 		f.hits.Add(1)
-		set := jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{
-			Key: &key.PublicKey, KeyID: kid, Algorithm: "RS256", Use: "sig",
-		}}}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(set)
+		_ = json.NewEncoder(w).Encode(jwksFor(&key.PublicKey, kid))
 	})
 	f.server = httptest.NewServer(mux)
 	t.Cleanup(f.server.Close)
@@ -95,21 +93,48 @@ func (o tokOpts) build() map[string]any {
 	return m
 }
 
-func sign(t *testing.T, alg jose.SignatureAlgorithm, key any, kid string, claims map[string]any) string {
+// jwksFor builds a JWKS document by hand (no JOSE library) for an RSA key.
+func jwksFor(pub *rsa.PublicKey, kid string) map[string]any {
+	return map[string]any{"keys": []map[string]string{{
+		"kty": "RSA", "use": "sig", "alg": "RS256", "kid": kid,
+		"n": base64.RawURLEncoding.EncodeToString(pub.N.Bytes()),
+		"e": base64.RawURLEncoding.EncodeToString(big.NewInt(int64(pub.E)).Bytes()),
+	}}}
+}
+
+// sign builds a compact JWS by hand. alg is "RS256" (key *rsa.PrivateKey) or
+// "HS256" (key []byte).
+func sign(t *testing.T, alg string, key any, kid string, claims map[string]any) string {
 	t.Helper()
-	so := (&jose.SignerOptions{}).WithType("JWT")
+	hdr := map[string]string{"alg": alg, "typ": "JWT"}
 	if kid != "" {
-		so = so.WithHeader("kid", kid)
+		hdr["kid"] = kid
 	}
-	sg, err := jose.NewSigner(jose.SigningKey{Algorithm: alg, Key: key}, so)
+	hb, err := json.Marshal(hdr)
 	if err != nil {
 		t.Fatal(err)
 	}
-	tok, err := jwt.Signed(sg).Claims(claims).CompactSerialize()
+	cb, err := json.Marshal(claims)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return tok
+	input := b64(hb) + "." + b64(cb)
+	var sig []byte
+	switch alg {
+	case "RS256":
+		sum := sha256.Sum256([]byte(input))
+		sig, err = rsa.SignPKCS1v15(rand.Reader, key.(*rsa.PrivateKey), crypto.SHA256, sum[:])
+		if err != nil {
+			t.Fatal(err)
+		}
+	case "HS256":
+		mac := hmac.New(sha256.New, key.([]byte))
+		mac.Write([]byte(input))
+		sig = mac.Sum(nil)
+	default:
+		t.Fatalf("unsupported alg %q", alg)
+	}
+	return input + "." + b64(sig)
 }
 
 func (f *rsaFixture) token(t *testing.T, o tokOpts) string {
@@ -123,7 +148,7 @@ func (f *rsaFixture) token(t *testing.T, o tokOpts) string {
 	if o.subject == "" {
 		o.subject = "auth0|user-1"
 	}
-	return sign(t, jose.RS256, f.key, f.kid, o.build())
+	return sign(t, "RS256", f.key, f.kid, o.build())
 }
 
 func newStore(t *testing.T) store.TenantStore {
@@ -342,7 +367,7 @@ func TestRejectsTokenWithoutSubject(t *testing.T) {
 	f := newRSAFixture(t, "kid-1")
 	claims := tokOpts{issuer: f.issuer(), audience: testAudience, extra: orgClaims(nil)}.build()
 	delete(claims, "sub")
-	tok := sign(t, jose.RS256, f.key, f.kid, claims)
+	tok := sign(t, "RS256", f.key, f.kid, claims)
 	rec, _ := run(t, auth0Config(f), newStore(t), tok)
 	wantError(t, rec, http.StatusUnauthorized, "unauthorized", "")
 }
@@ -354,7 +379,7 @@ func TestRejectsWrongSigningKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	claims := tokOpts{issuer: f.issuer(), audience: testAudience, subject: "u", extra: orgClaims(nil)}.build()
-	tok := sign(t, jose.RS256, other, "kid-1", claims)
+	tok := sign(t, "RS256", other, "kid-1", claims)
 	rec, _ := run(t, auth0Config(f), newStore(t), tok)
 	wantError(t, rec, http.StatusUnauthorized, "unauthorized", "")
 }
@@ -363,7 +388,7 @@ func TestRejectsHS256InAuth0Mode(t *testing.T) {
 	f := newRSAFixture(t, "kid-1")
 	// A dev token (HS256) with otherwise-correct issuer/audience claims.
 	claims := tokOpts{issuer: f.issuer(), audience: testAudience, subject: "u", extra: orgClaims(nil)}.build()
-	tok := sign(t, jose.HS256, []byte(devSecret), "", claims)
+	tok := sign(t, "HS256", []byte(devSecret), "", claims)
 	rec, p := run(t, auth0Config(f), newStore(t), tok)
 	wantError(t, rec, http.StatusUnauthorized, "unauthorized", "")
 	if p != nil {
@@ -386,7 +411,7 @@ func TestRejectsRS256InDevMode(t *testing.T) {
 	f := newRSAFixture(t, "kid-1")
 	cfg := auth.Config{Mode: "dev", DevSecret: devSecret, Audience: "opsvision-dev", ClaimNamespace: testNS}
 	claims := tokOpts{issuer: "opsvision-dev", audience: "opsvision-dev", subject: "u", extra: orgClaims(nil)}.build()
-	tok := sign(t, jose.RS256, f.key, f.kid, claims)
+	tok := sign(t, "RS256", f.key, f.kid, claims)
 	rec, p := run(t, cfg, newStore(t), tok)
 	wantError(t, rec, http.StatusUnauthorized, "unauthorized", "")
 	if p != nil {
@@ -757,18 +782,32 @@ func TestIssueDevTokenExpiryIs12h(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	parsed, err := jwt.ParseSigned(tok)
+	parts := strings.Split(tok, ".")
+	if len(parts) != 3 {
+		t.Fatalf("token has %d parts", len(parts))
+	}
+	// Verify the HS256 signature independently of the middleware.
+	mac := hmac.New(sha256.New, []byte(devSecret))
+	mac.Write([]byte(parts[0] + "." + parts[1]))
+	if got := b64(mac.Sum(nil)); got != parts[2] {
+		t.Errorf("signature mismatch")
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
 		t.Fatal(err)
 	}
-	var c jwt.Claims
-	if err := parsed.Claims([]byte(devSecret), &c); err != nil {
+	var c struct {
+		Iss string `json:"iss"`
+		Aud string `json:"aud"`
+		Exp int64  `json:"exp"`
+	}
+	if err := json.Unmarshal(raw, &c); err != nil {
 		t.Fatal(err)
 	}
-	if c.Issuer != "opsvision-dev" || !c.Audience.Contains("opsvision-dev") {
-		t.Errorf("iss/aud = %q/%v", c.Issuer, c.Audience)
+	if c.Iss != "opsvision-dev" || c.Aud != "opsvision-dev" {
+		t.Errorf("iss/aud = %q/%q", c.Iss, c.Aud)
 	}
-	d := time.Until(c.Expiry.Time())
+	d := time.Until(time.Unix(c.Exp, 0))
 	if d < 11*time.Hour+59*time.Minute || d > 12*time.Hour+time.Minute {
 		t.Errorf("expiry in %v, want ~12h", d)
 	}
@@ -816,3 +855,36 @@ func TestWithPrincipalRoundTrip(t *testing.T) {
 }
 
 func b64(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
+
+func TestRejectsSenderConstrainedToken(t *testing.T) {
+	f := newRSAFixture(t, "kid-1")
+	tok := f.token(t, tokOpts{extra: orgClaims(map[string]any{"cnf": map[string]string{"jkt": "abc"}})})
+	rec, p := run(t, auth0Config(f), newStore(t), tok)
+	wantError(t, rec, http.StatusUnauthorized, "unauthorized", "")
+	if p != nil {
+		t.Error("DPoP-bound token accepted as bearer")
+	}
+}
+
+func TestRejectsDPoPScheme(t *testing.T) {
+	f := newRSAFixture(t, "kid-1")
+	mw, _ := auth.Middleware(auth0Config(f), newStore(t))
+	h := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { t.Error("reached") }))
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "DPoP "+f.token(t, tokOpts{extra: orgClaims(nil)}))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	wantError(t, rec, http.StatusUnauthorized, "unauthorized", "")
+}
+
+func TestJWKSOutageIs503(t *testing.T) {
+	f := newRSAFixture(t, "kid-1")
+	cfg := auth0Config(f)
+	tok := f.token(t, tokOpts{extra: orgClaims(nil)})
+	f.server.Close()
+	rec, p := run(t, cfg, newStore(t), tok)
+	wantError(t, rec, http.StatusServiceUnavailable, "unavailable", "")
+	if p != nil {
+		t.Error("handler reached")
+	}
+}

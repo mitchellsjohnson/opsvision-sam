@@ -1,11 +1,12 @@
 package auth
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"time"
-
-	"gopkg.in/go-jose/go-jose.v2"
-	"gopkg.in/go-jose/go-jose.v2/jwt"
 )
 
 // devTokenTTL is the lifetime of tokens from IssueDevToken.
@@ -31,35 +32,34 @@ func IssueDevTokenFor(cfg Config, userID, email, name, orgID string, operator bo
 	if userID == "" {
 		return "", fmt.Errorf("auth: user ID is required")
 	}
-	signer, err := jose.NewSigner(
-		jose.SigningKey{Algorithm: jose.HS256, Key: []byte(cfg.DevSecret)},
-		(&jose.SignerOptions{}).WithType("JWT"),
-	)
-	if err != nil {
-		return "", fmt.Errorf("auth: dev signer: %w", err)
-	}
 	now := time.Now()
-	std := jwt.Claims{
-		Issuer:   DevIssuer,
-		Audience: jwt.Audience{cfg.devAudience()},
-		Subject:  userID,
-		IssuedAt: jwt.NewNumericDate(now),
-		Expiry:   jwt.NewNumericDate(now.Add(devTokenTTL)),
-	}
 	ns := cfg.claimNamespace()
-	custom := map[string]any{
+	claims := map[string]any{
+		"iss":        DevIssuer,
+		"aud":        cfg.devAudience(),
+		"sub":        userID,
+		"iat":        now.Unix(),
+		"exp":        now.Add(devTokenTTL).Unix(),
 		ns + "email": email,
 		ns + "name":  name,
 	}
 	if orgID != "" {
-		custom["org_id"] = orgID
+		claims["org_id"] = orgID
 	}
 	if operator {
-		custom["permissions"] = []string{PermissionOperator}
+		claims["permissions"] = []string{PermissionOperator}
 	}
-	tok, err := jwt.Signed(signer).Claims(std).Claims(custom).CompactSerialize()
+	header, err := json.Marshal(map[string]string{"alg": "HS256", "typ": "JWT"})
 	if err != nil {
-		return "", fmt.Errorf("auth: sign dev token: %w", err)
+		return "", fmt.Errorf("auth: encode dev token header: %w", err)
 	}
-	return tok, nil
+	payload, err := json.Marshal(claims)
+	if err != nil {
+		return "", fmt.Errorf("auth: encode dev token claims: %w", err)
+	}
+	enc := base64.RawURLEncoding
+	signingInput := enc.EncodeToString(header) + "." + enc.EncodeToString(payload)
+	mac := hmac.New(sha256.New, []byte(cfg.DevSecret))
+	mac.Write([]byte(signingInput))
+	return signingInput + "." + enc.EncodeToString(mac.Sum(nil)), nil
 }

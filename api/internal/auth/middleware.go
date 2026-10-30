@@ -10,7 +10,8 @@ import (
 	"strings"
 	"time"
 
-	jwtmiddleware "github.com/auth0/go-jwt-middleware/v2"
+	jwtmiddleware "github.com/auth0/go-jwt-middleware/v3"
+	"github.com/auth0/go-jwt-middleware/v3/core"
 
 	"opsvision/internal/domain"
 	"opsvision/internal/store"
@@ -90,14 +91,15 @@ func (e *httpError) write(w http.ResponseWriter) {
 func (a *authenticator) authenticate(r *http.Request) (Principal, *httpError) {
 	ctx := r.Context()
 
-	tokenString, err := jwtmiddleware.AuthHeaderTokenExtractor(r)
-	if err != nil || tokenString == "" {
+	extracted, err := jwtmiddleware.AuthHeaderTokenExtractor(r)
+	// Only the Bearer scheme is accepted: a DPoP-scheme token would require
+	// proof-of-possession checks this API does not perform.
+	if err != nil || extracted.Token == "" || extracted.Scheme != core.AuthSchemeBearer {
 		return Principal{}, errUnauthorized
 	}
-	v, err := verify(ctx, a.validator, tokenString)
+	v, err := verify(ctx, a.validator, extracted.Token)
 	if err != nil {
-		var ke *keyError
-		if errors.As(err, &ke) {
+		if isKeyFetchError(err) {
 			slog.Error("auth: cannot fetch verification keys", "err", err)
 			return Principal{}, errUnavailable
 		}

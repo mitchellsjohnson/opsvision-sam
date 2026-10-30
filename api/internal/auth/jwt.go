@@ -10,8 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/auth0/go-jwt-middleware/v2/jwks"
-	"github.com/auth0/go-jwt-middleware/v2/validator"
+	"github.com/auth0/go-jwt-middleware/v3/core"
+	"github.com/auth0/go-jwt-middleware/v3/jwks"
+	"github.com/auth0/go-jwt-middleware/v3/validator"
 )
 
 // Auth modes.
@@ -150,19 +151,20 @@ func (c *tokenClaims) isOperator() bool {
 	return false
 }
 
-// keyError marks a failure to obtain verification keys (for example the JWKS
-// endpoint being unreachable). It is not the caller's fault.
-type keyError struct{ err error }
-
-func (e *keyError) Error() string { return "verification keys unavailable: " + e.err.Error() }
-func (e *keyError) Unwrap() error { return e.err }
+// isKeyFetchError reports whether err means verification keys could not be
+// obtained (for example the JWKS endpoint being unreachable). That is not the
+// caller's fault.
+func isKeyFetchError(err error) bool {
+	var ve *core.ValidationError
+	return errors.As(err, &ve) && ve.Code == core.ErrorCodeJWKSFetchFailed
+}
 
 // newValidator builds the token validator for cfg: RS256 against the issuer's
 // JWKS in auth0 mode, HS256 against DevSecret in dev mode. The algorithm is
 // fixed by mode; a token signed with any other algorithm is rejected.
 func newValidator(cfg Config) (*validator.Validator, error) {
 	ns := cfg.claimNamespace()
-	custom := validator.WithCustomClaims(func() validator.CustomClaims { return &tokenClaims{ns: ns} })
+	custom := validator.WithCustomClaims(func() *tokenClaims { return &tokenClaims{ns: ns} })
 	skew := validator.WithAllowedClockSkew(clockSkew)
 
 	switch cfg.Mode {
@@ -182,36 +184,42 @@ func newValidator(cfg Config) (*validator.Validator, error) {
 		if err != nil {
 			return nil, fmt.Errorf("auth: invalid JWKS URL: %w", err)
 		}
-		provider := jwks.NewCachingProvider(issuerURL, jwksCacheTTL,
+		provider, err := jwks.NewCachingProvider(
+			jwks.WithIssuerURL(issuerURL),
 			jwks.WithCustomJWKSURI(jwksURL),
 			jwks.WithCustomClient(&http.Client{Timeout: jwksTimeout}),
-			// Refresh in the request path so a rotated signing key is
-			// picked up on the first request after the TTL.
-			jwks.WithSynchronousRefresh(true),
+			jwks.WithCacheTTL(jwksCacheTTL),
 		)
-		keyFunc := func(ctx context.Context) (interface{}, error) {
-			k, err := provider.KeyFunc(ctx)
-			if err != nil {
-				return nil, &keyError{err}
-			}
-			return k, nil
+		if err != nil {
+			return nil, fmt.Errorf("auth: JWKS provider: %w", err)
 		}
-		return validator.New(keyFunc, validator.RS256, issuer, []string{cfg.Audience}, skew, custom)
+		return validator.New(
+			validator.WithKeyFunc(provider.KeyFunc),
+			validator.WithAlgorithm(validator.RS256),
+			validator.WithIssuer(issuer),
+			validator.WithAudience(cfg.Audience),
+			skew, custom,
+		)
 
 	case ModeDev:
 		if len(cfg.DevSecret) < MinDevSecretBytes {
 			return nil, fmt.Errorf("auth: dev secret must be at least %d bytes", MinDevSecretBytes)
 		}
 		secret := []byte(cfg.DevSecret)
-		keyFunc := func(context.Context) (interface{}, error) { return secret, nil }
-		return validator.New(keyFunc, validator.HS256, DevIssuer, []string{cfg.devAudience()}, skew, custom)
+		return validator.New(
+			validator.WithKeyFunc(func(context.Context) (any, error) { return secret, nil }),
+			validator.WithAlgorithm(validator.HS256),
+			validator.WithIssuer(DevIssuer),
+			validator.WithAudience(cfg.devAudience()),
+			skew, custom,
+		)
 	}
 	return nil, fmt.Errorf("auth: unknown mode %q (want %q or %q)", cfg.Mode, ModeAuth0, ModeDev)
 }
 
 // tokenValidator is the part of *validator.Validator the middleware uses.
 type tokenValidator interface {
-	ValidateToken(ctx context.Context, tokenString string) (interface{}, error)
+	ValidateToken(ctx context.Context, tokenString string) (any, error)
 }
 
 // verified is the outcome of validating a token.
@@ -238,6 +246,12 @@ func verify(ctx context.Context, v tokenValidator, tokenString string) (verified
 	tc, ok := vc.CustomClaims.(*tokenClaims)
 	if !ok || tc == nil {
 		return verified{}, errInvalidToken
+	}
+	// A DPoP-bound token (cnf claim) is only safe when its proof is checked.
+	// This API does not verify proofs, so it must not accept such a token as
+	// a plain bearer token.
+	if vc.ConfirmationClaim != nil {
+		return verified{}, fmt.Errorf("%w: sender-constrained token", errInvalidToken)
 	}
 	if vc.RegisteredClaims.Expiry == 0 {
 		return verified{}, fmt.Errorf("%w: no exp claim", errInvalidToken)
