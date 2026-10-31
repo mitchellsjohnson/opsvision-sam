@@ -1,0 +1,20 @@
+/* Design tokens (Tailwind 4 theme). Utilities such as `bg-accent` and
+   `text-status-g` are generated from these; `static` emits every variable
+   even when no utility uses it yet. */
+@theme static {
+  --color-accent: #5B4BDB;
+  --color-accent-deep: #3F33A8;
+  --color-cream: #FFF6E5;
+  --color-amber: #F5A524;
+  --color-ink: #1D2433;
+
+  /* Status: foreground on background. */
+  --color-status-g: #137A3A;
+  --color-status-g-bg: #E3F6EA;
+  --color-status-y: #8A5A00;
+  --color-status-y-bg: #FFF3D6;
+  --color-status-r: #B42318;
+  --color-status-r-bg: #FDE4E2;
+  --color-status-na: #8A93A6;
+  --color-status-na-bg: #EEF0F4;
+}
