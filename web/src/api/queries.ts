@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ViewRequest } from '../lib/period'
 import { apiErrorFromResponse } from './errors'
 import type { components } from './schema'
@@ -7,6 +7,19 @@ import { useApi } from './useApi'
 type Schemas = components['schemas']
 export type DataBatchRequest = Schemas['DataBatchRequest']
 export type PutOverrideRequest = Schemas['PutOverrideRequest']
+export type Level = Schemas['Level']
+export type OrgUnit = Schemas['OrgUnit']
+export type OrgTree = Schemas['OrgTree']
+export type OrgTreeNode = Schemas['OrgTreeNode']
+export type CreateOrgUnitRequest = Schemas['OrgUnit']
+export type UpdateOrgUnitRequest = Schemas['UpdateOrgUnitRequest']
+export type CreateOrgMoveRequest = Schemas['CreateOrgMoveRequest']
+export type ItemKind = Schemas['ItemKind']
+export type TrackedItem = Schemas['TrackedItem']
+export type UpdateItemRequest = Schemas['UpdateItemRequest']
+export type Membership = Schemas['Membership']
+export type UpdateMemberRequest = Schemas['UpdateMemberRequest']
+export type InviteMemberRequest = Schemas['InviteMemberRequest']
 export interface OverrideCell {
   metricKey: string
   subjectId: string
@@ -18,6 +31,11 @@ export const keys = {
   me: ['me'] as const,
   scorecards: ['scorecards'] as const,
   orgUnits: ['orgUnits'] as const,
+  orgLevels: ['orgLevels'] as const,
+  orgTree: (month: string) => ['orgTree', month] as const,
+  itemKinds: ['itemKinds'] as const,
+  items: ['items'] as const,
+  members: ['members'] as const,
   view: (sc: string, req: ViewRequest) => ['view', sc, req] as const,
   entry: (sc: string, period: string) => ['entry', sc, period] as const,
   versions: (sc: string) => ['versions', sc] as const,
@@ -162,4 +180,189 @@ export function useClearOverride(sc: string) {
       unwrap(api.DELETE('/scorecards/{sc}/overrides', { params: { path: { sc }, query: cell } })),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['view', sc] }),
   })
+}
+
+// ---- Admin: org, items, members ---------------------------------------------
+
+/** The org hierarchy levels, shallowest first. */
+export function useOrgLevels() {
+  const api = useApi()
+  return useQuery({
+    queryKey: keys.orgLevels,
+    queryFn: async () => (await unwrap(api.GET('/org/levels'))).levels,
+  })
+}
+
+/** Replaces the hierarchy levels. */
+export function usePutOrgLevels() {
+  const api = useApi()
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (levels: Level[]) =>
+      (await unwrap(api.PUT('/org/levels', { body: { levels } }))).levels,
+    onSuccess: async (levels) => {
+      queryClient.setQueryData(keys.orgLevels, levels)
+      await queryClient.invalidateQueries({ queryKey: ['orgTree'] })
+    },
+  })
+}
+
+/** The org tree as it stood in a fiscal month (`2026-M10`). */
+export function useOrgTree(month: string) {
+  const api = useApi()
+  return useQuery({
+    queryKey: keys.orgTree(month),
+    queryFn: () => unwrap(api.GET('/org/tree', { params: { query: { month } } })),
+  })
+}
+
+/** Org structure changes also change what scorecards show, so refresh them too. */
+async function refreshOrg(queryClient: ReturnType<typeof useQueryClient>) {
+  await Promise.all([
+    queryClient.invalidateQueries({ queryKey: keys.orgUnits }),
+    queryClient.invalidateQueries({ queryKey: ['orgTree'] }),
+    queryClient.invalidateQueries({ queryKey: ['view'] }),
+  ])
+}
+
+export function useCreateOrgUnit() {
+  const api = useApi()
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (body: CreateOrgUnitRequest) => unwrap(api.POST('/org/units', { body })),
+    onSuccess: () => refreshOrg(queryClient),
+  })
+}
+
+export function useUpdateOrgUnit() {
+  const api = useApi()
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, body }: { id: string; body: UpdateOrgUnitRequest }) =>
+      unwrap(api.PATCH('/org/units/{id}', { params: { path: { id } }, body })),
+    onSuccess: () => refreshOrg(queryClient),
+  })
+}
+
+/** Reparents a unit from a month. */
+export function useCreateOrgMove() {
+  const api = useApi()
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, body }: { id: string; body: CreateOrgMoveRequest }) =>
+      unwrap(api.POST('/org/units/{id}/moves', { params: { path: { id } }, body })),
+    onSuccess: () => refreshOrg(queryClient),
+  })
+}
+
+export function useItemKinds() {
+  const api = useApi()
+  return useQuery({
+    queryKey: keys.itemKinds,
+    queryFn: async () => (await unwrap(api.GET('/item-kinds'))).itemKinds,
+  })
+}
+
+export function useCreateItemKind() {
+  const api = useApi()
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (body: ItemKind) => unwrap(api.POST('/item-kinds', { body })),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: keys.itemKinds }),
+  })
+}
+
+/** Every tracked item, of all kinds. */
+export function useItems() {
+  const api = useApi()
+  return useQuery({
+    queryKey: keys.items,
+    queryFn: async () => (await unwrap(api.GET('/items', { params: { query: {} } }))).items,
+  })
+}
+
+export function useCreateItem() {
+  const api = useApi()
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (body: TrackedItem) => unwrap(api.POST('/items', { body })),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: keys.items }),
+  })
+}
+
+export function useUpdateItem() {
+  const api = useApi()
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, body }: { id: string; body: UpdateItemRequest }) =>
+      unwrap(api.PATCH('/items/{id}', { params: { path: { id } }, body })),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: keys.items }),
+  })
+}
+
+/** The tenant's members, pending invitations included (admins only). */
+export function useMembers() {
+  const api = useApi()
+  return useQuery({
+    queryKey: keys.members,
+    queryFn: async () => (await unwrap(api.GET('/members'))).members,
+  })
+}
+
+export function useUpdateMember() {
+  const api = useApi()
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ userId, body }: { userId: string; body: UpdateMemberRequest }) =>
+      unwrap(api.PATCH('/members/{userId}', { params: { path: { userId } }, body })),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: keys.members }),
+  })
+}
+
+export function useInviteMember() {
+  const api = useApi()
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (body: InviteMemberRequest) => unwrap(api.POST('/members', { body })),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: keys.members }),
+  })
+}
+
+export interface MetricOption {
+  key: string
+  name: string
+}
+
+/**
+ * The metrics of each scorecard's current published methodology version,
+ * merged across scorecards (deduplicated by key, sorted by name).
+ */
+export function usePublishedMetrics(): {
+  data: MetricOption[] | undefined
+  isPending: boolean
+  isError: boolean
+} {
+  const api = useApi()
+  const scorecards = useScorecards()
+  const ids = scorecards.data?.scorecards.map((s) => s.id) ?? []
+  const versions = useQueries({
+    queries: ids.map((sc) => ({
+      queryKey: keys.versions(sc),
+      queryFn: () => unwrap(api.GET('/scorecards/{sc}/versions', { params: { path: { sc } } })),
+    })),
+  })
+  if (scorecards.isError || versions.some((v) => v.isError)) {
+    return { data: undefined, isPending: false, isError: true }
+  }
+  if (scorecards.isPending || versions.some((v) => v.isPending)) {
+    return { data: undefined, isPending: true, isError: false }
+  }
+  const byKey = new Map<string, MetricOption>()
+  for (const v of versions) {
+    // Newest first: the first published version is the current one.
+    const current = v.data?.versions.find((x) => x.status === 'published')
+    for (const m of current?.content.metrics ?? []) byKey.set(m.key, { key: m.key, name: m.name })
+  }
+  const data = [...byKey.values()].sort((a, b) => a.name.localeCompare(b.name))
+  return { data, isPending: false, isError: false }
 }

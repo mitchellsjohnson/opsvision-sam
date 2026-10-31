@@ -1,15 +1,15 @@
 import { Navigate, Route, Routes } from 'react-router'
 import { AppShell } from './shell/AppShell'
+import { ItemsPage } from './features/admin/ItemsPage'
+import { MembersPage } from './features/admin/MembersPage'
+import { OrgPage } from './features/admin/OrgPage'
 import { EntryPage } from './features/entry/EntryPage'
 import { HomeRedirect } from './pages/HomeRedirect'
 import { NotFoundPage } from './pages/NotFoundPage'
 import { RequireAdmin } from './pages/RequireAdmin'
 import { ScorecardPage } from './features/scorecard/ScorecardPage'
 import { ImportPage } from './pages/admin/ImportPage'
-import { ItemsPage } from './pages/admin/ItemsPage'
-import { MembersPage } from './pages/admin/MembersPage'
 import { MethodologyPage } from './pages/admin/MethodologyPage'
-import { OrgPage } from './pages/admin/OrgPage'
 
 export function App() {
   return (
