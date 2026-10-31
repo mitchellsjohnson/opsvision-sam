@@ -1,12 +1,23 @@
-/** Period strings: `2026-M10`, `2026-Q3`, `2026-H2`, `2026-FY`. */
+/**
+ * Fiscal periods, a TypeScript port of the API's period/calendar logic
+ * (api/internal/period).
+ *
+ * Period strings are FISCAL: `2027-M01` is the first month of fiscal year
+ * 2027, whatever calendar month that is. A fiscal year is labeled by the
+ * calendar year in which it ENDS, so with a July start, FY2027 runs from
+ * July 2026 to June 2027. Quarters and halves are counted from the start of
+ * the fiscal year. Pass the tenant's `fiscalYearStartMonth` (1-12) wherever a
+ * function needs to relate a fiscal period to the calendar.
+ */
 
 export type Grain = 'month' | 'quarter' | 'half' | 'year'
 
-export interface ParsedPeriod {
-  year: number
+export interface Period {
   grain: Grain
-  /** Month 1-12, quarter 1-4, half 1-2; always 1 for a year. */
-  n: number
+  /** The fiscal year, i.e. the calendar year the fiscal year ends in. */
+  fy: number
+  /** 1-based within the fiscal year (month 1-12, quarter 1-4, half 1-2); 0 for a year. */
+  index: number
 }
 
 export const GRAINS: { value: Grain; label: string }[] = [
@@ -16,63 +27,171 @@ export const GRAINS: { value: Grain; label: string }[] = [
   { value: 'year', label: 'Year' },
 ]
 
-const PATTERN = /^(\d{4})-(?:M(0[1-9]|1[0-2])|Q([1-4])|H([12])|(FY))$/
+const MONTHS_PER: Record<Grain, number> = { month: 1, quarter: 3, half: 6, year: 12 }
+const PER_YEAR: Record<Grain, number> = { month: 12, quarter: 4, half: 2, year: 1 }
 
-export function parsePeriod(s: string | null | undefined): ParsedPeriod | null {
+const MONTH_NAMES = [
+  'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+]
+
+const PATTERN = /^(\d+)-(?:M(\d+)|Q(\d+)|H(\d+)|(FY))$/
+
+/** Parses `2026-M10`, `2026-Q3`, `2026-H2` or `2026-FY`; null if invalid. */
+export function parsePeriod(s: string | null | undefined): Period | null {
   const m = s ? PATTERN.exec(s) : null
   if (!m) return null
-  const year = Number(m[1])
-  if (m[2]) return { year, grain: 'month', n: Number(m[2]) }
-  if (m[3]) return { year, grain: 'quarter', n: Number(m[3]) }
-  if (m[4]) return { year, grain: 'half', n: Number(m[4]) }
-  return { year, grain: 'year', n: 1 }
+  const fy = Number(m[1])
+  const within = (v: string | undefined, max: number) =>
+    v !== undefined && Number(v) >= 1 && Number(v) <= max ? Number(v) : null
+  if (m[5]) return { grain: 'year', fy, index: 0 }
+  if (m[2] !== undefined) {
+    const index = within(m[2], 12)
+    return index === null ? null : { grain: 'month', fy, index }
+  }
+  if (m[3] !== undefined) {
+    const index = within(m[3], 4)
+    return index === null ? null : { grain: 'quarter', fy, index }
+  }
+  const index = within(m[4], 2)
+  return index === null ? null : { grain: 'half', fy, index }
 }
 
-export function formatPeriod(p: ParsedPeriod): string {
-  const y = String(p.year).padStart(4, '0')
+/** Formats a period as `2026-M10`, `2026-Q3`, `2026-H2` or `2026-FY`. */
+export function formatPeriod(p: Period): string {
   switch (p.grain) {
     case 'month':
-      return `${y}-M${String(p.n).padStart(2, '0')}`
+      return `${p.fy}-M${String(p.index).padStart(2, '0')}`
     case 'quarter':
-      return `${y}-Q${p.n}`
+      return `${p.fy}-Q${p.index}`
     case 'half':
-      return `${y}-H${p.n}`
+      return `${p.fy}-H${p.index}`
     case 'year':
-      return `${y}-FY`
+      return `${p.fy}-FY`
   }
 }
 
-const MONTHS_PER: Record<Grain, number> = { month: 1, quarter: 3, half: 6, year: 12 }
-
-function endMonthNumber(p: ParsedPeriod): number {
-  return p.n * MONTHS_PER[p.grain]
+/** A start month outside 1-12 counts as January, as in the API. */
+function startMonth(fiscalYearStartMonth: number): number {
+  return Number.isInteger(fiscalYearStartMonth) && fiscalYearStartMonth >= 1 && fiscalYearStartMonth <= 12
+    ? fiscalYearStartMonth
+    : 1
 }
 
-/** The month a period ends in, as a month period. */
+/** The fiscal month containing a date (its local year and month). */
+export function monthOf(date: Date, fiscalYearStartMonth: number): Period {
+  const s = startMonth(fiscalYearStartMonth)
+  const m = date.getMonth() + 1
+  let fy = date.getFullYear()
+  if (s !== 1 && m >= s) fy++
+  return { grain: 'month', fy, index: ((m - s + 12) % 12) + 1 }
+}
+
+/** The fiscal month containing today. */
+export function currentMonth(fiscalYearStartMonth: number, now: Date = new Date()): string {
+  return formatPeriod(monthOf(now, fiscalYearStartMonth))
+}
+
+/** The calendar year and month (1-12) a fiscal month falls in. */
+export function calendarMonth(
+  month: Period,
+  fiscalYearStartMonth: number,
+): { year: number; month: number } {
+  const s = startMonth(fiscalYearStartMonth)
+  const startYear = s === 1 ? month.fy : month.fy - 1
+  const offset = s - 1 + (month.index - 1)
+  return { year: startYear + Math.floor(offset / 12), month: (offset % 12) + 1 }
+}
+
+/** `Oct 2026` for a fiscal month. */
+export function monthLabel(month: Period, fiscalYearStartMonth: number): string {
+  const c = calendarMonth(month, fiscalYearStartMonth)
+  return `${MONTH_NAMES[c.month - 1]} ${c.year}`
+}
+
+/** Short calendar name (`Jul`) of the nth (1-based) month of the fiscal year. */
+export function fiscalMonthName(index: number, fiscalYearStartMonth: number): string {
+  const s = startMonth(fiscalYearStartMonth)
+  return MONTH_NAMES[(s - 1 + index - 1) % 12] ?? ''
+}
+
+/** `Oct 2026`, `Q3 FY2026`, `H2 FY2026` or `FY2026`. */
+export function periodLabel(p: Period, fiscalYearStartMonth: number): string {
+  switch (p.grain) {
+    case 'month':
+      return monthLabel(p, fiscalYearStartMonth)
+    case 'quarter':
+      return `Q${p.index} FY${p.fy}`
+    case 'half':
+      return `H${p.index} FY${p.fy}`
+    case 'year':
+      return `FY${p.fy}`
+  }
+}
+
+/** The months of a period, in order. */
+export function monthsOf(p: Period): Period[] {
+  const n = MONTHS_PER[p.grain]
+  const first = p.grain === 'year' ? 1 : (p.index - 1) * n + 1
+  return Array.from({ length: n }, (_, i) => ({ grain: 'month', fy: p.fy, index: first + i }))
+}
+
+/** The last month of a period. */
+export function lastMonth(p: Period): Period {
+  const months = monthsOf(p)
+  return months[months.length - 1] as Period
+}
+
+/** The period of grain `g` that contains `month`. */
+export function parent(month: Period, g: Grain): Period {
+  if (g === 'year') return { grain: 'year', fy: month.fy, index: 0 }
+  return { grain: g, fy: month.fy, index: Math.floor((month.index - 1) / MONTHS_PER[g]) + 1 }
+}
+
+/** The quarter (1-4) a fiscal month belongs to. */
+export function quarterOf(month: Period): number {
+  return parent(month, 'quarter').index
+}
+
+/** The half (1-2) a fiscal month belongs to. */
+export function halfOf(month: Period): number {
+  return parent(month, 'half').index
+}
+
+/** The immediately preceding period of the same grain. */
+export function prev(p: Period): Period {
+  if (p.grain === 'year') return { ...p, fy: p.fy - 1 }
+  if (p.index > 1) return { ...p, index: p.index - 1 }
+  return { ...p, fy: p.fy - 1, index: PER_YEAR[p.grain] }
+}
+
+/** The same period one fiscal year earlier. */
+export function sameLastYear(p: Period): Period {
+  return { ...p, fy: p.fy - 1 }
+}
+
+/** The months from the start of a month's fiscal year through that month. */
+export function ytd(month: Period): Period[] {
+  return Array.from({ length: month.index }, (_, i) => ({ ...month, index: i + 1 }))
+}
+
+// String conveniences for URL state. Invalid input is returned unchanged.
+
+/** The last month of a period string, as a month period string. */
 export function endMonth(period: string): string {
   const p = parsePeriod(period)
-  if (!p) return period
-  return formatPeriod({ year: p.year, grain: 'month', n: endMonthNumber(p) })
+  return p ? formatPeriod(lastMonth(p)) : period
 }
 
-/** The period of another grain that contains the end month of `period`. */
+/** The period string of another grain that contains the last month of `period`. */
 export function convertGrain(period: string, grain: Grain): string {
   const p = parsePeriod(period)
-  if (!p) return period
-  const month = endMonthNumber(p)
-  const n = grain === 'year' ? 1 : Math.ceil(month / MONTHS_PER[grain])
-  return formatPeriod({ year: p.year, grain, n })
+  return p ? formatPeriod(parent(lastMonth(p), grain)) : period
 }
 
+/** The same period `delta` fiscal years later (or earlier, when negative). */
 export function shiftYear(period: string, delta: number): string {
   const p = parsePeriod(period)
-  if (!p) return period
-  return formatPeriod({ ...p, year: p.year + delta })
-}
-
-/** The calendar month containing `now`, as a month period. */
-export function currentMonth(now: Date = new Date()): string {
-  return formatPeriod({ year: now.getFullYear(), grain: 'month', n: now.getMonth() + 1 })
+  return p ? formatPeriod({ ...p, fy: p.fy + delta }) : period
 }
 
 /** Navigation state kept in the URL search params. */

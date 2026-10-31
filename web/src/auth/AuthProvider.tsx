@@ -1,12 +1,13 @@
 import { Auth0Provider, useAuth0 } from '@auth0/auth0-react'
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
-import { config, type AuthMode } from '../config'
+import { getConfig, type AuthMode } from '../config'
 import { AuthContext, type AuthState } from './context'
 import { clearDevToken, readDevToken, storeDevToken } from './devAuth'
 import { Auth0LoginPage, DevLoginPage } from './LoginPage'
 import {
   LAST_ORG_KEY,
   organizationForTenant,
+  rememberOrganization,
   rememberTenantOrganization,
   resolveOrganization,
 } from './organization'
@@ -21,7 +22,11 @@ interface Props {
  * Signs the user in and renders `children` only once authenticated. Dev mode
  * shows a user picker backed by the dev server; auth0 mode uses Auth0.
  */
-export function AuthProvider({ children, mode = config.authMode, apiUrl = config.apiUrl }: Props) {
+export function AuthProvider({
+  children,
+  mode = getConfig().authMode,
+  apiUrl = getConfig().apiUrl,
+}: Props) {
   return mode === 'auth0' ? (
     <Auth0Auth>{children}</Auth0Auth>
   ) : (
@@ -62,11 +67,18 @@ function DevAuth({ apiUrl, children }: { apiUrl: string; children: ReactNode }) 
 }
 
 function Auth0Auth({ children }: { children: ReactNode }) {
+  const config = getConfig()
   const organization = useMemo(() => resolveOrganization(window.location.search, localStorage), [])
+  // Remember an organization named in the URL for next time (not during render).
+  useEffect(() => {
+    if (organization) rememberOrganization(organization, localStorage)
+  }, [organization])
   return (
     <Auth0Provider
       domain={config.auth0Domain}
       clientId={config.auth0ClientId}
+      // Tokens stay in memory only, never in localStorage.
+      cacheLocation="memory"
       authorizationParams={{
         audience: config.auth0Audience,
         organization,

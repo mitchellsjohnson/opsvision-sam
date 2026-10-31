@@ -10,6 +10,8 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     setupFiles: ['./src/test/setup.ts'],
-    css: false,
+    // CSS is not processed in tests, except that tokens.css can be read as
+    // raw text (`?raw`) to check the design tokens' contrast.
+    css: { include: /tokens\.css/ },
   },
 })

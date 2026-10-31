@@ -31,6 +31,12 @@ export function useMe() {
   return useQuery({ queryKey: keys.me, queryFn: () => unwrap(api.GET('/me')) })
 }
 
+/** The tenant's fiscal year start month (1-12); January until the identity loads. */
+export function useFiscalYearStartMonth(): number {
+  const me = useMe()
+  return me.data?.tenant?.fiscalYearStartMonth ?? 1
+}
+
 export function useScorecards() {
   const api = useApi()
   return useQuery({ queryKey: keys.scorecards, queryFn: () => unwrap(api.GET('/scorecards')) })

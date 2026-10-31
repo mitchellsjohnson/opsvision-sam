@@ -1,5 +1,7 @@
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
+import clsx from 'clsx'
 import { Building2, Check, ChevronDown } from 'lucide-react'
+import { focusOnDark, menuItemHighlight } from '../ui/focus'
 
 export interface TenantOption {
   id: string
@@ -30,7 +32,12 @@ export function TenantSwitcher({ tenants, activeId, canSwitch, onSwitch }: Tenan
   }
   return (
     <DropdownMenu.Root>
-      <DropdownMenu.Trigger className="flex items-center gap-2 rounded-md px-2 py-1 text-sm hover:bg-white/10">
+      <DropdownMenu.Trigger
+        className={clsx(
+          'flex items-center gap-2 rounded-md px-2 py-1 text-sm hover:bg-white/10',
+          focusOnDark,
+        )}
+      >
         <Building2 aria-hidden="true" size={16} />
         <span>
           <span className="sr-only">Tenant: </span>
@@ -53,7 +60,10 @@ export function TenantSwitcher({ tenants, activeId, canSwitch, onSwitch }: Tenan
                 key={t.id}
                 value={t.id}
                 disabled={t.id !== activeId && !canSwitch?.(t.id)}
-                className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm outline-none data-[disabled]:opacity-50 data-[highlighted]:bg-cream"
+                className={clsx(
+                  'flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm data-[disabled]:opacity-50',
+                  menuItemHighlight,
+                )}
               >
                 <span className="w-4">
                   <DropdownMenu.ItemIndicator>

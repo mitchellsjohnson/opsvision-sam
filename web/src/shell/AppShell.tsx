@@ -5,6 +5,7 @@ import { useEffect } from 'react'
 import { NavLink, Outlet, useLocation, useSearchParams } from 'react-router'
 import { useMe, useOrgUnits, useScorecards } from '../api/queries'
 import { useAuth } from '../auth/context'
+import { focusOnDark, menuItemHighlight } from '../ui/focus'
 import { PeriodPicker } from './PeriodPicker'
 import { SubjectFilter } from './SubjectFilter'
 import { TenantSwitcher } from './TenantSwitcher'
@@ -51,7 +52,7 @@ export function AppShell() {
     <div className="flex min-h-screen flex-col">
       <a
         href="#main"
-        className="sr-only focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-50 focus:rounded-md focus:bg-white focus:px-3 focus:py-2 focus:font-medium focus:text-accent-deep"
+        className="sr-only focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-50 focus:rounded-md focus:bg-white focus:px-3 focus:py-2 focus:font-medium focus:text-accent-deep focus:outline-2 focus:outline-offset-2 focus:outline-amber"
       >
         Skip to main content
       </a>
@@ -63,7 +64,10 @@ export function AppShell() {
             type="button"
             disabled
             aria-label="Ask SAM (coming soon)"
-            className="flex size-8 items-center justify-center rounded-full bg-amber font-semibold text-ink opacity-70"
+            className={clsx(
+              'flex size-8 items-center justify-center rounded-full bg-amber font-semibold text-ink opacity-70',
+              focusOnDark,
+            )}
           >
             S
           </button>
@@ -74,7 +78,12 @@ export function AppShell() {
             onSwitch={auth.switchTenant}
           />
           <DropdownMenu.Root>
-            <DropdownMenu.Trigger className="flex items-center gap-2 rounded-md px-2 py-1 text-sm hover:bg-white/10">
+            <DropdownMenu.Trigger
+              className={clsx(
+                'flex items-center gap-2 rounded-md px-2 py-1 text-sm hover:bg-white/10',
+                focusOnDark,
+              )}
+            >
               {me.data?.name ?? 'Account'}
               <ChevronDown aria-hidden="true" size={16} />
             </DropdownMenu.Trigger>
@@ -92,7 +101,10 @@ export function AppShell() {
                 )}
                 <DropdownMenu.Item
                   onSelect={() => auth.signOut()}
-                  className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm outline-none data-[highlighted]:bg-cream"
+                  className={clsx(
+                    'flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm',
+                    menuItemHighlight,
+                  )}
                 >
                   <LogOut aria-hidden="true" size={14} />
                   Sign out

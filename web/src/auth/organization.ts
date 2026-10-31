@@ -6,13 +6,15 @@ export const TENANT_ORGS_KEY = 'opsvision.tenantOrganizations'
 type ReadableStorage = Pick<Storage, 'getItem'>
 type WritableStorage = ReadableStorage & Pick<Storage, 'setItem'>
 
-export function resolveOrganization(search: string, storage: WritableStorage): string | undefined {
+/** The organization to sign in to. Pure: it reads storage but never writes it. */
+export function resolveOrganization(search: string, storage: ReadableStorage): string | undefined {
   const fromUrl = new URLSearchParams(search).get('organization')
-  if (fromUrl) {
-    storage.setItem(LAST_ORG_KEY, fromUrl)
-    return fromUrl
-  }
-  return storage.getItem(LAST_ORG_KEY) ?? undefined
+  return fromUrl || (storage.getItem(LAST_ORG_KEY) ?? undefined)
+}
+
+/** Records the organization as the last one used. Call from an effect or callback. */
+export function rememberOrganization(organizationId: string, storage: WritableStorage): void {
+  storage.setItem(LAST_ORG_KEY, organizationId)
 }
 
 function readMap(storage: ReadableStorage): Record<string, string> {

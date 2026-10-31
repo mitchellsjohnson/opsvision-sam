@@ -1,5 +1,6 @@
 import { useCallback, useMemo } from 'react'
 import { useSearchParams } from 'react-router'
+import { useFiscalYearStartMonth, useMe } from '../api/queries'
 import { currentMonth, parsePeriod, type PeriodState } from '../lib/period'
 
 /** Search params that make up the shared view state and survive navigation. */
@@ -11,23 +12,39 @@ export interface PeriodPatch {
   subjects?: string[]
 }
 
+export interface PeriodView extends PeriodState {
+  /** The tenant's fiscal year start month; periods are fiscal. */
+  fiscalYearStartMonth: number
+  /**
+   * False while the default period (the current fiscal month) cannot be known
+   * yet because the tenant has not loaded. Wait for it before querying data.
+   */
+  ready: boolean
+}
+
 /**
  * The shell's period, YTD and subject selection. It lives in the URL
- * (`?period=2026-M10&ytd=1&subject=a&subject=b`) so views are linkable.
+ * (`?period=2026-M10&ytd=1&subject=a&subject=b`; periods are fiscal) so views
+ * are linkable. Without `?period=` it defaults to the current fiscal month.
  */
-export function usePeriodState(): [PeriodState, (patch: PeriodPatch) => void] {
+export function usePeriodState(): [PeriodView, (patch: PeriodPatch) => void] {
   const [params, setParams] = useSearchParams()
   const key = params.toString()
+  const fiscalYearStartMonth = useFiscalYearStartMonth()
+  const tenantPending = useMe().isPending
 
-  const state = useMemo<PeriodState>(() => {
+  const state = useMemo<PeriodView>(() => {
     const p = new URLSearchParams(key)
     const raw = p.get('period')
+    const valid = raw !== null && parsePeriod(raw) !== null
     return {
-      period: raw && parsePeriod(raw) ? raw : currentMonth(),
+      period: valid ? raw : currentMonth(fiscalYearStartMonth),
       ytd: p.get('ytd') === '1',
       subjects: p.getAll('subject'),
+      fiscalYearStartMonth,
+      ready: valid || !tenantPending,
     }
-  }, [key])
+  }, [key, fiscalYearStartMonth, tenantPending])
 
   const update = useCallback(
     (patch: PeriodPatch) => {

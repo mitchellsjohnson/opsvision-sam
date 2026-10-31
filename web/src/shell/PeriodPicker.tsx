@@ -3,122 +3,139 @@ import { useId } from 'react'
 import {
   GRAINS,
   convertGrain,
+  fiscalMonthName,
   formatPeriod,
+  monthOf,
   parsePeriod,
+  periodLabel,
   shiftYear,
   type Grain,
 } from '../lib/period'
 import { usePeriodState } from './usePeriodState'
 
-const MONTHS = [
-  'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
-]
+const fieldClass = 'rounded-md border border-ink/30 bg-white px-2 py-1 text-sm'
+const buttonClass = 'rounded-md border border-ink/30 bg-white p-1 hover:bg-cream disabled:opacity-50'
 
-const UNITS: Record<Exclude<Grain, 'year'>, { label: string; options: string[] }> = {
-  month: { label: 'Month', options: MONTHS },
-  quarter: { label: 'Quarter', options: ['Q1', 'Q2', 'Q3', 'Q4'] },
-  half: { label: 'Half', options: ['H1', 'H2'] },
+function unitOptions(grain: Exclude<Grain, 'year'>, start: number) {
+  const span = { month: 1, quarter: 3, half: 6 }[grain]
+  const count = 12 / span
+  return Array.from({ length: count }, (_, i) => {
+    const first = fiscalMonthName(i * span + 1, start)
+    const last = fiscalMonthName(i * span + span, start)
+    const name =
+      grain === 'month' ? first : `${grain === 'quarter' ? 'Q' : 'H'}${i + 1} (${first}–${last})`
+    return { value: i + 1, name }
+  })
 }
 
-const fieldClass = 'rounded-md border border-ink/30 bg-white px-2 py-1 text-sm'
-const buttonClass =
-  'rounded-md border border-ink/30 bg-white p-1 hover:bg-cream disabled:opacity-50'
+const UNIT_LABEL = { month: 'Month', quarter: 'Quarter', half: 'Half' }
 
-/** Month / quarter / half / year selection plus a year-to-date toggle; state lives in the URL. */
+/**
+ * Month / quarter / half / year selection plus a year-to-date toggle. State
+ * lives in the URL. Periods are fiscal, so months are listed from the
+ * tenant's fiscal year start and years are fiscal years (FY2027 = the year
+ * ending in 2027).
+ */
 export function PeriodPicker() {
-  const [{ period, ytd }, update] = usePeriodState()
+  const [{ period, ytd, fiscalYearStartMonth: start }, update] = usePeriodState()
   const id = useId()
   const parsed = parsePeriod(period)
   if (!parsed) return null
 
-  const thisYear = new Date().getFullYear()
+  const thisFy = monthOf(new Date(), start).fy
   const years: number[] = []
-  for (let y = thisYear + 1; y >= thisYear - 8; y--) years.push(y)
-  if (!years.includes(parsed.year)) years.push(parsed.year)
+  for (let y = thisFy + 1; y >= thisFy - 8; y--) years.push(y)
+  if (!years.includes(parsed.fy)) years.push(parsed.fy)
   years.sort((a, b) => b - a)
 
-  const unit = parsed.grain === 'year' ? null : UNITS[parsed.grain]
+  const unitGrain = parsed.grain === 'year' ? null : parsed.grain
 
   return (
     <fieldset className="flex flex-wrap items-end gap-3">
       <legend className="sr-only">Period</legend>
+      <div className="flex flex-col text-xs font-medium">
+        <label htmlFor={`${id}-grain`}>View by</label>
+        <select
+          id={`${id}-grain`}
+          className={fieldClass}
+          value={parsed.grain}
+          onChange={(e) => update({ period: convertGrain(period, e.target.value as Grain) })}
+        >
+          {GRAINS.map((g) => (
+            <option key={g.value} value={g.value}>
+              {g.label}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      <div className="flex items-end gap-1">
+        <button
+          type="button"
+          className={buttonClass}
+          aria-label="Previous fiscal year"
+          onClick={() => update({ period: shiftYear(period, -1) })}
+        >
+          <ChevronLeft aria-hidden="true" size={16} />
+        </button>
         <div className="flex flex-col text-xs font-medium">
-          <label htmlFor={`${id}-grain`}>View by</label>
+          <label htmlFor={`${id}-year`}>Fiscal year</label>
           <select
-            id={`${id}-grain`}
+            id={`${id}-year`}
             className={fieldClass}
-            value={parsed.grain}
-            onChange={(e) => update({ period: convertGrain(period, e.target.value as Grain) })}
+            value={parsed.fy}
+            onChange={(e) => update({ period: formatPeriod({ ...parsed, fy: Number(e.target.value) }) })}
           >
-            {GRAINS.map((g) => (
-              <option key={g.value} value={g.value}>
-                {g.label}
+            {years.map((y) => (
+              <option key={y} value={y}>
+                FY{y}
               </option>
             ))}
           </select>
         </div>
+        <button
+          type="button"
+          className={buttonClass}
+          aria-label="Next fiscal year"
+          onClick={() => update({ period: shiftYear(period, 1) })}
+        >
+          <ChevronRight aria-hidden="true" size={16} />
+        </button>
+      </div>
 
-        <div className="flex items-end gap-1">
-          <button
-            type="button"
-            className={buttonClass}
-            aria-label="Previous year"
-            onClick={() => update({ period: shiftYear(period, -1) })}
+      {unitGrain && (
+        <div className="flex flex-col text-xs font-medium">
+          <label htmlFor={`${id}-unit`}>{UNIT_LABEL[unitGrain]}</label>
+          <select
+            id={`${id}-unit`}
+            className={fieldClass}
+            value={parsed.index}
+            onChange={(e) =>
+              update({ period: formatPeriod({ ...parsed, index: Number(e.target.value) }) })
+            }
           >
-            <ChevronLeft aria-hidden="true" size={16} />
-          </button>
-          <div className="flex flex-col text-xs font-medium">
-            <label htmlFor={`${id}-year`}>Year</label>
-            <select
-              id={`${id}-year`}
-              className={fieldClass}
-              value={parsed.year}
-              onChange={(e) => update({ period: formatPeriod({ ...parsed, year: Number(e.target.value) }) })}
-            >
-              {years.map((y) => (
-                <option key={y} value={y}>
-                  {y}
-                </option>
-              ))}
-            </select>
-          </div>
-          <button
-            type="button"
-            className={buttonClass}
-            aria-label="Next year"
-            onClick={() => update({ period: shiftYear(period, 1) })}
-          >
-            <ChevronRight aria-hidden="true" size={16} />
-          </button>
+            {unitOptions(unitGrain, start).map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.name}
+              </option>
+            ))}
+          </select>
         </div>
+      )}
 
-        {unit && (
-          <div className="flex flex-col text-xs font-medium">
-            <label htmlFor={`${id}-unit`}>{unit.label}</label>
-            <select
-              id={`${id}-unit`}
-              className={fieldClass}
-              value={parsed.n}
-              onChange={(e) => update({ period: formatPeriod({ ...parsed, n: Number(e.target.value) }) })}
-            >
-              {unit.options.map((name, i) => (
-                <option key={name} value={i + 1}>
-                  {name}
-                </option>
-              ))}
-            </select>
-          </div>
-        )}
+      <label className="flex items-center gap-2 pb-1 text-sm font-medium">
+        <input
+          type="checkbox"
+          checked={ytd}
+          onChange={(e) => update({ ytd: e.target.checked })}
+          className="size-4 accent-accent"
+        />
+        Year to date
+      </label>
 
-        <label className="flex items-center gap-2 pb-1 text-sm font-medium">
-          <input
-            type="checkbox"
-            checked={ytd}
-            onChange={(e) => update({ ytd: e.target.checked })}
-            className="size-4 accent-accent"
-          />
-          Year to date
-        </label>
+      <p className="pb-1 text-sm text-ink/80">
+        Showing <strong className="font-semibold text-ink">{periodLabel(parsed, start)}</strong>
+      </p>
     </fieldset>
   )
 }

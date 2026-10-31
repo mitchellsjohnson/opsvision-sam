@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { LAST_ORG_KEY, resolveOrganization } from './organization'
+import { LAST_ORG_KEY, rememberOrganization, resolveOrganization } from './organization'
 
 function storage(initial: Record<string, string> = {}) {
   const data = { ...initial }
@@ -13,9 +13,15 @@ function storage(initial: Record<string, string> = {}) {
 }
 
 describe('resolveOrganization', () => {
-  it('prefers ?organization= and remembers it', () => {
+  it('prefers ?organization= and does not write storage', () => {
     const s = storage({ [LAST_ORG_KEY]: 'org_old' })
     expect(resolveOrganization('?organization=org_new', s)).toBe('org_new')
+    expect(s.data[LAST_ORG_KEY]).toBe('org_old')
+  })
+
+  it('remembers an organization on request', () => {
+    const s = storage()
+    rememberOrganization('org_new', s)
     expect(s.data[LAST_ORG_KEY]).toBe('org_new')
   })
 
