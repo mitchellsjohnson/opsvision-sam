@@ -6,6 +6,12 @@ import { useApi } from './useApi'
 
 type Schemas = components['schemas']
 export type DataBatchRequest = Schemas['DataBatchRequest']
+export type PutOverrideRequest = Schemas['PutOverrideRequest']
+export interface OverrideCell {
+  metricKey: string
+  subjectId: string
+  period: string
+}
 
 /** Query keys, shared so mutations and pages invalidate the same entries. */
 export const keys = {
@@ -14,6 +20,9 @@ export const keys = {
   orgUnits: ['orgUnits'] as const,
   view: (sc: string, req: ViewRequest) => ['view', sc, req] as const,
   entry: (sc: string, period: string) => ['entry', sc, period] as const,
+  versions: (sc: string) => ['versions', sc] as const,
+  history: (sc: string, measure: string, subject: string, period: string) =>
+    ['history', sc, measure, subject, period] as const,
 }
 
 type Result<T> = { data?: T; error?: unknown; response: Response }
@@ -99,5 +108,58 @@ export function usePreview(sc: string) {
   return useMutation({
     mutationFn: (body: DataBatchRequest) =>
       unwrap(api.POST('/scorecards/{sc}/preview', { params: { path: { sc } }, body })),
+  })
+}
+
+/** A scorecard's methodology versions, newest first. */
+export function useVersions(sc: string | undefined) {
+  const api = useApi()
+  return useQuery({
+    queryKey: keys.versions(sc ?? ''),
+    enabled: sc !== undefined,
+    queryFn: () => unwrap(api.GET('/scorecards/{sc}/versions', { params: { path: { sc: sc ?? '' } } })),
+  })
+}
+
+/** Stored revisions of one data point, newest first. */
+export function useHistory(
+  sc: string,
+  measure: string,
+  subject: string,
+  period: string,
+  enabled = true,
+) {
+  const api = useApi()
+  return useQuery({
+    queryKey: keys.history(sc, measure, subject, period),
+    enabled,
+    queryFn: () =>
+      unwrap(
+        api.GET('/scorecards/{sc}/history', {
+          params: { path: { sc }, query: { measure, subject, period } },
+        }),
+      ),
+  })
+}
+
+/** Creates or replaces an override on a metric cell; refreshes the scorecard view. */
+export function usePutOverride(sc: string) {
+  const api = useApi()
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (body: PutOverrideRequest) =>
+      unwrap(api.PUT('/scorecards/{sc}/overrides', { params: { path: { sc } }, body })),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['view', sc] }),
+  })
+}
+
+/** Removes an override from a metric cell; refreshes the scorecard view. */
+export function useClearOverride(sc: string) {
+  const api = useApi()
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (cell: OverrideCell) =>
+      unwrap(api.DELETE('/scorecards/{sc}/overrides', { params: { path: { sc }, query: cell } })),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['view', sc] }),
   })
 }
