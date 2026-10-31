@@ -1,6 +1,6 @@
 import { Navigate, Route, Routes } from 'react-router'
 import { AppShell } from './shell/AppShell'
-import { EntryPage } from './pages/EntryPage'
+import { EntryPage } from './features/entry/EntryPage'
 import { HomeRedirect } from './pages/HomeRedirect'
 import { NotFoundPage } from './pages/NotFoundPage'
 import { RequireAdmin } from './pages/RequireAdmin'

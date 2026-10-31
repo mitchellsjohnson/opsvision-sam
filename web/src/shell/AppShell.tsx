@@ -155,8 +155,14 @@ export function AppShell() {
               aria-label="Report filters"
               className="flex flex-wrap items-end gap-4 border-b border-ink/15 bg-white px-6 py-3"
             >
-              <PeriodPicker />
-              <SubjectFilter subjects={orgUnits.data?.units} />
+              {pathname === '/entry' ? (
+                <PeriodPicker monthOnly />
+              ) : (
+                <>
+                  <PeriodPicker />
+                  <SubjectFilter subjects={orgUnits.data?.units} />
+                </>
+              )}
             </section>
           )}
           <main id="main" tabIndex={-1} className="p-6 outline-none">

@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render } from '@testing-library/react'
 import type { ReactElement } from 'react'
-import { MemoryRouter } from 'react-router'
+import { createMemoryRouter, RouterProvider } from 'react-router'
 import { AuthContext, type AuthState } from '../auth/context'
 
 export function testAuth(overrides: Partial<AuthState> = {}): AuthState {
@@ -21,15 +21,17 @@ export function newQueryClient(): QueryClient {
   })
 }
 
-/** Renders with a signed-in test user, a fresh query cache and a memory router. */
+/** Renders with a signed-in test user, a fresh query cache and a memory data router. */
 export function renderApp(
   ui: ReactElement,
   { route = '/', auth = testAuth() }: { route?: string; auth?: AuthState } = {},
 ) {
+  // A data router (as in the app) so useBlocker works; one splat route renders the UI.
+  const router = createMemoryRouter([{ path: '*', element: ui }], { initialEntries: [route] })
   return render(
     <AuthContext.Provider value={auth}>
       <QueryClientProvider client={newQueryClient()}>
-        <MemoryRouter initialEntries={[route]}>{ui}</MemoryRouter>
+        <RouterProvider router={router} />
       </QueryClientProvider>
     </AuthContext.Provider>,
   )

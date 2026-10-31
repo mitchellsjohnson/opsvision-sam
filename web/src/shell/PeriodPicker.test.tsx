@@ -133,4 +133,32 @@ describe('PeriodPicker with a July fiscal year', () => {
     expect((screen.getByLabelText('Month') as HTMLSelectElement).value).toBe('1')
     expect(screen.getByText('Jul 2026')).toBeTruthy()
   })
+
+  describe('month only (data entry)', () => {
+    function monthPicker(route: string) {
+      renderApp(
+        <>
+          <PeriodPicker monthOnly />
+          <Search />
+        </>,
+        { route },
+      )
+      return userEvent.setup()
+    }
+
+    it('offers only the fiscal year and month', () => {
+      monthPicker('/?period=2026-M10')
+      expect(screen.queryByLabelText('View by')).toBeNull()
+      expect(screen.queryByRole('checkbox', { name: 'Year to date' })).toBeNull()
+      expect((screen.getByLabelText('Month') as HTMLSelectElement).value).toBe('10')
+      expect((screen.getByLabelText('Fiscal year') as HTMLSelectElement).value).toBe('2026')
+    })
+
+    it('shows the last month of a quarter and changes month in the URL', async () => {
+      const user = monthPicker('/?period=2026-Q3')
+      expect((screen.getByLabelText('Month') as HTMLSelectElement).value).toBe('9')
+      await user.selectOptions(screen.getByLabelText('Month'), '2')
+      expect(search().get('period')).toBe('2026-M02')
+    })
+  })
 })

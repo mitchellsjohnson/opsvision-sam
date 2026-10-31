@@ -3,6 +3,7 @@ import { useId } from 'react'
 import {
   GRAINS,
   convertGrain,
+  endMonth,
   fiscalMonthName,
   formatPeriod,
   monthOf,
@@ -31,14 +32,17 @@ function unitOptions(grain: Exclude<Grain, 'year'>, start: number) {
 const UNIT_LABEL = { month: 'Month', quarter: 'Quarter', half: 'Half' }
 
 /**
- * Month / quarter / half / year selection plus a year-to-date toggle. State
+ * Month / quarter / half / year selection plus a year-to-date toggle. With
+ * `monthOnly` (data entry) it offers just the fiscal year and month. State
  * lives in the URL. Periods are fiscal, so months are listed from the
  * tenant's fiscal year start and years are fiscal years (FY2027 = the year
  * ending in 2027).
  */
-export function PeriodPicker() {
-  const [{ period, ytd, fiscalYearStartMonth: start }, update] = usePeriodState()
+export function PeriodPicker({ monthOnly = false }: { monthOnly?: boolean } = {}) {
+  const [{ period: urlPeriod, ytd, fiscalYearStartMonth: start }, update] = usePeriodState()
   const id = useId()
+  // Month-only (data entry): a quarter, half or year in the URL stands for its last month.
+  const period = monthOnly ? endMonth(urlPeriod) : urlPeriod
   const parsed = parsePeriod(period)
   if (!parsed) return null
 
@@ -53,21 +57,23 @@ export function PeriodPicker() {
   return (
     <fieldset className="flex flex-wrap items-end gap-3">
       <legend className="sr-only">Period</legend>
-      <div className="flex flex-col text-xs font-medium">
-        <label htmlFor={`${id}-grain`}>View by</label>
-        <select
-          id={`${id}-grain`}
-          className={fieldClass}
-          value={parsed.grain}
-          onChange={(e) => update({ period: convertGrain(period, e.target.value as Grain) })}
-        >
-          {GRAINS.map((g) => (
-            <option key={g.value} value={g.value}>
-              {g.label}
-            </option>
-          ))}
-        </select>
-      </div>
+      {!monthOnly && (
+        <div className="flex flex-col text-xs font-medium">
+          <label htmlFor={`${id}-grain`}>View by</label>
+          <select
+            id={`${id}-grain`}
+            className={fieldClass}
+            value={parsed.grain}
+            onChange={(e) => update({ period: convertGrain(period, e.target.value as Grain) })}
+          >
+            {GRAINS.map((g) => (
+              <option key={g.value} value={g.value}>
+                {g.label}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
 
       <div className="flex items-end gap-1">
         <button
@@ -123,15 +129,17 @@ export function PeriodPicker() {
         </div>
       )}
 
-      <label className="flex items-center gap-2 pb-1 text-sm font-medium">
-        <input
-          type="checkbox"
-          checked={ytd}
-          onChange={(e) => update({ ytd: e.target.checked })}
-          className="size-4 accent-accent"
-        />
-        Year to date
-      </label>
+      {!monthOnly && (
+        <label className="flex items-center gap-2 pb-1 text-sm font-medium">
+          <input
+            type="checkbox"
+            checked={ytd}
+            onChange={(e) => update({ ytd: e.target.checked })}
+            className="size-4 accent-accent"
+          />
+          Year to date
+        </label>
+      )}
 
       <p className="pb-1 text-sm text-ink/80">
         Showing <strong className="font-semibold text-ink">{periodLabel(parsed, start)}</strong>
