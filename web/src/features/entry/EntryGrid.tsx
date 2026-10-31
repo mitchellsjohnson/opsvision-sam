@@ -26,6 +26,7 @@ import {
   commitDraft,
   describeSaved,
   draftOf,
+  formatNumber,
   effectiveRow,
   omit,
   rowKey,
@@ -63,6 +64,8 @@ interface Item {
   row: EntryRow
   saved: Saved
   draft: Draft
+  /** Whether the person has edited this row; untouched rows are never analyzed. */
+  touched: boolean
   analysis: Analysis
   /** The metric whose preview this row shows: the first one that uses the measure. */
   metricKey: string
@@ -70,6 +73,10 @@ interface Item {
 
 interface Conflict {
   current?: DataPoint
+}
+
+function sameDraft(a: Draft, b: Draft): boolean {
+  return a.value === b.value && a.reason === b.reason && a.na === b.na && a.baseRevision === b.baseRevision
 }
 
 function previewKey(metricKey: string, subjectId: string, period: string): string {
@@ -183,14 +190,17 @@ function GridBody({
       rows.map((fetched, index) => {
         const key = rowKey(fetched)
         const { row, saved } = effectiveRow(fetched, bases[key])
-        const draft = drafts[key] ?? draftOf(saved)
+        const touched = key in drafts
+        const draft = drafts[key] ?? draftOf(saved, row.revision)
         return {
           index,
           key,
           row,
           saved,
           draft,
-          analysis: analyze(draft, saved),
+          touched,
+          // Only edited rows are analyzed, so saved data can never show as an error.
+          analysis: touched ? analyze(draft, saved) : { dirty: false },
           metricKey: row.metricKeys[0] ?? '',
         }
       }),
@@ -198,7 +208,7 @@ function GridBody({
   )
 
   const dirtyItems = items.filter((i) => i.analysis.dirty)
-  const writes = dirtyItems.map((i) => toWrite(i.row, i.analysis) as DataWrite)
+  const writes = dirtyItems.map((i) => toWrite(i.row, i.draft, i.analysis) as DataWrite)
   const writesJson = JSON.stringify(writes)
   const issues = items.filter((i) => i.analysis.issue)
   const visibleIssues = issues.filter((i) => typing !== `${i.key}:${i.analysis.issue?.field}`)
@@ -298,6 +308,7 @@ function GridBody({
 
   function commit(item: Item) {
     setTyping(null)
+    if (!item.touched) return item.draft // nothing was edited: leave the saved text alone
     const next = commitDraft(item.draft)
     if (next.value !== item.draft.value || next.na !== item.draft.na) setDraft(item.key, next)
     return next
@@ -375,12 +386,12 @@ function GridBody({
       const parsed = parseEntryValue(raw)
       const reason = twoColumns ? (cells[1] ?? '').trim() : undefined
       if (parsed.kind === 'value') {
-        updates[target.key] = { value: String(parsed.value), reason: reason ?? '', na: false }
+        updates[target.key] = { ...d, value: formatNumber(parsed.value), reason: reason ?? '', na: false }
       } else if (parsed.kind === 'na') {
-        updates[target.key] = { value: '', reason: reason ?? d.reason, na: true }
+        updates[target.key] = { ...d, value: '', reason: reason ?? d.reason, na: true }
       } else if (parsed.kind === 'empty') {
         const next = reason ?? d.reason
-        updates[target.key] = { value: '', reason: next, na: reason === undefined ? d.na : next !== '' }
+        updates[target.key] = { ...d, value: '', reason: next, na: reason === undefined ? d.na : next !== '' }
       } else {
         // Keep the text so it can be seen and fixed; it is an error, not a change.
         updates[target.key] = { ...d, value: raw.trim() }
@@ -394,8 +405,12 @@ function GridBody({
       return next
     })
     const ignored = block.length - count
+    const lastIndex = count > 0 ? (targets[count - 1] as Item).index : item.index
+    const skipped = items.slice(item.index, lastIndex).filter((i) => !i.row.canEdit).length
     setStatus(
       `Pasted ${count} ${count === 1 ? 'row' : 'rows'}${
+        skipped > 0 ? `; skipped ${skipped} read-only ${skipped === 1 ? 'row' : 'rows'}` : ''
+      }${
         ignored > 0 ? `; ${ignored} more ${ignored === 1 ? 'row' : 'rows'} did not fit and ${ignored === 1 ? 'was' : 'were'} ignored` : ''
       }.`,
     )
@@ -412,6 +427,16 @@ function GridBody({
       },
     }))
     setConflicts((prev) => omit(prev, key))
+  }
+
+  function keepMine(key: string) {
+    const current = conflicts[key]?.current
+    adopt(key, current)
+    // The edit now builds on the version that conflicted, so the next Save replaces it.
+    setDrafts((prev) => {
+      const draft = prev[key]
+      return draft ? { ...prev, [key]: { ...draft, baseRevision: current?.revision ?? 0 } } : prev
+    })
   }
 
   function takeTheirs(key: string) {
@@ -434,6 +459,7 @@ function GridBody({
     setServerMessages({})
     const sentKeys = dirtyItems.map((i) => i.key)
     const sentWrites = writes
+    const sentDrafts = new Map(dirtyItems.map((i) => [i.key, i.draft]))
     save.mutate(
       { writes: sentWrites },
       {
@@ -451,7 +477,20 @@ function GridBody({
             }
             return next
           })
-          setDrafts({})
+          // Clear only what was sent and not touched since. Edits made while the save
+          // was in flight stay, rebased onto the revision just saved.
+          const savedRevision = new Map(result.saved.map((p) => [rowKey(p), p.revision]))
+          setDrafts((prev) => {
+            const next: Record<string, Draft> = {}
+            for (const [key, draft] of Object.entries(prev)) {
+              const sent = sentDrafts.get(key)
+              if (!sent) next[key] = draft
+              else if (!sameDraft(sent, draft)) {
+                next[key] = { ...draft, baseRevision: savedRevision.get(key) ?? draft.baseRevision }
+              }
+            }
+            return next
+          })
           setConflicts({})
           setStatus(`Saved ${sentWrites.length} ${sentWrites.length === 1 ? 'value' : 'values'}.`)
         },
@@ -756,7 +795,7 @@ function GridBody({
                   </button>
                   <button
                     type="button"
-                    onClick={() => adopt(item.key, conflict.current)}
+                    onClick={() => keepMine(item.key)}
                     aria-label={`Keep mine, ${row.measureName}, ${row.subjectName}`}
                     className="rounded-md border border-ink/30 bg-white px-2 py-1 text-xs font-medium hover:bg-cream"
                   >

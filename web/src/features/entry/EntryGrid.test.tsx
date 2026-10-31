@@ -78,6 +78,8 @@ interface Harness {
   counts: { entry: number; view: number }
   previews: DataWrite[][]
   saves: DataWrite[][]
+  /** When set, saves wait for it before answering (to type while a save is in flight). */
+  gate?: Promise<void>
   /** Makes the next save fail with this response (once). */
   failNextSave?: () => Response
   externalChange(measureKey: string, subjectId: string, value: number): void
@@ -119,6 +121,7 @@ function setup(rows: EntryRow[] = baseRows()) {
     http.post(`${API}/v1/scorecards/sc-main/data\\:batch`, async ({ request }) => {
       const body = (await request.json()) as { writes: DataWrite[] }
       h.saves.push(body.writes)
+      if (h.gate) await h.gate
       if (h.failNextSave) {
         const fail = h.failNextSave
         h.failNextSave = undefined
@@ -394,6 +397,32 @@ describe('typing and errors', () => {
   })
 })
 
+describe('saved values', () => {
+  it('shows tiny and huge saved numbers as plain digits and never flags untouched rows', async () => {
+    const { user } = setup([
+      row('closed', 'unit-a', { value: 1e-7, revision: 1 }),
+      row('total', 'unit-a', { value: 1e21, revision: 1 }),
+    ])
+    await ready()
+    expect(value('Closed items', 'Unit A').value).toBe('0.0000001')
+    expect(value('Total items', 'Unit A').value).toBe('1000000000000000000000')
+    // Move through both without editing: no errors, no changes.
+    value('Closed items', 'Unit A').focus()
+    await user.tab()
+    await user.tab()
+    await user.tab()
+    await user.tab()
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(value('Closed items', 'Unit A').value).toBe('0.0000001')
+    expect(saveButton().textContent).toBe('Save changes (0)')
+    // Editing one still works and leaves the other alone.
+    await typeInto(user, value('Closed items', 'Unit A'), '2')
+    await user.tab()
+    expect(saveButton().textContent).toBe('Save changes (1)')
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+})
+
 describe('paste', () => {
   it('a 2x1 block fills this row and the next', async () => {
     const { user } = setup()
@@ -424,6 +453,7 @@ describe('paste', () => {
     expect(value('Closed items', 'Unit D').value).toBe('5') // read-only, untouched
     expect(value('Closed items', 'Unit B').value).toBe('2')
     expect(value('Total items', 'Unit B').value).toBe('3')
+    expect(screen.getByRole('status').textContent).toBe('Pasted 3 rows; skipped 1 read-only row.')
   })
 
   it('ignores lines that run past the last row and says so', async () => {
@@ -585,6 +615,64 @@ describe('saving', () => {
     expect(h.saves[1]).toEqual([
       { measureKey: 'closed', subjectId: 'unit-a', period: PERIOD, value: 46, expectedRevision: 4 },
     ])
+  })
+
+  it('sends the revision an edit started from, even if a refetch brings a newer one', async () => {
+    const { h, user } = setup()
+    await ready()
+    await typeInto(user, value('Closed items', 'Unit A'), '45')
+    await user.tab()
+    // A colleague saves (revision 3 -> 4) and the window regains focus: the grid refetches.
+    h.externalChange('closed', 'unit-a', 77)
+    act(() => {
+      window.dispatchEvent(new Event('visibilitychange'))
+    })
+    await waitFor(() => expect(h.counts.entry).toBe(2))
+    expect(value('Closed items', 'Unit A').value).toBe('45') // my edit is still showing
+
+    await user.click(saveButton())
+    // Based on revision 3, so the server refuses instead of overwriting revision 4.
+    await screen.findByText(/Changed by someone else: now 77/)
+    expect(h.saves).toHaveLength(1)
+    expect(h.saves[0]).toEqual([
+      { measureKey: 'closed', subjectId: 'unit-a', period: PERIOD, value: 45, expectedRevision: 3 },
+    ])
+    expect(h.rows.find((r) => r.subjectId === 'unit-a' && r.measureKey === 'closed')?.value).toBe(77)
+  })
+
+  it('keeps edits made while a save is in flight, and still sends them afterwards', async () => {
+    let release = () => {}
+    const { h, user } = setup()
+    await ready()
+    h.gate = new Promise<void>((resolve) => (release = resolve))
+    await typeInto(user, value('Closed items', 'Unit A'), '45')
+    await typeInto(user, value('Closed items', 'Unit B'), '12')
+    await user.tab()
+    await user.click(saveButton())
+    await waitFor(() => expect(h.saves).toHaveLength(1))
+
+    // Still typing while the request is out: another row, and a sent row again.
+    await typeInto(user, value('Total items', 'Unit B'), '7')
+    await typeInto(user, value('Closed items', 'Unit A'), '46')
+    await user.tab()
+    h.gate = undefined
+    release()
+
+    await waitFor(() => expect(h.counts.entry).toBe(2)) // the save's refetch finished
+    await waitFor(() => expect(screen.getByRole('status').textContent).toBe('Saved 2 values.'))
+    expect(value('Closed items', 'Unit B').value).toBe('12') // sent and untouched: clean
+    expect(value('Total items', 'Unit B').value).toBe('7') // survives
+    expect(value('Closed items', 'Unit A').value).toBe('46') // survives
+    expect(saveButton().textContent).toBe('Save changes (2)')
+
+    await user.click(saveButton())
+    await waitFor(() => expect(h.saves).toHaveLength(2))
+    // The re-edited row builds on the revision the first save produced.
+    expect(h.saves[1]).toEqual([
+      { measureKey: 'closed', subjectId: 'unit-a', period: PERIOD, value: 46, expectedRevision: 4 },
+      { measureKey: 'total', subjectId: 'unit-b', period: PERIOD, value: 7, expectedRevision: 0 },
+    ])
+    await waitFor(() => expect(screen.getByRole('status').textContent).toBe('Saved 2 values.'))
   })
 
   it('blocks a save of more than 500 changes', async () => {

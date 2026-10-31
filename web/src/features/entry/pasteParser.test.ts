@@ -42,7 +42,7 @@ describe('parseEntryValue', () => {
     expect(parseEntryValue(' na ')).toEqual({ kind: 'na' })
   })
 
-  it.each(['abc', '1.2.3', '3,4', '1,23,456', '12,34', '--5', '$', '%', 'k', '1e5', '1 2', '5kk', '12abc', '$$5', '-$-5'])(
+  it.each(['abc', '1.2.3', '3,4', '1,23,456', '12,34', '--5', '$', '%', 'k', '1e5', '1 2', '5kk', '12abc', '$$5', '-$-5', '$5%', '-$5%', '$5.5%'])(
     '%j is an error with a message',
     (raw) => {
       const result = parseEntryValue(raw)

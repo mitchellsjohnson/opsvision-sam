@@ -35,11 +35,14 @@ export function parseEntryValue(raw: string): EntryValue {
   }
   const [, lead, trail, digits, suffix] = match
   if (lead && trail) return { kind: 'error', message: `"${text}" has two signs` }
+  if (suffix === '%' && text.includes('$')) {
+    return { kind: 'error', message: `"${text}" mixes a currency sign and a percent sign` }
+  }
 
   const magnitude = Number((digits ?? '').replace(/,/g, ''))
-  const scaled = magnitude * (MULTIPLIER[(suffix ?? '').toLowerCase()] ?? 1)
-  // Trim binary noise such as 1.1 * 1000 = 1100.0000000000002.
-  const clean = Number(scaled.toPrecision(15))
+  const multiplier = MULTIPLIER[(suffix ?? '').toLowerCase()]
+  // Scaling adds binary noise (1.1 * 1000 = 1100.0000000000002); plain digits stay exact.
+  const clean = multiplier ? Number((magnitude * multiplier).toPrecision(15)) : magnitude
   if (!Number.isFinite(clean)) return { kind: 'error', message: `"${text}" is too large` }
   const negative = (lead ?? trail) === '-'
   return { kind: 'value', value: negative && clean !== 0 ? -clean : clean }

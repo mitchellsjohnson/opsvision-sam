@@ -25,6 +25,17 @@ export interface Draft {
   reason: string
   /** Not applicable: set by `n/a` in the value input or by a reason, cleared by typing a number. */
   na: boolean
+  /**
+   * The revision this edit is based on: the row's revision when editing began (or the
+   * conflicting revision after Keep mine). Sent as `expectedRevision`, so a newer
+   * revision that arrives by refetch is caught by the server instead of overwritten.
+   */
+  baseRevision: number
+}
+
+/** A number as plain digits (never `1e-7` or `1e+21`), so it always parses back. */
+export function formatNumber(n: number): string {
+  return n.toLocaleString('en-US', { useGrouping: false, maximumFractionDigits: 20 })
 }
 
 export interface RowIssue {
@@ -65,14 +76,15 @@ export function effectiveRow(row: EntryRow, base: Base | undefined): { row: Entr
   return { row, saved: savedOf(row) }
 }
 
-export function draftOf(saved: Saved): Draft {
+/** The inputs' text for a saved state, based on the row's revision. */
+export function draftOf(saved: Saved, baseRevision: number): Draft {
   switch (saved.kind) {
     case 'value':
-      return { value: String(saved.value), reason: '', na: false }
+      return { value: formatNumber(saved.value), reason: '', na: false, baseRevision }
     case 'na':
-      return { value: '', reason: saved.reason, na: true }
+      return { value: '', reason: saved.reason, na: true, baseRevision }
     default:
-      return { value: '', reason: '', na: false }
+      return { value: '', reason: '', na: false, baseRevision }
   }
 }
 
@@ -125,7 +137,7 @@ export function commitDraft(draft: Draft): Draft {
   const parsed = parseEntryValue(draft.value)
   switch (parsed.kind) {
     case 'value':
-      return { ...draft, value: String(parsed.value), na: false }
+      return { ...draft, value: formatNumber(parsed.value), na: false }
     case 'na':
       return { ...draft, value: '', na: true }
     case 'empty':
@@ -135,14 +147,14 @@ export function commitDraft(draft: Draft): Draft {
   }
 }
 
-/** The write to send for a dirty row, using the row's current revision. */
-export function toWrite(row: EntryRow, analysis: Analysis): DataWrite | undefined {
+/** The write to send for a dirty row, based on the revision the edit started from. */
+export function toWrite(row: EntryRow, draft: Draft, analysis: Analysis): DataWrite | undefined {
   if (!analysis.dirty || !analysis.write) return undefined
   return {
     measureKey: row.measureKey,
     subjectId: row.subjectId,
     period: row.period,
-    expectedRevision: row.revision,
+    expectedRevision: draft.baseRevision,
     ...analysis.write,
   }
 }
