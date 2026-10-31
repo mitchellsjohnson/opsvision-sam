@@ -818,6 +818,15 @@ type ImportUpload struct {
 	UploadUrl string `json:"uploadUrl"`
 }
 
+// InviteMemberRequest defines model for InviteMemberRequest.
+type InviteMemberRequest struct {
+	Email string `json:"email"`
+	Role  Role   `json:"role"`
+
+	// Scope Restricts what a membership can see or edit. An empty list means everything.
+	Scope Scope `json:"scope"`
+}
+
 // ItemKind defines model for ItemKind.
 type ItemKind struct {
 	// Id Client-supplied identifier.
@@ -1505,6 +1514,9 @@ type CreateItemJSONRequestBody = TrackedItem
 // UpdateItemJSONRequestBody defines body for UpdateItem for application/json ContentType.
 type UpdateItemJSONRequestBody = UpdateItemRequest
 
+// InviteMemberJSONRequestBody defines body for InviteMember for application/json ContentType.
+type InviteMemberJSONRequestBody = InviteMemberRequest
+
 // UpdateMemberJSONRequestBody defines body for UpdateMember for application/json ContentType.
 type UpdateMemberJSONRequestBody = UpdateMemberRequest
 
@@ -1588,6 +1600,9 @@ type ServerInterface interface {
 	// ListMembers List the tenant's members
 	// (GET /members)
 	ListMembers(w http.ResponseWriter, r *http.Request)
+	// InviteMember Invite a member by email (admin only)
+	// (POST /members)
+	InviteMember(w http.ResponseWriter, r *http.Request)
 	// UpdateMember Change a member's role and scope (admin only)
 	// (PATCH /members/{userId})
 	UpdateMember(w http.ResponseWriter, r *http.Request, userId UserId)
@@ -1963,6 +1978,20 @@ func (siw *ServerInterfaceWrapper) ListMembers(w http.ResponseWriter, r *http.Re
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ListMembers(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// InviteMember operation middleware
+func (siw *ServerInterfaceWrapper) InviteMember(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.InviteMember(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -2912,6 +2941,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/operator/tenants", wrapper.ListOperatorTenants)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/operator/tenants", wrapper.CreateOperatorTenant)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/members", wrapper.ListMembers)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/members", wrapper.InviteMember)
 	m.HandleFunc(http.MethodPatch+" "+options.BaseURL+"/members/{userId}", wrapper.UpdateMember)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/org/levels", wrapper.ListOrgLevels)
 	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/org/levels", wrapper.PutOrgLevels)
@@ -3893,6 +3923,84 @@ func (response ListMembers403JSONResponse) VisitListMembersResponse(w http.Respo
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type InviteMemberRequestObject struct {
+	Body *InviteMemberJSONRequestBody
+}
+
+type InviteMemberResponseObject interface {
+	VisitInviteMemberResponse(w http.ResponseWriter) error
+}
+
+type InviteMember201JSONResponse Membership
+
+func (response InviteMember201JSONResponse) VisitInviteMemberResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(201)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type InviteMember400JSONResponse struct{ BadRequestJSONResponse }
+
+func (response InviteMember400JSONResponse) VisitInviteMemberResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type InviteMember401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response InviteMember401JSONResponse) VisitInviteMemberResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type InviteMember403JSONResponse struct{ ForbiddenJSONResponse }
+
+func (response InviteMember403JSONResponse) VisitInviteMemberResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type InviteMember409JSONResponse struct{ ConflictJSONResponse }
+
+func (response InviteMember409JSONResponse) VisitInviteMemberResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(409)
 	_, err := buf.WriteTo(w)
 	return err
 }
@@ -5901,6 +6009,9 @@ type StrictServerInterface interface {
 	// ListMembers List the tenant's members
 	// (GET /members)
 	ListMembers(ctx context.Context, request ListMembersRequestObject) (ListMembersResponseObject, error)
+	// InviteMember Invite a member by email (admin only)
+	// (POST /members)
+	InviteMember(ctx context.Context, request InviteMemberRequestObject) (InviteMemberResponseObject, error)
 	// UpdateMember Change a member's role and scope (admin only)
 	// (PATCH /members/{userId})
 	UpdateMember(ctx context.Context, request UpdateMemberRequestObject) (UpdateMemberResponseObject, error)
@@ -6413,6 +6524,37 @@ func (sh *strictHandler) ListMembers(w http.ResponseWriter, r *http.Request) {
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(ListMembersResponseObject); ok {
 		if err := validResponse.VisitListMembersResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// InviteMember operation middleware
+func (sh *strictHandler) InviteMember(w http.ResponseWriter, r *http.Request) {
+	var request InviteMemberRequestObject
+
+	var body InviteMemberJSONRequestBody
+	if err := runtime.BindJSONBody(r, &body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.InviteMember(ctx, request.(InviteMemberRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "InviteMember")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(InviteMemberResponseObject); ok {
+		if err := validResponse.VisitInviteMemberResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

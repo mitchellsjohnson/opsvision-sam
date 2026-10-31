@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -21,6 +22,93 @@ func (s *Server) ListMembers(ctx context.Context, _ ListMembersRequestObject) (L
 		return nil, err
 	}
 	return ListMembers200JSONResponse{Members: apiMemberships(ms)}, nil
+}
+
+// emailPattern is a deliberately simple address check: something, '@',
+// something, '.', something, with no whitespace. The identity provider is the
+// real authority; this only catches typos. '#' is excluded because the store
+// uses it as a key separator.
+var emailPattern = regexp.MustCompile(`^[^\s@#]+@[^\s@#]+\.[^\s@#]+$`)
+
+const maxEmailLen = 254
+
+// InviteMember creates a pending membership for an email address. Admins
+// only. The person gets the role and scope given here when they first sign in
+// with that verified email (see auth provisioning).
+func (s *Server) InviteMember(ctx context.Context, req InviteMemberRequestObject) (InviteMemberResponseObject, error) {
+	p, err := tenantAdmin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if req.Body == nil {
+		return nil, badRequest("request body is required")
+	}
+	body := *req.Body
+	tenantID := p.Tenant.ID
+
+	email := strings.TrimSpace(body.Email)
+	lower := strings.ToLower(email)
+	var pr problems
+	if len(email) > maxEmailLen || !emailPattern.MatchString(email) {
+		pr.add("email", "must be a valid email address")
+	}
+	pr.role("role", domain.Role(body.Role))
+	if body.Scope.OrgUnitIds == nil || body.Scope.MetricKeys == nil {
+		pr.add("scope", "orgUnitIds and metricKeys are both required (use [] for everything)")
+	}
+	us, err := s.store.ListOrgUnits(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	units := make(map[string]bool, len(us))
+	for _, u := range us {
+		units[u.ID] = true
+	}
+	for i, id := range body.Scope.OrgUnitIds {
+		path := "scope.orgUnitIds[" + strconv.Itoa(i) + "]"
+		switch {
+		case !validID(id):
+			pr.add(path, "%s", idRule)
+		case !units[id]:
+			pr.add(path, "org unit %q does not exist", id)
+		}
+	}
+	for i, k := range body.Scope.MetricKeys {
+		pr.key("scope.metricKeys["+strconv.Itoa(i)+"]", k)
+	}
+	if err := pr.err(); err != nil {
+		return nil, err
+	}
+
+	ms, err := s.store.ListMemberships(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	pendingID := store.PendingUserPrefix + lower
+	for _, m := range ms {
+		if m.UserID == pendingID {
+			return nil, conflict("an invitation for " + lower + " already exists")
+		}
+		if strings.ToLower(strings.TrimSpace(m.Email)) == lower {
+			return nil, conflict(lower + " is already a member")
+		}
+	}
+
+	m := domain.Membership{
+		UserID:    pendingID,
+		Email:     email,
+		Role:      domain.Role(body.Role),
+		Scope:     domainScope(body.Scope),
+		CreatedAt: s.now(),
+	}
+	if err := s.store.PutMembership(ctx, tenantID, m); err != nil {
+		return nil, err
+	}
+	out := apiMembership(m)
+	if err := s.audit(ctx, p, tenantID, "member.invite", "member", m.UserID, nil, out); err != nil {
+		return nil, err
+	}
+	return InviteMember201JSONResponse(out), nil
 }
 
 // UpdateMember changes a member's role and/or scope. Admins only. A tenant

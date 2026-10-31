@@ -49,7 +49,11 @@ export interface paths {
         /** List the tenant's members */
         get: operations["listMembers"];
         put?: never;
-        post?: never;
+        /**
+         * Invite a member by email (admin only)
+         * @description Creates a pending membership keyed `pending:` plus the lowercased email. It is bound to the person's user ID when they first sign in with that (verified) email.
+         */
+        post: operations["inviteMember"];
         delete?: never;
         options?: never;
         head?: never;
@@ -727,6 +731,11 @@ export interface components {
             /** Format: date-time */
             createdAt: string;
         };
+        InviteMemberRequest: {
+            email: string;
+            role: components["schemas"]["Role"];
+            scope: components["schemas"]["Scope"];
+        };
         UpdateMemberRequest: {
             role?: components["schemas"]["Role"];
             scope?: components["schemas"]["Scope"];
@@ -1326,6 +1335,34 @@ export interface operations {
             };
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+        };
+    };
+    inviteMember: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InviteMemberRequest"];
+            };
+        };
+        responses: {
+            /** @description The pending membership */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Membership"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
         };
     };
     updateMember: {

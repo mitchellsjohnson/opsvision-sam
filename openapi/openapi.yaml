@@ -104,6 +104,29 @@ paths:
                     items: { $ref: '#/components/schemas/Membership' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      operationId: inviteMember
+      tags: [Members]
+      summary: Invite a member by email (admin only)
+      description: >
+        Creates a pending membership keyed `pending:` plus the lowercased
+        email. It is bound to the person's user ID when they first sign in
+        with that (verified) email.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InviteMemberRequest' }
+      responses:
+        '201':
+          description: The pending membership
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Membership' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
 
   /members/{userId}:
     parameters:
@@ -1234,6 +1257,13 @@ components:
         role: { $ref: '#/components/schemas/Role' }
         scope: { $ref: '#/components/schemas/Scope' }
         createdAt: { type: string, format: date-time }
+    InviteMemberRequest:
+      type: object
+      required: [email, role, scope]
+      properties:
+        email: { type: string, minLength: 3 }
+        role: { $ref: '#/components/schemas/Role' }
+        scope: { $ref: '#/components/schemas/Scope' }
     UpdateMemberRequest:
       type: object
       minProperties: 1

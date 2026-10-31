@@ -205,3 +205,97 @@ func TestPendingAdminDoesNotCountAsAdmin(t *testing.T) {
 		t.Fatalf("pending member = %+v", got)
 	}
 }
+
+func TestInviteMember(t *testing.T) {
+	e := newTestEnv(t)
+	seedOrg(t, e)
+	admin := e.tokens["t1-admin"]
+
+	var got membershipJSON
+	e.expect(t, 201, admin, "POST", "/members", map[string]any{
+		"email": "  New.Person@Example.Test ",
+		"role":  "contributor",
+		"scope": map[string]any{"orgUnitIds": []string{"seg-a"}, "metricKeys": []string{"open_defects"}},
+	}, &got)
+	if got.UserID != store.PendingUserPrefix+"new.person@example.test" || got.Email != "New.Person@Example.Test" {
+		t.Fatalf("invited = %+v", got)
+	}
+	if got.Role != "contributor" || len(got.Scope.OrgUnitIDs) != 1 || got.Scope.MetricKeys[0] != "open_defects" {
+		t.Fatalf("invited = %+v", got)
+	}
+
+	// It is listed, and an audit entry records it.
+	var list struct{ Members []membershipJSON }
+	e.expect(t, 200, admin, "GET", "/members", nil, &list)
+	found := false
+	for _, m := range list.Members {
+		found = found || m.UserID == got.UserID
+	}
+	if !found {
+		t.Fatal("invited member not listed")
+	}
+	audited := false
+	for _, en := range e.audits(t, "t1") {
+		if en.Action == "member.invite" && en.TargetID == got.UserID && en.TargetType == "member" && en.ActorID == "u-t1-admin" {
+			audited = true
+		}
+	}
+	if !audited {
+		t.Fatal("no member.invite audit entry")
+	}
+
+	// Another tenant can invite the same address.
+	e.expect(t, 201, e.tokens["t2-admin"], "POST", "/members", map[string]any{
+		"email": "new.person@example.test", "role": "viewer",
+		"scope": map[string]any{"orgUnitIds": []string{}, "metricKeys": []string{}},
+	}, nil)
+}
+
+func TestInviteMemberConflicts(t *testing.T) {
+	e := newTestEnv(t)
+	admin := e.tokens["t1-admin"]
+	body := func(email string) map[string]any {
+		return map[string]any{"email": email, "role": "viewer", "scope": map[string]any{"orgUnitIds": []string{}, "metricKeys": []string{}}}
+	}
+	e.expect(t, 201, admin, "POST", "/members", body("dup@example.test"), nil)
+	// Pending duplicate, in any case.
+	e.expectError(t, 409, "conflict", admin, "POST", "/members", body("DUP@example.test"))
+	// A bound member already has this email, in any case.
+	e.expectError(t, 409, "conflict", admin, "POST", "/members", body("U-T1-VIEWER@example.test"))
+}
+
+func TestInviteMemberValidation(t *testing.T) {
+	e := newTestEnv(t)
+	seedOrg(t, e)
+	admin := e.tokens["t1-admin"]
+	scope := map[string]any{"orgUnitIds": []string{}, "metricKeys": []string{}}
+	bad := func(body map[string]any, path string) {
+		t.Helper()
+		got := e.expectError(t, 400, "invalid", admin, "POST", "/members", body)
+		for _, d := range got.Error.Details {
+			if d.Path == path {
+				return
+			}
+		}
+		t.Fatalf("no detail at %q: %+v", path, got.Error.Details)
+	}
+	bad(map[string]any{"email": "", "role": "viewer", "scope": scope}, "email")
+	bad(map[string]any{"email": "nobody", "role": "viewer", "scope": scope}, "email")
+	bad(map[string]any{"email": "a b@example.test", "role": "viewer", "scope": scope}, "email")
+	bad(map[string]any{"email": "a@b", "role": "viewer", "scope": scope}, "email")
+	bad(map[string]any{"email": "a@example.test", "role": "owner", "scope": scope}, "role")
+	bad(map[string]any{"email": "a@example.test", "role": "viewer",
+		"scope": map[string]any{"orgUnitIds": []string{"nowhere"}, "metricKeys": []string{}}}, "scope.orgUnitIds[0]")
+	bad(map[string]any{"email": "a@example.test", "role": "viewer",
+		"scope": map[string]any{"orgUnitIds": []string{}, "metricKeys": []string{"Bad-Key"}}}, "scope.metricKeys[0]")
+	bad(map[string]any{"email": "a@example.test", "role": "viewer", "scope": map[string]any{"orgUnitIds": []string{}}}, "scope")
+}
+
+func TestInviteMemberAdminOnly(t *testing.T) {
+	e := newTestEnv(t)
+	body := map[string]any{"email": "x@example.test", "role": "viewer", "scope": map[string]any{"orgUnitIds": []string{}, "metricKeys": []string{}}}
+	for _, role := range []string{"t1-contributor", "t1-viewer", "operator"} {
+		e.expectError(t, 403, "forbidden", e.tokens[role], "POST", "/members", body)
+	}
+	e.expectError(t, 401, "unauthorized", "", "POST", "/members", body)
+}
