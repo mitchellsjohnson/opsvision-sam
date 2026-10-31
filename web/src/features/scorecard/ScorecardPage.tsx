@@ -2,6 +2,7 @@ import * as Tabs from '@radix-ui/react-tabs'
 import { useParams, useSearchParams } from 'react-router'
 import { useScorecards } from '../../api/queries'
 import { PlaceholderPage } from '../../pages/Placeholder'
+import { ChartsTab } from './ChartsTab'
 import { TableTab } from './TableTab'
 
 const TABS = [
@@ -72,7 +73,7 @@ export function ScorecardPage() {
           ))}
         </Tabs.List>
         <Tabs.Content value="charts" className="py-4">
-          <p className="text-sm text-ink/80">Charts are coming next</p>
+          <ChartsTab scorecardId={scorecard.id} />
         </Tabs.Content>
         <Tabs.Content value="table" className="py-4">
           <TableTab scorecardId={scorecard.id} scorecardName={scorecard.name} />

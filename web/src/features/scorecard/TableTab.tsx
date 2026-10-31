@@ -1,7 +1,7 @@
 import clsx from 'clsx'
 import { ChevronDown, ChevronRight } from 'lucide-react'
-import { useId, useMemo, useRef, useState, type MouseEvent } from 'react'
-import { useSearchParams } from 'react-router'
+import { useEffect, useId, useMemo, useRef, useState, type MouseEvent } from 'react'
+import { useLocation, useSearchParams } from 'react-router'
 import { useMe, useOrgUnits, useVersions, useView } from '../../api/queries'
 import type { components } from '../../api/schema'
 import type { ViewRequest } from '../../lib/period'
@@ -11,12 +11,11 @@ import { StatusBadge } from '../../ui/StatusBadge'
 import { CellDrawer, type DrawerTarget } from './CellDrawer'
 import { buildColumns, columnRequest, type Column } from './columns'
 import { overrideSentence } from './format'
+import { cellKey, groupRows } from './viewHelpers'
 
 type Schemas = components['schemas']
 type Cell = Schemas['Cell']
 type ViewRow = Schemas['ViewRow']
-type ScorecardView = Schemas['ScorecardView']
-
 const HEAT: Record<string, string> = {
   G: 'bg-status-g-bg',
   Y: 'bg-status-y-bg',
@@ -24,39 +23,6 @@ const HEAT: Record<string, string> = {
 }
 
 const MAX_SUBJECTS = 200
-
-interface MetricGroup {
-  key: string
-  name: string
-  rows: ViewRow[]
-}
-interface CategoryGroup {
-  id: string
-  name: string
-  metrics: MetricGroup[]
-}
-
-/** Rows grouped by category (in category order), then metric (in the order returned). */
-function groupRows(view: ScorecardView): CategoryGroup[] {
-  const byCategory = new Map<string, Map<string, MetricGroup>>()
-  for (const row of view.rows) {
-    const metrics = byCategory.get(row.categoryId) ?? new Map<string, MetricGroup>()
-    byCategory.set(row.categoryId, metrics)
-    const group = metrics.get(row.metricKey) ?? { key: row.metricKey, name: row.metricName, rows: [] }
-    metrics.set(row.metricKey, group)
-    group.rows.push(row)
-  }
-  const known = [...view.categories].sort((a, b) => a.order - b.order)
-  const groups: CategoryGroup[] = []
-  for (const c of known) {
-    const metrics = byCategory.get(c.id)
-    if (metrics) groups.push({ id: c.id, name: c.name, metrics: [...metrics.values()] })
-  }
-  for (const [id, metrics] of byCategory) {
-    if (!known.some((c) => c.id === id)) groups.push({ id, name: 'Other', metrics: [...metrics.values()] })
-  }
-  return groups
-}
 
 interface RowState {
   row: ViewRow
@@ -118,10 +84,6 @@ function withDescendants(selected: string[], units: { id: string; parentId: stri
     queue.push(...(children.get(id) ?? []))
   }
   return [...out]
-}
-
-function cellKey(c: Cell): string {
-  return c.ytd ? `YTD:${c.period}` : c.period
 }
 
 function Skeleton() {
@@ -242,6 +204,19 @@ export function TableTab({ scorecardId, scorecardName }: TableTabProps) {
   const ready = period.ready && (period.subjects.length === 0 || !orgUnits.isPending)
   const view = useView(ready ? scorecardId : undefined, request)
 
+  // A link from the Charts tab names a metric (`#metric-<key>`); bring its rows into view once they render.
+  const { hash } = useLocation()
+  const scrolledTo = useRef('')
+  const loaded = view.data !== undefined
+  useEffect(() => {
+    if (!loaded || !hash.startsWith('#metric-') || scrolledTo.current === hash) return
+    const target = document.getElementById(decodeURIComponent(hash.slice(1)))
+    if (target) {
+      scrolledTo.current = hash
+      target.scrollIntoView({ block: 'center' })
+    }
+  }, [loaded, hash])
+
   const scale = me.data?.tenant?.statusScale ?? []
   const statusLabel = (key: string) => scale.find((s) => s.key === key)?.label
 
@@ -358,6 +333,7 @@ export function TableTab({ scorecardId, scorecardName }: TableTabProps) {
                     <tr key={s.id} id={s.id} hidden={!s.visible}>
                       <th
                         scope="row"
+                        id={isFirst ? `metric-${row.metricKey}` : undefined}
                         className="sticky left-0 z-10 w-64 min-w-64 max-w-64 border-b border-ink/10 bg-white px-3 py-1.5 text-left font-normal"
                       >
                         <div className="flex items-start gap-1" style={{ paddingLeft: `${indent}rem` }}>

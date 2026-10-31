@@ -91,6 +91,11 @@ export function changeText(c: ChangeInput): string | null {
   return null
 }
 
+/** The change phrase with a reminder of which way is good when lower is better: `17% worse vs Sep · lower is better`. */
+export function withDirection(text: string, direction: string): string {
+  return direction === 'lower_better' ? `${text} · lower is better` : text
+}
+
 /** `Overridden by <by> on <yyyy-mm-dd>: <reason>`; the reason is optional. */
 export function overrideSentence(o: components['schemas']['Override']): string {
   return `Overridden by ${o.by} on ${formatDate(o.at)}${o.reason ? `: ${o.reason}` : ''}`

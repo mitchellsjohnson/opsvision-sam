@@ -343,6 +343,15 @@ describe('TableTab', () => {
     })
   })
 
+  it('anchors each metric\'s first row for links from the Charts tab', async () => {
+    renderTable()
+    await screen.findByRole('table')
+    const anchor = document.getElementById('metric-on_time_pct')
+    expect(anchor?.getAttribute('scope')).toBe('row')
+    expect(anchor?.textContent).toContain('On-time delivery')
+    expect(document.getElementById('metric-defect_rate')).toBeTruthy()
+  })
+
   it('has no accessibility violations', async () => {
     renderTable('/scorecards/sc-main?period=2026-M10&ytd=1')
     const table = await screen.findByRole('table')

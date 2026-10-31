@@ -13,6 +13,7 @@ import {
 import type { components } from '../../api/schema'
 import { StatusBadge } from '../../ui/StatusBadge'
 import { changeText, formatDateTime, formatMetricValue, overrideSentence } from './format'
+import { plainNumber, ratioParts } from './viewHelpers'
 
 type Schemas = components['schemas']
 type Cell = Schemas['Cell']
@@ -35,13 +36,6 @@ export interface CellDrawerProps {
   onClose: () => void
   /** Where focus goes when the drawer closes: the cell button that opened it. */
   returnFocusTo?: RefObject<HTMLElement | null>
-}
-
-/** `a / b`, optionally scaled like `a / b * 100`: a ratio of two measures. */
-const RATIO = /^\s*([A-Za-z0-9_.-]+)\s*\/\s*([A-Za-z0-9_.-]+)\s*(?:\*\s*[0-9.]+\s*)?$/
-
-function plain(n: number): string {
-  return n.toLocaleString('en-US', { maximumFractionDigits: 2 })
 }
 
 function errorText(error: unknown): string {
@@ -104,11 +98,7 @@ function DrawerBody({
   const statusLabel = (key: string) => scale.find((s) => s.key === key)?.label
 
   const componentKeys = Object.keys(cell.components)
-  const ratio = metric ? RATIO.exec(metric.formula) : null
-  const ratioParts =
-    ratio && componentKeys.length === 2 && ratio[1] && ratio[2] ? [ratio[1], ratio[2]] : null
-  const isRatio =
-    ratioParts !== null && ratioParts.every((k) => Object.hasOwn(cell.components, k))
+  const ratio = ratioParts(metric?.formula, cell.components)
 
   const change = changeText({
     period: cell.period,
@@ -154,14 +144,14 @@ function DrawerBody({
         <Item label="Components">
           {componentKeys.length === 0 ? (
             <span className="text-ink/80">None</span>
-          ) : isRatio && ratioParts ? (
+          ) : ratio ? (
             <>
               <span className="font-medium">
-                {plain(cell.components[ratioParts[0] as string] as number)} /{' '}
-                {plain(cell.components[ratioParts[1] as string] as number)}
+                {plainNumber(cell.components[ratio[0]] as number)} /{' '}
+                {plainNumber(cell.components[ratio[1]] as number)}
               </span>
               <span className="block text-xs text-ink/80">
-                {measureName(ratioParts[0] as string)} / {measureName(ratioParts[1] as string)}
+                {measureName(ratio[0])} / {measureName(ratio[1])}
               </span>
             </>
           ) : (
@@ -169,7 +159,7 @@ function DrawerBody({
               {componentKeys.map((k) => (
                 <li key={k}>
                   <span className="text-ink/80">{measureName(k)}</span>{' '}
-                  <span className="font-medium">{plain(cell.components[k] as number)}</span>
+                  <span className="font-medium">{plainNumber(cell.components[k] as number)}</span>
                 </li>
               ))}
             </ul>
@@ -292,7 +282,7 @@ function MeasureHistory({
           {history.data.history.map((h) => (
             <li key={h.revision}>
               <span className="font-medium">
-                {h.value === null ? `Not applicable${h.naReason ? ` (${h.naReason})` : ''}` : plain(h.value)}
+                {h.value === null ? `Not applicable${h.naReason ? ` (${h.naReason})` : ''}` : plainNumber(h.value)}
               </span>{' '}
               <span className="text-ink/80">
                 · {h.enteredBy} · {formatDateTime(h.enteredAt)}

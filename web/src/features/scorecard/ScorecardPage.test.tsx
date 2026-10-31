@@ -41,11 +41,11 @@ describe('ScorecardPage', () => {
     expect(await screen.findByRole('table')).toBeTruthy()
   })
 
-  it('shows the Charts placeholder and reflects the tab in the URL and localStorage', async () => {
+  it('shows the Charts tab and reflects the tab in the URL and localStorage', async () => {
     renderPage('/scorecards/sc-main?period=2026-M10')
     const user = userEvent.setup()
     await user.click(await screen.findByRole('tab', { name: 'Charts' }))
-    expect(await screen.findByText('Charts are coming next')).toBeTruthy()
+    expect(await screen.findByRole('heading', { name: 'Delivery', level: 2 })).toBeTruthy()
     await waitFor(() => expect(location()).toContain('tab=charts'))
     expect(location()).toContain('period=2026-M10')
     expect(localStorage.getItem('opsvision.scorecardTab')).toBe('charts')
@@ -54,7 +54,7 @@ describe('ScorecardPage', () => {
   it('opens the remembered tab when the URL names none', async () => {
     localStorage.setItem('opsvision.scorecardTab', 'charts')
     renderPage('/scorecards/sc-main?period=2026-M10')
-    expect(await screen.findByText('Charts are coming next')).toBeTruthy()
+    expect(await screen.findByRole('heading', { name: 'Delivery', level: 2 })).toBeTruthy()
     expect(screen.getByRole('tab', { name: 'Charts' }).getAttribute('aria-selected')).toBe('true')
   })
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { changeText, formatDate, formatMetricValue } from './format'
+import { changeText, formatDate, formatMetricValue, withDirection } from './format'
 
 describe('formatMetricValue', () => {
   it('formats by metric format', () => {
@@ -45,5 +45,12 @@ describe('changeText', () => {
   })
   it('is null when there is no change', () => {
     expect(changeText({ ...base, change: null, changeKind: '' })).toBeNull()
+  })
+})
+
+describe('withDirection', () => {
+  it('adds the reminder only when lower is better', () => {
+    expect(withDirection('17% worse vs Sep', 'lower_better')).toBe('17% worse vs Sep · lower is better')
+    expect(withDirection('+2.1 pts vs Sep', 'higher_better')).toBe('+2.1 pts vs Sep')
   })
 })
