@@ -10,6 +10,7 @@ import {
   type ReactNode,
   type RefObject,
   type SelectHTMLAttributes,
+  type TextareaHTMLAttributes,
 } from 'react'
 
 export const inputClass =
@@ -67,6 +68,38 @@ export function TextField({
       )}
       <input
         {...input}
+        id={id}
+        className={inputClass}
+        aria-invalid={errors.length > 0 ? true : undefined}
+        aria-describedby={describedBy(hintId, errId)}
+      />
+      <FieldMessages id={`${id}-err`} errors={errors} />
+    </div>
+  )
+}
+
+export function TextAreaField({
+  label,
+  hint,
+  errors = [],
+  className,
+  ...area
+}: FieldChrome & Omit<TextareaHTMLAttributes<HTMLTextAreaElement>, 'id'>) {
+  const id = useId()
+  const hintId = hint ? `${id}-hint` : undefined
+  const errId = errors.length > 0 ? `${id}-err` : undefined
+  return (
+    <div className={className}>
+      <label htmlFor={id} className="block text-sm font-medium">
+        {label}
+      </label>
+      {hint && (
+        <p id={hintId} className="text-sm text-ink/80">
+          {hint}
+        </p>
+      )}
+      <textarea
+        {...area}
         id={id}
         className={inputClass}
         aria-invalid={errors.length > 0 ? true : undefined}
@@ -168,6 +201,7 @@ export interface FormDialogProps {
   triggerLabel: ReactNode
   triggerAriaLabel?: string
   triggerClassName?: string
+  triggerDisabled?: boolean
   title: string
   description: string
   /** Where focus goes when the dialog closes and the trigger is gone (e.g. the row was removed). */
@@ -181,6 +215,7 @@ export function FormDialog({
   triggerLabel,
   triggerAriaLabel,
   triggerClassName = secondaryButton,
+  triggerDisabled,
   title,
   description,
   fallbackFocus,
@@ -192,7 +227,13 @@ export function FormDialog({
   return (
     <Dialog.Root open={open} onOpenChange={setOpen}>
       <Dialog.Trigger asChild>
-        <button ref={triggerRef} type="button" aria-label={triggerAriaLabel} className={triggerClassName}>
+        <button
+          ref={triggerRef}
+          type="button"
+          aria-label={triggerAriaLabel}
+          disabled={triggerDisabled}
+          className={triggerClassName}
+        >
           {triggerLabel}
         </button>
       </Dialog.Trigger>
@@ -231,10 +272,12 @@ export function FormDialog({
 /** Cancel and submit buttons at the end of a dialog form. */
 export function FormActions({
   submitLabel,
+  pendingLabel = 'Saving…',
   pending,
   onCancel,
 }: {
   submitLabel: string
+  pendingLabel?: string
   pending: boolean
   onCancel: () => void
 }) {
@@ -244,7 +287,7 @@ export function FormActions({
         Cancel
       </button>
       <button type="submit" className={primaryButton} disabled={pending}>
-        {pending ? 'Saving…' : submitLabel}
+        {pending ? pendingLabel : submitLabel}
       </button>
     </div>
   )

@@ -8,8 +8,8 @@ import { HomeRedirect } from './pages/HomeRedirect'
 import { NotFoundPage } from './pages/NotFoundPage'
 import { RequireAdmin } from './pages/RequireAdmin'
 import { ScorecardPage } from './features/scorecard/ScorecardPage'
-import { ImportPage } from './pages/admin/ImportPage'
-import { MethodologyPage } from './pages/admin/MethodologyPage'
+import { ImportPage } from './features/admin/ImportPage'
+import { MethodologyPage } from './features/admin/MethodologyPage'
 
 export function App() {
   return (

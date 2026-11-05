@@ -20,6 +20,14 @@ export type UpdateItemRequest = Schemas['UpdateItemRequest']
 export type Membership = Schemas['Membership']
 export type UpdateMemberRequest = Schemas['UpdateMemberRequest']
 export type InviteMemberRequest = Schemas['InviteMemberRequest']
+export type MethodologyVersion = Schemas['MethodologyVersion']
+export type Methodology = Schemas['Methodology']
+export type Metric = Schemas['Metric']
+export type VersionDiff = Schemas['VersionDiff']
+export type VersionChange = Schemas['VersionChange']
+export type ImportTemplate = Schemas['ImportTemplate']
+export type ChangeSetPreview = Schemas['ChangeSetPreview']
+export type ImportUpload = Schemas['ImportUpload']
 export interface OverrideCell {
   metricKey: string
   subjectId: string
@@ -39,6 +47,8 @@ export const keys = {
   view: (sc: string, req: ViewRequest) => ['view', sc, req] as const,
   entry: (sc: string, period: string) => ['entry', sc, period] as const,
   versions: (sc: string) => ['versions', sc] as const,
+  diff: (sc: string, v: string, against: string) => ['diff', sc, v, against] as const,
+  importTemplates: ['importTemplates'] as const,
   history: (sc: string, measure: string, subject: string, period: string) =>
     ['history', sc, measure, subject, period] as const,
 }
@@ -325,6 +335,142 @@ export function useInviteMember() {
   return useMutation({
     mutationFn: (body: InviteMemberRequest) => unwrap(api.POST('/members', { body })),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: keys.members }),
+  })
+}
+
+// ---- Admin: methodology -----------------------------------------------------
+
+/** Version changes also change what scorecards show and which cells can be entered. */
+async function refreshVersions(queryClient: ReturnType<typeof useQueryClient>, sc: string) {
+  await Promise.all([
+    queryClient.invalidateQueries({ queryKey: keys.versions(sc) }),
+    queryClient.invalidateQueries({ queryKey: ['diff', sc] }),
+  ])
+}
+
+/** Creates a draft, empty or cloned from `cloneFrom`. */
+export function useCreateVersion(sc: string) {
+  const api = useApi()
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (body: { name: string; cloneFrom?: string }) =>
+      unwrap(api.POST('/scorecards/{sc}/versions', { params: { path: { sc } }, body })),
+    onSuccess: () => refreshVersions(queryClient, sc),
+  })
+}
+
+/** Saves a draft's content against the revision the editor loaded. */
+export function usePutVersion(sc: string) {
+  const api = useApi()
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ v, body }: { v: string; body: { revision: number; name?: string; content: Methodology } }) =>
+      unwrap(api.PUT('/scorecards/{sc}/versions/{v}', { params: { path: { sc, v } }, body })),
+    onSuccess: () => refreshVersions(queryClient, sc),
+  })
+}
+
+/** Validates the stored content of a version (not unsaved edits). */
+export function useValidateVersion(sc: string) {
+  const api = useApi()
+  return useMutation({
+    mutationFn: (v: string) =>
+      unwrap(api.POST('/scorecards/{sc}/versions/{v}/validate', { params: { path: { sc, v } } })),
+  })
+}
+
+/** Publishes a draft from a period, then refreshes versions and everything computed from them. */
+export function usePublishVersion(sc: string) {
+  const api = useApi()
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ v, effectiveFrom }: { v: string; effectiveFrom: string }) =>
+      unwrap(
+        api.POST('/scorecards/{sc}/versions/{v}/publish', {
+          params: { path: { sc, v } },
+          body: { effectiveFrom },
+        }),
+      ),
+    onSuccess: async () => {
+      await Promise.all([
+        refreshVersions(queryClient, sc),
+        queryClient.invalidateQueries({ queryKey: ['view', sc] }),
+        queryClient.invalidateQueries({ queryKey: ['entry', sc] }),
+      ])
+    },
+  })
+}
+
+/** The differences from `against` (the version in force when empty) to version `v`. */
+export function useVersionDiff(sc: string, v: string, against: string) {
+  const api = useApi()
+  return useQuery({
+    queryKey: keys.diff(sc, v, against),
+    queryFn: () =>
+      unwrap(
+        api.GET('/scorecards/{sc}/versions/{v}/diff', {
+          params: { path: { sc, v }, query: against === '' ? {} : { against } },
+        }),
+      ),
+  })
+}
+
+// ---- Admin: import ----------------------------------------------------------
+
+export function useImportTemplates() {
+  const api = useApi()
+  return useQuery({
+    queryKey: keys.importTemplates,
+    queryFn: async () => (await unwrap(api.GET('/import-templates'))).templates,
+  })
+}
+
+/** Creates or replaces one template. */
+export function usePutImportTemplate() {
+  const api = useApi()
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (body: ImportTemplate) =>
+      unwrap(api.PUT('/import-templates/{id}', { params: { path: { id: body.id } }, body })),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: keys.importTemplates }),
+  })
+}
+
+export function useCreateImportUpload() {
+  const api = useApi()
+  return useMutation({
+    mutationFn: (body: { filename?: string; contentType?: string }) =>
+      unwrap(api.POST('/imports/uploads', { body })),
+  })
+}
+
+export function useParseImport() {
+  const api = useApi()
+  return useMutation({
+    mutationFn: ({ id, templateId }: { id: string; templateId: string }) =>
+      unwrap(
+        api.POST('/imports/{id}/parse', {
+          params: { path: { id } },
+          body: { profile: 'legacy_workbook', templateId },
+        }),
+      ),
+  })
+}
+
+/** Applies a parsed import, then refreshes everything it may have changed. */
+export function useApplyImport() {
+  const api = useApi()
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => unwrap(api.POST('/imports/{id}/apply', { params: { path: { id } } })),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['view'] }),
+        queryClient.invalidateQueries({ queryKey: ['entry'] }),
+        queryClient.invalidateQueries({ queryKey: ['versions'] }),
+        queryClient.invalidateQueries({ queryKey: ['diff'] }),
+      ])
+    },
   })
 }
 
