@@ -304,3 +304,27 @@ func TestDocExampleLoads(t *testing.T) {
 		t.Errorf("the documented example does not load: %v", err)
 	}
 }
+
+func TestBootstrapAllowsZeroEffectiveDraft(t *testing.T) {
+	// A draft has no effective period yet; published and superseded versions
+	// still need one.
+	m := syntheticMap(t)
+	draft := slice(t, m, "versions")[1].(map[string]any)
+	if draft["status"] != "draft" {
+		t.Fatalf("fixture version 1 is %v, not a draft", draft["status"])
+	}
+	delete(draft, "effectiveFrom")
+	if _, err := Load(writeMap(t, m)); err != nil {
+		t.Errorf("draft without effectiveFrom rejected: %v", err)
+	}
+
+	for _, status := range []string{"published", "superseded"} {
+		m = syntheticMap(t)
+		v := slice(t, m, "versions")[0].(map[string]any)
+		v["status"] = status
+		delete(v, "effectiveFrom")
+		if _, err := Load(writeMap(t, m)); err == nil || !strings.Contains(err.Error(), "effectiveFrom") {
+			t.Errorf("%s without effectiveFrom: err = %v", status, err)
+		}
+	}
+}

@@ -113,6 +113,16 @@ func TestYears(t *testing.T) {
 	}
 }
 
+func TestYearsIncludesRowPeriodColumns(t *testing.T) {
+	tpl := legacy.Template{
+		Sheets: []legacy.SheetMap{{Sheet: "A", FiscalYear: 2025}},
+		Rows:   []legacy.RowMap{{Sheet: "A", PeriodColumns: map[string]string{"F": "2028-Q1", "G": "bogus"}}},
+	}
+	if got, want := importer.Years(tpl), []int{2024, 2025, 2027, 2028}; !slices.Equal(got, want) {
+		t.Errorf("Years = %v, want %v", got, want)
+	}
+}
+
 func TestOpenWorkbookFileErrors(t *testing.T) {
 	if _, err := importer.OpenWorkbookFile("does-not-exist.xlsx"); err == nil {
 		t.Error("missing file accepted")

@@ -33,7 +33,7 @@ written `2026-M07`, `2026-Q3`, `2026-H2` or `2026-FY`.
 | `itemKinds`  | `{id, name}` |
 | `items`      | tracked items `{id, kindId, name, orgUnitId, sourceKeys}` |
 | `scorecards` | `{id, name}` |
-| `versions`   | methodology versions `{id, scorecardId, name, status, effectiveFrom, publishedAt, content}`. `content` is `{categories, measures, metrics}` and must be valid for `published` and `superseded` versions; a `draft` may be incomplete. Import text from a workbook is only written to drafts |
+| `versions`   | methodology versions `{id, scorecardId, name, status, effectiveFrom, publishedAt, content}`. `content` is `{categories, measures, metrics}` and must be valid for `published` and `superseded` versions; a `draft` may be incomplete and may omit `effectiveFrom`. Import text from a workbook is only written to drafts |
 | `templates`  | import templates `{id, name, profile: "legacy_workbook", body}`; `body` is the legacy mapping (`sheets`, `rows`, `methodology`) plus an optional `scorecardId` (without it the tenant's only scorecard is used). The body is validated like the Import API validates it |
 | `users`      | dev sign-ins `{userId, email, name, role, scope}`; `role` is `admin`, `contributor` or `viewer`; `scope.orgUnitIds` / `scope.metricKeys` limit what they see |
 
@@ -78,6 +78,58 @@ pending invitations. Omitted keys mean "none".
 
 A larger synthetic file, with a template that matches the test workbook, is
 `api/internal/bootstrap/testdata/synthetic.json`.
+
+## Import template reference
+
+A template `body` has `sheets`, `rows` and `methodology`.
+
+**`sheets`** (one per data sheet): `sheet`, `fiscalYear`, `labelColumn`,
+`monthColumns` (column letter to fiscal month 1-12), `periodColumns` (column
+letter to a period such as `2025-Q4`; wins over `monthColumns` for the same
+column) and an optional `ytdColumn`.
+
+**`rows`**: each maps one sheet row to a metric and subject.
+
+| Field | Meaning |
+|-------|---------|
+| `sheet`, `label` | the sheet and the row's text in its `labelColumn`. A row with no `metric` is a section header |
+| `section` | only match rows below the section header with this label |
+| `row` | optional 1-based worksheet row number. The mapping then applies to exactly that row, `section` is ignored, and `label` becomes optional: if given, it is a guard, and a row whose label differs (trimmed, case-insensitive) is skipped with an error finding `row N label is "x", expected "y"`. A row number needs a `metric`, and a sheet's row numbers must be unique |
+| `metric`, `subject` | the metric key and the org unit or tracked item ID |
+| `convert`, `measures` | the converter and its role-to-measure map |
+| `periodColumns` | optional column letter to period for this row. It replaces the sheet's `monthColumns` and `periodColumns` for the row entirely: only the listed columns are imported. Each period's grain must fit the metric's frequency |
+
+Use `row` when labels repeat. Here the sheet has two blocks that both list
+`North` and `South` (rows 3-4 under "Revenue", rows 6-7 under "Cost"), and
+the "Retention" row on row 9 is quarterly although the sheet's columns are
+months. Its values sit in the January (`F`) and April (`I`) columns:
+
+```json
+{
+  "sheets": [{
+    "sheet": "Data", "fiscalYear": 2025, "labelColumn": "A",
+    "monthColumns": {"F": 1, "G": 2, "H": 3, "I": 4, "J": 5, "K": 6}
+  }],
+  "rows": [
+    {"sheet": "Data", "row": 3, "label": "North", "metric": "revenue", "subject": "north",
+     "convert": "money_k", "measures": {"value": "revenue"}},
+    {"sheet": "Data", "row": 4, "label": "South", "metric": "revenue", "subject": "south",
+     "convert": "money_k", "measures": {"value": "revenue"}},
+    {"sheet": "Data", "row": 6, "label": "North", "metric": "cost", "subject": "north",
+     "convert": "money_k", "measures": {"value": "cost"}},
+    {"sheet": "Data", "row": 7, "label": "South", "metric": "cost", "subject": "south",
+     "convert": "money_k", "measures": {"value": "cost"}},
+    {"sheet": "Data", "row": 9, "metric": "retention", "subject": "company",
+     "convert": "value", "measures": {"value": "retention"},
+     "periodColumns": {"F": "2025-Q1", "I": "2025-Q2"}}
+  ]
+}
+```
+
+The `value`, `money_k` and `daily_average` converters also read a score with
+its change (`1587 | 12% Quality Increase | G`), and a bare number or percent
+that carries a status (`99.5 | G`): the number is imported and the status is
+checked against the methodology like any other recorded status.
 
 ## Running the dev server with it
 

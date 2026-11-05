@@ -208,7 +208,8 @@ func (f File) validate() []error {
 			bad("%s: duplicate version id %q in scorecard %q", path, v.ID, v.ScorecardID)
 		}
 		versionSeen[k] = true
-		if v.EffectiveFrom == (period.Period{}) {
+		// A draft has no effective period until it is scheduled to publish.
+		if v.EffectiveFrom == (period.Period{}) && v.Status != domain.VersionDraft {
 			bad("%s: effectiveFrom is required", path)
 		}
 		switch v.Status {

@@ -42,17 +42,33 @@ type SheetMap struct {
 // empty Metric is a section header: it starts a section, and later RowMaps
 // whose Section equals its label only match rows below it. A RowMap with an
 // empty Section matches a row with its label anywhere on the sheet.
+//
+// A RowMap with Row set is different: it applies to exactly that worksheet
+// row, whatever sections the sheet has, so labels that repeat across blocks
+// can be told apart. Its Label, if any, is only a guard (see Row).
 type RowMap struct {
-	Sheet   string `json:"sheet"`
+	Sheet string `json:"sheet"`
+	// Section scopes a label mapping to the rows below a section header. It
+	// is ignored when Row is set.
 	Section string `json:"section"`
-	Label   string `json:"label"`
-	Metric  string `json:"metric"`
+	// Label is the row's label in the sheet's label column. With Row set it
+	// is optional and guards the mapping: when the row's label (trimmed,
+	// case-insensitive) differs, the row is skipped with an error finding.
+	Label string `json:"label"`
+	// Row is an optional 1-based worksheet row number. See the type comment.
+	Row    int    `json:"row,omitempty"`
+	Metric string `json:"metric"`
 	// Subject is the ID of an existing org unit or tracked item.
 	Subject string `json:"subject"`
 	// Convert names the converter that turns cell text into measures.
 	Convert string `json:"convert"`
 	// Measures maps each role of the converter to a measure key.
 	Measures map[string]string `json:"measures"`
+	// PeriodColumns maps a column letter to a period such as "2025-Q1". When
+	// set it replaces the sheet's MonthColumns and PeriodColumns for this
+	// row entirely: only the listed columns are imported for the row. Use it
+	// for a row whose columns are quarters on a sheet whose columns are months.
+	PeriodColumns map[string]string `json:"periodColumns,omitempty"`
 }
 
 // MethodologyMap says where a sheet keeps methodology text for the metrics of
@@ -177,44 +193,71 @@ func (t Template) Validate() []changeset.Finding {
 
 	type labelKey struct{ sheet, section, label string }
 	seen := map[labelKey]bool{}
+	type rowKey struct {
+		sheet string
+		row   int
+	}
+	seenRows := map[rowKey]bool{}
 	headers := map[[2]string]bool{}
 	for _, rm := range t.Rows {
-		if rm.Metric == "" {
+		if rm.Metric == "" && rm.Row == 0 {
 			headers[[2]string{norm(rm.Sheet), norm(rm.Label)}] = true
 		}
 	}
 	headerIdx := map[[2]string]int{}
 	for i, rm := range t.Rows {
-		if rm.Metric == "" {
+		if rm.Metric == "" && rm.Row == 0 {
 			headerIdx[[2]string{norm(rm.Sheet), norm(rm.Label)}] = i + 1
 		}
 	}
 	for i, rm := range t.Rows {
 		where := fmt.Sprintf("row mapping %d (%q)", i+1, rm.Label)
+		if rm.Row != 0 {
+			where = fmt.Sprintf("row mapping %d (row %d)", i+1, rm.Row)
+		}
 		if !sheets[norm(rm.Sheet)] {
 			bad(rm.Sheet, "%s names sheet %q, which has no sheet entry", where, rm.Sheet)
 			continue
 		}
-		if norm(rm.Label) == "" {
-			bad(rm.Sheet, "row mapping %d has no label", i+1)
+		if rm.Row < 0 {
+			bad(rm.Sheet, "%s has row %d; rows are numbered from 1", where, rm.Row)
 			continue
 		}
-		k := labelKey{norm(rm.Sheet), norm(rm.Section), norm(rm.Label)}
-		if seen[k] {
-			bad(rm.Sheet, "%s is listed twice in the same section", where)
+		if rm.Row == 0 && norm(rm.Label) == "" {
+			bad(rm.Sheet, "row mapping %d has no label (or row number)", i+1)
+			continue
 		}
-		seen[k] = true
-		if h, clash := headerIdx[[2]string{norm(rm.Sheet), norm(rm.Label)}]; clash && rm.Metric != "" {
-			bad(rm.Sheet, "%s has the same label as section header mapping %d (%q), so the row would be read as a section header", where, h, t.Rows[h-1].Label)
-		}
-		if rm.Section != "" && !headers[[2]string{norm(rm.Sheet), norm(rm.Section)}] {
-			bad(rm.Sheet, "%s names section %q, which is not a section header row mapping", where, rm.Section)
+		if rm.Row > 0 {
+			rk := rowKey{norm(rm.Sheet), rm.Row}
+			if seenRows[rk] {
+				bad(rm.Sheet, "%s: row %d is listed twice on the sheet", where, rm.Row)
+			}
+			seenRows[rk] = true
+			if rm.Metric == "" {
+				bad(rm.Sheet, "%s has no metric; a row number cannot mark a section header", where)
+				continue
+			}
+		} else {
+			k := labelKey{norm(rm.Sheet), norm(rm.Section), norm(rm.Label)}
+			if seen[k] {
+				bad(rm.Sheet, "%s is listed twice in the same section", where)
+			}
+			seen[k] = true
+			if h, clash := headerIdx[[2]string{norm(rm.Sheet), norm(rm.Label)}]; clash && rm.Metric != "" {
+				bad(rm.Sheet, "%s has the same label as section header mapping %d (%q), so the row would be read as a section header", where, h, t.Rows[h-1].Label)
+			}
+			if rm.Section != "" && !headers[[2]string{norm(rm.Sheet), norm(rm.Section)}] {
+				bad(rm.Sheet, "%s names section %q, which is not a section header row mapping", where, rm.Section)
+			}
 		}
 		if rm.Metric == "" {
-			if rm.Section != "" || rm.Subject != "" || rm.Convert != "" || len(rm.Measures) > 0 {
+			if rm.Section != "" || rm.Subject != "" || rm.Convert != "" || len(rm.Measures) > 0 || len(rm.PeriodColumns) > 0 {
 				bad(rm.Sheet, "%s is a section header (no metric) and must only set sheet and label", where)
 			}
 			continue
+		}
+		if sm, ok := sheetByName(t.Sheets, rm.Sheet); ok {
+			out = append(out, validateRowPeriodColumns(where, sm, rm)...)
 		}
 		if rm.Subject == "" {
 			bad(rm.Sheet, "%s has no subject", where)
@@ -246,6 +289,55 @@ func (t Template) Validate() []changeset.Finding {
 
 	for i, mm := range t.Methodology {
 		out = append(out, validateMethodologyMap(i, mm)...)
+	}
+	return out
+}
+
+func sheetByName(sheets []SheetMap, name string) (SheetMap, bool) {
+	for _, sm := range sheets {
+		if norm(sm.Sheet) == norm(name) {
+			return sm, true
+		}
+	}
+	return SheetMap{}, false
+}
+
+// validateRowPeriodColumns checks a row's own period columns. Whether a
+// period's grain fits the metric's frequency is only known once the metric is
+// looked up, so the importer checks that per cell, as for sheet columns.
+func validateRowPeriodColumns(where string, sm SheetMap, rm RowMap) []changeset.Finding {
+	var out []changeset.Finding
+	bad := func(format string, a ...any) {
+		out = append(out, changeset.Finding{Severity: changeset.SeverityError, Sheet: rm.Sheet, Message: "template: " + fmt.Sprintf(format, a...)})
+	}
+	cols := map[string]period.Period{}
+	periods := map[period.Period]string{}
+	for _, col := range sortedKeys(rm.PeriodColumns) {
+		if !validColumn(col) {
+			bad("%s has an invalid period column %q", where, col)
+			continue
+		}
+		up := strings.ToUpper(col)
+		p, err := period.Parse(rm.PeriodColumns[col])
+		if err != nil {
+			bad("%s column %s: %v", where, up, err)
+			continue
+		}
+		if _, dup := cols[up]; dup {
+			bad("%s lists period column %s twice", where, up)
+			continue
+		}
+		cols[up] = p
+		if prev, dup := periods[p]; dup {
+			bad("%s: columns %s and %s both map to period %s", where, prev, up, p)
+		}
+		periods[p] = up
+		if strings.EqualFold(up, sm.LabelColumn) {
+			bad("%s: period column %s is the label column", where, up)
+		}
+		if sm.YTDColumn != "" && strings.EqualFold(up, sm.YTDColumn) {
+			bad("%s: period column %s is the sheet's ytdColumn", where, up)
+		}
 	}
 	return out
 }

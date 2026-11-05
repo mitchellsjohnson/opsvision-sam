@@ -168,6 +168,20 @@ func resolveColumns(sm SheetMap) []colPeriod {
 	return out
 }
 
+// resolveRowColumns lists a row's own period columns in column order. They
+// replace the sheet's columns for that row. Template validation has already
+// checked them.
+func resolveRowColumns(rm RowMap) []colPeriod {
+	out := make([]colPeriod, 0, len(rm.PeriodColumns))
+	for col, text := range rm.PeriodColumns {
+		if pp, err := period.Parse(text); err == nil {
+			out = append(out, colPeriod{strings.ToUpper(col), pp})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return colNumber(out[i].col) < colNumber(out[j].col) })
+	return out
+}
+
 // rowOf returns the row number of a canonical cell reference.
 func rowOf(ref string) (int, bool) {
 	i := 0
@@ -212,8 +226,22 @@ func (p *parser) dataSheet(sm SheetMap) {
 	}
 	matched := make([]bool, len(rows))
 
+	// Explicit row mappings apply to exactly one worksheet row; label mappings
+	// walk the sheet and track sections.
+	explicit := map[int]int{}
+	for i, rm := range rows {
+		if rm.Row > 0 {
+			explicit[rm.Row] = i
+		}
+	}
+
 	section := ""
 	for _, r := range rowNumbers(sh) {
+		if i, ok := explicit[r]; ok {
+			matched[i] = true
+			p.explicitRow(sh, sm, rows[i], r, cols)
+			continue
+		}
 		label := norm(sh.Cells[ref(sm.LabelColumn, r)].Text)
 		if label == "" {
 			continue
@@ -235,6 +263,8 @@ func (p *parser) dataSheet(sm SheetMap) {
 			continue
 		}
 		switch {
+		case rm.Row > 0:
+			p.find(changeset.SeverityWarn, sh.Name, "", "row %d (%q) was not found: the row is empty or past the end of the sheet", rm.Row, rm.Label)
 		case rm.Metric == "":
 			p.find(changeset.SeverityWarn, sh.Name, "", "section header %q was not found in column %s", rm.Label, strings.ToUpper(sm.LabelColumn))
 		case rm.Section != "":
@@ -249,7 +279,7 @@ func (p *parser) dataSheet(sm SheetMap) {
 // normalized label, or -1.
 func sectionHeader(rows []RowMap, label string) int {
 	for i, rm := range rows {
-		if rm.Metric == "" && norm(rm.Label) == label {
+		if rm.Row == 0 && rm.Metric == "" && norm(rm.Label) == label {
 			return i
 		}
 	}
@@ -260,12 +290,12 @@ func sectionHeader(rows []RowMap, label string) int {
 // current section: one scoped to that section wins over an unscoped one.
 func matchRow(rows []RowMap, label, section string) int {
 	for i, rm := range rows {
-		if rm.Metric != "" && rm.Section != "" && section != "" && norm(rm.Section) == section && norm(rm.Label) == label {
+		if rm.Row == 0 && rm.Metric != "" && rm.Section != "" && section != "" && norm(rm.Section) == section && norm(rm.Label) == label {
 			return i
 		}
 	}
 	for i, rm := range rows {
-		if rm.Metric != "" && rm.Section == "" && norm(rm.Label) == label {
+		if rm.Row == 0 && rm.Metric != "" && rm.Section == "" && norm(rm.Label) == label {
 			return i
 		}
 	}
@@ -275,14 +305,32 @@ func matchRow(rows []RowMap, label, section string) int {
 // rowYTD tracks the latest month a row imported, for its YTD comparison.
 type rowYTD struct {
 	ok    bool
+	fy    int
 	month int
 	ic    importedCell
+}
+
+// explicitRow imports a row selected by number. A label on the mapping is a
+// guard: when the sheet's label differs, the row is skipped with an error.
+func (p *parser) explicitRow(sh *xlsx.Sheet, sm SheetMap, rm RowMap, r int, cols []colPeriod) {
+	if want := strings.TrimSpace(cellNormalizer.Replace(rm.Label)); want != "" {
+		cref := ref(sm.LabelColumn, r)
+		got := strings.TrimSpace(cellNormalizer.Replace(sh.Cells[cref].Text))
+		if norm(got) != norm(want) {
+			p.find(changeset.SeverityError, sh.Name, cref, "row %d label is %q, expected %q: row not imported", r, got, want)
+			return
+		}
+	}
+	p.importRow(sh, sm, rm, r, cols)
 }
 
 func (p *parser) importRow(sh *xlsx.Sheet, sm SheetMap, rm RowMap, r int, cols []colPeriod) {
 	if !p.known(rm.Subject) {
 		p.find(changeset.SeverityError, sh.Name, ref(sm.LabelColumn, r), "subject %q is not an org unit or tracked item", rm.Subject)
 		return
+	}
+	if len(rm.PeriodColumns) > 0 {
+		cols = resolveRowColumns(rm)
 	}
 	var last rowYTD
 	for _, cp := range cols {
@@ -296,8 +344,8 @@ func (p *parser) importRow(sh *xlsx.Sheet, sm SheetMap, rm RowMap, r int, cols [
 			continue // notes are kept only for cells that were imported
 		}
 		p.noteComments(sh, rm, cp.p, cref)
-		if cp.p.Grain == period.Month && ic.reported != nil && cp.p.Index >= last.month {
-			last = rowYTD{ok: true, month: cp.p.Index, ic: ic}
+		if cp.p.Grain == period.Month && ic.reported != nil && (cp.p.FY > last.fy || (cp.p.FY == last.fy && cp.p.Index >= last.month)) {
+			last = rowYTD{ok: true, fy: cp.p.FY, month: cp.p.Index, ic: ic}
 		}
 	}
 	if sm.YTDColumn == "" || !last.ok {
@@ -449,7 +497,7 @@ func (p *parser) ytdCell(sh *xlsx.Sheet, sm SheetMap, rm RowMap, r int, last row
 	if parsed.Kind == Empty || parsed.Kind == NotApplicable {
 		return
 	}
-	through := period.Period{Grain: period.Month, FY: sm.FiscalYear, Index: last.month}
+	through := period.Period{Grain: period.Month, FY: last.fy, Index: last.month}
 	out, err := p.convert(rm, parsed, through)
 	if err != nil {
 		p.find(changeset.SeverityWarn, sh.Name, yref, "cannot read the YTD value %q with converter %s: %v", strings.TrimSpace(cell.Text), rm.Convert, err)

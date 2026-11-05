@@ -144,6 +144,13 @@ func Years(t legacy.Template) []int {
 			}
 		}
 	}
+	for _, rm := range t.Rows {
+		for _, text := range rm.PeriodColumns {
+			if per, err := period.Parse(text); err == nil {
+				add(per.FY)
+			}
+		}
+	}
 	out := make([]int, 0, len(seen))
 	for y := range seen {
 		out = append(out, y)

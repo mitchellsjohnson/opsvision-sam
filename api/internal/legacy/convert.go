@@ -92,8 +92,22 @@ func convValue(in convIn) (convOut, error) {
 	return convOut{}, mismatch("a number or percent", p)
 }
 
+// valueWithStatus reports whether the cell carries a single number in Value
+// beyond what the converter's own kind covers: a score with its percent change
+// ("1587 | 12% Quality Increase | G"), or a bare number or percent that the
+// workbook recorded a status for ("99.5 | G").
+func valueWithStatus(p Parsed) bool {
+	switch p.Kind {
+	case ScoreChange:
+		return p.Value != nil
+	case Number, Percent:
+		return p.Value != nil && p.Status != ""
+	}
+	return false
+}
+
 func convMoneyK(in convIn) (convOut, error) {
-	if in.p.Kind != Money {
+	if in.p.Kind != Money && !valueWithStatus(in.p) {
 		return convOut{}, mismatch("an amount in thousands like $8,234k", in.p)
 	}
 	return single("value", *in.p.Value, in.p), nil
@@ -147,7 +161,7 @@ func convScoreOfMax(in convIn) (convOut, error) {
 
 func convDailyAverage(in convIn) (convOut, error) {
 	p := in.p
-	if p.Kind != Number {
+	if p.Kind != Number && !valueWithStatus(p) {
 		return convOut{}, mismatch("a daily average number", p)
 	}
 	days := float64(in.cal.Seconds(in.per)) / 86400
