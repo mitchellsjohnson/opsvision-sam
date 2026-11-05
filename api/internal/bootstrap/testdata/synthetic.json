@@ -1,0 +1,144 @@
+{
+  "tenant": {
+    "id": "sample-co",
+    "name": "Sample Co",
+    "auth0OrgId": "org_sample_co",
+    "fiscalYearStartMonth": 1
+  },
+  "levels": [
+    {"id": "co", "name": "Company", "depth": 0},
+    {"id": "seg", "name": "Segment", "depth": 1}
+  ],
+  "units": [
+    {"id": "company", "name": "Company", "levelId": "co"},
+    {"id": "north", "name": "North Segment", "levelId": "seg", "parentId": "company", "sourceKeys": ["North Segment"]},
+    {"id": "south", "name": "South Segment", "levelId": "seg", "parentId": "company", "sourceKeys": ["South Segment"]}
+  ],
+  "moves": [],
+  "itemKinds": [{"id": "service", "name": "Services"}],
+  "items": [
+    {"id": "svc-1", "kindId": "service", "name": "Service One", "orgUnitId": "north"}
+  ],
+  "scorecards": [{"id": "sc", "name": "Scorecard"}],
+  "versions": [
+    {
+      "id": "v1",
+      "scorecardId": "sc",
+      "name": "v1",
+      "status": "published",
+      "effectiveFrom": "2025-FY",
+      "publishedAt": "2025-01-01T00:00:00Z",
+      "content": {
+        "categories": [{"id": "delivery", "name": "Delivery", "order": 1}],
+        "measures": [
+          {"key": "epics_done", "name": "Epics done", "unit": "count", "orgAgg": "sum", "timeAgg": "sum"},
+          {"key": "epics_total", "name": "Epics total", "unit": "count", "orgAgg": "sum", "timeAgg": "sum"},
+          {"key": "seconds_down", "name": "Seconds down", "unit": "seconds", "orgAgg": "sum", "timeAgg": "sum"},
+          {"key": "seconds_in_period", "name": "Seconds in period", "unit": "seconds", "orgAgg": "sum", "timeAgg": "sum"}
+        ],
+        "metrics": [
+          {
+            "key": "epics_on_time", "name": "Epics on time", "categoryId": "delivery",
+            "formula": "epics_done / epics_total * 100", "format": "percent0",
+            "direction": "higher_better", "frequency": "monthly",
+            "reportedAt": [{"kind": "level", "id": "seg"}],
+            "rule": {"type": "bands", "bands": [
+              {"status": "G", "op": ">=", "value": 80},
+              {"status": "Y", "op": ">=", "value": 60},
+              {"status": "R", "op": "", "value": 0}
+            ]},
+            "targets": []
+          },
+          {
+            "key": "uptime", "name": "Uptime", "categoryId": "delivery",
+            "formula": "(1 - seconds_down / seconds_in_period) * 100", "format": "percent2",
+            "direction": "higher_better", "frequency": "monthly",
+            "reportedAt": [{"kind": "level", "id": "seg"}],
+            "rule": {"type": "bands", "bands": [
+              {"status": "G", "op": ">=", "value": 99.9},
+              {"status": "Y", "op": ">=", "value": 99.5},
+              {"status": "R", "op": "", "value": 0}
+            ]},
+            "targets": []
+          }
+        ]
+      }
+    },
+    {
+      "id": "v2-draft",
+      "scorecardId": "sc",
+      "name": "v2",
+      "status": "draft",
+      "effectiveFrom": "2026-FY",
+      "content": {
+        "categories": [{"id": "delivery", "name": "Delivery", "order": 1}],
+        "measures": [
+          {"key": "epics_done", "name": "Epics done", "unit": "count", "orgAgg": "sum", "timeAgg": "sum"},
+          {"key": "epics_total", "name": "Epics total", "unit": "count", "orgAgg": "sum", "timeAgg": "sum"},
+          {"key": "seconds_down", "name": "Seconds down", "unit": "seconds", "orgAgg": "sum", "timeAgg": "sum"},
+          {"key": "seconds_in_period", "name": "Seconds in period", "unit": "seconds", "orgAgg": "sum", "timeAgg": "sum"}
+        ],
+        "metrics": [
+          {
+            "key": "epics_on_time", "name": "Epics on time", "categoryId": "delivery",
+            "formula": "epics_done / epics_total * 100", "format": "percent0",
+            "direction": "higher_better", "frequency": "monthly",
+            "reportedAt": [{"kind": "level", "id": "seg"}],
+            "rule": {"type": "bands", "bands": [
+              {"status": "G", "op": ">=", "value": 80},
+              {"status": "Y", "op": ">=", "value": 60},
+              {"status": "R", "op": "", "value": 0}
+            ]},
+            "targets": []
+          },
+          {
+            "key": "uptime", "name": "Uptime", "categoryId": "delivery",
+            "formula": "(1 - seconds_down / seconds_in_period) * 100", "format": "percent2",
+            "direction": "higher_better", "frequency": "monthly",
+            "reportedAt": [{"kind": "level", "id": "seg"}],
+            "rule": {"type": "bands", "bands": [
+              {"status": "G", "op": ">=", "value": 99.9},
+              {"status": "Y", "op": ">=", "value": 99.5},
+              {"status": "R", "op": "", "value": 0}
+            ]},
+            "targets": []
+          }
+        ]
+      }
+    }
+  ],
+  "templates": [
+    {
+      "id": "legacy-1",
+      "name": "Sample legacy scorecard",
+      "profile": "legacy_workbook",
+      "body": {
+        "scorecardId": "sc",
+        "sheets": [{"sheet": "Scorecard", "fiscalYear": 2025, "labelColumn": "A",
+                    "monthColumns": {"F": 1, "G": 2, "H": 3}}],
+        "rows": [
+          {"sheet": "Scorecard", "label": "Epics on time"},
+          {"sheet": "Scorecard", "section": "Epics on time", "label": "North Segment", "metric": "epics_on_time", "subject": "north",
+           "convert": "ratio", "measures": {"num": "epics_done", "den": "epics_total"}},
+          {"sheet": "Scorecard", "section": "Epics on time", "label": "South Segment", "metric": "epics_on_time", "subject": "south",
+           "convert": "ratio", "measures": {"num": "epics_done", "den": "epics_total"}},
+          {"sheet": "Scorecard", "label": "Uptime"},
+          {"sheet": "Scorecard", "section": "Uptime", "label": "North Segment", "metric": "uptime", "subject": "north",
+           "convert": "uptime_percent", "measures": {"down": "seconds_down", "period": "seconds_in_period"}},
+          {"sheet": "Scorecard", "section": "Uptime", "label": "South Segment", "metric": "uptime", "subject": "south",
+           "convert": "uptime_percent", "measures": {"down": "seconds_down", "period": "seconds_in_period"}}
+        ],
+        "methodology": [{"sheet": "Methodology", "versionId": "v2-draft",
+          "rows": {"Epics on time": "epics_on_time", "Uptime": "uptime"},
+          "columns": {"B": "frequency", "C": "definition", "D": "green", "E": "yellow", "F": "red",
+                      "G": "source", "H": "notes", "I": "link"}}]
+      }
+    }
+  ],
+  "users": [
+    {"userId": "dev|admin", "email": "admin@sample.test", "name": "Sample Admin", "role": "admin"},
+    {"userId": "dev|viewer", "email": "viewer@sample.test", "name": "Sample Viewer", "role": "viewer"},
+    {"userId": "dev|north", "email": "north@sample.test", "name": "North Contributor", "role": "contributor",
+     "scope": {"orgUnitIds": ["north"]}}
+  ]
+}

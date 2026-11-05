@@ -12,9 +12,8 @@ import (
 
 	"opsvision/internal/changeset"
 	"opsvision/internal/domain"
-	"opsvision/internal/legacy"
+	"opsvision/internal/importer"
 	"opsvision/internal/objects"
-	"opsvision/internal/period"
 	"opsvision/internal/store"
 	"opsvision/internal/xlsx"
 )
@@ -180,12 +179,10 @@ func (s *Server) ParseImport(ctx context.Context, req ParseImportRequestObject) 
 		return nil, err
 	}
 
-	years := templateYears(tb.Template)
-	base, err := s.loadInput(ctx, *p.Tenant, scorecardID, years)
+	cs, err := importer.Parse(ctx, s.store, *p.Tenant, s.calendar(*p.Tenant), scorecardID, tb.Template, wb)
 	if err != nil {
 		return nil, err
 	}
-	cs := legacy.ParseWorkbook(wb, tb.Template, base)
 	cs.ID = im.ID
 	cs.CreatedBy = p.UserID
 	cs.CreatedAt = s.now()
@@ -218,27 +215,15 @@ func (s *Server) ParseImport(ctx context.Context, req ParseImportRequestObject) 
 // importScorecard picks the scorecard an import writes to: the one the
 // template names, else the tenant's only one.
 func (s *Server) importScorecard(ctx context.Context, tenantID, named string) (string, error) {
-	if named != "" {
-		if _, err := s.store.GetScorecard(ctx, tenantID, named); err != nil {
-			if errors.Is(err, store.ErrNotFound) {
-				return "", badRequest("request validation failed", detail{Path: "body.scorecardId", Message: fmt.Sprintf("scorecard %q does not exist", named)})
-			}
-			return "", err
-		}
-		return named, nil
+	id, err := importer.ResolveScorecard(ctx, s.store, tenantID, named)
+	var ie *importer.Error
+	switch {
+	case errors.As(err, &ie) && ie.Path != "":
+		return "", badRequest("request validation failed", detail{Path: ie.Path, Message: ie.Message})
+	case errors.As(err, &ie):
+		return "", badRequest(ie.Message)
 	}
-	scs, err := s.store.ListScorecards(ctx, tenantID)
-	if err != nil {
-		return "", err
-	}
-	switch len(scs) {
-	case 1:
-		return scs[0].ID, nil
-	case 0:
-		return "", badRequest("the tenant has no scorecard to import into")
-	default:
-		return "", badRequest("the tenant has several scorecards; set scorecardId in the template body")
-	}
+	return id, err
 }
 
 // readWorkbook loads and opens an uploaded workbook. The size limit is checked
@@ -269,21 +254,6 @@ func readWorkbook(ctx context.Context, objs objects.Store, key string) (*xlsx.Wo
 		return nil, badRequest(err.Error())
 	}
 	return wb, nil
-}
-
-// templateYears lists the fiscal years of data a parse compares against: those
-// the template's sheets name, and the year before each.
-func templateYears(t legacy.Template) []int {
-	var ps []period.Period
-	for _, sm := range t.Sheets {
-		ps = append(ps, period.Period{FY: sm.FiscalYear})
-		for _, text := range sm.PeriodColumns {
-			if per, err := period.Parse(text); err == nil {
-				ps = append(ps, per)
-			}
-		}
-	}
-	return fiscalYears(true, ps...)
 }
 
 // ---- apply ----------------------------------------------------------------------
@@ -449,40 +419,14 @@ func previewOf(cs changeset.ChangeSet, counts ImportCounts, findings []changeset
 
 // ---- templates -------------------------------------------------------------------
 
-// templateBody is the stored document of a legacy_workbook template: the
-// legacy mapping plus the scorecard to import into.
-type templateBody struct {
-	legacy.Template
-	// ScorecardID names the scorecard the import writes to. Without it the
-	// tenant's only scorecard is used.
-	ScorecardID string `json:"scorecardId,omitempty"`
-}
-
-// decodeTemplateBody decodes a template body strictly (unknown fields and
-// trailing data are errors) and validates the mapping. The returned details
-// are empty when the template is usable.
-func decodeTemplateBody(raw []byte) (templateBody, []detail) {
-	var tb templateBody
-	if len(raw) > legacy.MaxTemplateBytes {
-		return tb, []detail{{Path: "body", Message: fmt.Sprintf("is larger than %d bytes", legacy.MaxTemplateBytes)}}
-	}
-	if len(bytes.TrimSpace(raw)) == 0 {
-		raw = []byte("{}")
-	}
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&tb); err != nil {
-		return templateBody{}, []detail{{Path: "body", Message: "is not a valid template: " + err.Error()}}
-	}
-	if _, err := dec.Token(); err != io.EOF {
-		return templateBody{}, []detail{{Path: "body", Message: "has data after the JSON document"}}
-	}
+// decodeTemplateBody decodes and validates the body of a legacy_workbook
+// template (see importer.DecodeTemplateBody). The returned details are empty
+// when the template is usable.
+func decodeTemplateBody(raw []byte) (importer.TemplateBody, []detail) {
+	tb, ps := importer.DecodeTemplateBody(raw)
 	var out []detail
-	if tb.ScorecardID != "" && !validID(tb.ScorecardID) {
-		out = append(out, detail{Path: "body.scorecardId", Message: idRule})
-	}
-	for _, f := range tb.Template.Validate() {
-		out = append(out, detail{Path: "body", Message: strings.TrimPrefix(f.Message, "template: ")})
+	for _, p := range ps {
+		out = append(out, detail{Path: p.Path, Message: p.Message})
 	}
 	return tb, out
 }

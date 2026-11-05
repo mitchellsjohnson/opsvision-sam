@@ -2,12 +2,11 @@ package httpapi
 
 import (
 	"context"
-	"fmt"
 	"sort"
 
 	"opsvision/internal/domain"
 	"opsvision/internal/engine"
-	"opsvision/internal/orgtree"
+	"opsvision/internal/importer"
 	"opsvision/internal/period"
 )
 
@@ -19,41 +18,7 @@ import (
 // computed from the input, so one must never outlive the request that read
 // the data it was built from.
 func (s *Server) loadInput(ctx context.Context, tenant domain.Tenant, scorecardID string, years []int) (*engine.Input, error) {
-	units, err := s.store.ListOrgUnits(ctx, tenant.ID)
-	if err != nil {
-		return nil, err
-	}
-	moves, err := s.store.ListOrgMoves(ctx, tenant.ID)
-	if err != nil {
-		return nil, err
-	}
-	tree, err := orgtree.New(units, moves)
-	if err != nil {
-		return nil, fmt.Errorf("httpapi: build org tree: %w", err)
-	}
-	items, err := s.store.ListTrackedItems(ctx, tenant.ID)
-	if err != nil {
-		return nil, err
-	}
-	versions, err := s.store.ListVersions(ctx, tenant.ID, scorecardID)
-	if err != nil {
-		return nil, err
-	}
-	in := &engine.Input{
-		Cal:       s.calendar(tenant),
-		Tree:      tree,
-		Items:     items,
-		Versions:  versions,
-		Data:      []domain.DataPoint{},
-		Overrides: []domain.Override{},
-	}
-	if len(years) > 0 {
-		in.Data, in.Overrides, err = s.store.ListData(ctx, tenant.ID, scorecardID, years)
-		if err != nil {
-			return nil, err
-		}
-	}
-	return in, nil
+	return importer.LoadInput(ctx, s.store, tenant, s.calendar(tenant), scorecardID, years)
 }
 
 // fiscalYears returns the sorted distinct fiscal years of ps. With withPrior

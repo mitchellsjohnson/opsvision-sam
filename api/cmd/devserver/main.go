@@ -21,6 +21,14 @@
 // minutes; the endpoint accepts only the .xlsx content type and 20 MiB. With
 // -objects s3 (and -uploads-bucket or $UPLOADS_BUCKET) uploads go to S3 with
 // presigned URLs, as in production.
+//
+// To work with a private tenant configuration instead of the demo, pass
+// -bootstrap <file> (memory store only; see docs/deploy/local-bootstrap.md).
+// /dev/users and /dev/login then serve the file's users. With -import
+// <workbook.xlsx> -import-template <id> the server also parses that legacy
+// workbook with the named template and applies the result before it starts
+// listening, and refuses to start if that fails. Use cmd/importcheck to
+// iterate on a template first. Keep real files under /private/ (git-ignored).
 package main
 
 import (
@@ -43,8 +51,11 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 
 	"opsvision/internal/auth"
+	"opsvision/internal/bootstrap"
+	"opsvision/internal/changeset"
 	"opsvision/internal/demo"
 	"opsvision/internal/httpapi"
+	"opsvision/internal/importer"
 	"opsvision/internal/objects"
 	"opsvision/internal/period"
 	"opsvision/internal/store"
@@ -64,6 +75,10 @@ type options struct {
 	allowedOrigin string
 	auth0Domain   string
 	auth0Audience string
+
+	bootstrap      string // bootstrap file (memory store only)
+	importFile     string // legacy workbook to import at startup
+	importTemplate string // template ID of the bootstrap file to import it with
 }
 
 // parseFlags reads options from args and the environment (getenv). The dev
@@ -83,8 +98,17 @@ func parseFlags(args []string, getenv func(string) string) (options, error) {
 	fs.StringVar(&o.allowedOrigin, "allowed-origin", "http://localhost:5173", "browser origin allowed by CORS")
 	fs.StringVar(&o.auth0Domain, "auth0-domain", "", "Auth0 domain (with -auth auth0; default $AUTH0_DOMAIN)")
 	fs.StringVar(&o.auth0Audience, "auth0-audience", "", "Auth0 API audience (with -auth auth0; default $AUTH0_AUDIENCE)")
+	fs.StringVar(&o.bootstrap, "bootstrap", "", "tenant bootstrap JSON file to load instead of the demo (memory store only; see docs/deploy/local-bootstrap.md)")
+	fs.StringVar(&o.importFile, "import", "", "legacy .xlsx workbook to import at startup (needs -bootstrap and -import-template)")
+	fs.StringVar(&o.importTemplate, "import-template", "", "ID of the bootstrap file's import template for -import")
 	if err := fs.Parse(args); err != nil {
 		return options{}, err
+	}
+	// -bootstrap replaces the demo; only an explicit -seed demo conflicts.
+	seedSet := false
+	fs.Visit(func(f *flag.Flag) { seedSet = seedSet || f.Name == "seed" })
+	if o.bootstrap != "" && !seedSet {
+		o.seed = "none"
 	}
 	if o.devSecret == "" {
 		o.devSecret = getenv("OPSVISION_DEV_SECRET")
@@ -124,6 +148,20 @@ func (o options) validate() error {
 	case "demo", "none":
 	default:
 		return fmt.Errorf("invalid -seed %q (want demo or none)", o.seed)
+	}
+	if o.bootstrap != "" {
+		if o.seed == "demo" {
+			return errors.New("-bootstrap cannot be combined with -seed demo")
+		}
+		if o.store != "memory" {
+			return errors.New("-bootstrap requires -store memory (it loads a tenant into a fresh store)")
+		}
+	}
+	if (o.importFile == "") != (o.importTemplate == "") {
+		return errors.New("-import and -import-template must be given together")
+	}
+	if o.importFile != "" && o.bootstrap == "" {
+		return errors.New("-import requires -bootstrap")
 	}
 	switch o.auth {
 	case "dev":
@@ -187,26 +225,77 @@ func newHandler(ctx context.Context, o options) (http.Handler, error) {
 
 // newHandlerObjects is newHandler that also returns the import file store.
 func newHandlerObjects(ctx context.Context, o options) (http.Handler, objects.Store, error) {
-	if err := o.validate(); err != nil {
+	a, err := build(ctx, o)
+	if err != nil {
 		return nil, nil, err
+	}
+	return a.handler, a.objects, nil
+}
+
+// app is a built server and the stores behind it.
+type app struct {
+	handler http.Handler
+	objects objects.Store
+	store   store.Store
+}
+
+// identity is who /dev/users lists and /dev/login signs in: the demo's users
+// and organisation, or the bootstrap file's.
+type identity struct {
+	users      []demo.User
+	auth0OrgID string
+}
+
+func demoIdentity() identity { return identity{users: demo.Users, auth0OrgID: demo.Auth0OrgID} }
+
+func bootstrapIdentity(f bootstrap.File) identity {
+	id := identity{auth0OrgID: f.Tenant.Auth0OrgID, users: []demo.User{}}
+	for _, u := range f.Users {
+		id.users = append(id.users, demo.User{UserID: u.UserID, Email: u.Email, Name: u.Name, Role: u.Role})
+	}
+	return id
+}
+
+// build validates the options, opens and prepares the stores (demo seed or
+// bootstrap file with its optional startup import), and assembles the server.
+func build(ctx context.Context, o options) (*app, error) {
+	if err := o.validate(); err != nil {
+		return nil, err
 	}
 	st, err := openStore(ctx, o)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	objs, err := openObjects(ctx, o)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if _, mem := objs.(*objects.Mem); mem && o.auth != "dev" {
 		slog.Warn("in-memory import uploads are only served with -auth dev; use -objects s3 to import files")
 	}
+	ident := demoIdentity()
 	if o.seed == "demo" {
 		id, err := demo.Seed(ctx, st, period.Calendar{FiscalYearStartMonth: 1})
 		if err != nil {
-			return nil, nil, fmt.Errorf("seed demo data: %w", err)
+			return nil, fmt.Errorf("seed demo data: %w", err)
 		}
 		slog.Info("demo tenant ready", "tenant", id)
+	}
+	if o.bootstrap != "" {
+		f, err := bootstrap.Load(o.bootstrap)
+		if err != nil {
+			return nil, err
+		}
+		if err := bootstrap.Apply(ctx, st, f, time.Now()); err != nil {
+			return nil, err
+		}
+		slog.Info("bootstrap tenant ready", "tenant", f.Tenant.ID, "users", len(f.Users), "templates", len(f.Templates))
+		ident = bootstrapIdentity(f)
+		if o.importFile != "" {
+			if err := startupImport(ctx, st, f.Tenant.ID, o.importFile, o.importTemplate); err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	authCfg := auth.Config{Mode: auth.ModeDev, DevSecret: o.devSecret}
@@ -215,20 +304,64 @@ func newHandlerObjects(ctx context.Context, o options) (http.Handler, objects.St
 	}
 	authMW, err := auth.Middleware(authCfg, st)
 	if err != nil {
-		return nil, nil, fmt.Errorf("auth: %w", err)
+		return nil, fmt.Errorf("auth: %w", err)
 	}
 	api := httpapi.NewHandler(httpapi.NewServer(httpapi.Deps{Store: st, Objects: objs}), authMW)
 
 	mux := http.NewServeMux()
 	if o.auth == "dev" {
-		mux.HandleFunc("GET /dev/users", devUsers)
-		mux.HandleFunc("POST /dev/login", devLogin(o.devSecret))
+		mux.HandleFunc("GET /dev/users", devUsers(ident))
+		mux.HandleFunc("POST /dev/login", devLogin(o.devSecret, ident))
 		if mem, ok := objs.(*objects.Mem); ok {
 			mux.HandleFunc("PUT "+objects.DevObjectsPath+"{key...}", devPutObject(mem, o.devSecret, func() time.Time { return time.Now() }))
 		}
 	}
 	mux.Handle("/", api)
-	return httpapi.CORS(o.allowedOrigin)(mux), objs, nil
+	return &app{handler: httpapi.CORS(o.allowedOrigin)(mux), objects: objs, store: st}, nil
+}
+
+// startupActor is recorded as the author of the startup import.
+const startupActor = "startup-import"
+
+// startupImport parses a legacy workbook with a saved template and applies
+// the change set, through the same code the Import API uses. It logs counts,
+// never the content of findings (which come from the workbook); run
+// cmd/importcheck to read them. Any error finding, or any failure to apply,
+// is an error: the server must not start on a half-imported tenant.
+func startupImport(ctx context.Context, st store.Store, tenantID, workbook, templateID string) error {
+	tenant, err := st.GetTenant(ctx, tenantID)
+	if err != nil {
+		return fmt.Errorf("startup import: %w", err)
+	}
+	wb, err := importer.OpenWorkbookFile(workbook)
+	if err != nil {
+		return fmt.Errorf("startup import: %w", err)
+	}
+	res, err := importer.ParseStored(ctx, st, tenant, importer.CalendarOf(tenant), templateID, wb)
+	if err != nil {
+		return fmt.Errorf("startup import: %w", err)
+	}
+	cs := res.ChangeSet
+	cs.ID = startupActor
+	cs.CreatedBy = startupActor
+	cs.CreatedAt = time.Now().UTC()
+
+	found := importer.CountFindings(cs.Findings)
+	slog.Info("startup import parsed",
+		"template", templateID, "scorecard", res.ScorecardID,
+		"dataPoints", len(cs.Data), "overrides", len(cs.Overrides), "versionText", len(cs.VersionText), "legacyNotes", len(cs.Notes),
+		"errors", found[changeset.SeverityError], "warnings", found[changeset.SeverityWarn], "info", found[changeset.SeverityInfo])
+	if n := found[changeset.SeverityError]; n > 0 {
+		return fmt.Errorf("startup import: the workbook has %d error finding(s) and cannot be applied; run `go run ./cmd/importcheck` with the same files to read them", n)
+	}
+	applied, err := changeset.Apply(ctx, st, tenantID, res.ScorecardID, cs, startupActor)
+	if err != nil {
+		return fmt.Errorf("startup import: apply: %w", err)
+	}
+	slog.Info("startup import applied",
+		"dataPoints", applied.DataPoints, "overrides", applied.Overrides, "versionText", applied.VersionText,
+		"skippedVersionText", len(applied.Findings))
+	return nil
 }
 
 // devPutObject accepts an import upload at a URL signed by objects.Mem. The
@@ -278,12 +411,14 @@ func devError(w http.ResponseWriter, status int, code, msg string) {
 	writeJSON(w, status, map[string]any{"error": map[string]string{"code": code, "message": msg}})
 }
 
-func devUsers(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, demo.Users)
+func devUsers(ident identity) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, ident.users)
+	}
 }
 
-// devLogin signs a token for a demo user, named by user ID or email.
-func devLogin(secret string) http.HandlerFunc {
+// devLogin signs a token for a dev user, named by user ID or email.
+func devLogin(secret string, ident identity) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			UserID string `json:"userId"`
@@ -293,11 +428,11 @@ func devLogin(secret string) http.HandlerFunc {
 			devError(w, http.StatusBadRequest, "invalid", `body must be {"userId": "..."}`)
 			return
 		}
-		for _, u := range demo.Users {
+		for _, u := range ident.users {
 			if body.UserID != u.UserID && !strings.EqualFold(body.UserID, u.Email) {
 				continue
 			}
-			token, err := auth.IssueDevToken(secret, u.UserID, u.Email, u.Name, demo.Auth0OrgID, false)
+			token, err := auth.IssueDevToken(secret, u.UserID, u.Email, u.Name, ident.auth0OrgID, false)
 			if err != nil {
 				devError(w, http.StatusInternalServerError, "internal", "cannot sign token")
 				return
@@ -305,7 +440,7 @@ func devLogin(secret string) http.HandlerFunc {
 			writeJSON(w, http.StatusOK, map[string]string{"token": token})
 			return
 		}
-		devError(w, http.StatusNotFound, "not_found", "unknown demo user")
+		devError(w, http.StatusNotFound, "not_found", "unknown dev user")
 	}
 }
 
