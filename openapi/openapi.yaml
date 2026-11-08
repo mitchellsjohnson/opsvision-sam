@@ -30,6 +30,7 @@ tags:
   - name: Methodology
   - name: Data
   - name: Imports
+  - name: Records
   - name: Audit
 
 paths:
@@ -580,7 +581,10 @@ paths:
       summary: Publish a draft, effective from a period (admin only)
       description: |
         Validates first; invalid content fails with 400 `invalid` and
-        `error.details` lists every problem as `{path, message}`.
+        `error.details` lists every problem as `{path, message}`. After
+        publishing, derived values of open periods are recalculated from the
+        stored records under the versions now in force; `recalculated`
+        counts the data points written or removed.
       requestBody:
         required: true
         content:
@@ -591,7 +595,7 @@ paths:
           description: The published version
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/MethodologyVersion' }
+              schema: { $ref: '#/components/schemas/PublishVersionResult' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -880,6 +884,9 @@ paths:
       operationId: createImportUpload
       tags: [Imports]
       summary: Start an import and get a URL to upload the file to
+      description: |
+        `contentType` is the .xlsx type (the default) or `text/csv`; the
+        upload URL accepts that type only. Admins only.
       requestBody:
         required: false
         content:
@@ -922,6 +929,68 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/TooLarge' }
+
+  /imports/{id}/inspect:
+    parameters:
+      - $ref: '#/components/parameters/ServerIdPath'
+    post:
+      operationId: inspectImport
+      tags: [Records]
+      summary: Look at an uploaded records export (admin only)
+      description: |
+        Guesses each column's record field, lists the distinct values of
+        priority, state, and product or team columns, detects date formats,
+        suggests a record type, recognizes a saved `records` template, and
+        suggests the org unit or tracked item each product or team value
+        means. Nothing is stored. CSV files are read with the header on line
+        1, workbooks from the first visible sheet.
+      responses:
+        '200':
+          description: What the file looks like
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RecordsInspectResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/TooLarge' }
+
+  /imports/{id}/records-preview:
+    parameters:
+      - $ref: '#/components/parameters/ServerIdPath'
+    post:
+      operationId: previewRecordsImport
+      tags: [Records]
+      summary: Preview importing an uploaded records export (admin only)
+      description: |
+        Reads the upload with a saved `records` template (`templateId`) or an
+        inline one (`template`); exactly one is required. Returns the row
+        counts, what changes on the scorecard, and what needs the admin's
+        input. Nothing is applied: the preview and its answers are stored on
+        the import (status `parsed`, profile `records`) for apply. An import
+        may be previewed again until it is applied. `draftVersionId`
+        evaluates a draft methodology version in place of the versions in
+        force. `missing` lists the open records a full export no longer has.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RecordsPreviewRequest' }
+      responses:
+        '200':
+          description: The preview; nothing has been applied
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RecordsPreview' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/TooLarge' }
 
   /imports/{id}/apply:
     parameters:
@@ -929,7 +998,20 @@ paths:
     post:
       operationId: applyImport
       tags: [Imports]
-      summary: Apply a parsed change set
+      summary: Apply a parsed change set or a records preview (admin only)
+      description: |
+        A `legacy_workbook` import ignores the body. A `records` import needs
+        the answers of its stored preview: different answers fail with 409
+        "preview is out of date". It stores the snapshot, the records, and
+        the answered source keys and shared units, then recalculates derived
+        values; `saveTemplate` also saves the template with the answered
+        value maps and date order. The response's `records` describes what
+        was applied. An import can be applied once.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApplyImportRequest' }
       responses:
         '200':
           description: The applied change set
@@ -941,6 +1023,124 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+
+  /record-types:
+    get:
+      operationId: listRecordTypes
+      tags: [Records]
+      summary: List the tenant's record types
+      responses:
+        '200':
+          description: Record types, sorted by ID
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [recordTypes]
+                properties:
+                  recordTypes:
+                    type: array
+                    items: { $ref: '#/components/schemas/RecordType' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /record-types/{id}:
+    parameters:
+      - $ref: '#/components/parameters/RecordTypeId'
+    put:
+      operationId: putRecordType
+      tags: [Records]
+      summary: Create or replace a record type (admin only)
+      description: |
+        `revision` is the revision the client loaded: 0 creates the type,
+        which must not exist yet. A stale revision fails with 409.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RecordType' }
+      responses:
+        '200':
+          description: The stored record type
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RecordType' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /scorecards/{sc}/records/sample:
+    parameters:
+      - $ref: '#/components/parameters/ScorecardId'
+    post:
+      operationId: sampleRecords
+      tags: [Records]
+      summary: Count the records a condition matches in a period (admin only)
+      description: |
+        Counts, per org unit or tracked item, the stored records of
+        `recordType` whose `bucketBy` date falls in `period` and that match
+        `where` (each record as of its latest revision). Records whose
+        product or team matches no single leaf subject are not counted. A
+        `where` that does not compile fails with 400 at `where`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RecordsSampleRequest' }
+      responses:
+        '200':
+          description: The counts, largest first
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RecordsSample' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /scorecards/{sc}/records/contributions:
+    parameters:
+      - $ref: '#/components/parameters/ScorecardId'
+    get:
+      operationId: listRecordContributions
+      tags: [Records]
+      summary: The records behind a metric cell
+      description: |
+        For each derived measure the metric's formula references (under the
+        version in force for the period), the stored data point beside the
+        value records give, and the records that contribute to it. A
+        rolled-up subject lists the contributions of every leaf subject below
+        it that the caller may read. Requires data read access to the
+        subject. Records are paginated across measures, 100 per page; pass
+        `nextCursor` back as `cursor` for the next page.
+      parameters:
+        - name: metric
+          in: query
+          required: true
+          schema: { $ref: '#/components/schemas/Key' }
+        - name: subject
+          in: query
+          required: true
+          schema: { $ref: '#/components/schemas/Id' }
+        - name: period
+          in: query
+          required: true
+          schema: { $ref: '#/components/schemas/Period' }
+        - name: cursor
+          in: query
+          required: false
+          schema: { type: string }
+      responses:
+        '200':
+          description: The contributions
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RecordContributions' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
 
   /import-templates:
     get:
@@ -1084,6 +1284,12 @@ components:
       required: true
       description: Methodology version ID.
       schema: { $ref: '#/components/schemas/ServerId' }
+    RecordTypeId:
+      name: id
+      in: path
+      required: true
+      description: Record type ID.
+      schema: { $ref: '#/components/schemas/Key' }
 
   responses:
     BadRequest:
@@ -1111,6 +1317,11 @@ components:
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
+    TooLarge:
+      description: The uploaded file is over the 20 MiB limit (`too_large`)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
 
   schemas:
     # ---- Errors -----------------------------------------------------------
@@ -1124,7 +1335,7 @@ components:
           properties:
             code:
               type: string
-              enum: [not_found, forbidden, conflict, invalid, unauthorized, not_implemented]
+              enum: [not_found, forbidden, conflict, invalid, unauthorized, not_implemented, too_large]
             message: { type: string }
             details:
               type: array
@@ -1645,6 +1856,14 @@ components:
       required: [effectiveFrom]
       properties:
         effectiveFrom: { $ref: '#/components/schemas/Period' }
+    PublishVersionResult:
+      description: The published version, and how many derived data points publishing recalculated.
+      allOf:
+        - $ref: '#/components/schemas/MethodologyVersion'
+        - type: object
+          required: [recalculated]
+          properties:
+            recalculated: { type: integer, minimum: 0 }
     VersionDiff:
       type: object
       required: [from, to, changes]
@@ -1812,6 +2031,11 @@ components:
         enteredBy: { $ref: '#/components/schemas/UserId' }
         enteredAt: { type: string, format: date-time }
         revision: { type: integer, minimum: 0 }
+        deleted:
+          type: boolean
+          description: |
+            Set only in history, on the revision that removed the value (a
+            derived value no longer produced). Absent on live points.
     EntryRow:
       type: object
       required: [measureKey, measureName, metricKeys, subjectId, subjectName, period, naReason, revision, canEdit]
@@ -1915,15 +2139,16 @@ components:
         name: { type: string, minLength: 1 }
         profile:
           type: string
-          description: Only `legacy_workbook` can be stored today; `csv` is rejected.
-          enum: [legacy_workbook, csv]
+          description: '`legacy_workbook` or `records`; `csv` is rejected.'
+          enum: [legacy_workbook, csv, records]
         body:
           type: object
           description: >-
             The mapping document for the profile. For `legacy_workbook` it has
             `sheets`, `rows` and `methodology`, and an optional `scorecardId` naming the scorecard the import
-            writes to (default: the tenant's only scorecard). Unknown fields and
-            invalid mappings are rejected with 400.
+            writes to (default: the tenant's only scorecard). For `records` it
+            is a RecordTemplate for one of the tenant's record types. Unknown
+            fields and invalid mappings are rejected with 400.
           additionalProperties: true
     ImportCounts:
       type: object
@@ -1977,6 +2202,434 @@ components:
           maxItems: 50
           description: Up to 50 of the changes, for review.
           items: { $ref: '#/components/schemas/ImportChange' }
+        records:
+          description: Set only when a `records` import was applied; the other fields are then empty.
+          allOf:
+            - $ref: '#/components/schemas/RecordsApplied'
+
+    # ---- Records ----------------------------------------------------------
+    RecordFieldMap:
+      type: object
+      description: |
+        Where one record field or attribute comes from: exactly one of
+        `column` (header text), `constant`, and `template` (text with
+        `{Column}` placeholders). `map` translates raw values (`*` is the
+        fallback); `default` replaces an empty cell; `dateFormats` are Go
+        layouts tried in order; `separator` splits a list column;
+        `transform` (attributes only) is nonEmpty, number, bool, date, or text.
+      properties:
+        column: { type: string }
+        constant: { type: string }
+        template: { type: string }
+        map:
+          type: object
+          additionalProperties: { type: string }
+        default: { type: string }
+        dateFormats:
+          type: array
+          items: { type: string }
+        separator: { type: string }
+        transform: { type: string }
+    RecordFileSpec:
+      type: object
+      required: [format, headerRow]
+      properties:
+        format:
+          type: string
+          enum: [csv, xlsx]
+        sheet:
+          type: string
+          description: Worksheet name; empty means the first visible sheet.
+        headerRow:
+          type: integer
+          minimum: 0
+          description: 1-based row holding the headers; 0 means 1.
+    RecordSkipRule:
+      type: object
+      required: [column, in]
+      properties:
+        column: { type: string }
+        in:
+          type: array
+          items: { type: string }
+    RecordTemplate:
+      type: object
+      description: Maps one export format to one record type.
+      required: [name, recordType, source, file, fullExport, fields]
+      properties:
+        name: { type: string }
+        recordType: { $ref: '#/components/schemas/Key' }
+        source:
+          type: string
+          description: The source system records come from (part of a record's identity).
+        file: { $ref: '#/components/schemas/RecordFileSpec' }
+        fullExport:
+          type: boolean
+          description: The file lists every record, so open records it lacks are missing.
+        fields:
+          type: object
+          additionalProperties: { $ref: '#/components/schemas/RecordFieldMap' }
+        attributes:
+          type: object
+          additionalProperties: { $ref: '#/components/schemas/RecordFieldMap' }
+        skipRows:
+          type: array
+          items: { $ref: '#/components/schemas/RecordSkipRule' }
+    RecordCellRef:
+      type: object
+      required: [measureKey, subjectId, period]
+      properties:
+        measureKey: { $ref: '#/components/schemas/Key' }
+        subjectId: { $ref: '#/components/schemas/Id' }
+        period: { $ref: '#/components/schemas/Period' }
+    RecordAnswers:
+      type: object
+      description: |
+        The admin's replies to a preview. `sourceKeys` maps a product or team
+        value to the org unit or tracked item it means; `ignoreValues` skips
+        rows carrying those values; `valueMaps` adds raw-value translations
+        per template field or attribute; `dateOrder` settles ambiguous dates
+        (`mdy`, `dmy`, or empty); `useRecords` lists typed values the derived
+        value replaces; `markMissingCancelled` cancels records a full export
+        no longer lists; `createShared` lists parent units that get a
+        "<name> (shared)" child.
+      properties:
+        sourceKeys:
+          type: object
+          additionalProperties: { $ref: '#/components/schemas/Id' }
+        ignoreValues:
+          type: array
+          items: { type: string }
+        valueMaps:
+          type: object
+          additionalProperties:
+            type: object
+            additionalProperties: { type: string }
+        dateOrder: { type: string }
+        useRecords:
+          type: array
+          items: { $ref: '#/components/schemas/RecordCellRef' }
+        markMissingCancelled: { type: boolean }
+        createShared:
+          type: array
+          items: { $ref: '#/components/schemas/Id' }
+    ColumnGuess:
+      type: object
+      required: [field, column, confidence, samples]
+      properties:
+        field: { type: string }
+        column: { type: string }
+        confidence: { type: number, format: double, minimum: 0, maximum: 1 }
+        samples:
+          type: array
+          items: { type: string }
+    ValueCount:
+      type: object
+      description: One distinct raw value, its row count, and its suggested meaning (empty for none).
+      required: [value, count, suggested]
+      properties:
+        value: { type: string }
+        count: { type: integer, minimum: 0 }
+        suggested: { type: string }
+    SubjectSuggestion:
+      type: object
+      description: |
+        The org unit or tracked item one product or team value probably
+        means: `subjectId` is the best match (empty when nothing is close),
+        `score` its closeness from 0.5 to 1, `candidates` up to three matches.
+      required: [value, rows, subjectId, score, candidates]
+      properties:
+        value: { type: string }
+        rows: { type: integer, minimum: 0 }
+        subjectId: { type: string }
+        score: { type: number, format: double }
+        candidates:
+          type: array
+          items: { $ref: '#/components/schemas/Id' }
+    RecordInspection:
+      type: object
+      required: [headers, rowCount, samples, suggestedType, guesses, values, dateFormats, ambiguousDates, draft, matchedTemplateId, added, missing]
+      properties:
+        headers:
+          type: array
+          items: { type: string }
+        rowCount: { type: integer, minimum: 0 }
+        samples:
+          type: array
+          description: The first rows of the file.
+          items:
+            type: array
+            items: { type: string }
+        suggestedType:
+          type: string
+          description: The record type the file probably holds; empty when none fits.
+        guesses:
+          type: array
+          items: { $ref: '#/components/schemas/ColumnGuess' }
+        values:
+          type: object
+          description: Distinct values by field (priority, state, subjectKey).
+          additionalProperties:
+            type: array
+            items: { $ref: '#/components/schemas/ValueCount' }
+        dateFormats:
+          type: object
+          description: Go layouts that read each date column, by header.
+          additionalProperties:
+            type: array
+            items: { type: string }
+        ambiguousDates:
+          type: array
+          description: Columns where day-first and month-first both fit.
+          items: { type: string }
+        draft: { $ref: '#/components/schemas/RecordTemplate' }
+        matchedTemplateId:
+          type: string
+          description: The saved template this file looks like; empty when none.
+        added:
+          type: array
+          description: Columns of the file the matched template does not use.
+          items: { type: string }
+        missing:
+          type: array
+          description: Columns the matched template uses that the file lacks.
+          items: { type: string }
+    RecordsInspectResult:
+      type: object
+      required: [inspection, subjects]
+      properties:
+        inspection: { $ref: '#/components/schemas/RecordInspection' }
+        subjects:
+          type: array
+          items: { $ref: '#/components/schemas/SubjectSuggestion' }
+    RecordsPreviewRequest:
+      type: object
+      required: [scorecardId, asOf]
+      properties:
+        scorecardId: { $ref: '#/components/schemas/Id' }
+        asOf: { $ref: '#/components/schemas/Date' }
+        templateId: { $ref: '#/components/schemas/Id' }
+        template: { $ref: '#/components/schemas/RecordTemplate' }
+        answers: { $ref: '#/components/schemas/RecordAnswers' }
+        draftVersionId: { $ref: '#/components/schemas/ServerId' }
+    RecordCounts:
+      type: object
+      description: Row counts; `missing` counts records.
+      required: [new, changed, unchanged, skipped, missing, unmatched, errors]
+      properties:
+        new: { type: integer, minimum: 0 }
+        changed: { type: integer, minimum: 0 }
+        unchanged: { type: integer, minimum: 0 }
+        skipped: { type: integer, minimum: 0 }
+        missing: { type: integer, minimum: 0 }
+        unmatched: { type: integer, minimum: 0 }
+        errors: { type: integer, minimum: 0 }
+    RecordContribution:
+      type: object
+      description: |
+        One record's part in a derived value. `amount` is what it added (1
+        for a count, a defect's points, an age in days); `dates` holds the
+        dates the rule used, by field name; `subjectId` is the leaf subject
+        it counts for, when listed for a cell.
+      required: [source, externalId, title, url, priority, state, amount, reason, dates]
+      properties:
+        source: { type: string }
+        externalId: { type: string }
+        title: { type: string }
+        url: { type: string }
+        priority: { type: string }
+        state:
+          type: string
+          enum: [open, done, cancelled]
+        amount: { type: number, format: double }
+        reason:
+          type: string
+          description: matched, met, missed, slipped, pending, open_days, or age_days.
+        dates:
+          type: object
+          additionalProperties: { $ref: '#/components/schemas/Date' }
+        subjectId: { $ref: '#/components/schemas/Id' }
+    RecordStoryLine:
+      type: object
+      description: |
+        One metric cell an import changes. `reasons` lists, by reason
+        (slipped, met, missed, newly_open, closed, priority_changed, added,
+        removed), the records whose part in the cell changed.
+      required: [period, metricKey, metricName, subjectId, subjectName, beforeDisplay, afterDisplay, beforeStatus, afterStatus, reasons]
+      properties:
+        period: { $ref: '#/components/schemas/Period' }
+        metricKey: { $ref: '#/components/schemas/Key' }
+        metricName: { type: string }
+        subjectId: { $ref: '#/components/schemas/Id' }
+        subjectName: { type: string }
+        beforeDisplay: { type: string }
+        afterDisplay: { type: string }
+        beforeStatus: { type: string }
+        afterStatus: { type: string }
+        reasons:
+          type: object
+          additionalProperties:
+            type: array
+            items: { $ref: '#/components/schemas/RecordContribution' }
+    TypedVsRecords:
+      type: object
+      description: A typed value of a derived measure beside the value records give.
+      required: [measureKey, subjectId, period, typed, typedSource, records, contributions]
+      properties:
+        measureKey: { $ref: '#/components/schemas/Key' }
+        subjectId: { $ref: '#/components/schemas/Id' }
+        period: { $ref: '#/components/schemas/Period' }
+        typed: { type: number, format: double }
+        typedSource: { type: string }
+        records: { type: number, format: double }
+        contributions:
+          type: array
+          items: { $ref: '#/components/schemas/RecordContribution' }
+    RecordStory:
+      type: object
+      description: |
+        What an import changes on the scorecard, worst status changes first;
+        `more` counts lines beyond the first 50. `lockedWaiting` is empty
+        until months can be locked.
+      required: [nothingChanged, lines, more, typed, lockedWaiting]
+      properties:
+        nothingChanged: { type: boolean }
+        lines:
+          type: array
+          items: { $ref: '#/components/schemas/RecordStoryLine' }
+        more: { type: integer, minimum: 0 }
+        typed:
+          type: array
+          items: { $ref: '#/components/schemas/TypedVsRecords' }
+        lockedWaiting:
+          type: array
+          items: { $ref: '#/components/schemas/RecordStoryLine' }
+    RecordRowProblem:
+      type: object
+      description: One thing wrong with one row; `row` is 0 for a problem with the file's columns.
+      required: [row, kind, column, field, value, message]
+      properties:
+        row: { type: integer, minimum: 0 }
+        kind: { type: string }
+        column: { type: string }
+        field: { type: string }
+        value: { type: string }
+        message: { type: string }
+    ParentMatch:
+      type: object
+      description: A product or team value that matches a parent unit, with its row count.
+      required: [value, rows, unitId]
+      properties:
+        value: { type: string }
+        rows: { type: integer, minimum: 0 }
+        unitId: { $ref: '#/components/schemas/Id' }
+    RecordsPreview:
+      type: object
+      required: [counts, story, problems, unmatched, parents, newValues, missing, columnsAdded, columnsMissing]
+      properties:
+        counts: { $ref: '#/components/schemas/RecordCounts' }
+        story: { $ref: '#/components/schemas/RecordStory' }
+        problems:
+          type: array
+          items: { $ref: '#/components/schemas/RecordRowProblem' }
+        unmatched:
+          type: array
+          items: { $ref: '#/components/schemas/SubjectSuggestion' }
+        parents:
+          type: array
+          items: { $ref: '#/components/schemas/ParentMatch' }
+        newValues:
+          type: object
+          description: Raw values no map covers, by field.
+          additionalProperties:
+            type: array
+            items: { $ref: '#/components/schemas/ValueCount' }
+        missing:
+          type: array
+          description: External IDs of open records a full export no longer has.
+          items: { type: string }
+        columnsAdded:
+          type: array
+          items: { type: string }
+        columnsMissing:
+          type: array
+          items: { type: string }
+    ApplyImportRequest:
+      type: object
+      properties:
+        answers: { $ref: '#/components/schemas/RecordAnswers' }
+        saveTemplate:
+          type: object
+          description: Save the template, with the answers' value maps and date order, under this ID and name.
+          required: [id, name]
+          properties:
+            id: { $ref: '#/components/schemas/Id' }
+            name: { type: string, minLength: 1 }
+    RecordsApplied:
+      type: object
+      required: [snapshotId, counts]
+      properties:
+        snapshotId: { $ref: '#/components/schemas/ServerId' }
+        counts: { $ref: '#/components/schemas/RecordCounts' }
+        templateId:
+          description: The template saved with the answers, when one was requested.
+          allOf:
+            - $ref: '#/components/schemas/Id'
+    RecordsSampleRequest:
+      type: object
+      required: [recordType, bucketBy, period]
+      properties:
+        recordType: { $ref: '#/components/schemas/Key' }
+        where: { type: string }
+        bucketBy:
+          type: string
+          description: A date field or date attribute key.
+        period: { $ref: '#/components/schemas/Period' }
+    RecordsSample:
+      type: object
+      required: [total, bySubject]
+      properties:
+        total: { type: integer, minimum: 0 }
+        bySubject:
+          type: array
+          items:
+            type: object
+            required: [subjectId, name, count]
+            properties:
+              subjectId: { $ref: '#/components/schemas/Id' }
+              name: { type: string }
+              count: { type: integer, minimum: 0 }
+    ContributionMeasure:
+      type: object
+      description: |
+        One derived measure of a metric cell. `value` and `source` are the
+        stored data point (null and empty when none is stored, as on a
+        rolled-up subject); `recordsValue` is the value records give, rolled
+        up over the leaf subjects listed (null when records give none, or
+        the measure's org aggregation cannot be rolled up here). `cutoff` is
+        the last day records cover; `pending` counts commitments still due.
+        `records` holds this page's contributions.
+      required: [measureKey, value, source, recordsValue, pending, records]
+      properties:
+        measureKey: { $ref: '#/components/schemas/Key' }
+        value: { $ref: '#/components/schemas/MeasureValue' }
+        source: { type: string }
+        recordsValue: { $ref: '#/components/schemas/MeasureValue' }
+        cutoff: { $ref: '#/components/schemas/Date' }
+        pending: { type: integer, minimum: 0 }
+        records:
+          type: array
+          items: { $ref: '#/components/schemas/RecordContribution' }
+    RecordContributions:
+      type: object
+      required: [measures]
+      properties:
+        measures:
+          type: array
+          items: { $ref: '#/components/schemas/ContributionMeasure' }
+        nextCursor:
+          type: string
+          description: Absent on the last page.
 
     # ---- Audit ------------------------------------------------------------
     AuditEntry:

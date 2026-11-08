@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/oapi-codegen/runtime"
+	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
 // Defines values for Agg.
@@ -42,6 +43,30 @@ func (e Agg) Valid() bool {
 	case AggNone:
 		return true
 	case AggSum:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AttributeDefType.
+const (
+	AttributeDefTypeBool   AttributeDefType = "bool"
+	AttributeDefTypeDate   AttributeDefType = "date"
+	AttributeDefTypeNumber AttributeDefType = "number"
+	AttributeDefTypeString AttributeDefType = "string"
+)
+
+// Valid indicates whether the value is a known member of the AttributeDefType enum.
+func (e AttributeDefType) Valid() bool {
+	switch e {
+	case AttributeDefTypeBool:
+		return true
+	case AttributeDefTypeDate:
+		return true
+	case AttributeDefTypeNumber:
+		return true
+	case AttributeDefTypeString:
 		return true
 	default:
 		return false
@@ -89,28 +114,28 @@ func (e Comparison) Valid() bool {
 
 // Defines values for DataPointSource.
 const (
-	Api     DataPointSource = "api"
-	Grid    DataPointSource = "grid"
-	Import  DataPointSource = "import"
-	Legacy  DataPointSource = "legacy"
-	Records DataPointSource = "records"
-	Sam     DataPointSource = "sam"
+	DataPointSourceApi     DataPointSource = "api"
+	DataPointSourceGrid    DataPointSource = "grid"
+	DataPointSourceImport  DataPointSource = "import"
+	DataPointSourceLegacy  DataPointSource = "legacy"
+	DataPointSourceRecords DataPointSource = "records"
+	DataPointSourceSam     DataPointSource = "sam"
 )
 
 // Valid indicates whether the value is a known member of the DataPointSource enum.
 func (e DataPointSource) Valid() bool {
 	switch e {
-	case Api:
+	case DataPointSourceApi:
 		return true
-	case Grid:
+	case DataPointSourceGrid:
 		return true
-	case Import:
+	case DataPointSourceImport:
 		return true
-	case Legacy:
+	case DataPointSourceLegacy:
 		return true
-	case Records:
+	case DataPointSourceRecords:
 		return true
-	case Sam:
+	case DataPointSourceSam:
 		return true
 	default:
 		return false
@@ -190,6 +215,7 @@ const (
 	ErrorErrorCodeInvalid        ErrorErrorCode = "invalid"
 	ErrorErrorCodeNotFound       ErrorErrorCode = "not_found"
 	ErrorErrorCodeNotImplemented ErrorErrorCode = "not_implemented"
+	ErrorErrorCodeTooLarge       ErrorErrorCode = "too_large"
 	ErrorErrorCodeUnauthorized   ErrorErrorCode = "unauthorized"
 )
 
@@ -205,6 +231,8 @@ func (e ErrorErrorCode) Valid() bool {
 	case ErrorErrorCodeNotFound:
 		return true
 	case ErrorErrorCodeNotImplemented:
+		return true
+	case ErrorErrorCodeTooLarge:
 		return true
 	case ErrorErrorCodeUnauthorized:
 		return true
@@ -283,6 +311,7 @@ func (e ImportFindingSeverity) Valid() bool {
 const (
 	ImportTemplateProfileCsv            ImportTemplateProfile = "csv"
 	ImportTemplateProfileLegacyWorkbook ImportTemplateProfile = "legacy_workbook"
+	ImportTemplateProfileRecords        ImportTemplateProfile = "records"
 )
 
 // Valid indicates whether the value is a known member of the ImportTemplateProfile enum.
@@ -291,6 +320,8 @@ func (e ImportTemplateProfile) Valid() bool {
 	case ImportTemplateProfileCsv:
 		return true
 	case ImportTemplateProfileLegacyWorkbook:
+		return true
+	case ImportTemplateProfileRecords:
 		return true
 	default:
 		return false
@@ -363,6 +394,45 @@ func (e ParseImportRequestProfile) Valid() bool {
 	case ParseImportRequestProfileCsv:
 		return true
 	case ParseImportRequestProfileLegacyWorkbook:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for RecordContributionState.
+const (
+	Cancelled RecordContributionState = "cancelled"
+	Done      RecordContributionState = "done"
+	Open      RecordContributionState = "open"
+)
+
+// Valid indicates whether the value is a known member of the RecordContributionState enum.
+func (e RecordContributionState) Valid() bool {
+	switch e {
+	case Cancelled:
+		return true
+	case Done:
+		return true
+	case Open:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for RecordFileSpecFormat.
+const (
+	RecordFileSpecFormatCsv  RecordFileSpecFormat = "csv"
+	RecordFileSpecFormatXlsx RecordFileSpecFormat = "xlsx"
+)
+
+// Valid indicates whether the value is a known member of the RecordFileSpecFormat enum.
+func (e RecordFileSpecFormat) Valid() bool {
+	switch e {
+	case RecordFileSpecFormatCsv:
+		return true
+	case RecordFileSpecFormatXlsx:
 		return true
 	default:
 		return false
@@ -495,6 +565,41 @@ func (e GetScorecardViewParamsStructure) Valid() bool {
 // Agg Aggregation across org units or across time.
 type Agg string
 
+// ApplyImportRequest defines model for ApplyImportRequest.
+type ApplyImportRequest struct {
+	// Answers The admin's replies to a preview. `sourceKeys` maps a product or team
+	// value to the org unit or tracked item it means; `ignoreValues` skips
+	// rows carrying those values; `valueMaps` adds raw-value translations
+	// per template field or attribute; `dateOrder` settles ambiguous dates
+	// (`mdy`, `dmy`, or empty); `useRecords` lists typed values the derived
+	// value replaces; `markMissingCancelled` cancels records a full export
+	// no longer lists; `createShared` lists parent units that get a
+	// "<name> (shared)" child.
+	Answers *RecordAnswers `json:"answers,omitempty"`
+
+	// SaveTemplate Save the template, with the answers' value maps and date order, under this ID and name.
+	SaveTemplate *struct {
+		// Id Client-supplied identifier.
+		//
+		// Example: team-alpha
+		Id   Id     `json:"id"`
+		Name string `json:"name"`
+	} `json:"saveTemplate,omitempty"`
+}
+
+// AttributeDef A custom attribute of a record type.
+type AttributeDef struct {
+	// Key Attribute key; camelCase or snake_case, starting with a lowercase letter.
+	//
+	// Example: customerTicket
+	Key  string           `json:"key"`
+	Name string           `json:"name"`
+	Type AttributeDefType `json:"type"`
+}
+
+// AttributeDefType defines model for AttributeDef.Type.
+type AttributeDefType string
+
 // AuditEntry defines model for AuditEntry.
 type AuditEntry struct {
 	// Action Example: update
@@ -614,6 +719,9 @@ type ChangeSetPreview struct {
 	// Example: 01J9ZQ3K8W
 	Id ServerId `json:"id"`
 
+	// Records Set only when a `records` import was applied; the other fields are then empty.
+	Records *RecordsApplied `json:"records,omitempty"`
+
 	// Sample Up to 50 of the changes, for review.
 	Sample []ImportChange         `json:"sample"`
 	Status ChangeSetPreviewStatus `json:"status"`
@@ -622,8 +730,44 @@ type ChangeSetPreview struct {
 // ChangeSetPreviewStatus defines model for ChangeSetPreview.Status.
 type ChangeSetPreviewStatus string
 
+// ColumnGuess defines model for ColumnGuess.
+type ColumnGuess struct {
+	Column     string   `json:"column"`
+	Confidence float64  `json:"confidence"`
+	Field      string   `json:"field"`
+	Samples    []string `json:"samples"`
+}
+
 // Comparison defines model for Comparison.
 type Comparison string
+
+// ContributionMeasure One derived measure of a metric cell. `value` and `source` are the
+// stored data point (null and empty when none is stored, as on a
+// rolled-up subject); `recordsValue` is the value records give, rolled
+// up over the leaf subjects listed (null when records give none, or
+// the measure's org aggregation cannot be rolled up here). `cutoff` is
+// the last day records cover; `pending` counts commitments still due.
+// `records` holds this page's contributions.
+type ContributionMeasure struct {
+	// Cutoff A calendar date; time zones are ignored.
+	//
+	// Example: 2026-09-03
+	Cutoff *Date `json:"cutoff,omitempty"`
+
+	// MeasureKey Measure or metric key.
+	//
+	// Example: open_defects
+	MeasureKey Key                  `json:"measureKey"`
+	Pending    int                  `json:"pending"`
+	Records    []RecordContribution `json:"records"`
+
+	// RecordsValue The value, or null when not applicable.
+	RecordsValue *MeasureValue `json:"recordsValue"`
+	Source       string        `json:"source"`
+
+	// Value The value, or null when not applicable.
+	Value *MeasureValue `json:"value"`
+}
 
 // CreateOrgMoveRequest defines model for CreateOrgMoveRequest.
 type CreateOrgMoveRequest struct {
@@ -674,6 +818,9 @@ type DataConflict struct {
 
 // DataPoint A measure value for one subject in one period. A null value means not applicable.
 type DataPoint struct {
+	// Deleted Set only in history, on the revision that removed the value (a
+	// derived value no longer produced). Absent on live points.
+	Deleted   *bool     `json:"deleted,omitempty"`
 	EnteredAt time.Time `json:"enteredAt"`
 
 	// EnteredBy User ID from the identity provider. It never contains `#`.
@@ -732,6 +879,11 @@ type DataWrite struct {
 	// Value The value, or null when not applicable.
 	Value *MeasureValue `json:"value,omitempty"`
 }
+
+// Date A calendar date; time zones are ignored.
+//
+// Example: 2026-09-03
+type Date = openapi_types.Date
 
 // DeriveRule Turns records into a measure's value per subject per period. Required
 // on `derived` measures and rejected on `entered` ones. Which other
@@ -901,7 +1053,7 @@ type ImportFindingSeverity string
 
 // ImportTemplate defines model for ImportTemplate.
 type ImportTemplate struct {
-	// Body The mapping document for the profile. For `legacy_workbook` it has `sheets`, `rows` and `methodology`, and an optional `scorecardId` naming the scorecard the import writes to (default: the tenant's only scorecard). Unknown fields and invalid mappings are rejected with 400.
+	// Body The mapping document for the profile. For `legacy_workbook` it has `sheets`, `rows` and `methodology`, and an optional `scorecardId` naming the scorecard the import writes to (default: the tenant's only scorecard). For `records` it is a RecordTemplate for one of the tenant's record types. Unknown fields and invalid mappings are rejected with 400.
 	Body map[string]interface{} `json:"body"`
 
 	// Id Client-supplied identifier.
@@ -910,11 +1062,11 @@ type ImportTemplate struct {
 	Id   Id     `json:"id"`
 	Name string `json:"name"`
 
-	// Profile Only `legacy_workbook` can be stored today; `csv` is rejected.
+	// Profile `legacy_workbook` or `records`; `csv` is rejected.
 	Profile ImportTemplateProfile `json:"profile"`
 }
 
-// ImportTemplateProfile Only `legacy_workbook` can be stored today; `csv` is rejected.
+// ImportTemplateProfile `legacy_workbook` or `records`; `csv` is rejected.
 type ImportTemplateProfile string
 
 // ImportUpload defines model for ImportUpload.
@@ -1203,6 +1355,17 @@ type Override struct {
 	Value *MeasureValue `json:"value"`
 }
 
+// ParentMatch A product or team value that matches a parent unit, with its row count.
+type ParentMatch struct {
+	Rows int `json:"rows"`
+
+	// UnitId Client-supplied identifier.
+	//
+	// Example: team-alpha
+	UnitId Id     `json:"unitId"`
+	Value  string `json:"value"`
+}
+
 // ParseImportRequest defines model for ParseImportRequest.
 type ParseImportRequest struct {
 	Profile ParseImportRequestProfile `json:"profile"`
@@ -1227,6 +1390,31 @@ type PublishVersionRequest struct {
 	//
 	// Example: 2026-M10
 	EffectiveFrom Period `json:"effectiveFrom"`
+}
+
+// PublishVersionResult The published version, and how many derived data points publishing recalculated.
+type PublishVersionResult struct {
+	Content Methodology `json:"content"`
+
+	// EffectiveFrom A period, or the empty string when unset.
+	//
+	// Example: 2026-M10
+	EffectiveFrom OptionalPeriod `json:"effectiveFrom"`
+
+	// Id Server-generated identifier; treat as opaque.
+	//
+	// Example: 01J9ZQ3K8W
+	Id           ServerId   `json:"id"`
+	Name         string     `json:"name"`
+	PublishedAt  *time.Time `json:"publishedAt,omitempty"`
+	Recalculated int        `json:"recalculated"`
+	Revision     int        `json:"revision"`
+
+	// ScorecardId Client-supplied identifier.
+	//
+	// Example: team-alpha
+	ScorecardId Id            `json:"scorecardId"`
+	Status      VersionStatus `json:"status"`
 }
 
 // PutOverrideRequest defines model for PutOverrideRequest.
@@ -1259,6 +1447,352 @@ type PutVersionRequest struct {
 
 	// Revision The revision the client loaded. A mismatch fails with 409.
 	Revision int `json:"revision"`
+}
+
+// RecordAnswers The admin's replies to a preview. `sourceKeys` maps a product or team
+// value to the org unit or tracked item it means; `ignoreValues` skips
+// rows carrying those values; `valueMaps` adds raw-value translations
+// per template field or attribute; `dateOrder` settles ambiguous dates
+// (`mdy`, `dmy`, or empty); `useRecords` lists typed values the derived
+// value replaces; `markMissingCancelled` cancels records a full export
+// no longer lists; `createShared` lists parent units that get a
+// "<name> (shared)" child.
+type RecordAnswers struct {
+	CreateShared         *[]Id                         `json:"createShared,omitempty"`
+	DateOrder            *string                       `json:"dateOrder,omitempty"`
+	IgnoreValues         *[]string                     `json:"ignoreValues,omitempty"`
+	MarkMissingCancelled *bool                         `json:"markMissingCancelled,omitempty"`
+	SourceKeys           *map[string]Id                `json:"sourceKeys,omitempty"`
+	UseRecords           *[]RecordCellRef              `json:"useRecords,omitempty"`
+	ValueMaps            *map[string]map[string]string `json:"valueMaps,omitempty"`
+}
+
+// RecordCellRef defines model for RecordCellRef.
+type RecordCellRef struct {
+	// MeasureKey Measure or metric key.
+	//
+	// Example: open_defects
+	MeasureKey Key `json:"measureKey"`
+
+	// Period A month, quarter, half, or fiscal year.
+	//
+	// Example: 2026-M10
+	Period Period `json:"period"`
+
+	// SubjectId Client-supplied identifier.
+	//
+	// Example: team-alpha
+	SubjectId Id `json:"subjectId"`
+}
+
+// RecordContribution One record's part in a derived value. `amount` is what it added (1
+// for a count, a defect's points, an age in days); `dates` holds the
+// dates the rule used, by field name; `subjectId` is the leaf subject
+// it counts for, when listed for a cell.
+type RecordContribution struct {
+	Amount     float64         `json:"amount"`
+	Dates      map[string]Date `json:"dates"`
+	ExternalId string          `json:"externalId"`
+	Priority   string          `json:"priority"`
+
+	// Reason matched, met, missed, slipped, pending, open_days, or age_days.
+	Reason string                  `json:"reason"`
+	Source string                  `json:"source"`
+	State  RecordContributionState `json:"state"`
+
+	// SubjectId Client-supplied identifier.
+	//
+	// Example: team-alpha
+	SubjectId *Id    `json:"subjectId,omitempty"`
+	Title     string `json:"title"`
+	Url       string `json:"url"`
+}
+
+// RecordContributionState defines model for RecordContribution.State.
+type RecordContributionState string
+
+// RecordContributions defines model for RecordContributions.
+type RecordContributions struct {
+	Measures []ContributionMeasure `json:"measures"`
+
+	// NextCursor Absent on the last page.
+	NextCursor *string `json:"nextCursor,omitempty"`
+}
+
+// RecordCounts Row counts; `missing` counts records.
+type RecordCounts struct {
+	Changed   int `json:"changed"`
+	Errors    int `json:"errors"`
+	Missing   int `json:"missing"`
+	New       int `json:"new"`
+	Skipped   int `json:"skipped"`
+	Unchanged int `json:"unchanged"`
+	Unmatched int `json:"unmatched"`
+}
+
+// RecordFieldMap Where one record field or attribute comes from: exactly one of
+// `column` (header text), `constant`, and `template` (text with
+// `{Column}` placeholders). `map` translates raw values (`*` is the
+// fallback); `default` replaces an empty cell; `dateFormats` are Go
+// layouts tried in order; `separator` splits a list column;
+// `transform` (attributes only) is nonEmpty, number, bool, date, or text.
+type RecordFieldMap struct {
+	Column      *string            `json:"column,omitempty"`
+	Constant    *string            `json:"constant,omitempty"`
+	DateFormats *[]string          `json:"dateFormats,omitempty"`
+	Default     *string            `json:"default,omitempty"`
+	Map         *map[string]string `json:"map,omitempty"`
+	Separator   *string            `json:"separator,omitempty"`
+	Template    *string            `json:"template,omitempty"`
+	Transform   *string            `json:"transform,omitempty"`
+}
+
+// RecordFileSpec defines model for RecordFileSpec.
+type RecordFileSpec struct {
+	Format RecordFileSpecFormat `json:"format"`
+
+	// HeaderRow 1-based row holding the headers; 0 means 1.
+	HeaderRow int `json:"headerRow"`
+
+	// Sheet Worksheet name; empty means the first visible sheet.
+	Sheet *string `json:"sheet,omitempty"`
+}
+
+// RecordFileSpecFormat defines model for RecordFileSpec.Format.
+type RecordFileSpecFormat string
+
+// RecordInspection defines model for RecordInspection.
+type RecordInspection struct {
+	// Added Columns of the file the matched template does not use.
+	Added []string `json:"added"`
+
+	// AmbiguousDates Columns where day-first and month-first both fit.
+	AmbiguousDates []string `json:"ambiguousDates"`
+
+	// DateFormats Go layouts that read each date column, by header.
+	DateFormats map[string][]string `json:"dateFormats"`
+
+	// Draft Maps one export format to one record type.
+	Draft   RecordTemplate `json:"draft"`
+	Guesses []ColumnGuess  `json:"guesses"`
+	Headers []string       `json:"headers"`
+
+	// MatchedTemplateId The saved template this file looks like; empty when none.
+	MatchedTemplateId string `json:"matchedTemplateId"`
+
+	// Missing Columns the matched template uses that the file lacks.
+	Missing  []string `json:"missing"`
+	RowCount int      `json:"rowCount"`
+
+	// Samples The first rows of the file.
+	Samples [][]string `json:"samples"`
+
+	// SuggestedType The record type the file probably holds; empty when none fits.
+	SuggestedType string `json:"suggestedType"`
+
+	// Values Distinct values by field (priority, state, subjectKey).
+	Values map[string][]ValueCount `json:"values"`
+}
+
+// RecordRowProblem One thing wrong with one row; `row` is 0 for a problem with the file's columns.
+type RecordRowProblem struct {
+	Column  string `json:"column"`
+	Field   string `json:"field"`
+	Kind    string `json:"kind"`
+	Message string `json:"message"`
+	Row     int    `json:"row"`
+	Value   string `json:"value"`
+}
+
+// RecordSkipRule defines model for RecordSkipRule.
+type RecordSkipRule struct {
+	Column string   `json:"column"`
+	In     []string `json:"in"`
+}
+
+// RecordStory What an import changes on the scorecard, worst status changes first;
+// `more` counts lines beyond the first 50. `lockedWaiting` is empty
+// until months can be locked.
+type RecordStory struct {
+	Lines          []RecordStoryLine `json:"lines"`
+	LockedWaiting  []RecordStoryLine `json:"lockedWaiting"`
+	More           int               `json:"more"`
+	NothingChanged bool              `json:"nothingChanged"`
+	Typed          []TypedVsRecords  `json:"typed"`
+}
+
+// RecordStoryLine One metric cell an import changes. `reasons` lists, by reason
+// (slipped, met, missed, newly_open, closed, priority_changed, added,
+// removed), the records whose part in the cell changed.
+type RecordStoryLine struct {
+	AfterDisplay  string `json:"afterDisplay"`
+	AfterStatus   string `json:"afterStatus"`
+	BeforeDisplay string `json:"beforeDisplay"`
+	BeforeStatus  string `json:"beforeStatus"`
+
+	// MetricKey Measure or metric key.
+	//
+	// Example: open_defects
+	MetricKey  Key    `json:"metricKey"`
+	MetricName string `json:"metricName"`
+
+	// Period A month, quarter, half, or fiscal year.
+	//
+	// Example: 2026-M10
+	Period  Period                          `json:"period"`
+	Reasons map[string][]RecordContribution `json:"reasons"`
+
+	// SubjectId Client-supplied identifier.
+	//
+	// Example: team-alpha
+	SubjectId   Id     `json:"subjectId"`
+	SubjectName string `json:"subjectName"`
+}
+
+// RecordTemplate Maps one export format to one record type.
+type RecordTemplate struct {
+	Attributes *map[string]RecordFieldMap `json:"attributes,omitempty"`
+	Fields     map[string]RecordFieldMap  `json:"fields"`
+	File       RecordFileSpec             `json:"file"`
+
+	// FullExport The file lists every record, so open records it lacks are missing.
+	FullExport bool   `json:"fullExport"`
+	Name       string `json:"name"`
+
+	// RecordType Measure or metric key.
+	//
+	// Example: open_defects
+	RecordType Key               `json:"recordType"`
+	SkipRows   *[]RecordSkipRule `json:"skipRows,omitempty"`
+
+	// Source The source system records come from (part of a record's identity).
+	Source string `json:"source"`
+}
+
+// RecordType A tenant-level kind of record (defect, epic, ...). `none` is always an
+// implicit priority. `trackedFrom` maps a record source to the first
+// month derived values are produced for it.
+type RecordType struct {
+	Attributes []AttributeDef `json:"attributes"`
+
+	// Id Measure or metric key.
+	//
+	// Example: open_defects
+	Id          Key                    `json:"id"`
+	Name        string                 `json:"name"`
+	Priorities  []string               `json:"priorities"`
+	Revision    int                    `json:"revision"`
+	TrackedFrom map[string]MonthPeriod `json:"trackedFrom"`
+}
+
+// RecordsApplied defines model for RecordsApplied.
+type RecordsApplied struct {
+	// Counts Row counts; `missing` counts records.
+	Counts RecordCounts `json:"counts"`
+
+	// SnapshotId Server-generated identifier; treat as opaque.
+	//
+	// Example: 01J9ZQ3K8W
+	SnapshotId ServerId `json:"snapshotId"`
+
+	// TemplateId The template saved with the answers, when one was requested.
+	TemplateId *Id `json:"templateId,omitempty"`
+}
+
+// RecordsInspectResult defines model for RecordsInspectResult.
+type RecordsInspectResult struct {
+	Inspection RecordInspection    `json:"inspection"`
+	Subjects   []SubjectSuggestion `json:"subjects"`
+}
+
+// RecordsPreview defines model for RecordsPreview.
+type RecordsPreview struct {
+	ColumnsAdded   []string `json:"columnsAdded"`
+	ColumnsMissing []string `json:"columnsMissing"`
+
+	// Counts Row counts; `missing` counts records.
+	Counts RecordCounts `json:"counts"`
+
+	// Missing External IDs of open records a full export no longer has.
+	Missing []string `json:"missing"`
+
+	// NewValues Raw values no map covers, by field.
+	NewValues map[string][]ValueCount `json:"newValues"`
+	Parents   []ParentMatch           `json:"parents"`
+	Problems  []RecordRowProblem      `json:"problems"`
+
+	// Story What an import changes on the scorecard, worst status changes first;
+	// `more` counts lines beyond the first 50. `lockedWaiting` is empty
+	// until months can be locked.
+	Story     RecordStory         `json:"story"`
+	Unmatched []SubjectSuggestion `json:"unmatched"`
+}
+
+// RecordsPreviewRequest defines model for RecordsPreviewRequest.
+type RecordsPreviewRequest struct {
+	// Answers The admin's replies to a preview. `sourceKeys` maps a product or team
+	// value to the org unit or tracked item it means; `ignoreValues` skips
+	// rows carrying those values; `valueMaps` adds raw-value translations
+	// per template field or attribute; `dateOrder` settles ambiguous dates
+	// (`mdy`, `dmy`, or empty); `useRecords` lists typed values the derived
+	// value replaces; `markMissingCancelled` cancels records a full export
+	// no longer lists; `createShared` lists parent units that get a
+	// "<name> (shared)" child.
+	Answers *RecordAnswers `json:"answers,omitempty"`
+
+	// AsOf A calendar date; time zones are ignored.
+	//
+	// Example: 2026-09-03
+	AsOf Date `json:"asOf"`
+
+	// DraftVersionId Server-generated identifier; treat as opaque.
+	//
+	// Example: 01J9ZQ3K8W
+	DraftVersionId *ServerId `json:"draftVersionId,omitempty"`
+
+	// ScorecardId Client-supplied identifier.
+	//
+	// Example: team-alpha
+	ScorecardId Id `json:"scorecardId"`
+
+	// Template Maps one export format to one record type.
+	Template *RecordTemplate `json:"template,omitempty"`
+
+	// TemplateId Client-supplied identifier.
+	//
+	// Example: team-alpha
+	TemplateId *Id `json:"templateId,omitempty"`
+}
+
+// RecordsSample defines model for RecordsSample.
+type RecordsSample struct {
+	BySubject []struct {
+		Count int    `json:"count"`
+		Name  string `json:"name"`
+
+		// SubjectId Client-supplied identifier.
+		//
+		// Example: team-alpha
+		SubjectId Id `json:"subjectId"`
+	} `json:"bySubject"`
+	Total int `json:"total"`
+}
+
+// RecordsSampleRequest defines model for RecordsSampleRequest.
+type RecordsSampleRequest struct {
+	// BucketBy A date field or date attribute key.
+	BucketBy string `json:"bucketBy"`
+
+	// Period A month, quarter, half, or fiscal year.
+	//
+	// Example: 2026-M10
+	Period Period `json:"period"`
+
+	// RecordType Measure or metric key.
+	//
+	// Example: open_defects
+	RecordType Key     `json:"recordType"`
+	Where      *string `json:"where,omitempty"`
 }
 
 // Role defines model for Role.
@@ -1350,6 +1884,17 @@ type SubjectBands struct {
 	SubjectId Id `json:"subjectId"`
 }
 
+// SubjectSuggestion The org unit or tracked item one product or team value probably
+// means: `subjectId` is the best match (empty when nothing is close),
+// `score` its closeness from 0.5 to 1, `candidates` up to three matches.
+type SubjectSuggestion struct {
+	Candidates []Id    `json:"candidates"`
+	Rows       int     `json:"rows"`
+	Score      float64 `json:"score"`
+	SubjectId  string  `json:"subjectId"`
+	Value      string  `json:"value"`
+}
+
 // Target defines model for Target.
 type Target struct {
 	// From A period, or the empty string when unset.
@@ -1410,6 +1955,29 @@ type TrackedItem struct {
 	SourceKeys []string `json:"sourceKeys"`
 }
 
+// TypedVsRecords A typed value of a derived measure beside the value records give.
+type TypedVsRecords struct {
+	Contributions []RecordContribution `json:"contributions"`
+
+	// MeasureKey Measure or metric key.
+	//
+	// Example: open_defects
+	MeasureKey Key `json:"measureKey"`
+
+	// Period A month, quarter, half, or fiscal year.
+	//
+	// Example: 2026-M10
+	Period  Period  `json:"period"`
+	Records float64 `json:"records"`
+
+	// SubjectId Client-supplied identifier.
+	//
+	// Example: team-alpha
+	SubjectId   Id      `json:"subjectId"`
+	Typed       float64 `json:"typed"`
+	TypedSource string  `json:"typedSource"`
+}
+
 // UpdateItemRequest defines model for UpdateItemRequest.
 type UpdateItemRequest struct {
 	Name       *string   `json:"name,omitempty"`
@@ -1439,6 +2007,13 @@ type UpdateOrgUnitRequest struct {
 //
 // Example: auth0|abc123
 type UserId = string
+
+// ValueCount One distinct raw value, its row count, and its suggested meaning (empty for none).
+type ValueCount struct {
+	Count     int    `json:"count"`
+	Suggested string `json:"suggested"`
+	Value     string `json:"value"`
+}
 
 // VersionChange defines model for VersionChange.
 type VersionChange struct {
@@ -1498,6 +2073,11 @@ type ViewRow struct {
 	SubjectName string `json:"subjectName"`
 }
 
+// RecordTypeId Measure or metric key.
+//
+// Example: open_defects
+type RecordTypeId = Key
+
 // ScorecardId Client-supplied identifier.
 //
 // Example: team-alpha
@@ -1524,6 +2104,9 @@ type Forbidden = Error
 
 // NotFound defines model for NotFound.
 type NotFound = Error
+
+// TooLarge defines model for TooLarge.
+type TooLarge = Error
 
 // Unauthorized defines model for Unauthorized.
 type Unauthorized = Error
@@ -1584,6 +2167,14 @@ type DeleteOverrideParams struct {
 	Period    Period `form:"period" json:"period"`
 }
 
+// ListRecordContributionsParams defines parameters for ListRecordContributions.
+type ListRecordContributionsParams struct {
+	Metric  Key     `form:"metric" json:"metric"`
+	Subject Id      `form:"subject" json:"subject"`
+	Period  Period  `form:"period" json:"period"`
+	Cursor  *string `form:"cursor,omitempty" json:"cursor,omitempty"`
+}
+
 // GetVersionDiffParams defines parameters for GetVersionDiff.
 type GetVersionDiffParams struct {
 	// Against ID of the version to compare against; it must belong to the same
@@ -1628,8 +2219,14 @@ type PutImportTemplateJSONRequestBody = ImportTemplate
 // CreateImportUploadJSONRequestBody defines body for CreateImportUpload for application/json ContentType.
 type CreateImportUploadJSONRequestBody CreateImportUploadJSONBody
 
+// ApplyImportJSONRequestBody defines body for ApplyImport for application/json ContentType.
+type ApplyImportJSONRequestBody = ApplyImportRequest
+
 // ParseImportJSONRequestBody defines body for ParseImport for application/json ContentType.
 type ParseImportJSONRequestBody = ParseImportRequest
+
+// PreviewRecordsImportJSONRequestBody defines body for PreviewRecordsImport for application/json ContentType.
+type PreviewRecordsImportJSONRequestBody = RecordsPreviewRequest
 
 // CreateItemKindJSONRequestBody defines body for CreateItemKind for application/json ContentType.
 type CreateItemKindJSONRequestBody = ItemKind
@@ -1661,6 +2258,9 @@ type UpdateOrgUnitJSONRequestBody = UpdateOrgUnitRequest
 // CreateOrgMoveJSONRequestBody defines body for CreateOrgMove for application/json ContentType.
 type CreateOrgMoveJSONRequestBody = CreateOrgMoveRequest
 
+// PutRecordTypeJSONRequestBody defines body for PutRecordType for application/json ContentType.
+type PutRecordTypeJSONRequestBody = RecordType
+
 // CreateScorecardJSONRequestBody defines body for CreateScorecard for application/json ContentType.
 type CreateScorecardJSONRequestBody = Scorecard
 
@@ -1672,6 +2272,9 @@ type PutOverrideJSONRequestBody = PutOverrideRequest
 
 // PreviewDataJSONRequestBody defines body for PreviewData for application/json ContentType.
 type PreviewDataJSONRequestBody = DataBatchRequest
+
+// SampleRecordsJSONRequestBody defines body for SampleRecords for application/json ContentType.
+type SampleRecordsJSONRequestBody = RecordsSampleRequest
 
 // CreateVersionJSONRequestBody defines body for CreateVersion for application/json ContentType.
 type CreateVersionJSONRequestBody = CreateVersionRequest
@@ -1699,12 +2302,18 @@ type ServerInterface interface {
 	// CreateImportUpload Start an import and get a URL to upload the file to
 	// (POST /imports/uploads)
 	CreateImportUpload(w http.ResponseWriter, r *http.Request)
-	// ApplyImport Apply a parsed change set
+	// ApplyImport Apply a parsed change set or a records preview (admin only)
 	// (POST /imports/{id}/apply)
 	ApplyImport(w http.ResponseWriter, r *http.Request, id ServerIdPath)
+	// InspectImport Look at an uploaded records export (admin only)
+	// (POST /imports/{id}/inspect)
+	InspectImport(w http.ResponseWriter, r *http.Request, id ServerIdPath)
 	// ParseImport Parse an uploaded file into a change set preview
 	// (POST /imports/{id}/parse)
 	ParseImport(w http.ResponseWriter, r *http.Request, id ServerIdPath)
+	// PreviewRecordsImport Preview importing an uploaded records export (admin only)
+	// (POST /imports/{id}/records-preview)
+	PreviewRecordsImport(w http.ResponseWriter, r *http.Request, id ServerIdPath)
 	// ListItemKinds List item kinds
 	// (GET /item-kinds)
 	ListItemKinds(w http.ResponseWriter, r *http.Request)
@@ -1759,6 +2368,12 @@ type ServerInterface interface {
 	// CreateOrgMove Reparent an org unit effective from a month (admin only)
 	// (POST /org/units/{id}/moves)
 	CreateOrgMove(w http.ResponseWriter, r *http.Request, id Id)
+	// ListRecordTypes List the tenant's record types
+	// (GET /record-types)
+	ListRecordTypes(w http.ResponseWriter, r *http.Request)
+	// PutRecordType Create or replace a record type (admin only)
+	// (PUT /record-types/{id})
+	PutRecordType(w http.ResponseWriter, r *http.Request, id RecordTypeId)
 	// ListScorecards List scorecards
 	// (GET /scorecards)
 	ListScorecards(w http.ResponseWriter, r *http.Request)
@@ -1783,6 +2398,12 @@ type ServerInterface interface {
 	// PreviewData Compute the cells a batch would affect, without saving
 	// (POST /scorecards/{sc}/preview)
 	PreviewData(w http.ResponseWriter, r *http.Request, sc ScorecardId)
+	// ListRecordContributions The records behind a metric cell
+	// (GET /scorecards/{sc}/records/contributions)
+	ListRecordContributions(w http.ResponseWriter, r *http.Request, sc ScorecardId, params ListRecordContributionsParams)
+	// SampleRecords Count the records a condition matches in a period (admin only)
+	// (POST /scorecards/{sc}/records/sample)
+	SampleRecords(w http.ResponseWriter, r *http.Request, sc ScorecardId)
 	// ListVersions List a scorecard's methodology versions
 	// (GET /scorecards/{sc}/versions)
 	ListVersions(w http.ResponseWriter, r *http.Request, sc ScorecardId)
@@ -1958,6 +2579,32 @@ func (siw *ServerInterfaceWrapper) ApplyImport(w http.ResponseWriter, r *http.Re
 	handler.ServeHTTP(w, r)
 }
 
+// InspectImport operation middleware
+func (siw *ServerInterfaceWrapper) InspectImport(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id ServerIdPath
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.InspectImport(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // ParseImport operation middleware
 func (siw *ServerInterfaceWrapper) ParseImport(w http.ResponseWriter, r *http.Request) {
 
@@ -1975,6 +2622,32 @@ func (siw *ServerInterfaceWrapper) ParseImport(w http.ResponseWriter, r *http.Re
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ParseImport(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PreviewRecordsImport operation middleware
+func (siw *ServerInterfaceWrapper) PreviewRecordsImport(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id ServerIdPath
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PreviewRecordsImport(w, r, id)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -2322,6 +2995,46 @@ func (siw *ServerInterfaceWrapper) CreateOrgMove(w http.ResponseWriter, r *http.
 	handler.ServeHTTP(w, r)
 }
 
+// ListRecordTypes operation middleware
+func (siw *ServerInterfaceWrapper) ListRecordTypes(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListRecordTypes(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PutRecordType operation middleware
+func (siw *ServerInterfaceWrapper) PutRecordType(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id RecordTypeId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PutRecordType(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // ListScorecards operation middleware
 func (siw *ServerInterfaceWrapper) ListScorecards(w http.ResponseWriter, r *http.Request) {
 
@@ -2597,6 +3310,113 @@ func (siw *ServerInterfaceWrapper) PreviewData(w http.ResponseWriter, r *http.Re
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.PreviewData(w, r, sc)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListRecordContributions operation middleware
+func (siw *ServerInterfaceWrapper) ListRecordContributions(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "sc" -------------
+	var sc ScorecardId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "sc", r.PathValue("sc"), &sc, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "sc", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListRecordContributionsParams
+
+	// ------------- Required query parameter "metric" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "metric", r.URL.Query(), &params.Metric, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "metric"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "metric", Err: err})
+		}
+		return
+	}
+
+	// ------------- Required query parameter "subject" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "subject", r.URL.Query(), &params.Subject, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "subject"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "subject", Err: err})
+		}
+		return
+	}
+
+	// ------------- Required query parameter "period" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "period", r.URL.Query(), &params.Period, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "period"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "period", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "cursor" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "cursor", r.URL.Query(), &params.Cursor, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "cursor"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "cursor", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListRecordContributions(w, r, sc, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// SampleRecords operation middleware
+func (siw *ServerInterfaceWrapper) SampleRecords(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "sc" -------------
+	var sc ScorecardId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "sc", r.PathValue("sc"), &sc, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "sc", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.SampleRecords(w, r, sc)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3099,7 +3919,13 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/scorecards/{sc}/overrides", wrapper.PutOverride)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/imports/uploads", wrapper.CreateImportUpload)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/imports/{id}/parse", wrapper.ParseImport)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/imports/{id}/inspect", wrapper.InspectImport)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/imports/{id}/records-preview", wrapper.PreviewRecordsImport)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/imports/{id}/apply", wrapper.ApplyImport)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/record-types", wrapper.ListRecordTypes)
+	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/record-types/{id}", wrapper.PutRecordType)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/scorecards/{sc}/records/sample", wrapper.SampleRecords)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/scorecards/{sc}/records/contributions", wrapper.ListRecordContributions)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/import-templates", wrapper.ListImportTemplates)
 	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/import-templates", wrapper.ReplaceImportTemplates)
 	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/import-templates/{id}", wrapper.PutImportTemplate)
@@ -3115,6 +3941,8 @@ type ConflictJSONResponse Error
 type ForbiddenJSONResponse Error
 
 type NotFoundJSONResponse Error
+
+type TooLargeJSONResponse Error
 
 type UnauthorizedJSONResponse Error
 
@@ -3431,7 +4259,8 @@ func (response CreateImportUpload403JSONResponse) VisitCreateImportUploadRespons
 }
 
 type ApplyImportRequestObject struct {
-	Id ServerIdPath `json:"id"`
+	Id   ServerIdPath `json:"id"`
+	Body *ApplyImportJSONRequestBody
 }
 
 type ApplyImportResponseObject interface {
@@ -3518,6 +4347,112 @@ func (response ApplyImport409JSONResponse) VisitApplyImportResponse(w http.Respo
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type InspectImportRequestObject struct {
+	Id ServerIdPath `json:"id"`
+}
+
+type InspectImportResponseObject interface {
+	VisitInspectImportResponse(w http.ResponseWriter) error
+}
+
+type InspectImport200JSONResponse RecordsInspectResult
+
+func (response InspectImport200JSONResponse) VisitInspectImportResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type InspectImport400JSONResponse struct{ BadRequestJSONResponse }
+
+func (response InspectImport400JSONResponse) VisitInspectImportResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type InspectImport401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response InspectImport401JSONResponse) VisitInspectImportResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type InspectImport403JSONResponse struct{ ForbiddenJSONResponse }
+
+func (response InspectImport403JSONResponse) VisitInspectImportResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type InspectImport404JSONResponse struct{ NotFoundJSONResponse }
+
+func (response InspectImport404JSONResponse) VisitInspectImportResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type InspectImport409JSONResponse struct{ ConflictJSONResponse }
+
+func (response InspectImport409JSONResponse) VisitInspectImportResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type InspectImport413JSONResponse struct{ TooLargeJSONResponse }
+
+func (response InspectImport413JSONResponse) VisitInspectImportResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(413)
 	_, err := buf.WriteTo(w)
 	return err
 }
@@ -3611,6 +4546,127 @@ func (response ParseImport409JSONResponse) VisitParseImportResponse(w http.Respo
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ParseImport413JSONResponse struct{ TooLargeJSONResponse }
+
+func (response ParseImport413JSONResponse) VisitParseImportResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(413)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PreviewRecordsImportRequestObject struct {
+	Id   ServerIdPath `json:"id"`
+	Body *PreviewRecordsImportJSONRequestBody
+}
+
+type PreviewRecordsImportResponseObject interface {
+	VisitPreviewRecordsImportResponse(w http.ResponseWriter) error
+}
+
+type PreviewRecordsImport200JSONResponse RecordsPreview
+
+func (response PreviewRecordsImport200JSONResponse) VisitPreviewRecordsImportResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PreviewRecordsImport400JSONResponse struct{ BadRequestJSONResponse }
+
+func (response PreviewRecordsImport400JSONResponse) VisitPreviewRecordsImportResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PreviewRecordsImport401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response PreviewRecordsImport401JSONResponse) VisitPreviewRecordsImportResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PreviewRecordsImport403JSONResponse struct{ ForbiddenJSONResponse }
+
+func (response PreviewRecordsImport403JSONResponse) VisitPreviewRecordsImportResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PreviewRecordsImport404JSONResponse struct{ NotFoundJSONResponse }
+
+func (response PreviewRecordsImport404JSONResponse) VisitPreviewRecordsImportResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PreviewRecordsImport409JSONResponse struct{ ConflictJSONResponse }
+
+func (response PreviewRecordsImport409JSONResponse) VisitPreviewRecordsImportResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PreviewRecordsImport413JSONResponse struct{ TooLargeJSONResponse }
+
+func (response PreviewRecordsImport413JSONResponse) VisitPreviewRecordsImportResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(413)
 	_, err := buf.WriteTo(w)
 	return err
 }
@@ -4835,6 +5891,136 @@ func (response CreateOrgMove409JSONResponse) VisitCreateOrgMoveResponse(w http.R
 	return err
 }
 
+type ListRecordTypesRequestObject struct {
+}
+
+type ListRecordTypesResponseObject interface {
+	VisitListRecordTypesResponse(w http.ResponseWriter) error
+}
+
+type ListRecordTypes200JSONResponse struct {
+	RecordTypes []RecordType `json:"recordTypes"`
+}
+
+func (response ListRecordTypes200JSONResponse) VisitListRecordTypesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListRecordTypes401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response ListRecordTypes401JSONResponse) VisitListRecordTypesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListRecordTypes403JSONResponse struct{ ForbiddenJSONResponse }
+
+func (response ListRecordTypes403JSONResponse) VisitListRecordTypesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PutRecordTypeRequestObject struct {
+	Id   RecordTypeId `json:"id"`
+	Body *PutRecordTypeJSONRequestBody
+}
+
+type PutRecordTypeResponseObject interface {
+	VisitPutRecordTypeResponse(w http.ResponseWriter) error
+}
+
+type PutRecordType200JSONResponse RecordType
+
+func (response PutRecordType200JSONResponse) VisitPutRecordTypeResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PutRecordType400JSONResponse struct{ BadRequestJSONResponse }
+
+func (response PutRecordType400JSONResponse) VisitPutRecordTypeResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PutRecordType401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response PutRecordType401JSONResponse) VisitPutRecordTypeResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PutRecordType403JSONResponse struct{ ForbiddenJSONResponse }
+
+func (response PutRecordType403JSONResponse) VisitPutRecordTypeResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PutRecordType409JSONResponse struct{ ConflictJSONResponse }
+
+func (response PutRecordType409JSONResponse) VisitPutRecordTypeResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type ListScorecardsRequestObject struct {
 }
 
@@ -5452,6 +6638,164 @@ func (response PreviewData404JSONResponse) VisitPreviewDataResponse(w http.Respo
 	return err
 }
 
+type ListRecordContributionsRequestObject struct {
+	Sc     ScorecardId `json:"sc"`
+	Params ListRecordContributionsParams
+}
+
+type ListRecordContributionsResponseObject interface {
+	VisitListRecordContributionsResponse(w http.ResponseWriter) error
+}
+
+type ListRecordContributions200JSONResponse RecordContributions
+
+func (response ListRecordContributions200JSONResponse) VisitListRecordContributionsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListRecordContributions400JSONResponse struct{ BadRequestJSONResponse }
+
+func (response ListRecordContributions400JSONResponse) VisitListRecordContributionsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListRecordContributions401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response ListRecordContributions401JSONResponse) VisitListRecordContributionsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListRecordContributions403JSONResponse struct{ ForbiddenJSONResponse }
+
+func (response ListRecordContributions403JSONResponse) VisitListRecordContributionsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListRecordContributions404JSONResponse struct{ NotFoundJSONResponse }
+
+func (response ListRecordContributions404JSONResponse) VisitListRecordContributionsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SampleRecordsRequestObject struct {
+	Sc   ScorecardId `json:"sc"`
+	Body *SampleRecordsJSONRequestBody
+}
+
+type SampleRecordsResponseObject interface {
+	VisitSampleRecordsResponse(w http.ResponseWriter) error
+}
+
+type SampleRecords200JSONResponse RecordsSample
+
+func (response SampleRecords200JSONResponse) VisitSampleRecordsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SampleRecords400JSONResponse struct{ BadRequestJSONResponse }
+
+func (response SampleRecords400JSONResponse) VisitSampleRecordsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SampleRecords401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response SampleRecords401JSONResponse) VisitSampleRecordsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SampleRecords403JSONResponse struct{ ForbiddenJSONResponse }
+
+func (response SampleRecords403JSONResponse) VisitSampleRecordsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SampleRecords404JSONResponse struct{ NotFoundJSONResponse }
+
+func (response SampleRecords404JSONResponse) VisitSampleRecordsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type ListVersionsRequestObject struct {
 	Sc ScorecardId `json:"sc"`
 }
@@ -5846,7 +7190,7 @@ type PublishVersionResponseObject interface {
 	VisitPublishVersionResponse(w http.ResponseWriter) error
 }
 
-type PublishVersion200JSONResponse MethodologyVersion
+type PublishVersion200JSONResponse PublishVersionResult
 
 func (response PublishVersion200JSONResponse) VisitPublishVersionResponse(w http.ResponseWriter) error {
 
@@ -6108,12 +7452,18 @@ type StrictServerInterface interface {
 	// CreateImportUpload Start an import and get a URL to upload the file to
 	// (POST /imports/uploads)
 	CreateImportUpload(ctx context.Context, request CreateImportUploadRequestObject) (CreateImportUploadResponseObject, error)
-	// ApplyImport Apply a parsed change set
+	// ApplyImport Apply a parsed change set or a records preview (admin only)
 	// (POST /imports/{id}/apply)
 	ApplyImport(ctx context.Context, request ApplyImportRequestObject) (ApplyImportResponseObject, error)
+	// InspectImport Look at an uploaded records export (admin only)
+	// (POST /imports/{id}/inspect)
+	InspectImport(ctx context.Context, request InspectImportRequestObject) (InspectImportResponseObject, error)
 	// ParseImport Parse an uploaded file into a change set preview
 	// (POST /imports/{id}/parse)
 	ParseImport(ctx context.Context, request ParseImportRequestObject) (ParseImportResponseObject, error)
+	// PreviewRecordsImport Preview importing an uploaded records export (admin only)
+	// (POST /imports/{id}/records-preview)
+	PreviewRecordsImport(ctx context.Context, request PreviewRecordsImportRequestObject) (PreviewRecordsImportResponseObject, error)
 	// ListItemKinds List item kinds
 	// (GET /item-kinds)
 	ListItemKinds(ctx context.Context, request ListItemKindsRequestObject) (ListItemKindsResponseObject, error)
@@ -6168,6 +7518,12 @@ type StrictServerInterface interface {
 	// CreateOrgMove Reparent an org unit effective from a month (admin only)
 	// (POST /org/units/{id}/moves)
 	CreateOrgMove(ctx context.Context, request CreateOrgMoveRequestObject) (CreateOrgMoveResponseObject, error)
+	// ListRecordTypes List the tenant's record types
+	// (GET /record-types)
+	ListRecordTypes(ctx context.Context, request ListRecordTypesRequestObject) (ListRecordTypesResponseObject, error)
+	// PutRecordType Create or replace a record type (admin only)
+	// (PUT /record-types/{id})
+	PutRecordType(ctx context.Context, request PutRecordTypeRequestObject) (PutRecordTypeResponseObject, error)
 	// ListScorecards List scorecards
 	// (GET /scorecards)
 	ListScorecards(ctx context.Context, request ListScorecardsRequestObject) (ListScorecardsResponseObject, error)
@@ -6192,6 +7548,12 @@ type StrictServerInterface interface {
 	// PreviewData Compute the cells a batch would affect, without saving
 	// (POST /scorecards/{sc}/preview)
 	PreviewData(ctx context.Context, request PreviewDataRequestObject) (PreviewDataResponseObject, error)
+	// ListRecordContributions The records behind a metric cell
+	// (GET /scorecards/{sc}/records/contributions)
+	ListRecordContributions(ctx context.Context, request ListRecordContributionsRequestObject) (ListRecordContributionsResponseObject, error)
+	// SampleRecords Count the records a condition matches in a period (admin only)
+	// (POST /scorecards/{sc}/records/sample)
+	SampleRecords(ctx context.Context, request SampleRecordsRequestObject) (SampleRecordsResponseObject, error)
 	// ListVersions List a scorecard's methodology versions
 	// (GET /scorecards/{sc}/versions)
 	ListVersions(ctx context.Context, request ListVersionsRequestObject) (ListVersionsResponseObject, error)
@@ -6411,6 +7773,16 @@ func (sh *strictHandler) ApplyImport(w http.ResponseWriter, r *http.Request, id 
 
 	request.Id = id
 
+	var body ApplyImportJSONRequestBody
+	if err := runtime.BindJSONBody(r, &body); err != nil {
+		if !errors.Is(err, io.EOF) {
+			sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+			return
+		}
+	} else {
+		request.Body = &body
+	}
+
 	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
 		return sh.ssi.ApplyImport(ctx, request.(ApplyImportRequestObject))
 	}
@@ -6424,6 +7796,32 @@ func (sh *strictHandler) ApplyImport(w http.ResponseWriter, r *http.Request, id 
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(ApplyImportResponseObject); ok {
 		if err := validResponse.VisitApplyImportResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// InspectImport operation middleware
+func (sh *strictHandler) InspectImport(w http.ResponseWriter, r *http.Request, id ServerIdPath) {
+	var request InspectImportRequestObject
+
+	request.Id = id
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.InspectImport(ctx, request.(InspectImportRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "InspectImport")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(InspectImportResponseObject); ok {
+		if err := validResponse.VisitInspectImportResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
@@ -6457,6 +7855,39 @@ func (sh *strictHandler) ParseImport(w http.ResponseWriter, r *http.Request, id 
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(ParseImportResponseObject); ok {
 		if err := validResponse.VisitParseImportResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// PreviewRecordsImport operation middleware
+func (sh *strictHandler) PreviewRecordsImport(w http.ResponseWriter, r *http.Request, id ServerIdPath) {
+	var request PreviewRecordsImportRequestObject
+
+	request.Id = id
+
+	var body PreviewRecordsImportJSONRequestBody
+	if err := runtime.BindJSONBody(r, &body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.PreviewRecordsImport(ctx, request.(PreviewRecordsImportRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "PreviewRecordsImport")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(PreviewRecordsImportResponseObject); ok {
+		if err := validResponse.VisitPreviewRecordsImportResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
@@ -6978,6 +8409,63 @@ func (sh *strictHandler) CreateOrgMove(w http.ResponseWriter, r *http.Request, i
 	}
 }
 
+// ListRecordTypes operation middleware
+func (sh *strictHandler) ListRecordTypes(w http.ResponseWriter, r *http.Request) {
+	var request ListRecordTypesRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListRecordTypes(ctx, request.(ListRecordTypesRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListRecordTypes")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListRecordTypesResponseObject); ok {
+		if err := validResponse.VisitListRecordTypesResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// PutRecordType operation middleware
+func (sh *strictHandler) PutRecordType(w http.ResponseWriter, r *http.Request, id RecordTypeId) {
+	var request PutRecordTypeRequestObject
+
+	request.Id = id
+
+	var body PutRecordTypeJSONRequestBody
+	if err := runtime.BindJSONBody(r, &body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.PutRecordType(ctx, request.(PutRecordTypeRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "PutRecordType")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(PutRecordTypeResponseObject); ok {
+		if err := validResponse.VisitPutRecordTypeResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // ListScorecards operation middleware
 func (sh *strictHandler) ListScorecards(w http.ResponseWriter, r *http.Request) {
 	var request ListScorecardsRequestObject
@@ -7206,6 +8694,66 @@ func (sh *strictHandler) PreviewData(w http.ResponseWriter, r *http.Request, sc 
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(PreviewDataResponseObject); ok {
 		if err := validResponse.VisitPreviewDataResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListRecordContributions operation middleware
+func (sh *strictHandler) ListRecordContributions(w http.ResponseWriter, r *http.Request, sc ScorecardId, params ListRecordContributionsParams) {
+	var request ListRecordContributionsRequestObject
+
+	request.Sc = sc
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListRecordContributions(ctx, request.(ListRecordContributionsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListRecordContributions")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListRecordContributionsResponseObject); ok {
+		if err := validResponse.VisitListRecordContributionsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// SampleRecords operation middleware
+func (sh *strictHandler) SampleRecords(w http.ResponseWriter, r *http.Request, sc ScorecardId) {
+	var request SampleRecordsRequestObject
+
+	request.Sc = sc
+
+	var body SampleRecordsJSONRequestBody
+	if err := runtime.BindJSONBody(r, &body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.SampleRecords(ctx, request.(SampleRecordsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "SampleRecords")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(SampleRecordsResponseObject); ok {
+		if err := validResponse.VisitSampleRecordsResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

@@ -17,6 +17,7 @@ const (
 	codeNotFound       = "not_found"
 	codeConflict       = "conflict"
 	codeNotImplemented = "not_implemented"
+	codeTooLarge       = "too_large"
 	codeInternal       = "internal"
 )
 
@@ -64,6 +65,10 @@ func notFound(msg string) *apiError {
 
 func conflict(msg string) *apiError {
 	return &apiError{status: http.StatusConflict, code: codeConflict, message: msg}
+}
+
+func tooLarge(msg string) *apiError {
+	return &apiError{status: http.StatusRequestEntityTooLarge, code: codeTooLarge, message: msg}
 }
 
 // writeError writes the error envelope.

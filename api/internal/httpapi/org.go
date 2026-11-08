@@ -259,11 +259,7 @@ func (s *Server) CreateOrgUnit(ctx context.Context, req CreateOrgUnitRequestObje
 	if err != nil {
 		return nil, err
 	}
-	owners, err := s.sourceKeyOwners(ctx, tenantID, st.units, "", "")
-	if err != nil {
-		return nil, err
-	}
-	checkKeyConflicts(&pr, "sourceKeys", keys, owners)
+	checkKeyConflicts(&pr, "sourceKeys", keys)
 	if _, exists := st.unit(b.Id); exists {
 		return nil, conflict("org unit " + b.Id + " already exists")
 	}
@@ -281,6 +277,13 @@ func (s *Server) CreateOrgUnit(ctx context.Context, req CreateOrgUnitRequestObje
 		}
 	}
 	if err := pr.err(); err != nil {
+		return nil, err
+	}
+	items, err := s.store.ListTrackedItems(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	if err := sourceKeyConflict("sourceKeys", keys, st.units, items, "", ""); err != nil {
 		return nil, err
 	}
 
@@ -361,14 +364,19 @@ func (s *Server) UpdateOrgUnit(ctx context.Context, req UpdateOrgUnitRequestObje
 		pr.add("levelId", "level %q does not exist", *b.LevelId)
 	}
 	if b.SourceKeys != nil {
-		owners, err := s.sourceKeyOwners(ctx, tenantID, st.units, current.ID, "")
-		if err != nil {
-			return nil, err
-		}
-		checkKeyConflicts(&pr, "sourceKeys", keys, owners)
+		checkKeyConflicts(&pr, "sourceKeys", keys)
 	}
 	if err := pr.err(); err != nil {
 		return nil, err
+	}
+	if b.SourceKeys != nil {
+		items, err := s.store.ListTrackedItems(ctx, tenantID)
+		if err != nil {
+			return nil, err
+		}
+		if err := sourceKeyConflict("sourceKeys", keys, st.units, items, current.ID, ""); err != nil {
+			return nil, err
+		}
 	}
 
 	updated := current

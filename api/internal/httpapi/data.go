@@ -342,7 +342,7 @@ func copyValue(v *float64) *float64 {
 }
 
 func apiPoint(dp domain.DataPoint) DataPoint {
-	return DataPoint{
+	out := DataPoint{
 		MeasureKey: dp.MeasureKey,
 		SubjectId:  dp.SubjectID,
 		Period:     periodString(dp.Period),
@@ -353,6 +353,11 @@ func apiPoint(dp domain.DataPoint) DataPoint {
 		EnteredAt:  dp.EnteredAt,
 		Revision:   dp.Revision,
 	}
+	if dp.Deleted {
+		deleted := true
+		out.Deleted = &deleted
+	}
+	return out
 }
 
 func apiWrite(w store.DataWrite) DataWrite {
@@ -541,6 +546,7 @@ func (ws *writeSet) chainOf(subjectID string, month period.Period) []string {
 // ---- history -----------------------------------------------------------------------
 
 // GetDataHistory lists every stored revision of a data point, newest first.
+// The revision that removed a value is marked deleted.
 func (s *Server) GetDataHistory(ctx context.Context, req GetDataHistoryRequestObject) (GetDataHistoryResponseObject, error) {
 	p, err := member(ctx)
 	if err != nil {

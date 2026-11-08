@@ -248,7 +248,8 @@ func TestCreateImportUploadBody(t *testing.T) {
 	// The body is optional.
 	e.expect(t, 201, admin, "POST", "/imports/uploads", nil, nil)
 	e.expect(t, 201, admin, "POST", "/imports/uploads", map[string]string{"contentType": objects.ContentTypeXLSX}, nil)
-	e.expectError(t, 400, "invalid", admin, "POST", "/imports/uploads", map[string]string{"contentType": "text/csv"})
+	e.expect(t, 201, admin, "POST", "/imports/uploads", map[string]string{"contentType": "text/csv"}, nil)
+	e.expectError(t, 400, "invalid", admin, "POST", "/imports/uploads", map[string]string{"contentType": "text/plain"})
 }
 
 // ---- parse and apply ----------------------------------------------------------------
@@ -465,7 +466,7 @@ func TestParseRejectsOversizedUpload(t *testing.T) {
 	admin := e.tokens["t1-admin"]
 	e.putTemplate(t, admin, sampleTemplate(t, "legacy-1"))
 	up := e.createImport(t, make([]byte, objects.MaxUploadBytes+1))
-	e.expectError(t, 400, "invalid", admin, "POST", "/imports/"+up.ImportID+"/parse",
+	e.expectError(t, 413, "too_large", admin, "POST", "/imports/"+up.ImportID+"/parse",
 		map[string]string{"profile": "legacy_workbook", "templateId": "legacy-1"})
 }
 

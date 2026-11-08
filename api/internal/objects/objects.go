@@ -16,7 +16,9 @@ import (
 const (
 	// ContentTypeXLSX is the only content type of an uploaded workbook.
 	ContentTypeXLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-	// MaxUploadBytes is the largest workbook the API accepts.
+	// ContentTypeCSV is the content type of an uploaded CSV export.
+	ContentTypeCSV = "text/csv"
+	// MaxUploadBytes is the largest upload the API accepts.
 	MaxUploadBytes int64 = 20 << 20
 	// UploadTTL is how long a presigned upload URL stays valid.
 	UploadTTL = 15 * time.Minute

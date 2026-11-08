@@ -18,7 +18,8 @@
 // Imports keep uploaded workbooks in memory (-objects mem, the default). The
 // upload URLs the API hands out point at PUT /dev/objects/{key...}?exp=<unix>&sig=<hex>,
 // signed with the dev secret (HMAC-SHA256 of "key|exp") and valid for 15
-// minutes; the endpoint accepts only the .xlsx content type and 20 MiB. With
+// minutes; the endpoint accepts the .xlsx or CSV content type its key names,
+// up to 20 MiB. With
 // -objects s3 (and -uploads-bucket or $UPLOADS_BUCKET) uploads go to S3 with
 // presigned URLs, as in production.
 //
@@ -365,8 +366,9 @@ func startupImport(ctx context.Context, st store.Store, tenantID, workbook, temp
 }
 
 // devPutObject accepts an import upload at a URL signed by objects.Mem. The
-// signature is the only credential: it binds the key and an expiry. Only the
-// .xlsx content type is accepted, up to objects.MaxUploadBytes.
+// signature is the only credential: it binds the key and an expiry. The
+// content type must match the key's extension (.xlsx or .csv), up to
+// objects.MaxUploadBytes.
 func devPutObject(mem *objects.Mem, secret string, now func() time.Time) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		key := r.PathValue("key")
@@ -379,8 +381,12 @@ func devPutObject(mem *objects.Mem, secret string, now func() time.Time) http.Ha
 			devError(w, http.StatusForbidden, "forbidden", "invalid upload signature")
 			return
 		}
-		if r.Header.Get("Content-Type") != objects.ContentTypeXLSX {
-			devError(w, http.StatusUnsupportedMediaType, "invalid", "Content-Type must be "+objects.ContentTypeXLSX)
+		contentType := objects.ContentTypeXLSX
+		if strings.HasSuffix(key, ".csv") {
+			contentType = objects.ContentTypeCSV
+		}
+		if r.Header.Get("Content-Type") != contentType {
+			devError(w, http.StatusUnsupportedMediaType, "invalid", "Content-Type must be "+contentType)
 			return
 		}
 		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, objects.MaxUploadBytes))
@@ -393,7 +399,7 @@ func devPutObject(mem *objects.Mem, secret string, now func() time.Time) http.Ha
 			devError(w, http.StatusBadRequest, "invalid", "cannot read the upload")
 			return
 		}
-		if err := mem.Put(r.Context(), key, objects.ContentTypeXLSX, body); err != nil {
+		if err := mem.Put(r.Context(), key, contentType, body); err != nil {
 			devError(w, http.StatusInternalServerError, "internal", "cannot store the upload")
 			return
 		}

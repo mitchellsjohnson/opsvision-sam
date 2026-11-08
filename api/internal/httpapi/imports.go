@@ -9,6 +9,7 @@ import (
 	"io"
 	"slices"
 	"strings"
+	"time"
 
 	"opsvision/internal/changeset"
 	"opsvision/internal/domain"
@@ -29,6 +30,7 @@ const (
 const (
 	profileLegacyWorkbook = "legacy_workbook"
 	profileCSV            = "csv"
+	profileRecords        = "records"
 )
 
 const (
@@ -37,10 +39,14 @@ const (
 	previewSampleSize = 50
 )
 
-// uploadKey is the object key of an import's uploaded workbook.
-func uploadKey(tenantID, importID string) string {
-	return "t/" + tenantID + "/imports/" + importID + ".xlsx"
+// uploadKey is the object key of an import's uploaded file; ext is ".xlsx"
+// or ".csv".
+func uploadKey(tenantID, importID, ext string) string {
+	return "t/" + tenantID + "/imports/" + importID + ext
 }
+
+// isCSVUpload reports whether an upload's object key names a CSV file.
+func isCSVUpload(key string) bool { return strings.HasSuffix(key, ".csv") }
 
 // changeSetKey is the object key of an import's parsed change set.
 func changeSetKey(tenantID, importID string) string {
@@ -80,7 +86,7 @@ func (s *Server) loadImport(ctx context.Context, tenantID, id string) (store.Imp
 // ---- upload ---------------------------------------------------------------------
 
 // CreateImportUpload starts an import and returns a URL to upload the
-// workbook to. Admins only.
+// file to: an .xlsx workbook (the default) or a CSV export. Admins only.
 func (s *Server) CreateImportUpload(ctx context.Context, req CreateImportUploadRequestObject) (CreateImportUploadResponseObject, error) {
 	p, err := tenantAdmin(ctx)
 	if err != nil {
@@ -90,13 +96,21 @@ func (s *Server) CreateImportUpload(ctx context.Context, req CreateImportUploadR
 	if err != nil {
 		return nil, err
 	}
-	if req.Body != nil && req.Body.ContentType != nil && *req.Body.ContentType != objects.ContentTypeXLSX {
-		return nil, badRequest("only .xlsx workbooks can be imported", detail{Path: "contentType", Message: "must be " + objects.ContentTypeXLSX})
+	contentType, ext := objects.ContentTypeXLSX, ".xlsx"
+	if req.Body != nil && req.Body.ContentType != nil {
+		switch *req.Body.ContentType {
+		case objects.ContentTypeXLSX:
+		case objects.ContentTypeCSV:
+			contentType, ext = objects.ContentTypeCSV, ".csv"
+		default:
+			return nil, badRequest("only .xlsx workbooks and CSV files can be imported",
+				detail{Path: "contentType", Message: "must be " + objects.ContentTypeXLSX + " or " + objects.ContentTypeCSV})
+		}
 	}
 	tenantID := p.Tenant.ID
 	id := s.newID()
-	key := uploadKey(tenantID, id)
-	url, err := objs.PresignPut(ctx, key, objects.ContentTypeXLSX, objects.MaxUploadBytes, objects.UploadTTL)
+	key := uploadKey(tenantID, id, ext)
+	url, err := objs.PresignPut(ctx, key, contentType, objects.MaxUploadBytes, objects.UploadTTL)
 	if err != nil {
 		return nil, err
 	}
@@ -226,11 +240,11 @@ func (s *Server) importScorecard(ctx context.Context, tenantID, named string) (s
 	return id, err
 }
 
-// readWorkbook loads and opens an uploaded workbook. The size limit is checked
-// twice: against the size the store reports, and while reading, because a
-// store may report no size at all.
-func readWorkbook(ctx context.Context, objs objects.Store, key string) (*xlsx.Workbook, error) {
-	tooLarge := badRequest(fmt.Sprintf("the file is larger than %d MiB", objects.MaxUploadBytes>>20))
+// readUpload loads an uploaded file. The size limit is checked twice:
+// against the size the store reports, and while reading, because a store may
+// report no size at all. Over the limit is a 413.
+func readUpload(ctx context.Context, objs objects.Store, key string) ([]byte, error) {
+	over := tooLarge(fmt.Sprintf("the file is larger than %d MiB", objects.MaxUploadBytes>>20))
 	rc, size, err := objs.Get(ctx, key)
 	if errors.Is(err, objects.ErrNotFound) {
 		return nil, notFound("no file has been uploaded for this import")
@@ -240,14 +254,23 @@ func readWorkbook(ctx context.Context, objs objects.Store, key string) (*xlsx.Wo
 	}
 	defer rc.Close()
 	if size > objects.MaxUploadBytes {
-		return nil, tooLarge
+		return nil, over
 	}
 	data, err := io.ReadAll(io.LimitReader(rc, objects.MaxUploadBytes+1))
 	if err != nil {
 		return nil, err
 	}
 	if int64(len(data)) > objects.MaxUploadBytes {
-		return nil, tooLarge
+		return nil, over
+	}
+	return data, nil
+}
+
+// readWorkbook loads and opens an uploaded workbook.
+func readWorkbook(ctx context.Context, objs objects.Store, key string) (*xlsx.Workbook, error) {
+	data, err := readUpload(ctx, objs, key)
+	if err != nil {
+		return nil, err
 	}
 	wb, err := xlsx.Open(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
@@ -258,8 +281,8 @@ func readWorkbook(ctx context.Context, objs objects.Store, key string) (*xlsx.Wo
 
 // ---- apply ----------------------------------------------------------------------
 
-// ApplyImport applies a parsed change set. An import can be applied once.
-// Admins only.
+// ApplyImport applies a parsed change set, or a records preview (see
+// applyRecords). An import can be applied once. Admins only.
 func (s *Server) ApplyImport(ctx context.Context, req ApplyImportRequestObject) (ApplyImportResponseObject, error) {
 	p, err := tenantAdmin(ctx)
 	if err != nil {
@@ -276,6 +299,9 @@ func (s *Server) ApplyImport(ctx context.Context, req ApplyImportRequestObject) 
 	}
 	if im.Status != importParsed {
 		return nil, conflict(fmt.Sprintf("import is %s; only a parsed import can be applied", im.Status))
+	}
+	if im.Profile == profileRecords {
+		return s.applyRecords(ctx, p, objs, im, req.Body)
 	}
 
 	rc, _, err := objs.Get(ctx, changeSetKey(tenantID, im.ID))
@@ -431,9 +457,9 @@ func decodeTemplateBody(raw []byte) (importer.TemplateBody, []detail) {
 	return tb, out
 }
 
-// validateTemplate checks one template of a request; path prefixes the
-// problem paths (for example "templates[2]").
-func validateTemplate(pr *problems, path string, t ImportTemplate) (store.Template, bool) {
+// validateTemplate checks one template of a request against the tenant's
+// record types; path prefixes the problem paths (for example "templates[2]").
+func validateTemplate(pr *problems, path string, t ImportTemplate, types []domain.RecordType) (store.Template, bool) {
 	before := len(pr.list)
 	if path != "" {
 		path += "."
@@ -441,20 +467,27 @@ func validateTemplate(pr *problems, path string, t ImportTemplate) (store.Templa
 	pr.id(path+"id", t.Id)
 	pr.nonEmpty(path+"name", t.Name)
 	switch string(t.Profile) {
-	case profileLegacyWorkbook:
+	case profileLegacyWorkbook, profileRecords:
 	case profileCSV:
 		pr.add(path+"profile", "%s", csvUnavailable)
 	default:
-		pr.add(path+"profile", "must be legacy_workbook")
+		pr.add(path+"profile", "must be legacy_workbook or records")
 	}
 	raw, err := json.Marshal(t.Body)
-	if err != nil {
+	switch {
+	case err != nil:
 		pr.add(path+"body", "is not valid JSON")
-	} else if string(t.Profile) == profileLegacyWorkbook {
+	case string(t.Profile) == profileLegacyWorkbook:
 		if _, ds := decodeTemplateBody(raw); len(ds) > 0 {
 			for _, d := range ds {
 				pr.add(path+d.Path, "%s", d.Message)
 			}
+		}
+	case string(t.Profile) == profileRecords:
+		if rt, err := decodeRecordTemplate(raw); err != nil {
+			pr.add(path+"body", "is not a records template: %v", err)
+		} else {
+			validateRecordTemplate(pr, path+"body.", rt, types)
 		}
 	}
 	if len(pr.list) > before {
@@ -507,12 +540,16 @@ func (s *Server) PutImportTemplate(ctx context.Context, req PutImportTemplateReq
 	b := *req.Body
 	tenantID := p.Tenant.ID
 
+	types, err := s.store.ListRecordTypes(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
 	var pr problems
 	pr.id("id", req.Id)
 	if b.Id != req.Id {
 		pr.add("id", "must equal the id in the path (%q)", req.Id)
 	}
-	t, _ := validateTemplate(&pr, "", b)
+	t, _ := validateTemplate(&pr, "", b, types)
 	if err := pr.err(); err != nil {
 		return nil, err
 	}
@@ -525,6 +562,7 @@ func (s *Server) PutImportTemplate(ctx context.Context, req PutImportTemplateReq
 	for _, e := range existing {
 		if e.ID == t.ID {
 			before = apiTemplate(e)
+			t.LastUsed = e.LastUsed
 		}
 	}
 	if err := s.store.PutTemplate(ctx, tenantID, t); err != nil {
@@ -548,6 +586,10 @@ func (s *Server) ReplaceImportTemplates(ctx context.Context, req ReplaceImportTe
 		return nil, badRequest("request body is required")
 	}
 	tenantID := p.Tenant.ID
+	types, err := s.store.ListRecordTypes(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
 
 	var pr problems
 	next := make([]store.Template, 0, len(req.Body.Templates))
@@ -559,7 +601,7 @@ func (s *Server) ReplaceImportTemplates(ctx context.Context, req ReplaceImportTe
 			continue
 		}
 		seen[in.Id] = i
-		if t, ok := validateTemplate(&pr, path, in); ok {
+		if t, ok := validateTemplate(&pr, path, in, types); ok {
 			next = append(next, t)
 		}
 	}
@@ -571,9 +613,14 @@ func (s *Server) ReplaceImportTemplates(ctx context.Context, req ReplaceImportTe
 	if err != nil {
 		return nil, err
 	}
+	lastUsed := map[string]*time.Time{}
+	for _, old := range before {
+		lastUsed[old.ID] = old.LastUsed
+	}
 	// Write the new set first and delete the rest last: a failure part-way
 	// leaves too many templates, never too few.
 	for _, t := range next {
+		t.LastUsed = lastUsed[t.ID]
 		if err := s.store.PutTemplate(ctx, tenantID, t); err != nil {
 			return nil, err
 		}

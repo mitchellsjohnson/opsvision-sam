@@ -136,19 +136,19 @@ func TestSourceKeysUniqueAcrossUnitsAndItems(t *testing.T) {
 	e.expect(t, 200, admin, "PATCH", "/org/units/seg-a", map[string]any{"sourceKeys": []string{"Alpha"}}, nil)
 	e.expect(t, 201, admin, "POST", "/items", item("svc-1", "Gamma"), nil)
 
-	// Unit vs unit: case-insensitive and trimmed; the detail names the other unit and the key's index.
-	keyDetail(t, e.expectError(t, 400, "invalid", admin, "POST", "/org/units", unit("u1", "fresh", "  ALPHA ")), "sourceKeys[1]", "seg-a")
+	// Unit vs unit: case-insensitive and trimmed; a 409 whose detail names the other unit and the key's index.
+	keyDetail(t, e.expectError(t, 409, "conflict", admin, "POST", "/org/units", unit("u1", "fresh", "  ALPHA ")), "sourceKeys[1]", "seg-a")
 	// Unit vs item.
-	keyDetail(t, e.expectError(t, 400, "invalid", admin, "POST", "/org/units", unit("u2", "gamma")), "sourceKeys[0]", "svc-1")
+	keyDetail(t, e.expectError(t, 409, "conflict", admin, "POST", "/org/units", unit("u2", "gamma")), "sourceKeys[0]", "svc-1")
 	// Item vs unit, and item vs item.
-	keyDetail(t, e.expectError(t, 400, "invalid", admin, "POST", "/items", item("i1", "alpha")), "sourceKeys[0]", "seg-a")
-	keyDetail(t, e.expectError(t, 400, "invalid", admin, "POST", "/items", item("i2", "ok", "GAMMA")), "sourceKeys[1]", "svc-1")
+	keyDetail(t, e.expectError(t, 409, "conflict", admin, "POST", "/items", item("i1", "alpha")), "sourceKeys[0]", "seg-a")
+	keyDetail(t, e.expectError(t, 409, "conflict", admin, "POST", "/items", item("i2", "ok", "GAMMA")), "sourceKeys[1]", "svc-1")
 	// Updates.
-	keyDetail(t, e.expectError(t, 400, "invalid", admin, "PATCH", "/org/units/seg-b", map[string]any{"sourceKeys": []string{"gamma"}}), "sourceKeys[0]", "svc-1")
-	keyDetail(t, e.expectError(t, 400, "invalid", admin, "PATCH", "/org/units/seg-b", map[string]any{"sourceKeys": []string{"ALPHA"}}), "sourceKeys[0]", "seg-a")
+	keyDetail(t, e.expectError(t, 409, "conflict", admin, "PATCH", "/org/units/seg-b", map[string]any{"sourceKeys": []string{"gamma"}}), "sourceKeys[0]", "svc-1")
+	keyDetail(t, e.expectError(t, 409, "conflict", admin, "PATCH", "/org/units/seg-b", map[string]any{"sourceKeys": []string{"ALPHA"}}), "sourceKeys[0]", "seg-a")
 	e.expect(t, 201, admin, "POST", "/items", item("svc-2", "Delta"), nil)
-	keyDetail(t, e.expectError(t, 400, "invalid", admin, "PATCH", "/items/svc-2", map[string]any{"sourceKeys": []string{"alpha"}}), "sourceKeys[0]", "seg-a")
-	keyDetail(t, e.expectError(t, 400, "invalid", admin, "PATCH", "/items/svc-2", map[string]any{"sourceKeys": []string{"x", "gamma"}}), "sourceKeys[1]", "svc-1")
+	keyDetail(t, e.expectError(t, 409, "conflict", admin, "PATCH", "/items/svc-2", map[string]any{"sourceKeys": []string{"alpha"}}), "sourceKeys[0]", "seg-a")
+	keyDetail(t, e.expectError(t, 409, "conflict", admin, "PATCH", "/items/svc-2", map[string]any{"sourceKeys": []string{"x", "gamma"}}), "sourceKeys[1]", "svc-1")
 	// Duplicates inside one list.
 	e.expectError(t, 400, "invalid", admin, "POST", "/items", item("i3", "dup", " DUP"))
 	e.expectError(t, 400, "invalid", admin, "PATCH", "/org/units/seg-b", map[string]any{"sourceKeys": []string{"one", "ONE"}})

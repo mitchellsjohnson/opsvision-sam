@@ -282,6 +282,33 @@ func TestDevObjectsUpload(t *testing.T) {
 	}
 }
 
+func TestDevObjectsUploadCSV(t *testing.T) {
+	h, objs, err := newHandlerObjects(context.Background(), devOpts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := "t/acme/imports/x.csv"
+	uri, err := objs.PresignPut(context.Background(), key, objects.ContentTypeCSV, objects.MaxUploadBytes, objects.UploadTTL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, _ := url.Parse(uri)
+	target := u.RequestURI()
+	if w := put(h, target, objects.ContentTypeXLSX, []byte("a,b")); w.Code != http.StatusUnsupportedMediaType {
+		t.Errorf("xlsx type on a .csv key = %d", w.Code)
+	}
+	if w := put(h, target, objects.ContentTypeCSV, []byte("a,b")); w.Code != http.StatusOK {
+		t.Fatalf("PUT = %d: %s", w.Code, w.Body)
+	}
+	mem, ok := objs.(*objects.Mem)
+	if !ok {
+		t.Fatalf("objects store is %T", objs)
+	}
+	if ct, ok := mem.ContentType(key); !ok || ct != objects.ContentTypeCSV {
+		t.Errorf("stored content type = %q, %v", ct, ok)
+	}
+}
+
 func TestDevObjectsRejectsBadSignatures(t *testing.T) {
 	h, objs, err := newHandlerObjects(context.Background(), devOpts())
 	if err != nil {

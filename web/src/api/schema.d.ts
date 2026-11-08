@@ -340,7 +340,10 @@ export interface paths {
         /**
          * Publish a draft, effective from a period (admin only)
          * @description Validates first; invalid content fails with 400 `invalid` and
-         *     `error.details` lists every problem as `{path, message}`.
+         *     `error.details` lists every problem as `{path, message}`. After
+         *     publishing, derived values of open periods are recalculated from the
+         *     stored records under the versions now in force; `recalculated`
+         *     counts the data points written or removed.
          */
         post: operations["publishVersion"];
         delete?: never;
@@ -513,7 +516,11 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Start an import and get a URL to upload the file to */
+        /**
+         * Start an import and get a URL to upload the file to
+         * @description `contentType` is the .xlsx type (the default) or `text/csv`; the
+         *     upload URL accepts that type only. Admins only.
+         */
         post: operations["createImportUpload"];
         delete?: never;
         options?: never;
@@ -541,6 +548,64 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/imports/{id}/inspect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Server-generated identifier. */
+                id: components["parameters"]["ServerIdPath"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Look at an uploaded records export (admin only)
+         * @description Guesses each column's record field, lists the distinct values of
+         *     priority, state, and product or team columns, detects date formats,
+         *     suggests a record type, recognizes a saved `records` template, and
+         *     suggests the org unit or tracked item each product or team value
+         *     means. Nothing is stored. CSV files are read with the header on line
+         *     1, workbooks from the first visible sheet.
+         */
+        post: operations["inspectImport"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/imports/{id}/records-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Server-generated identifier. */
+                id: components["parameters"]["ServerIdPath"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Preview importing an uploaded records export (admin only)
+         * @description Reads the upload with a saved `records` template (`templateId`) or an
+         *     inline one (`template`); exactly one is required. Returns the row
+         *     counts, what changes on the scorecard, and what needs the admin's
+         *     input. Nothing is applied: the preview and its answers are stored on
+         *     the import (status `parsed`, profile `records`) for apply. An import
+         *     may be previewed again until it is applied. `draftVersionId`
+         *     evaluates a draft methodology version in place of the versions in
+         *     force. `missing` lists the open records a full export no longer has.
+         */
+        post: operations["previewRecordsImport"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/imports/{id}/apply": {
         parameters: {
             query?: never;
@@ -553,8 +618,114 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Apply a parsed change set */
+        /**
+         * Apply a parsed change set or a records preview (admin only)
+         * @description A `legacy_workbook` import ignores the body. A `records` import needs
+         *     the answers of its stored preview: different answers fail with 409
+         *     "preview is out of date". It stores the snapshot, the records, and
+         *     the answered source keys and shared units, then recalculates derived
+         *     values; `saveTemplate` also saves the template with the answered
+         *     value maps and date order. The response's `records` describes what
+         *     was applied. An import can be applied once.
+         */
         post: operations["applyImport"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/record-types": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List the tenant's record types */
+        get: operations["listRecordTypes"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/record-types/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Record type ID. */
+                id: components["parameters"]["RecordTypeId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Create or replace a record type (admin only)
+         * @description `revision` is the revision the client loaded: 0 creates the type,
+         *     which must not exist yet. A stale revision fails with 409.
+         */
+        put: operations["putRecordType"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/scorecards/{sc}/records/sample": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Scorecard ID. */
+                sc: components["parameters"]["ScorecardId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Count the records a condition matches in a period (admin only)
+         * @description Counts, per org unit or tracked item, the stored records of
+         *     `recordType` whose `bucketBy` date falls in `period` and that match
+         *     `where` (each record as of its latest revision). Records whose
+         *     product or team matches no single leaf subject are not counted. A
+         *     `where` that does not compile fails with 400 at `where`.
+         */
+        post: operations["sampleRecords"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/scorecards/{sc}/records/contributions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Scorecard ID. */
+                sc: components["parameters"]["ScorecardId"];
+            };
+            cookie?: never;
+        };
+        /**
+         * The records behind a metric cell
+         * @description For each derived measure the metric's formula references (under the
+         *     version in force for the period), the stored data point beside the
+         *     value records give, and the records that contribute to it. A
+         *     rolled-up subject lists the contributions of every leaf subject below
+         *     it that the caller may read. Requires data read access to the
+         *     subject. Records are paginated across measures, 100 per page; pass
+         *     `nextCursor` back as `cursor` for the next page.
+         */
+        get: operations["listRecordContributions"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -623,7 +794,7 @@ export interface components {
         Error: {
             error: {
                 /** @enum {string} */
-                code: "not_found" | "forbidden" | "conflict" | "invalid" | "unauthorized" | "not_implemented";
+                code: "not_found" | "forbidden" | "conflict" | "invalid" | "unauthorized" | "not_implemented" | "too_large";
                 message: string;
                 details?: components["schemas"]["ErrorDetail"][];
             };
@@ -999,6 +1170,10 @@ export interface components {
         PublishVersionRequest: {
             effectiveFrom: components["schemas"]["Period"];
         };
+        /** @description The published version, and how many derived data points publishing recalculated. */
+        PublishVersionResult: components["schemas"]["MethodologyVersion"] & {
+            recalculated: number;
+        };
         VersionDiff: {
             from: components["schemas"]["ServerId"];
             to: components["schemas"]["ServerId"];
@@ -1120,6 +1295,11 @@ export interface components {
             /** Format: date-time */
             enteredAt: string;
             revision: number;
+            /**
+             * @description Set only in history, on the revision that removed the value (a
+             *     derived value no longer produced). Absent on live points.
+             */
+            deleted?: boolean;
         };
         EntryRow: {
             measureKey: components["schemas"]["Key"];
@@ -1181,11 +1361,11 @@ export interface components {
             id: components["schemas"]["Id"];
             name: string;
             /**
-             * @description Only `legacy_workbook` can be stored today; `csv` is rejected.
+             * @description `legacy_workbook` or `records`; `csv` is rejected.
              * @enum {string}
              */
-            profile: "legacy_workbook" | "csv";
-            /** @description The mapping document for the profile. For `legacy_workbook` it has `sheets`, `rows` and `methodology`, and an optional `scorecardId` naming the scorecard the import writes to (default: the tenant's only scorecard). Unknown fields and invalid mappings are rejected with 400. */
+            profile: "legacy_workbook" | "csv" | "records";
+            /** @description The mapping document for the profile. For `legacy_workbook` it has `sheets`, `rows` and `methodology`, and an optional `scorecardId` naming the scorecard the import writes to (default: the tenant's only scorecard). For `records` it is a RecordTemplate for one of the tenant's record types. Unknown fields and invalid mappings are rejected with 400. */
             body: {
                 [key: string]: unknown;
             };
@@ -1227,6 +1407,309 @@ export interface components {
             findings: components["schemas"]["ImportFinding"][];
             /** @description Up to 50 of the changes, for review. */
             sample: components["schemas"]["ImportChange"][];
+            /** @description Set only when a `records` import was applied; the other fields are then empty. */
+            records?: components["schemas"]["RecordsApplied"];
+        };
+        /**
+         * @description Where one record field or attribute comes from: exactly one of
+         *     `column` (header text), `constant`, and `template` (text with
+         *     `{Column}` placeholders). `map` translates raw values (`*` is the
+         *     fallback); `default` replaces an empty cell; `dateFormats` are Go
+         *     layouts tried in order; `separator` splits a list column;
+         *     `transform` (attributes only) is nonEmpty, number, bool, date, or text.
+         */
+        RecordFieldMap: {
+            column?: string;
+            constant?: string;
+            template?: string;
+            map?: {
+                [key: string]: string;
+            };
+            default?: string;
+            dateFormats?: string[];
+            separator?: string;
+            transform?: string;
+        };
+        RecordFileSpec: {
+            /** @enum {string} */
+            format: "csv" | "xlsx";
+            /** @description Worksheet name; empty means the first visible sheet. */
+            sheet?: string;
+            /** @description 1-based row holding the headers; 0 means 1. */
+            headerRow: number;
+        };
+        RecordSkipRule: {
+            column: string;
+            in: string[];
+        };
+        /** @description Maps one export format to one record type. */
+        RecordTemplate: {
+            name: string;
+            recordType: components["schemas"]["Key"];
+            /** @description The source system records come from (part of a record's identity). */
+            source: string;
+            file: components["schemas"]["RecordFileSpec"];
+            /** @description The file lists every record, so open records it lacks are missing. */
+            fullExport: boolean;
+            fields: {
+                [key: string]: components["schemas"]["RecordFieldMap"];
+            };
+            attributes?: {
+                [key: string]: components["schemas"]["RecordFieldMap"];
+            };
+            skipRows?: components["schemas"]["RecordSkipRule"][];
+        };
+        RecordCellRef: {
+            measureKey: components["schemas"]["Key"];
+            subjectId: components["schemas"]["Id"];
+            period: components["schemas"]["Period"];
+        };
+        /**
+         * @description The admin's replies to a preview. `sourceKeys` maps a product or team
+         *     value to the org unit or tracked item it means; `ignoreValues` skips
+         *     rows carrying those values; `valueMaps` adds raw-value translations
+         *     per template field or attribute; `dateOrder` settles ambiguous dates
+         *     (`mdy`, `dmy`, or empty); `useRecords` lists typed values the derived
+         *     value replaces; `markMissingCancelled` cancels records a full export
+         *     no longer lists; `createShared` lists parent units that get a
+         *     "<name> (shared)" child.
+         */
+        RecordAnswers: {
+            sourceKeys?: {
+                [key: string]: components["schemas"]["Id"];
+            };
+            ignoreValues?: string[];
+            valueMaps?: {
+                [key: string]: {
+                    [key: string]: string;
+                };
+            };
+            dateOrder?: string;
+            useRecords?: components["schemas"]["RecordCellRef"][];
+            markMissingCancelled?: boolean;
+            createShared?: components["schemas"]["Id"][];
+        };
+        ColumnGuess: {
+            field: string;
+            column: string;
+            /** Format: double */
+            confidence: number;
+            samples: string[];
+        };
+        /** @description One distinct raw value, its row count, and its suggested meaning (empty for none). */
+        ValueCount: {
+            value: string;
+            count: number;
+            suggested: string;
+        };
+        /**
+         * @description The org unit or tracked item one product or team value probably
+         *     means: `subjectId` is the best match (empty when nothing is close),
+         *     `score` its closeness from 0.5 to 1, `candidates` up to three matches.
+         */
+        SubjectSuggestion: {
+            value: string;
+            rows: number;
+            subjectId: string;
+            /** Format: double */
+            score: number;
+            candidates: components["schemas"]["Id"][];
+        };
+        RecordInspection: {
+            headers: string[];
+            rowCount: number;
+            /** @description The first rows of the file. */
+            samples: string[][];
+            /** @description The record type the file probably holds; empty when none fits. */
+            suggestedType: string;
+            guesses: components["schemas"]["ColumnGuess"][];
+            /** @description Distinct values by field (priority, state, subjectKey). */
+            values: {
+                [key: string]: components["schemas"]["ValueCount"][];
+            };
+            /** @description Go layouts that read each date column, by header. */
+            dateFormats: {
+                [key: string]: string[];
+            };
+            /** @description Columns where day-first and month-first both fit. */
+            ambiguousDates: string[];
+            draft: components["schemas"]["RecordTemplate"];
+            /** @description The saved template this file looks like; empty when none. */
+            matchedTemplateId: string;
+            /** @description Columns of the file the matched template does not use. */
+            added: string[];
+            /** @description Columns the matched template uses that the file lacks. */
+            missing: string[];
+        };
+        RecordsInspectResult: {
+            inspection: components["schemas"]["RecordInspection"];
+            subjects: components["schemas"]["SubjectSuggestion"][];
+        };
+        RecordsPreviewRequest: {
+            scorecardId: components["schemas"]["Id"];
+            asOf: components["schemas"]["Date"];
+            templateId?: components["schemas"]["Id"];
+            template?: components["schemas"]["RecordTemplate"];
+            answers?: components["schemas"]["RecordAnswers"];
+            draftVersionId?: components["schemas"]["ServerId"];
+        };
+        /** @description Row counts; `missing` counts records. */
+        RecordCounts: {
+            new: number;
+            changed: number;
+            unchanged: number;
+            skipped: number;
+            missing: number;
+            unmatched: number;
+            errors: number;
+        };
+        /**
+         * @description One record's part in a derived value. `amount` is what it added (1
+         *     for a count, a defect's points, an age in days); `dates` holds the
+         *     dates the rule used, by field name; `subjectId` is the leaf subject
+         *     it counts for, when listed for a cell.
+         */
+        RecordContribution: {
+            source: string;
+            externalId: string;
+            title: string;
+            url: string;
+            priority: string;
+            /** @enum {string} */
+            state: "open" | "done" | "cancelled";
+            /** Format: double */
+            amount: number;
+            /** @description matched, met, missed, slipped, pending, open_days, or age_days. */
+            reason: string;
+            dates: {
+                [key: string]: components["schemas"]["Date"];
+            };
+            subjectId?: components["schemas"]["Id"];
+        };
+        /**
+         * @description One metric cell an import changes. `reasons` lists, by reason
+         *     (slipped, met, missed, newly_open, closed, priority_changed, added,
+         *     removed), the records whose part in the cell changed.
+         */
+        RecordStoryLine: {
+            period: components["schemas"]["Period"];
+            metricKey: components["schemas"]["Key"];
+            metricName: string;
+            subjectId: components["schemas"]["Id"];
+            subjectName: string;
+            beforeDisplay: string;
+            afterDisplay: string;
+            beforeStatus: string;
+            afterStatus: string;
+            reasons: {
+                [key: string]: components["schemas"]["RecordContribution"][];
+            };
+        };
+        /** @description A typed value of a derived measure beside the value records give. */
+        TypedVsRecords: {
+            measureKey: components["schemas"]["Key"];
+            subjectId: components["schemas"]["Id"];
+            period: components["schemas"]["Period"];
+            /** Format: double */
+            typed: number;
+            typedSource: string;
+            /** Format: double */
+            records: number;
+            contributions: components["schemas"]["RecordContribution"][];
+        };
+        /**
+         * @description What an import changes on the scorecard, worst status changes first;
+         *     `more` counts lines beyond the first 50. `lockedWaiting` is empty
+         *     until months can be locked.
+         */
+        RecordStory: {
+            nothingChanged: boolean;
+            lines: components["schemas"]["RecordStoryLine"][];
+            more: number;
+            typed: components["schemas"]["TypedVsRecords"][];
+            lockedWaiting: components["schemas"]["RecordStoryLine"][];
+        };
+        /** @description One thing wrong with one row; `row` is 0 for a problem with the file's columns. */
+        RecordRowProblem: {
+            row: number;
+            kind: string;
+            column: string;
+            field: string;
+            value: string;
+            message: string;
+        };
+        /** @description A product or team value that matches a parent unit, with its row count. */
+        ParentMatch: {
+            value: string;
+            rows: number;
+            unitId: components["schemas"]["Id"];
+        };
+        RecordsPreview: {
+            counts: components["schemas"]["RecordCounts"];
+            story: components["schemas"]["RecordStory"];
+            problems: components["schemas"]["RecordRowProblem"][];
+            unmatched: components["schemas"]["SubjectSuggestion"][];
+            parents: components["schemas"]["ParentMatch"][];
+            /** @description Raw values no map covers, by field. */
+            newValues: {
+                [key: string]: components["schemas"]["ValueCount"][];
+            };
+            /** @description External IDs of open records a full export no longer has. */
+            missing: string[];
+            columnsAdded: string[];
+            columnsMissing: string[];
+        };
+        ApplyImportRequest: {
+            answers?: components["schemas"]["RecordAnswers"];
+            /** @description Save the template, with the answers' value maps and date order, under this ID and name. */
+            saveTemplate?: {
+                id: components["schemas"]["Id"];
+                name: string;
+            };
+        };
+        RecordsApplied: {
+            snapshotId: components["schemas"]["ServerId"];
+            counts: components["schemas"]["RecordCounts"];
+            /** @description The template saved with the answers, when one was requested. */
+            templateId?: components["schemas"]["Id"];
+        };
+        RecordsSampleRequest: {
+            recordType: components["schemas"]["Key"];
+            where?: string;
+            /** @description A date field or date attribute key. */
+            bucketBy: string;
+            period: components["schemas"]["Period"];
+        };
+        RecordsSample: {
+            total: number;
+            bySubject: {
+                subjectId: components["schemas"]["Id"];
+                name: string;
+                count: number;
+            }[];
+        };
+        /**
+         * @description One derived measure of a metric cell. `value` and `source` are the
+         *     stored data point (null and empty when none is stored, as on a
+         *     rolled-up subject); `recordsValue` is the value records give, rolled
+         *     up over the leaf subjects listed (null when records give none, or
+         *     the measure's org aggregation cannot be rolled up here). `cutoff` is
+         *     the last day records cover; `pending` counts commitments still due.
+         *     `records` holds this page's contributions.
+         */
+        ContributionMeasure: {
+            measureKey: components["schemas"]["Key"];
+            value: components["schemas"]["MeasureValue"];
+            source: string;
+            recordsValue: components["schemas"]["MeasureValue"];
+            cutoff?: components["schemas"]["Date"];
+            pending: number;
+            records: components["schemas"]["RecordContribution"][];
+        };
+        RecordContributions: {
+            measures: components["schemas"]["ContributionMeasure"][];
+            /** @description Absent on the last page. */
+            nextCursor?: string;
         };
         AuditEntry: {
             id: components["schemas"]["ServerId"];
@@ -1292,6 +1775,15 @@ export interface components {
                 "application/json": components["schemas"]["Error"];
             };
         };
+        /** @description The uploaded file is over the 20 MiB limit (`too_large`) */
+        TooLarge: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["Error"];
+            };
+        };
     };
     parameters: {
         /** @description Client-supplied identifier. */
@@ -1304,6 +1796,8 @@ export interface components {
         ScorecardId: components["schemas"]["Id"];
         /** @description Methodology version ID. */
         VersionId: components["schemas"]["ServerId"];
+        /** @description Record type ID. */
+        RecordTypeId: components["schemas"]["Key"];
     };
     requestBodies: never;
     headers: never;
@@ -2032,7 +2526,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["MethodologyVersion"];
+                    "application/json": components["schemas"]["PublishVersionResult"];
                 };
             };
             400: components["responses"]["BadRequest"];
@@ -2387,6 +2881,69 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
+            413: components["responses"]["TooLarge"];
+        };
+    };
+    inspectImport: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Server-generated identifier. */
+                id: components["parameters"]["ServerIdPath"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description What the file looks like */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecordsInspectResult"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            413: components["responses"]["TooLarge"];
+        };
+    };
+    previewRecordsImport: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Server-generated identifier. */
+                id: components["parameters"]["ServerIdPath"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecordsPreviewRequest"];
+            };
+        };
+        responses: {
+            /** @description The preview; nothing has been applied */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecordsPreview"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            413: components["responses"]["TooLarge"];
         };
     };
     applyImport: {
@@ -2399,7 +2956,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["ApplyImportRequest"];
+            };
+        };
         responses: {
             /** @description The applied change set */
             200: {
@@ -2415,6 +2976,124 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
+        };
+    };
+    listRecordTypes: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Record types, sorted by ID */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        recordTypes: components["schemas"]["RecordType"][];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    putRecordType: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Record type ID. */
+                id: components["parameters"]["RecordTypeId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecordType"];
+            };
+        };
+        responses: {
+            /** @description The stored record type */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecordType"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+        };
+    };
+    sampleRecords: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Scorecard ID. */
+                sc: components["parameters"]["ScorecardId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecordsSampleRequest"];
+            };
+        };
+        responses: {
+            /** @description The counts, largest first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecordsSample"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    listRecordContributions: {
+        parameters: {
+            query: {
+                metric: components["schemas"]["Key"];
+                subject: components["schemas"]["Id"];
+                period: components["schemas"]["Period"];
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Scorecard ID. */
+                sc: components["parameters"]["ScorecardId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The contributions */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecordContributions"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
         };
     };
     listImportTemplates: {

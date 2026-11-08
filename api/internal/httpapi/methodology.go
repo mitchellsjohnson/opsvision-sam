@@ -11,6 +11,8 @@ import (
 	"opsvision/internal/auth"
 	"opsvision/internal/domain"
 	"opsvision/internal/period"
+	"opsvision/internal/recordimport"
+	"opsvision/internal/records"
 	"opsvision/internal/store"
 )
 
@@ -66,6 +68,44 @@ func auditOfVersion(v domain.MethodologyVersion) versionAudit {
 			"metrics":    len(v.Content.Metrics),
 		},
 	}
+}
+
+// deriveProblems checks content's derive rules against the tenant's record
+// types: domain.ValidateDerive, then each where condition compiled against
+// its record type, reported at measures[i].derive.where.
+func (s *Server) deriveProblems(ctx context.Context, tenantID string, content domain.Methodology) ([]domain.ValidationError, error) {
+	types, err := s.store.ListRecordTypes(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	errs := domain.ValidateDerive(content, types)
+	byID := make(map[string]domain.RecordType, len(types))
+	for _, rt := range types {
+		byID[rt.ID] = rt
+	}
+	for i, m := range content.Measures {
+		if m.Derive == nil || m.Derive.Where == "" {
+			continue
+		}
+		rt, ok := byID[m.Derive.RecordType]
+		if !ok {
+			continue // ValidateDerive reports the unknown record type
+		}
+		if _, err := records.CompileWhere(m.Derive.Where, rt); err != nil {
+			errs = append(errs, domain.ValidationError{Path: fmt.Sprintf("measures[%d].derive.where", i), Message: err.Error()})
+		}
+	}
+	return errs, nil
+}
+
+// methodologyProblems is everything validate and publish report: the
+// content's own rules and its derive rules.
+func (s *Server) methodologyProblems(ctx context.Context, tenant domain.Tenant, content domain.Methodology) ([]domain.ValidationError, error) {
+	derive, err := s.deriveProblems(ctx, tenant.ID, content)
+	if err != nil {
+		return nil, err
+	}
+	return append(content.Validate(statusScale(tenant)), derive...), nil
 }
 
 // scorecardOf loads a scorecard of the tenant, or reports 404.
@@ -262,7 +302,9 @@ func (s *Server) GetVersion(ctx context.Context, req GetVersionRequestObject) (G
 
 // PutVersion saves a draft's name and content. The content is stored as
 // sent, however incomplete: a draft is work in progress, and the validate
-// operation checks it. Admins only.
+// operation checks it. Derive rules are the exception: one that does not fit
+// the tenant's record types, or whose where condition does not compile, is
+// refused. Admins only.
 func (s *Server) PutVersion(ctx context.Context, req PutVersionRequestObject) (PutVersionResponseObject, error) {
 	p, err := methodologyAdmin(ctx)
 	if err != nil {
@@ -287,6 +329,16 @@ func (s *Server) PutVersion(ctx context.Context, req PutVersionRequestObject) (P
 	}
 
 	tenantID := p.Tenant.ID
+	derive, err := s.deriveProblems(ctx, tenantID, content)
+	if err != nil {
+		return nil, err
+	}
+	for _, e := range derive {
+		pr.add("content."+e.Path, "%s", e.Message)
+	}
+	if err := pr.err(); err != nil {
+		return nil, err
+	}
 	cur, err := s.versionOf(ctx, tenantID, req.Sc, req.V)
 	if err != nil {
 		return nil, err
@@ -314,8 +366,8 @@ func (s *Server) PutVersion(ctx context.Context, req PutVersionRequestObject) (P
 }
 
 // ValidateVersion checks a version's content against the tenant's status
-// scale. Always 200 for an existing version; problems are in the body.
-// Admins only.
+// scale and its derive rules against the tenant's record types. Always 200
+// for an existing version; problems are in the body. Admins only.
 func (s *Server) ValidateVersion(ctx context.Context, req ValidateVersionRequestObject) (ValidateVersionResponseObject, error) {
 	p, err := methodologyAdmin(ctx)
 	if err != nil {
@@ -331,7 +383,11 @@ func (s *Server) ValidateVersion(ctx context.Context, req ValidateVersionRequest
 	if err != nil {
 		return nil, err
 	}
-	errs := validationDetails(v.Content.Validate(statusScale(*p.Tenant)))
+	found, err := s.methodologyProblems(ctx, *p.Tenant, v.Content)
+	if err != nil {
+		return nil, err
+	}
+	errs := validationDetails(found)
 	out := make([]ErrorDetail, 0, len(errs))
 	for _, d := range errs {
 		out = append(out, ErrorDetail{Path: d.Path, Message: d.Message})
@@ -355,7 +411,8 @@ func inForce(v domain.MethodologyVersion) bool {
 
 // PublishVersion makes a draft effective from a month. Published versions
 // are immutable. The version in force immediately before the new month, if
-// still marked published, becomes superseded. Admins only.
+// still marked published, becomes superseded. Derived values of open periods
+// are then recalculated under the versions now in force. Admins only.
 func (s *Server) PublishVersion(ctx context.Context, req PublishVersionRequestObject) (PublishVersionResponseObject, error) {
 	p, err := methodologyAdmin(ctx)
 	if err != nil {
@@ -380,7 +437,11 @@ func (s *Server) PublishVersion(ctx context.Context, req PublishVersionRequestOb
 	if inForce(cur) {
 		return nil, conflict("version is already published")
 	}
-	if errs := cur.Content.Validate(statusScale(*p.Tenant)); len(errs) > 0 {
+	errs, err := s.methodologyProblems(ctx, *p.Tenant, cur.Content)
+	if err != nil {
+		return nil, err
+	}
+	if len(errs) > 0 {
 		return nil, badRequest("methodology is invalid", validationDetails(errs)...)
 	}
 
@@ -428,7 +489,42 @@ func (s *Server) PublishVersion(ctx context.Context, req PublishVersionRequestOb
 			return nil, err
 		}
 	}
-	return PublishVersion200JSONResponse(apiVersion(stored)), nil
+
+	n, err := s.recalculate(ctx, p, req.Sc, stored.ID)
+	if err != nil {
+		return nil, err
+	}
+	v := apiVersion(stored)
+	return PublishVersion200JSONResponse{
+		Id: v.Id, ScorecardId: v.ScorecardId, Name: v.Name, Status: v.Status, EffectiveFrom: v.EffectiveFrom,
+		PublishedAt: v.PublishedAt, Revision: v.Revision, Content: v.Content, Recalculated: n,
+	}, nil
+}
+
+// recalculate brings a scorecard's derived points up to date with the stored
+// records under the versions in force, and returns the number of points
+// written or removed. Phase 1 has no month lock, so every period is open.
+// The writes are audited against the version whose publication caused them.
+func (s *Server) recalculate(ctx context.Context, p auth.Principal, scorecardID, versionID string) (int, error) {
+	tenantID := p.Tenant.ID
+	writes, err := recordimport.Recalculate(ctx, s.store, *p.Tenant, scorecardID, func(period.Period) bool { return false }, nil)
+	if err != nil {
+		return 0, fmt.Errorf("httpapi: recalculate derived values: %w", err)
+	}
+	if len(writes) == 0 {
+		return 0, nil
+	}
+	now := s.now()
+	for i := range writes {
+		writes[i].Point.EnteredBy, writes[i].Point.EnteredAt = p.UserID, now
+	}
+	if _, err := s.store.PutDataPoints(ctx, tenantID, scorecardID, writes); err != nil {
+		return 0, fmt.Errorf("httpapi: save recalculated derived values: %w", err)
+	}
+	if err := s.audit(ctx, p, tenantID, "records.recalculate", "version", versionID, nil, map[string]int{"dataPoints": len(writes)}); err != nil {
+		return 0, err
+	}
+	return len(writes), nil
 }
 
 // GetVersionDiff compares a version with another version of the scorecard,

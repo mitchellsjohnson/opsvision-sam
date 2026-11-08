@@ -194,6 +194,9 @@ func (s *Server) GetScorecardView(ctx context.Context, req GetScorecardViewReque
 		if !found {
 			return nil, badRequest("request validation failed", detail{Path: "restate", Message: "not a methodology version of this scorecard"})
 		}
+		if err := s.restateDerived(ctx, *p.Tenant, sc.ID, in, vr.Restate, fiscalYears(true, cols...)); err != nil {
+			return nil, err
+		}
 	}
 	view, err := engine.Compute(in, vr)
 	if err != nil {

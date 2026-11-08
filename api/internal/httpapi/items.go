@@ -145,12 +145,11 @@ func (s *Server) CreateItem(ctx context.Context, req CreateItemRequestObject) (C
 	if b.OrgUnitId != "" && !hasUnit(units, b.OrgUnitId) {
 		pr.add("orgUnitId", "org unit %q does not exist", b.OrgUnitId)
 	}
-	owners, err := s.sourceKeyOwners(ctx, tenantID, units, "", "")
-	if err != nil {
+	checkKeyConflicts(&pr, "sourceKeys", keys)
+	if err := pr.err(); err != nil {
 		return nil, err
 	}
-	checkKeyConflicts(&pr, "sourceKeys", keys, owners)
-	if err := pr.err(); err != nil {
+	if err := sourceKeyConflict("sourceKeys", keys, units, existing, "", ""); err != nil {
 		return nil, err
 	}
 
@@ -218,14 +217,15 @@ func (s *Server) UpdateItem(ctx context.Context, req UpdateItemRequestObject) (U
 		pr.add("orgUnitId", "org unit %q does not exist", *b.OrgUnitId)
 	}
 	if b.SourceKeys != nil {
-		owners, err := s.sourceKeyOwners(ctx, tenantID, units, "", current.ID)
-		if err != nil {
-			return nil, err
-		}
-		checkKeyConflicts(&pr, "sourceKeys", keys, owners)
+		checkKeyConflicts(&pr, "sourceKeys", keys)
 	}
 	if err := pr.err(); err != nil {
 		return nil, err
+	}
+	if b.SourceKeys != nil {
+		if err := sourceKeyConflict("sourceKeys", keys, units, items, "", current.ID); err != nil {
+			return nil, err
+		}
 	}
 
 	updated := current
