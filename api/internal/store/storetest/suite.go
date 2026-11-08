@@ -66,6 +66,7 @@ func Run(t *testing.T, newStore func(t *testing.T) store.Store) {
 		{"ReturnedValuesAreCopies", returnedValuesAreCopies},
 		{"ConcurrentWritersOneWins", concurrentWritersOneWins},
 		{"TemplateRevisionIncrements", templateRevisionIncrements},
+		{"TemplateLastUsedKeepsRevision", templateLastUsedKeepsRevision},
 		{"RecordTypeRevision", recordTypeRevision},
 		{"ApplySnapshotGroupsRevisions", applySnapshotGroupsRevisions},
 		{"ApplySnapshotLargeBatch", applySnapshotLargeBatch},
@@ -1416,6 +1417,69 @@ func templateRevisionIncrements(t *testing.T, s store.Store) {
 	must(t, s.DeleteTemplate(ctx, tn, "a"))
 	must(t, s.PutTemplate(ctx, tn, store.Template{ID: "a", Name: "Again"}))
 	wantEq(t, "recreated", list(tn)["a"].Revision, 1)
+}
+
+func templateLastUsedKeepsRevision(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	tn := newTenant(t, s)
+	get := func() store.Template {
+		t.Helper()
+		ts, err := s.ListTemplates(ctx, tn)
+		must(t, err)
+		wantEq(t, "template count", len(ts), 1)
+		return ts[0]
+	}
+
+	tpl := store.Template{ID: "a", Name: "A", Profile: "csv", Body: json.RawMessage(`{"cols":[1]}`)}
+	must(t, s.PutTemplate(ctx, tn, tpl))
+	wantEq(t, "first save", get().Revision, 1)
+
+	// Touching only LastUsed keeps the revision and updates LastUsed.
+	used := at(20)
+	tpl.LastUsed = &used
+	must(t, s.PutTemplate(ctx, tn, tpl))
+	got := get()
+	wantEq(t, "revision after touch", got.Revision, 1)
+	if got.LastUsed == nil || !got.LastUsed.Equal(used) {
+		t.Fatalf("LastUsed = %v, want %v", got.LastUsed, used)
+	}
+	used2 := at(21)
+	tpl.LastUsed = &used2
+	must(t, s.PutTemplate(ctx, tn, tpl))
+	got = get()
+	wantEq(t, "revision after second touch", got.Revision, 1)
+	if !got.LastUsed.Equal(used2) {
+		t.Fatalf("LastUsed = %v, want %v", got.LastUsed, used2)
+	}
+
+	// Re-saving the same Body with different whitespace is not a change.
+	tpl.Body = json.RawMessage(`{ "cols": [ 1 ] }`)
+	must(t, s.PutTemplate(ctx, tn, tpl))
+	wantEq(t, "revision after whitespace-only body edit", get().Revision, 1)
+
+	// Changing the body, name or profile increments, and LastUsed rides along.
+	tpl.Body = json.RawMessage(`{"cols":[1,2]}`)
+	must(t, s.PutTemplate(ctx, tn, tpl))
+	wantEq(t, "revision after body change", get().Revision, 2)
+	tpl.Name = "A renamed"
+	must(t, s.PutTemplate(ctx, tn, tpl))
+	wantEq(t, "revision after name change", get().Revision, 3)
+	tpl.Profile = "workbook"
+	must(t, s.PutTemplate(ctx, tn, tpl))
+	got = get()
+	wantEq(t, "revision after profile change", got.Revision, 4)
+	if !got.LastUsed.Equal(used2) {
+		t.Fatalf("LastUsed = %v, want %v", got.LastUsed, used2)
+	}
+
+	// Clearing LastUsed alone is also not a content change.
+	tpl.LastUsed = nil
+	must(t, s.PutTemplate(ctx, tn, tpl))
+	got = get()
+	wantEq(t, "revision after clearing LastUsed", got.Revision, 4)
+	if got.LastUsed != nil {
+		t.Fatalf("LastUsed = %v, want nil", got.LastUsed)
+	}
 }
 
 func recordType(id, name string) domain.RecordType {

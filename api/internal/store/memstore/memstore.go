@@ -787,13 +787,18 @@ func (s *Store) GetImport(_ context.Context, tenantID, id string) (store.Import,
 	return cloneImport(im), nil
 }
 
-// PutTemplate implements store.ImportStore.
+// PutTemplate implements store.ImportStore. The revision increments only
+// when the content changes (store.TemplateContentChanged).
 func (s *Store) PutTemplate(_ context.Context, tenantID string, t store.Template) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	td := s.tenant(tenantID)
 	c := cloneTemplate(t)
-	c.Revision = td.templates[t.ID].Revision + 1 // 1 when new
+	prev, exists := td.templates[t.ID]
+	c.Revision = prev.Revision
+	if !exists || store.TemplateContentChanged(prev, t) {
+		c.Revision++ // 1 when new
+	}
 	td.templates[t.ID] = c
 	return nil
 }

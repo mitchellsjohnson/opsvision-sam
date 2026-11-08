@@ -8,6 +8,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -199,12 +200,35 @@ type Template struct {
 	LastUsed *time.Time      `json:"lastUsed,omitempty"`
 }
 
+// TemplateContentChanged reports whether next differs from prev in content,
+// that is in Name, Profile or Body. ID, Revision and LastUsed are not content.
+// Bodies are compared as JSON after compaction, so whitespace differences do
+// not count; a Body that is not valid JSON is compared byte for byte, and an
+// empty Body equals a nil one. Stores use it to decide whether PutTemplate
+// increments Revision.
+func TemplateContentChanged(prev, next Template) bool {
+	if prev.Name != next.Name || prev.Profile != next.Profile {
+		return true
+	}
+	return !bytes.Equal(compactJSON(prev.Body), compactJSON(next.Body))
+}
+
+func compactJSON(b json.RawMessage) []byte {
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, b); err != nil {
+		return b
+	}
+	return buf.Bytes()
+}
+
 // ImportStore holds imports and import templates. Puts upsert by ID.
 type ImportStore interface {
 	PutImport(ctx context.Context, tenantID string, im Import) error
 	GetImport(ctx context.Context, tenantID, id string) (Import, error)
-	// PutTemplate upserts a template. The stored Revision is the previous
-	// stored Revision plus one (1 for a new template); the Revision field of
+	// PutTemplate upserts a template. A new template is stored with Revision
+	// 1. For an existing one the Revision increments only when the content
+	// changes (see TemplateContentChanged: Name, Profile or Body); a save that
+	// changes only LastUsed keeps the stored Revision. The Revision field of
 	// t is ignored. LastUsed is stored as given, so a caller that edits a
 	// template must carry the stored value forward.
 	PutTemplate(ctx context.Context, tenantID string, t Template) error

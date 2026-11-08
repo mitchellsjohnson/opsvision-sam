@@ -1150,19 +1150,26 @@ func (s *Store) GetImport(ctx context.Context, tenantID, id string) (store.Impor
 }
 
 // PutTemplate implements store.ImportStore. The stored Revision is the
-// previous one plus one. The write is conditional on the revision that was
-// read (or on the template not existing), and is re-read and retried when a
-// concurrent save wins, so no revision number is ever issued twice.
+// previous one plus one when the content changed (store.TemplateContentChanged)
+// and unchanged for a LastUsed-only save. The write is conditional on the
+// revision that was read (or on the template not existing), and is re-read
+// and retried when a concurrent save wins, so no revision number is ever
+// issued twice.
 func (s *Store) PutTemplate(ctx context.Context, tenantID string, t store.Template) error {
 	for attempt := 1; ; attempt++ {
 		prev, found := 0, false
+		var old store.Template
 		cur, err := get[templateItem](ctx, s, tenantPK(tenantID), templateSK(t.ID))
 		switch {
 		case errors.Is(err, store.ErrNotFound):
 		case err != nil:
 			return err
 		default:
-			prev, found = cur.Revision, true
+			prev, found, old = cur.Revision, true, cur.domain()
+		}
+		next := prev + 1
+		if prev > 0 && !store.TemplateContentChanged(old, t) {
+			next = prev // only LastUsed changed
 		}
 		cond, names, values := notExists, map[string]string(nil), avMap(nil)
 		switch {
@@ -1174,7 +1181,7 @@ func (s *Store) PutTemplate(ctx context.Context, tenantID string, t store.Templa
 			// Saved before templates had revisions: it counts as revision 0.
 			cond = "attribute_exists(PK)"
 		}
-		err = s.put(ctx, newTemplateItem(tenantID, t, prev+1), cond, names, values)
+		err = s.put(ctx, newTemplateItem(tenantID, t, next), cond, names, values)
 		if !errors.Is(err, errConditionFailed) {
 			return err
 		}
