@@ -299,6 +299,21 @@ func zeroOf(kind domain.AttrType) any {
 	return ""
 }
 
+// FieldDate returns the date field or date attribute name of f as a calendar
+// day, and false when it is empty. It fails when a date attribute holds a
+// value of another type.
+func FieldDate(f domain.RecordFields, name string) (domain.Date, bool, error) {
+	v, err := fieldValue(f, name, domain.AttrDate)
+	if err != nil {
+		return domain.Date{}, false, err
+	}
+	t, ok := v.(time.Time)
+	if !ok {
+		return domain.Date{}, false, nil
+	}
+	return domain.Date{Time: t}, true, nil
+}
+
 // fieldValue returns the run-time value of the field or attribute name in f:
 // a string, float64, bool, time.Time, []time.Time, or nil when missing.
 func fieldValue(f domain.RecordFields, name string, kind domain.AttrType) (any, error) {

@@ -171,6 +171,14 @@ func withAnswers(t records.Template, rt domain.RecordType, ans Answers) (records
 	return t, nil
 }
 
+// TemplateWithAnswers returns a copy of t that reads the file the way Build
+// reads it with ans: the date order's layouts first on every date field and
+// date attribute, and the answered values in each field's map. Saving it
+// keeps the answers for the next upload.
+func TemplateWithAnswers(t records.Template, rt domain.RecordType, ans Answers) (records.Template, error) {
+	return withAnswers(t, rt, ans)
+}
+
 // identityValues are the values a field accepts as written when it has no map.
 func identityValues(field string, attr bool, rt domain.RecordType) []string {
 	if attr {

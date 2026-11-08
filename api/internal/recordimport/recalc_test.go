@@ -177,3 +177,33 @@ func TestDraftPreview(t *testing.T) {
 		t.Errorf("Build stored a draft value")
 	}
 }
+
+func TestLoadDeriveInputDropsOrphanRevisions(t *testing.T) {
+	f := newFixture(t)
+	f.load(octoberEpics(), "2026-10-31")
+	// A revision whose snapshot was never stored (a failed partial apply).
+	orphan := store.RecordRevisionWrite{Source: "tracker", ExternalID: "CHK-9", Type: "epic",
+		Rev: domain.RecordRevision{AsOf: day("2026-10-31"), SnapshotID: "lost", Fields: domain.RecordFields{SubjectKey: "Checkout", State: domain.StateOpen}}}
+	if err := f.st.ApplySnapshot(f.ctx, acme.ID, domain.Snapshot{ID: "tmp", RecordType: "epic", Source: "tracker", AsOf: day("2026-10-31")}, []store.RecordRevisionWrite{orphan}); err != nil {
+		t.Fatal(err)
+	}
+	in, err := LoadDeriveInput(f.ctx, f.st, acme, scID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if in.Tree == nil || len(in.Types) != 1 || in.LatestAsOf["epic"].String() != "2026-10-31" {
+		t.Fatalf("input = %+v", in)
+	}
+	ids := map[string]bool{}
+	for _, r := range in.Records {
+		ids[r.ExternalID] = true
+		for _, rv := range r.Revisions {
+			if rv.SnapshotID == "lost" {
+				t.Errorf("orphan revision kept on %s", r.ExternalID)
+			}
+		}
+	}
+	if !ids["CHK-1"] || !ids["BIL-1"] {
+		t.Errorf("records = %v", ids)
+	}
+}

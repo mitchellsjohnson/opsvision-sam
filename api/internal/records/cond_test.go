@@ -202,3 +202,21 @@ func TestWhereDates(t *testing.T) {
 		t.Error("missing dueAt should not match in")
 	}
 }
+
+func TestFieldDate(t *testing.T) {
+	due := day("2026-10-31")
+	f := domain.RecordFields{CreatedAt: day("2026-09-03"), DueAt: &due,
+		Attributes: map[string]any{"reviewedAt": "2026-09-10", "team": "Payments"}}
+	for name, want := range map[string]string{"createdAt": "2026-09-03", "dueAt": "2026-10-31", "reviewedAt": "2026-09-10"} {
+		got, ok, err := FieldDate(f, name)
+		if err != nil || !ok || got.String() != want {
+			t.Errorf("FieldDate(%s) = %v, %v, %v; want %s", name, got, ok, err, want)
+		}
+	}
+	if _, ok, err := FieldDate(f, "completedAt"); ok || err != nil {
+		t.Errorf("empty completedAt = %v, %v", ok, err)
+	}
+	if _, _, err := FieldDate(f, "team"); err == nil {
+		t.Error("a string attribute read as a date did not fail")
+	}
+}

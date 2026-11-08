@@ -714,3 +714,23 @@ func TestBuildDoesNotStore(t *testing.T) {
 		t.Errorf("Build created units: %d", len(units))
 	}
 }
+
+func TestTemplateWithAnswers(t *testing.T) {
+	rt := domain.RecordType{ID: "epic", Name: "Epic"}
+	got, err := TemplateWithAnswers(epicTemplate(), rt, Answers{DateOrder: "dmy", ValueMaps: map[string]map[string]string{"state": {"Shelved": "cancelled"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Fields["state"].Map["Shelved"] != "cancelled" || got.Fields["state"].Map["Done"] != "done" {
+		t.Errorf("state map = %v", got.Fields["state"].Map)
+	}
+	if fm := got.Fields["dueAt"].DateFormats; len(fm) != 3 || fm[0] != "02/01/2006" || fm[2] != "2006-01-02" {
+		t.Errorf("dueAt formats = %v", fm)
+	}
+	if _, ok := epicTemplate().Fields["state"].Map["Shelved"]; ok {
+		t.Error("the input template was modified")
+	}
+	if _, err := TemplateWithAnswers(epicTemplate(), rt, Answers{ValueMaps: map[string]map[string]string{"priority": {"x": "P1"}}}); err == nil {
+		t.Error("an answer for an unmapped field did not fail")
+	}
+}

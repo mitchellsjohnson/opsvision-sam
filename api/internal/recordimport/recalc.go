@@ -362,6 +362,17 @@ func pointsBySlot(pts []domain.DataPoint) map[CellRef]domain.DataPoint {
 	return out
 }
 
+// LoadDeriveInput reads what derivation reads for a tenant, as Recalculate
+// sees it: the org, tracked items, record types, and the records with
+// revisions left over from a failed partial apply dropped.
+func LoadDeriveInput(ctx context.Context, st store.Store, tenant domain.Tenant, scorecardID string) (records.DeriveInput, error) {
+	w, err := loadWorld(ctx, st, tenant, scorecardID)
+	if err != nil {
+		return records.DeriveInput{}, err
+	}
+	return w.deriveInput(), nil
+}
+
 // Recalculate returns the writes that bring a scorecard's derived points up
 // to date with the stored records. Each period is derived under the
 // methodology version in force for it, for every derived measure, for the
