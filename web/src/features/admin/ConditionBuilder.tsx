@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { useRecordValues } from '../../api/queries'
 import {
+  NUMBER_TEXT,
   dateFieldsOf,
   defaultValue,
   isComplete,
@@ -125,6 +126,9 @@ export function ConditionBuilder({
             const kind = f?.kind ?? 'text'
             const ops = opsFor(kind)
             const done = isComplete(row, dates)
+            const text = typeof row.value === 'string' ? row.value.trim() : ''
+            const notNumber = kind === 'number' && !done && text !== '' && !NUMBER_TEXT.test(text)
+            const noteId = `${id}-note-${i}`
             return (
               <li key={i} data-row={i} className="flex flex-wrap items-start gap-2">
                 <select
@@ -161,6 +165,8 @@ export function ConditionBuilder({
                   known={f ? knownValues[f.key] : undefined}
                   listId={`${id}-values-${i}`}
                   hintId={`${id}-list-hint`}
+                  noteId={done ? undefined : noteId}
+                  invalid={notNumber}
                   onChange={(value) => setRow(i, { ...row, value })}
                 />
                 <button
@@ -174,7 +180,17 @@ export function ConditionBuilder({
                 >
                   Remove
                 </button>
-                {!done && <p className="basis-full text-sm text-ink/80">Not used until it has a value.</p>}
+                {notNumber ? (
+                  <p id={noteId} className="basis-full text-sm font-medium text-status-r">
+                    <span className="sr-only">Error: </span>Enter a number. This condition is not used until it has one.
+                  </p>
+                ) : (
+                  !done && (
+                    <p id={noteId} className="basis-full text-sm text-ink/80">
+                      Not used until it has a value.
+                    </p>
+                  )
+                )}
               </li>
             )
           })}
@@ -231,6 +247,8 @@ function ValueEditor({
   known,
   listId,
   hintId,
+  noteId,
+  invalid,
   onChange,
 }: {
   n: number
@@ -241,10 +259,15 @@ function ValueEditor({
   known: readonly string[] | undefined
   listId: string
   hintId: string
+  /** The row's "not used yet" note, when it shows. */
+  noteId?: string
+  invalid?: boolean
   onChange: (value: ConditionRow['value']) => void
 }) {
   const suggestions = useSuggestions(recordType, field, known)
   const label = `Condition ${n} value`
+  const describedBy = noteId
+  const listDescribedBy = noteId ? `${hintId} ${noteId}` : hintId
   if (row.op === 'is_empty' || row.op === 'not_empty' || !field) return null
   const text = typeof row.value === 'string' ? row.value : ''
 
@@ -263,7 +286,13 @@ function ValueEditor({
   }
   if (field.kind === 'date') {
     return (
-      <select aria-label={label} className={`${inputClass} w-auto`} value={text} onChange={(e) => onChange(e.target.value)}>
+      <select
+        aria-label={label}
+        aria-describedby={describedBy}
+        className={`${inputClass} w-auto`}
+        value={text}
+        onChange={(e) => onChange(e.target.value)}
+      >
         {text === '' && <option value="">Choose a date</option>}
         {fields
           .filter((x) => x.kind === 'date' && x.key !== field.key)
@@ -280,7 +309,7 @@ function ValueEditor({
     if (row.op === 'one_of') {
       const chosen = new Set(Array.isArray(row.value) ? row.value : [])
       return (
-        <fieldset className="flex flex-wrap gap-x-3 gap-y-1 pt-2">
+        <fieldset className="flex flex-wrap gap-x-3 gap-y-1 pt-2" aria-describedby={describedBy}>
           <legend className="sr-only">{`Condition ${n} values`}</legend>
           {options.map((o) => (
             <label key={o.value} className="flex items-center gap-1 text-sm">
@@ -311,6 +340,8 @@ function ValueEditor({
     return (
       <input
         aria-label={label}
+        aria-describedby={describedBy}
+        aria-invalid={invalid || undefined}
         inputMode="decimal"
         className={`${inputClass} w-28`}
         value={text}
@@ -333,13 +364,13 @@ function ValueEditor({
     const chosen = Array.isArray(row.value) ? row.value : []
     const offered = suggestions.slice(0, CHECKBOX_LIMIT)
     if (offered.length === 0) {
-      return <ListInput label={`Condition ${n} values`} describedBy={hintId} value={chosen} onChange={onChange} />
+      return <ListInput label={`Condition ${n} values`} describedBy={listDescribedBy} value={chosen} onChange={onChange} />
     }
     const offeredValues = new Set(offered.map((s) => s.value))
     const others = chosen.filter((v) => !offeredValues.has(v))
     return (
       <div className="space-y-1 pt-2">
-        <fieldset className="flex flex-wrap gap-x-3 gap-y-1">
+        <fieldset className="flex flex-wrap gap-x-3 gap-y-1" aria-describedby={describedBy}>
           <legend className="sr-only">{`Condition ${n} values`}</legend>
           {offered.map((s) => (
             <label key={s.value} className="flex items-center gap-1 text-sm">
@@ -370,7 +401,14 @@ function ValueEditor({
   }
   return (
     <>
-      <input aria-label={label} className={`${inputClass} w-auto`} list={list} value={text} onChange={(e) => onChange(e.target.value)} />
+      <input
+        aria-label={label}
+        aria-describedby={describedBy}
+        className={`${inputClass} w-auto`}
+        list={list}
+        value={text}
+        onChange={(e) => onChange(e.target.value)}
+      />
       {datalist}
     </>
   )

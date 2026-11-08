@@ -35,7 +35,11 @@ function useDebounced<T>(value: T, ms: number): T {
 
 const count = (n: number) => n.toLocaleString('en-US')
 
-/** "Last month this matches 212 records (Checkout 41, Billing 18, …)" for a filter, as you edit it. */
+/**
+ * "Last month this matches 212 records (Checkout 41, Billing 18, …)" for a
+ * filter, as you edit it. Records counted by their created date read as
+ * created: "Last month 212 records were created (…)".
+ */
 export function SampleLine({
   sc,
   recordType,
@@ -61,11 +65,16 @@ export function SampleLine({
       : `Could not count matching records: ${e.message}`
   } else if (sample.data) {
     const { total, bySubject } = sample.data
-    if (total === 0) text = 'Last month this matches no records.'
+    const created = bucketBy === 'createdAt'
+    const matching = where.trim() === '' ? '' : 'matching '
+    if (total === 0) text = created ? `Last month no ${matching}records were created.` : 'Last month this matches no records.'
     else {
       const top = bySubject.slice(0, 3).map((s) => `${s.name} ${count(s.count)}`)
       const list = top.length > 0 ? ` (${top.join(', ')}${bySubject.length > top.length ? ', …' : ''})` : ''
-      text = `Last month this matches ${count(total)} ${total === 1 ? 'record' : 'records'}${list}`
+      const records = total === 1 ? 'record' : 'records'
+      text = created
+        ? `Last month ${count(total)} ${matching}${records} ${total === 1 ? 'was' : 'were'} created${list}`
+        : `Last month this matches ${count(total)} ${records}${list}`
     }
   } else if (sample.isFetching) text = 'Counting matching records…'
 

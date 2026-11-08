@@ -65,7 +65,7 @@ describe('DeriveEditor', () => {
     const user = userEvent.setup()
     renderApp(<Harness types={rules.recordTypes} />)
     expect(
-      await screen.findByText('Last month this matches 212 records (Checkout 41, Billing 18, Identity 12, …)'),
+      await screen.findByText('Last month 212 records were created (Checkout 41, Billing 18, Identity 12, …)'),
     ).toBeTruthy()
     expect(samples()[0]?.body).toEqual({ recordType: 'defect', bucketBy: 'createdAt', period: lastMonth() })
 
@@ -74,7 +74,7 @@ describe('DeriveEditor', () => {
     await user.selectOptions(screen.getByLabelText('Condition 1 field'), 'customerTicket')
     expect((screen.getByLabelText('Condition 1 operator') as HTMLSelectElement).value).toBe('is')
     expect((screen.getByLabelText('Condition 1 value') as HTMLSelectElement).value).toBe('yes')
-    expect(await screen.findByText('Last month this matches 1 record (Billing 1)')).toBeTruthy()
+    expect(await screen.findByText('Last month 1 matching record was created (Billing 1)')).toBeTruthy()
     expect(samples().at(-1)?.body).toMatchObject({ recordType: 'defect', where: 'customerTicket' })
   })
 
@@ -134,10 +134,30 @@ describe('DeriveEditor', () => {
     expect(screen.queryByText(/derive|subject|revision/i)).toBeNull()
   })
 
+  it('ties "Not used until it has a value" to the control, and asks for a number', async () => {
+    const user = userEvent.setup()
+    renderApp(<Harness types={rules.recordTypes} />)
+    await user.click(screen.getByRole('button', { name: 'Add condition' }))
+    const value = screen.getByLabelText('Condition 1 value')
+    expect(describedText(value)).toContain('Not used until it has a value.')
+    await user.type(value, 'Bug')
+    expect(screen.queryByText('Not used until it has a value.')).toBeNull()
+
+    await user.selectOptions(screen.getByLabelText('Condition 1 field'), 'planned')
+    const n = screen.getByLabelText('Condition 1 value')
+    await user.type(n, 'abc')
+    expect(n.getAttribute('aria-invalid')).toBe('true')
+    expect(describedText(n)).toContain('Enter a number')
+    await user.clear(n)
+    await user.type(n, '12.5')
+    expect(n.getAttribute('aria-invalid')).toBeNull()
+    expect(screen.queryByText(/Enter a number/)).toBeNull()
+  })
+
   it('has no axe violations', async () => {
     const user = userEvent.setup()
     const { container } = renderApp(<Harness types={rules.recordTypes} />)
-    await screen.findByText(/Last month this matches/)
+    await screen.findByText(/Last month 212 records were created/)
     await user.click(screen.getByRole('button', { name: 'Add condition' }))
     await user.click(screen.getByRole('button', { name: 'Show advanced' }))
     expect((await axe(container)).violations).toEqual([])

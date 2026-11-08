@@ -325,7 +325,8 @@ function recordCount(n: number): string {
 function RecordsSkeleton() {
   return (
     <div role="status" aria-label="Loading records" className="mt-2">
-      <div className="space-y-2 motion-safe:animate-pulse">
+      <span className="sr-only">Loading records</span>
+      <div aria-hidden="true" className="space-y-2 motion-safe:animate-pulse">
         {Array.from({ length: 3 }, (_, i) => (
           <div key={i} className="h-6 rounded bg-ink/10" />
         ))}

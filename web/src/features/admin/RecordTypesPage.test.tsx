@@ -86,6 +86,9 @@ describe('RecordTypesPage', () => {
     await user.click(within(editor).getByRole('button', { name: 'Add priority' }))
     await user.click(within(editor).getByRole('button', { name: 'Add custom field' }))
     await user.type(within(editor).getByLabelText('Custom field 1 name'), 'Customer impact')
+    // The key follows the name, and is shown only under Advanced.
+    expect(within(editor).queryByLabelText('Custom field 1 key')).toBeNull()
+    await user.click(within(editor).getByRole('button', { name: 'Show advanced' }))
     expect((within(editor).getByLabelText('Custom field 1 key') as HTMLInputElement).value).toBe('customerImpact')
     await user.selectOptions(within(editor).getByLabelText('Custom field 1 type'), 'bool')
     await user.selectOptions(within(editor).getByLabelText('Tracked from for tracker'), '2026-M09')
@@ -99,6 +102,23 @@ describe('RecordTypesPage', () => {
       trackedFrom: { tracker: '2026-M09' },
       revision: 1,
     })
+  })
+
+  it('moves focus into the editor on Edit, and to a neighbor when a row is removed', async () => {
+    const { user } = await setup()
+    const editor = await openEditor(user, 'Defect')
+    expect(document.activeElement).toBe(within(editor).getByRole('heading', { name: 'Edit Defect' }))
+
+    await user.click(within(editor).getByRole('button', { name: 'Add custom field' }))
+    await user.type(within(editor).getByLabelText('Custom field 2 name'), 'Team')
+    await user.click(within(editor).getByRole('button', { name: 'Remove custom field 1' }))
+    expect(document.activeElement).toBe(within(editor).getByRole('button', { name: 'Remove custom field 1' }))
+    expect((within(editor).getByLabelText('Custom field 1 name') as HTMLInputElement).value).toBe('Team')
+    await user.click(within(editor).getByRole('button', { name: 'Remove custom field 1' }))
+    expect(document.activeElement).toBe(within(editor).getByRole('heading', { name: 'Custom fields' }))
+
+    await user.click(within(editor).getByRole('button', { name: 'Remove tracker' }))
+    expect(document.activeElement).toBe(within(editor).getByRole('heading', { name: 'Tracked from' }))
   })
 
   it('says when the record type changed somewhere else', async () => {

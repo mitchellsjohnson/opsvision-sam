@@ -505,7 +505,9 @@ describe('CellDrawer records', () => {
       return epicMeasures()
     })
     const region = await recordsRegion()
-    expect(within(region).getByRole('status', { name: 'Loading records' })).toBeTruthy()
+    const loading = within(region).getByRole('status', { name: 'Loading records' })
+    // A live region announces its text, not its label.
+    expect(loading.textContent).toBe('Loading records')
     release()
     await within(region).findAllByText('Derived from 3 records')
     expect(within(region).queryByRole('status', { name: 'Loading records' })).toBeNull()

@@ -157,6 +157,9 @@ export function defaultValue(
 const IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/
 const NUMBER = /^-?\d+(\.\d+)?$/
 
+/** A number a condition can compare with, such as 12 or -0.5. */
+export const NUMBER_TEXT = NUMBER
+
 function quote(s: string): string {
   return `'${s.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`
 }

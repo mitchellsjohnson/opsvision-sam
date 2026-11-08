@@ -146,11 +146,14 @@ function RecordTypeEditor({
   type,
   fiscal,
   onReload,
+  focusOnOpen,
 }: {
   type: RecordType
   fiscal: number
   /** Loads the latest saved record type. */
   onReload: () => Promise<RecordType | undefined>
+  /** Move focus to the editor when it opens (it was opened with Edit). */
+  focusOnOpen: boolean
 }) {
   const put = usePutRecordType()
   const { formRef, focusErrors } = useFocusOnError<HTMLFormElement>()
@@ -170,7 +173,29 @@ function RecordTypeEditor({
   const priHeading = useRef<HTMLHeadingElement>(null)
   const headingId = `rt-${type.id}-h`
   const headingRef = useRef<HTMLHeadingElement>(null)
+  const attrHeading = useRef<HTMLHeadingElement>(null)
+  const trackedHeading = useRef<HTMLHeadingElement>(null)
+  const attrTable = useRef<HTMLTableElement>(null)
+  const trackedList = useRef<HTMLDivElement>(null)
+  /** After a removal: the row whose Remove button takes focus, or -1 for the section heading. */
+  const removedFocus = useRef<{ section: 'attr' | 'tracked'; index: number } | null>(null)
+  const [showKeys, setShowKeys] = useState(false)
   const label = draft.name.trim() || type.id
+
+  useEffect(() => {
+    if (focusOnOpen) headingRef.current?.focus()
+    // Only when the editor opens.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  useEffect(() => {
+    const f = removedFocus.current
+    if (!f) return
+    removedFocus.current = null
+    const root = f.section === 'attr' ? attrTable.current : trackedList.current
+    const target = f.index >= 0 ? root?.querySelectorAll<HTMLButtonElement>('button[data-remove]')[f.index] : undefined
+    ;(target ?? (f.section === 'attr' ? attrHeading.current : trackedHeading.current))?.focus()
+  })
 
   useEffect(() => {
     const f = pendingFocus.current
@@ -379,17 +404,19 @@ function RecordTypeEditor({
         </div>
 
         <div className="space-y-2">
-          <h3 className="text-base font-semibold">Custom fields</h3>
+          <h3 ref={attrHeading} tabIndex={-1} className="text-base font-semibold">
+            Custom fields
+          </h3>
           <p className="text-sm text-ink/80">Extra columns your exports carry, such as whether a customer ticket is linked.</p>
           {draft.attributes.length === 0 ? (
             <p className="text-sm">No custom fields.</p>
           ) : (
-            <table className="w-full text-left text-sm">
+            <table ref={attrTable} id={`${headingId}-attrs`} className="w-full text-left text-sm">
               <caption className="sr-only">Custom fields</caption>
               <thead>
                 <tr>
                   <th scope="col" className="pr-2 font-medium">Name</th>
-                  <th scope="col" className="pr-2 font-medium">Key</th>
+                  {showKeys && <th scope="col" className="pr-2 font-medium">Key</th>}
                   <th scope="col" className="pr-2 font-medium">Type</th>
                   <th scope="col"><span className="sr-only">Actions</span></th>
                 </tr>
@@ -429,17 +456,19 @@ function RecordTypeEditor({
                         />
                         <FieldMessages id={nameCell.errId} errors={nameCell.errs} />
                       </td>
-                      <td className="pr-2">
-                        <input
-                          aria-label={`Custom field ${n} key`}
-                          className={`${inputClass} font-mono`}
-                          value={a.key}
-                          readOnly={!a.isNew}
-                          {...keyCell.props}
-                          onChange={(e) => setAttr(i, { key: e.target.value, keyEdited: true })}
-                        />
-                        <FieldMessages id={keyCell.errId} errors={keyCell.errs} />
-                      </td>
+                      {showKeys && (
+                        <td className="pr-2">
+                          <input
+                            aria-label={`Custom field ${n} key`}
+                            className={`${inputClass} font-mono`}
+                            value={a.key}
+                            readOnly={!a.isNew}
+                            {...keyCell.props}
+                            onChange={(e) => setAttr(i, { key: e.target.value, keyEdited: true })}
+                          />
+                          <FieldMessages id={keyCell.errId} errors={keyCell.errs} />
+                        </td>
+                      )}
                       <td className="pr-2">
                         <select
                           aria-label={`Custom field ${n} type`}
@@ -459,9 +488,13 @@ function RecordTypeEditor({
                       <td>
                         <button
                           type="button"
+                          data-remove=""
                           className={`${secondaryButton} mt-1`}
                           aria-label={`Remove custom field ${n}`}
-                          onClick={() => set({ attributes: draft.attributes.filter((_, j) => j !== i) })}
+                          onClick={() => {
+                            set({ attributes: draft.attributes.filter((_, j) => j !== i) })
+                            removedFocus.current = { section: 'attr', index: Math.min(i, draft.attributes.length - 2) }
+                          }}
                         >
                           Remove
                         </button>
@@ -472,19 +505,39 @@ function RecordTypeEditor({
               </tbody>
             </table>
           )}
-          <button
-            type="button"
-            className={secondaryButton}
-            onClick={() =>
-              set({ attributes: [...draft.attributes, { key: '', name: '', type: 'string', isNew: true, keyEdited: false }] })
-            }
-          >
-            Add custom field
-          </button>
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              className={secondaryButton}
+              onClick={() =>
+                set({ attributes: [...draft.attributes, { key: '', name: '', type: 'string', isNew: true, keyEdited: false }] })
+              }
+            >
+              Add custom field
+            </button>
+            {draft.attributes.length > 0 && (
+              <button
+                type="button"
+                className={linkButton}
+                aria-expanded={showKeys}
+                aria-controls={`${headingId}-attrs`}
+                onClick={() => setShowKeys((v) => !v)}
+              >
+                {showKeys ? 'Hide advanced' : 'Show advanced'}
+              </button>
+            )}
+          </div>
+          {showKeys && (
+            <p className="text-sm text-ink/80">
+              Keys name the fields in rules and templates. A new field’s key follows its name; a saved key cannot change.
+            </p>
+          )}
         </div>
 
-        <div className="space-y-2">
-          <h3 className="text-base font-semibold">Tracked from</h3>
+        <div ref={trackedList} className="space-y-2">
+          <h3 ref={trackedHeading} tabIndex={-1} className="text-base font-semibold">
+            Tracked from
+          </h3>
           <p className="text-sm text-ink/80">
             For each source system, the first month calculated values come from its records. Earlier months keep the
             numbers that were typed or imported.
@@ -517,9 +570,13 @@ function RecordTypeEditor({
                 </div>
                 <button
                   type="button"
+                  data-remove=""
                   className={`${secondaryButton} mb-0.5`}
                   aria-label={`Remove ${source}`}
-                  onClick={() => set({ tracked: draft.tracked.filter((_, j) => j !== i) })}
+                  onClick={() => {
+                    set({ tracked: draft.tracked.filter((_, j) => j !== i) })
+                    removedFocus.current = { section: 'tracked', index: Math.min(i, draft.tracked.length - 2) }
+                  }}
                 >
                   Remove
                 </button>
@@ -577,6 +634,7 @@ export function RecordTypesPage() {
   const fiscal = useFiscalYearStartMonth()
   const types = useRecordTypes()
   const [selected, setSelected] = useState<string | null>(null)
+  const [focusEditor, setFocusEditor] = useState(false)
   const [notice, setNotice] = useState('')
   const list = types.data ?? []
   const open = list.find((t) => t.id === selected)
@@ -596,6 +654,7 @@ export function RecordTypesPage() {
               close={close}
               onCreated={(t) => {
                 setNotice(`Added ${t.name}.`)
+                setFocusEditor(false)
                 setSelected(t.id)
               }}
             />
@@ -636,7 +695,15 @@ export function RecordTypesPage() {
                 <td className="py-2 pr-4">{attributesText(t)}</td>
                 <td className="py-2 pr-4">{trackedText(t, fiscal)}</td>
                 <td className="py-2">
-                  <button type="button" className={linkButton} aria-label={`Edit ${t.name}`} onClick={() => setSelected(t.id)}>
+                  <button
+                    type="button"
+                    className={linkButton}
+                    aria-label={`Edit ${t.name}`}
+                    onClick={() => {
+                      setFocusEditor(true)
+                      setSelected(t.id)
+                    }}
+                  >
                     Edit
                   </button>
                 </td>
@@ -650,6 +717,7 @@ export function RecordTypesPage() {
           key={open.id}
           type={open}
           fiscal={fiscal}
+          focusOnOpen={focusEditor}
           onReload={async () => (await types.refetch()).data?.find((t) => t.id === open.id)}
         />
       )}
