@@ -19,7 +19,7 @@ import { DeriveEditor, DeriveRuleEditor, newPresetChoice, type PresetChoice } fr
 import { DiffView } from './DiffView'
 import { MetricForm } from './MetricForm'
 import { PublishDialog } from './PublishDialog'
-import { applyPreset, presetKeys } from './presets'
+import { applyPreset } from './presets'
 import { errorsFrom, NO_ERRORS, type FormErrors } from './adminModel'
 import {
   FieldMessages,
@@ -312,22 +312,38 @@ export function DraftEditor({ sc, version, versions, onReload, onNotice }: Draft
     if (!preset) return
     const d = draftRef.current
     const deepest = [...(levels.data ?? [])].sort((a, b) => b.depth - a.depth)[0]
-    const { content } = applyPreset(contentOf(d), preset.preset, {
+    const result = applyPreset(contentOf(d), preset.preset, {
       ...preset.params,
       statusKeys: statusScale.map((s) => s.key),
       reportedAt: deepest ? [{ kind: 'level', id: deepest.id }] : [],
     })
+    const { content } = result
     const added = content.metrics.slice(d.metrics.length).map((metric) => ({ uid: nextUid(), isNew: true, metric }))
     setProblems([])
     update({ ...d, measures: content.measures, metrics: [...d.metrics, ...added] })
+    const nameOf = (key: string) => {
+      const m = content.measures.find((x) => x.key === key)
+      return m?.name || key
+    }
     const newMeasures = content.measures.length - d.measures.length
-    const reused = presetKeys(preset.preset, preset.params).measures.length - newMeasures
     const parts = [
       ...(newMeasures > 0 ? [plural(newMeasures, 'measure', 'measures')] : []),
       ...(added.length > 0 ? [plural(added.length, 'metric', 'metrics')] : []),
     ]
-    const reusedText = reused > 0 ? `${plural(reused, 'existing measure now comes', 'existing measures now come')} from records.` : ''
-    setStatus([parts.length > 0 ? `Added ${parts.join(' and ')} to the draft.` : '', reusedText].filter(Boolean).join(' '))
+    const n = result.converted.length
+    setStatus(
+      [
+        parts.length > 0
+          ? `Added ${parts.join(' and ')} to the draft.`
+          : result.converted.length === 0
+            ? 'Those measures are already in the draft.'
+            : '',
+        n > 0 ? `${plural(n, 'existing measure now comes', 'existing measures now come')} from records.` : '',
+        ...result.kept.map((k) => `Kept ${nameOf(k.existing)} as it was; added ${nameOf(k.added)}.`),
+      ]
+        .filter(Boolean)
+        .join(' '),
+    )
     setPresetOpen(false)
     setPreset(null)
     measuresHeading.current?.focus()

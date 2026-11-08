@@ -205,6 +205,33 @@ describe('DeriveEditor in the draft editor', () => {
     expect(body.content.metrics.find((m) => m.key === 'epic_on_time_pct')?.formula).toBe('epic_on_time / epic_committed * 100')
   })
 
+  it('keeps a measure derived by another rule and says so, taking over an entered one', async () => {
+    fake.versions[0]!.content.measures.push({ key: 'defect_days', name: 'Days in period', unit: 'days', orgAgg: 'max', timeAgg: 'sum' })
+    const user = await openDraft()
+    await user.click(screen.getByRole('button', { name: 'Add measures from records' }))
+    const panel = await screen.findByRole('region', { name: 'Add measures from records' })
+    expect((within(panel).getByLabelText('Record type') as HTMLSelectElement).value).toBe('defect')
+    await user.click(within(panel).getByRole('radio', { name: /Weighted open items/ }))
+    await user.click(within(panel).getByRole('button', { name: 'Add to draft' }))
+    expect(
+      await screen.findByText(
+        'Added 1 measure and 1 metric to the draft. 1 existing measure now comes from records. ' +
+          'Kept Defect points as it was; added Defect weighted open points (2).',
+      ),
+    ).toBeTruthy()
+    await user.click(screen.getByRole('button', { name: 'Save draft' }))
+    await waitFor(() => expect(fake.requests.filter((r) => r.method === 'PUT' && r.path === `${V}/ver-2`)).toHaveLength(1))
+    const body = fake.requests.find((r) => r.method === 'PUT')?.body as {
+      content: { measures: { key: string; source?: string; derive?: { op?: string; where?: string } }[]; metrics: { key: string; formula: string }[] }
+    }
+    const byKey = new Map(body.content.measures.map((m) => [m.key, m]))
+    expect(byKey.get('defect_points_sum')?.derive?.where).toBe("category in ['bug']")
+    expect(byKey.get('defect_points_sum_2')?.derive).toMatchObject({ op: 'daily_open_weighted' })
+    expect(byKey.get('defect_points_sum_2')?.derive?.where).toBeUndefined()
+    expect(byKey.get('defect_days')).toMatchObject({ source: 'derived', derive: { op: 'days_in_period' } })
+    expect(body.content.metrics.find((m) => m.key === 'defect_weighted_score')?.formula).toBe('defect_points_sum_2 / defect_days')
+  })
+
   it('shows the server error for a bad Advanced expression under the field', async () => {
     const user = await openDraft()
     await user.click(screen.getByRole('button', { name: 'Edit rule for Defect points' }))

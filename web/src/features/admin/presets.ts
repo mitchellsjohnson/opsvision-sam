@@ -299,29 +299,88 @@ export function presetKeys(id: PresetId, params: PresetParams): { measures: stri
   return out
 }
 
-/**
- * Adds a preset's measures (and, unless `withMetric` is false, its metric) to
- * a methodology. A measure whose key already exists is made derived in place,
- * keeping its name, unit and aggregation; an existing metric is left as it is.
- * `created` lists the keys that were added. The input is not changed.
- */
-export function applyPreset(content: Methodology, id: PresetId, params: PresetParams): { content: Methodology; created: string[] } {
-  const next = structuredClone(content)
-  const planned = plan(next, id, params)
-  const created: string[] = []
-  for (const m of planned.measures) {
-    const i = next.measures.findIndex((x) => x.key === m.key)
-    const existing = next.measures[i]
-    if (existing) {
-      next.measures[i] = { ...existing, source: 'derived', derive: m.derive }
-    } else {
-      next.measures.push(m)
-      created.push(m.key)
+const RULE_FIELDS = ['recordType', 'op', 'bucketBy', 'field', 'where', 'outcome', 'ageFrom', 'ageTo'] as const
+
+/** Whether two rules derive the same values (absent and empty count as the same). */
+export function sameRule(a: DeriveRule | undefined, b: DeriveRule | undefined): boolean {
+  if (!a || !b) return false
+  if (RULE_FIELDS.some((f) => (a[f] ?? '') !== (b[f] ?? ''))) return false
+  const wa = a.weights ?? {}
+  const wb = b.weights ?? {}
+  const keys = new Set([...Object.keys(wa), ...Object.keys(wb)])
+  return [...keys].every((k) => wa[k] === wb[k])
+}
+
+export interface PresetResult {
+  content: Methodology
+  /** Keys of the measures and metric that were added. */
+  created: string[]
+  /** Entered measures the preset's rule now derives. */
+  converted: string[]
+  /** Measures already derived by the same rule, used as they are. */
+  reused: string[]
+  /** Measures already derived by another rule: kept as they were, with the preset's measure added under a new key. */
+  kept: { existing: string; added: string }[]
+}
+
+/** Puts one planned measure into `content` (see applyPreset) and returns the key it ended up under. */
+function place(content: Methodology, m: Measure, out: PresetResult): string {
+  for (let n = 1; ; n++) {
+    const key = n === 1 ? m.key : `${m.key}_${n}`
+    const i = content.measures.findIndex((x) => x.key === key)
+    const existing = content.measures[i]
+    if (!existing) {
+      content.measures.push(n === 1 ? m : { ...m, key, name: `${m.name} (${n})` })
+      out.created.push(key)
+      if (n > 1) out.kept.push({ existing: m.key, added: key })
+      return key
+    }
+    if (existing.source === 'derived') {
+      if (sameRule(existing.derive, m.derive)) {
+        out.reused.push(key)
+        return key
+      }
+    } else if (n === 1) {
+      content.measures[i] = { ...existing, source: 'derived', derive: m.derive }
+      out.converted.push(key)
+      return key
     }
   }
-  if (planned.metric && params.withMetric !== false && !next.metrics.some((x) => x.key === planned.metric?.key)) {
-    next.metrics.push(planned.metric)
-    created.push(planned.metric.key)
+}
+
+/** Rewrites the measure keys a formula references. */
+function renameKeys(formula: string, renames: ReadonlyMap<string, string>): string {
+  if (renames.size === 0) return formula
+  return formula.replace(/\b[a-z][a-z0-9_]*\b/g, (k) => renames.get(k) ?? k)
+}
+
+/**
+ * Adds a preset's measures (and, unless `withMetric` is false, its metric) to
+ * a methodology, never changing what an existing derived measure means:
+ * - a new key is added;
+ * - an entered measure with the key is made derived in place, keeping its
+ *   name, unit and aggregation;
+ * - a measure already derived by the same rule is used as it is;
+ * - a measure derived by another rule is left alone, and the preset's measure
+ *   is added under the first free key `<key>_2`, `<key>_3`, …, which the new
+ *   metric's formula then uses.
+ * An existing metric is left as it is. The input is not changed.
+ */
+export function applyPreset(content: Methodology, id: PresetId, params: PresetParams): PresetResult {
+  const next = structuredClone(content)
+  const planned = plan(next, id, params)
+  const out: PresetResult = { content: next, created: [], converted: [], reused: [], kept: [] }
+  const renames = new Map<string, string>()
+
+  for (const m of planned.measures) {
+    const used = place(next, m, out)
+    if (used !== m.key) renames.set(m.key, used)
   }
-  return { content: next, created }
+
+  const metric = planned.metric
+  if (metric && params.withMetric !== false && !next.metrics.some((x) => x.key === metric.key)) {
+    next.metrics.push({ ...metric, formula: renameKeys(metric.formula, renames) })
+    out.created.push(metric.key)
+  }
+  return out
 }

@@ -226,6 +226,69 @@ describe('applyPreset', () => {
     expect(again.content.measures).toHaveLength(2)
   })
 
+  it('takes over an entered measure and reuses an identical derived rule without a suffix', () => {
+    const before: Methodology = {
+      ...empty(),
+      measures: [{ key: 'epic_committed', name: 'Epics committed (typed)', unit: 'epics', orgAgg: 'sum', timeAgg: 'sum' }],
+    }
+    const first = applyPreset(before, 'on_time', { recordType: 'epic', where: "state != 'cancelled'" })
+    expect(first.converted).toEqual(['epic_committed'])
+    expect(first.kept).toEqual([])
+    expect(first.created).toEqual(['epic_on_time', 'epic_on_time_pct'])
+
+    const again = applyPreset(first.content, 'on_time', { recordType: 'epic', where: "state != 'cancelled'" })
+    expect(again.reused).toEqual(['epic_committed', 'epic_on_time'])
+    expect(again.created).toEqual([])
+    expect(again.kept).toEqual([])
+    expect(again.content).toEqual(first.content)
+    // Rules match whatever order the weights were written in.
+    const w1 = applyPreset(empty(), 'weighted_open', { recordType: 'defect', weights: { P1: 64, none: 1 } })
+    const w2 = applyPreset(w1.content, 'weighted_open', { recordType: 'defect', weights: { none: 1, P1: 64 } })
+    expect(w2.reused).toEqual(['defect_points_sum', 'defect_days'])
+  })
+
+  it('never replaces a measure derived by another rule: Count, then Average age on the same type', () => {
+    const count = applyPreset(empty(), 'count', { recordType: 'idea', bucketBy: 'completedAt', where: "state == 'done'" })
+    const countMeasure = structuredClone(measure(count.content, 'idea_count'))
+
+    const age = applyPreset(count.content, 'average_age', { recordType: 'idea', ageFrom: 'createdAt', ageTo: 'completedAt' })
+    expect(measure(age.content, 'idea_count')).toEqual(countMeasure)
+    expect(measure(age.content, 'idea_count_2')).toMatchObject({
+      name: 'idea count (2)',
+      source: 'derived',
+      derive: { recordType: 'idea', op: 'count', bucketBy: 'createdAt' },
+    })
+    expect(age.created).toEqual(['idea_age_days_sum', 'idea_count_2', 'idea_average_age'])
+    expect(age.kept).toEqual([{ existing: 'idea_count', added: 'idea_count_2' }])
+    expect(age.content.metrics.find((m) => m.key === 'idea_average_age')?.formula).toBe('idea_age_days_sum / idea_count_2')
+
+    // Applying it again finds its own measure under the suffix.
+    const again = applyPreset(age.content, 'average_age', { recordType: 'idea', ageFrom: 'createdAt', ageTo: 'completedAt' })
+    expect(again.reused).toEqual(['idea_age_days_sum', 'idea_count_2'])
+    expect(again.content.measures).toHaveLength(age.content.measures.length)
+
+    // A third, different rule takes the next free key.
+    const third = applyPreset(age.content, 'count', { recordType: 'idea', bucketBy: 'dueAt' })
+    expect(third.kept).toEqual([{ existing: 'idea_count', added: 'idea_count_3' }])
+  })
+
+  it("never points one record type's budget measures at another: Within budget on two types", () => {
+    const concepts = applyPreset(empty(), 'within_budget', { recordType: 'concept', bucketBy: 'completedAt', unit: 'spend_k' })
+    const planned = structuredClone(measure(concepts.content, 'planned_spend_k'))
+    const actual = structuredClone(measure(concepts.content, 'actual_spend_k'))
+
+    const bets = applyPreset(concepts.content, 'within_budget', { recordType: 'bet', bucketBy: 'completedAt', unit: 'spend_k' })
+    expect(measure(bets.content, 'planned_spend_k')).toEqual(planned)
+    expect(measure(bets.content, 'actual_spend_k')).toEqual(actual)
+    expect(measure(bets.content, 'planned_spend_k_2').derive).toMatchObject({ recordType: 'bet', op: 'sum', field: 'planned' })
+    expect(measure(bets.content, 'actual_spend_k_2').derive).toMatchObject({ recordType: 'bet', op: 'sum', field: 'actual' })
+    expect(bets.kept).toEqual([
+      { existing: 'planned_spend_k', added: 'planned_spend_k_2' },
+      { existing: 'actual_spend_k', added: 'actual_spend_k_2' },
+    ])
+    expect(bets.created).toEqual(['bet_measured', 'bet_within_budget', 'planned_spend_k_2', 'actual_spend_k_2', 'bet_within_budget_pct'])
+  })
+
   it('skips the metric when asked and uses the status scale given', () => {
     const noMetric = applyPreset(empty(), 'on_time', { recordType: 'epic', withMetric: false })
     expect(noMetric.content.metrics).toEqual([])
