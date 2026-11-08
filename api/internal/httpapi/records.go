@@ -1043,7 +1043,7 @@ func (s *Server) applyRecords(ctx context.Context, p auth.Principal, objs object
 		return nil, err
 	}
 	if key, holder, held := heldSourceKey(doc.Answers, units, items); held {
-		return nil, conflict(fmt.Sprintf("source key %q now belongs to %s; preview the import again", key, holder))
+		return nil, previewOutOfDate(fmt.Sprintf("source key %q now belongs to %s; preview the import again", key, holder))
 	}
 	var saved records.Template
 	if save != nil {

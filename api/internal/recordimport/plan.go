@@ -716,7 +716,7 @@ func Build(ctx context.Context, st store.Store, tenant domain.Tenant, scorecardI
 		p.Story.PreviousAsOf = &prev
 	}
 	laterDate := hasPrev && prev.Before(asOf)
-	p.Story.SameRecords = len(p.Revisions) == 0 && laterDate
+	p.Story.SameRecords = len(p.Revisions) == 0 && laterDate && p.Counts.Unchanged > 0 && p.Counts.Unmatched == 0
 	p.Story.NothingChanged = len(p.Revisions) == 0 && len(p.Writes) == 0 && !laterDate
 	return p, nil
 }

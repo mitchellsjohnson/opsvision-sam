@@ -251,13 +251,17 @@ func revisionIDs(revs []store.RecordRevisionWrite) []string {
 	return out
 }
 
-// octoberEpics: two Checkout epics delivered on time, one Billing epic still open.
-func octoberEpics() records.Table {
-	return epicTable(
+// octoberRows: two Checkout epics delivered on time, one Billing epic still open.
+func octoberRows() []epic {
+	return []epic{
 		doneEpic("CHK-1", "Checkout", "2026-10-10", "2026-10-08"),
 		doneEpic("CHK-2", "Checkout", "2026-10-12", "2026-10-12"),
 		openEpic("BIL-1", "Billing", "2026-10-28"),
-	)
+	}
+}
+
+func octoberEpics() records.Table {
+	return epicTable(octoberRows()...)
 }
 
 func TestReuploadIsNoOp(t *testing.T) {
@@ -313,6 +317,12 @@ func TestReuploadLaterAsOf(t *testing.T) {
 	in, err := LoadDeriveInput(f.ctx, f.st, acme, scID)
 	if err != nil || in.LatestAsOf["epic"].String() != "2026-11-04" {
 		t.Fatalf("latest as-of after apply = %v (%v), want 2026-11-04", in.LatestAsOf, err)
+	}
+
+	// Rows still waiting for an answer are not "the same records".
+	waiting := f.build(epicTable(append(octoberRows(), openEpic("ANL-1", "Analytics", "2026-11-20"))...), "2026-11-06", Answers{})
+	if waiting.Counts.Unmatched != 1 || waiting.Story.SameRecords || waiting.Story.NothingChanged {
+		t.Errorf("with an unmatched row: counts %+v, sameRecords %v, nothingChanged %v", waiting.Counts, waiting.Story.SameRecords, waiting.Story.NothingChanged)
 	}
 
 	// The same date again changes nothing at all.

@@ -58,7 +58,7 @@ type TypedVsRecords struct {
 // no new or changed records but runs later than the last upload from its
 // source, whose as-of date is PreviousAsOf. Warnings say, in plain
 // language, what derivation worked around (a priority with no weight) or
-// could not derive.
+// could not derive. Rows still waiting for an answer rule out SameRecords.
 type Story struct {
 	NothingChanged bool
 	SameRecords    bool

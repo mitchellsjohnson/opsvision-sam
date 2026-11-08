@@ -638,9 +638,10 @@ export interface paths {
          *
          *     A records 409 carries one of these codes: `already_applied` (this
          *     preview was applied already), `preview_out_of_date` (the plan or the
-         *     answers are not the stored preview's, or the preview is missing:
-         *     preview again), or `conflict` (a record type, template, or source key
-         *     changed meanwhile: try again).
+         *     answers are not the stored preview's, the preview is missing, or an
+         *     answered source key now belongs to another subject: preview again),
+         *     or `conflict` (a record type or template changed meanwhile: try
+         *     again).
          */
         post: operations["applyImport"];
         delete?: never;
