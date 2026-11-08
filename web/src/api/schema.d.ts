@@ -884,7 +884,11 @@ export interface components {
         };
         /** @description A custom attribute of a record type. */
         AttributeDef: {
-            key: components["schemas"]["Key"];
+            /**
+             * @description Attribute key; camelCase or snake_case, starting with a lowercase letter.
+             * @example customerTicket
+             */
+            key: string;
             name: string;
             /** @enum {string} */
             type: "string" | "number" | "bool" | "date";

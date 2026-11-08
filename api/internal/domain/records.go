@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
 	"time"
 
@@ -174,6 +175,23 @@ func (rt RecordType) AllPriorities() []string {
 	return out
 }
 
+// attributeKeyPattern allows camelCase and snake_case attribute keys such as
+// customerTicket and within_budget.
+var attributeKeyPattern = regexp.MustCompile(`^[a-z][A-Za-z0-9_]*$`)
+
+// checkAttributeKey validates a custom attribute key's shape. Unlike measure
+// keys it may contain capitals, matching the camelCase built-in field names.
+func (v *validator) checkAttributeKey(path, key string) {
+	switch {
+	case key == "":
+		v.add(path, "key is required")
+	case reservedKeys[key]:
+		v.add(path, "key %q is reserved", key)
+	case !attributeKeyPattern.MatchString(key):
+		v.add(path, "key %q must match %s", key, attributeKeyPattern)
+	}
+}
+
 // Validate returns every problem found in the record type, or nil. Paths are
 // like priorities[1], attributes[0].key, trackedFrom.tracker.
 func (rt RecordType) Validate() []ValidationError {
@@ -198,7 +216,7 @@ func (rt RecordType) Validate() []ValidationError {
 	seenAttr := make(map[string]bool, len(rt.Attributes))
 	for i, a := range rt.Attributes {
 		path := fmt.Sprintf("attributes[%d]", i)
-		v.checkKey(path+".key", a.Key)
+		v.checkAttributeKey(path+".key", a.Key)
 		if _, builtin := recordFieldKinds[a.Key]; builtin {
 			v.add(path+".key", "key %q is a built-in record field", a.Key)
 		}

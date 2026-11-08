@@ -98,6 +98,11 @@ func TestRecordTypeValidate(t *testing.T) {
 		{"empty priority", func(r *RecordType) { r.Priorities = []string{"P1", ""} }, "priorities[1]"},
 		{"duplicate priority", func(r *RecordType) { r.Priorities = []string{"P1", "P2", "P1"} }, "priorities[2]"},
 		{"bad attribute key", func(r *RecordType) { r.Attributes[0].Key = "Customer Ticket" }, "attributes[0].key"},
+		{"capitalized attribute key", func(r *RecordType) { r.Attributes[0].Key = "Customer" }, "attributes[0].key"},
+		{"digit-first attribute key", func(r *RecordType) { r.Attributes[0].Key = "1abc" }, "attributes[0].key"},
+		{"dashed attribute key", func(r *RecordType) { r.Attributes[0].Key = "customer-ticket" }, "attributes[0].key"},
+		{"reserved attribute key", func(r *RecordType) { r.Attributes[0].Key = "min" }, "attributes[0].key"},
+		{"built-in camelCase attribute key", func(r *RecordType) { r.Attributes[0].Key = "dueAt" }, "attributes[0].key"},
 		{"empty attribute key", func(r *RecordType) { r.Attributes[0].Key = "" }, "attributes[0].key"},
 		{"built-in attribute key", func(r *RecordType) { r.Attributes[0].Key = "title" }, "attributes[0].key"},
 		{"duplicate attribute key", func(r *RecordType) {
@@ -126,6 +131,16 @@ func TestRecordTypeValidate(t *testing.T) {
 	rt.Priorities = []string{"P1", PriorityNone}
 	if errs := rt.Validate(); errs != nil {
 		t.Fatalf("month tracked-from and explicit none rejected: %v", errs)
+	}
+}
+
+func TestRecordTypeAttributeKeysAcceptCamelCase(t *testing.T) {
+	for _, key := range []string{"customerTicket", "withinBudget", "customer_ticket", "a", "x1Y2_z"} {
+		rt := validRecordType()
+		rt.Attributes = []AttributeDef{{Key: key, Name: "Attr", Type: AttrBool}}
+		if errs := rt.Validate(); errs != nil {
+			t.Errorf("key %q rejected: %v", key, errs)
+		}
 	}
 }
 

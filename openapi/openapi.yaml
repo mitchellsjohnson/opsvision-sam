@@ -1483,7 +1483,11 @@ components:
       description: A custom attribute of a record type.
       required: [key, name, type]
       properties:
-        key: { $ref: '#/components/schemas/Key' }
+        key:
+          type: string
+          description: Attribute key; camelCase or snake_case, starting with a lowercase letter.
+          pattern: '^[a-z][A-Za-z0-9_]*$'
+          example: customerTicket
         name: { type: string }
         type:
           type: string
