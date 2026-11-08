@@ -1,4 +1,4 @@
-import { CircleHelp } from 'lucide-react'
+import { CircleHelp, TriangleAlert } from 'lucide-react'
 import { useId } from 'react'
 import type { RecordType } from '../../api/queries'
 import { inputClass } from '../admin/formUi'
@@ -166,6 +166,7 @@ export function NeedsInput({
   date,
   missing,
   fullExport,
+  duplicates,
 }: {
   questions: Questions
   answers: AnswerState
@@ -176,6 +177,8 @@ export function NeedsInput({
   date: DateQuestion | null
   missing: readonly string[]
   fullExport: boolean
+  /** Rows that share an ID; they can only be fixed in the export. */
+  duplicates: readonly string[]
 }) {
   const dateName = useId()
   const missingHint = useId()
@@ -241,6 +244,17 @@ export function NeedsInput({
             </label>
           ))}
         </fieldset>
+      )}
+
+      {duplicates.length > 0 && (
+        <ul className="space-y-1">
+          {duplicates.map((d) => (
+            <li key={d} className="flex items-start gap-2 text-sm">
+              <TriangleAlert aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-status-y" />
+              <span>{d}</span>
+            </li>
+          ))}
+        </ul>
       )}
 
       {missing.length > 0 && (

@@ -285,6 +285,13 @@ export function requestsTo(fake: RecordsFake, method: string, path: string): Rec
 /** MSW handlers for the records import endpoints over an in-memory fake. */
 export function recordsHandlers(fake: RecordsFake, { withVersions = true } = {}) {
   const filenames = new Map<string, string>()
+  // As in the API: an applied import cannot be previewed or applied again.
+  const appliedIds = new Set<string>()
+  const appliedConflict = () =>
+    HttpResponse.json(
+      { error: { code: 'conflict', message: 'import is applied; only an uploaded or previewed import can be previewed' } },
+      { status: 409 },
+    )
   const record = async (request: Request, path: string) => {
     const body = await request.clone().json().catch(() => undefined)
     fake.requests.push({ method: request.method, path, body })
@@ -326,6 +333,7 @@ export function recordsHandlers(fake: RecordsFake, { withVersions = true } = {})
     http.post(`${API}/v1/imports/:id/records-preview`, async ({ request, params }) => {
       const w = await record(request, `/imports/${String(params.id)}/records-preview`)
       if (w.failure) return w.failure
+      if (appliedIds.has(String(params.id))) return appliedConflict()
       const name = filenames.get(String(params.id)) ?? String(params.id)
       const p = fake.previews[name]
       if (!p) return HttpResponse.json({ error: { code: 'not_found', message: 'import not found' } }, { status: 404 })
@@ -335,6 +343,8 @@ export function recordsHandlers(fake: RecordsFake, { withVersions = true } = {})
       const id = String(params.id)
       const w = await record(request, `/imports/${id}/apply`)
       if (w.failure) return w.failure
+      if (appliedIds.has(id)) return appliedConflict()
+      appliedIds.add(id)
       const name = filenames.get(id) ?? id
       const records = fake.applied[name] ?? {
         snapshotId: `snap-${id}`,

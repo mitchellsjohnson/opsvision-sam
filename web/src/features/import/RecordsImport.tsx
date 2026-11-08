@@ -27,6 +27,7 @@ import { fileSize, putFile } from '../admin/importModel'
 import { DropZone } from './DropZone'
 import type { SubjectOption } from './NeedsInput'
 import {
+  answersFor,
   answersUpdateTemplate,
   buildAnswers,
   contentTypeFor,
@@ -65,7 +66,7 @@ type FileStatus =
 
 type Outcome =
   | { kind: 'applied'; records: NonNullable<ChangeSetPreview['records']> }
-  | { kind: 'failed'; message: string; stale: boolean; attempt: number }
+  | { kind: 'failed'; message: string }
 
 type Phase =
   | { step: 'uploading' }
@@ -115,6 +116,7 @@ function FileImport({
   entry,
   scorecardId,
   outcome,
+  refresh,
   onStatus,
   onRemove,
   onNeedsSetup,
@@ -122,6 +124,8 @@ function FileImport({
   entry: Entry
   scorecardId: string
   outcome: Outcome | undefined
+  /** Grows each time Apply finds the preview out of date; a change previews again. */
+  refresh: number
   onStatus: (key: string, status: FileStatus) => void
   onRemove: (key: string) => void
   onNeedsSetup?: (file: File, result: RecordsInspectResult, importId: string) => void
@@ -182,14 +186,20 @@ function FileImport({
   const template: RecordTemplate | undefined = entry.prepared?.template ?? (saved?.body as RecordTemplate | undefined)
   const templateName = entry.prepared?.saveAs.name ?? saved?.name ?? 'saved export'
   const recordType = recordTypes.data?.find((rt) => rt.id === template?.recordType)
-  const answersJson = JSON.stringify(buildAnswers(q.answers))
-  const refresh = outcome?.kind === 'failed' && outcome.stale ? outcome.attempt : 0
-  const requestKey = JSON.stringify([asOf, answersJson, refresh, retry])
+  const answers = answersFor(q, scorecardId)
+  const answersJson = JSON.stringify(buildAnswers(answers))
   const inline = entry.prepared ? JSON.stringify(entry.prepared.template) : ''
+  const applied = outcome?.kind === 'applied' ? outcome.records : undefined
+  const isApplied = applied !== undefined
+  const requestKey = JSON.stringify([scorecardId, matchedId, inline, asOf, answersJson, refresh, retry])
 
   // Preview now, then again 300 ms after the last answer or date change.
   useEffect(() => {
-    if (importId === '') return
+    if (importId === '' || isApplied) {
+      // An applied import cannot be previewed; drop any answer still on its way.
+      seq.current++
+      return
+    }
     const mine = ++seq.current
     const delay = previewed.current ? DEBOUNCE_MS : 0
     previewed.current = true
@@ -201,18 +211,18 @@ function FileImport({
         if (mine !== seq.current) return
         setResult({ key: requestKey, preview: p })
         setPreviewError(null)
-        setQ((prev) => mergeQuestions(prev, p))
+        setQ((prev) => mergeQuestions(prev, p, scorecardId))
       } catch (err) {
         if (mine !== seq.current) return
         setPreviewError({ key: requestKey, message: failureText(err, 'preview') })
       }
     }, delay)
     return () => clearTimeout(timer)
-  }, [importId, matchedId, inline, scorecardId, asOf, answersJson, requestKey, requestPreview])
+  }, [importId, isApplied, matchedId, inline, scorecardId, asOf, answersJson, requestKey, requestPreview])
 
   const preview = result?.preview
   const current = result !== null && result.key === requestKey
-  const failedNow = previewError !== null && previewError.key === requestKey
+  const failedNow = !applied && previewError !== null && previewError.key === requestKey
 
   const status: FileStatus = (() => {
     if (outcome?.kind === 'applied') return { state: 'applied' }
@@ -237,7 +247,7 @@ function FileImport({
       ? 'Uploading…'
       : phase.step === 'reading'
         ? 'Reading the file…'
-        : phase.step === 'ready' && !failedNow && !current
+        : phase.step === 'ready' && !applied && !failedNow && !current
           ? preview
             ? 'Updating the preview…'
             : 'Working out what changes…'
@@ -266,8 +276,6 @@ function FileImport({
       </p>
     )
   })()
-
-  const applied = outcome?.kind === 'applied' ? outcome.records : undefined
 
   return (
     <section aria-labelledby={headingId} className="ov-enter space-y-4 rounded-lg border border-ink/20 bg-white p-4 shadow-sm">
@@ -366,8 +374,8 @@ function FileImport({
           asOf={asOf}
           onAsOfChange={setAsOf}
           questions={q.questions}
-          answers={q.answers}
-          setAnswers={(update) => setQ((prev) => ({ ...prev, answers: update(prev.answers) }))}
+          answers={answers}
+          setAnswers={(update) => setQ((prev) => ({ ...prev, answers: update(answersFor(prev, scorecardId)) }))}
           recordType={recordType}
           fullExport={template?.fullExport ?? false}
           fiscalYearStartMonth={fy}
@@ -417,6 +425,7 @@ export function RecordsImport({
   const summaryRef = useRef<HTMLParagraphElement>(null)
   const [statuses, setStatuses] = useState<Record<string, FileStatus>>({})
   const [outcomes, setOutcomes] = useState<Record<string, Outcome>>({})
+  const [staleCounts, setStaleCounts] = useState<Record<string, number>>({})
   const [applying, setApplying] = useState(false)
   const [summary, setSummary] = useState({ text: '', ok: true })
   const [chosenScorecard, setChosenScorecard] = useState('')
@@ -461,21 +470,16 @@ export function RecordsImport({
       } catch (err) {
         failed++
         const stale = err instanceof ApiError && err.status === 409
-        setOutcomes((prev) => {
-          const before = prev[entry.key]
-          const attempt = before?.kind === 'failed' ? before.attempt + 1 : 1
-          return {
-            ...prev,
-            [entry.key]: {
-              kind: 'failed',
-              stale,
-              attempt,
-              message: stale
-                ? 'This preview was out of date, so we refreshed it. Check it, then apply again.'
-                : failureText(err, 'apply'),
-            },
-          }
-        })
+        if (stale) setStaleCounts((prev) => ({ ...prev, [entry.key]: (prev[entry.key] ?? 0) + 1 }))
+        setOutcomes((prev) => ({
+          ...prev,
+          [entry.key]: {
+            kind: 'failed',
+            message: stale
+              ? 'This preview was out of date, so we refreshed it. Check it, then apply again.'
+              : failureText(err, 'apply'),
+          },
+        }))
       }
     }
     setApplying(false)
@@ -526,6 +530,7 @@ export function RecordsImport({
                 entry={entry}
                 scorecardId={scorecardId}
                 outcome={outcomes[entry.key]}
+                refresh={staleCounts[entry.key] ?? 0}
                 onStatus={onStatus}
                 onRemove={remove}
                 onNeedsSetup={onNeedsSetup}

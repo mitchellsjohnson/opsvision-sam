@@ -1,5 +1,6 @@
 import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { delay, http, HttpResponse } from 'msw'
 import { Route, Routes, useLocation } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { axe } from 'vitest-axe'
@@ -16,7 +17,7 @@ import {
   requestsTo,
   type RecordsFake,
 } from '../../test/recordsFixtures'
-import { server, state } from '../../test/server'
+import { API, server, state } from '../../test/server'
 import { renderApp } from '../../test/utils'
 import { viewHandlers } from '../../test/viewFixtures'
 import { ImportPage } from '../admin/ImportPage'
@@ -99,6 +100,13 @@ function lineText(text: string) {
 }
 
 const forbidden = /subject|source key|revision|snapshot/i
+
+/** Longer than the preview's 300 ms debounce. */
+const DEBOUNCE_WAIT = 450
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
 
 describe('RecordsImport: drop and preview', () => {
   it('previews two dropped files separately, each recognized by its template', async () => {
@@ -256,6 +264,19 @@ describe('RecordsImport: the story', () => {
 })
 
 describe('RecordsImport: needs your input', () => {
+  it('lists rows that share an ID, to fix in the export, and keeps them in the problems table', async () => {
+    const base = fake.previews['defects.csv'] as components['schemas']['RecordsPreview']
+    const dup = (row: number) => ({ row, kind: 'duplicate_id', column: 'Issue key', field: 'externalId', value: 'CHK-9', message: '"CHK-9" is also on another row' })
+    fake.previews['defects.csv'] = { ...base, problems: [...base.problems, dup(12), dup(40)] }
+    await renderImportPage()
+    dropOn(dropZone(), [csv('defects.csv')])
+    const region = await previewed('defects.csv')
+    const needs = within(region).getByRole('heading', { name: 'Needs your input' }).parentElement!
+    expect(within(needs).getByText('These rows share an ID: CHK-9 (rows 12 and 40). Fix them in the export and upload again.')).toBeTruthy()
+    const problems = within(region).getByRole('table', { name: 'Rows we couldn’t read' })
+    expect(within(problems).getAllByText('ID “CHK-9” is on more than one row')).toHaveLength(2)
+  })
+
   it('re-previews with the product picked for an unmatched value', async () => {
     const { user } = await renderImportPage()
     dropOn(dropZone(), [csv('defects.csv')])
@@ -380,6 +401,114 @@ describe('RecordsImport: apply', () => {
     await user.click(apply)
     expect(await within(card('epics.xlsx')).findByText(/This preview was out of date/)).toBeTruthy()
     await waitFor(() => expect(previews('imp-1').length).toBeGreaterThan(before))
+
+    // Applying the refreshed preview succeeds, and the applied file is not previewed again.
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Apply' }) as HTMLButtonElement).disabled).toBe(false))
+    await user.click(screen.getByRole('button', { name: 'Apply' }))
+    expect(await within(card('epics.xlsx')).findByText('Applied: 7 new and 30 changed records.')).toBeTruthy()
+    const afterApply = previews('imp-1').length
+    await sleep(DEBOUNCE_WAIT)
+    expect(previews('imp-1')).toHaveLength(afterApply)
+    expect(within(card('epics.xlsx')).queryByRole('alert')).toBeNull()
+    expect(within(card('epics.xlsx')).queryByRole('button', { name: 'Try again' })).toBeNull()
+    expect(within(card('epics.xlsx')).getByRole('status').textContent).toBe('')
+  })
+
+  it('does not preview an applied file when an answer was still waiting to be sent', async () => {
+    // A slow apply, so an answer can change while it is in flight; then the fake's own handler answers.
+    server.use(
+      http.post(`${API}/v1/imports/:id/apply`, async () => {
+        await delay(150)
+      }),
+    )
+    const { user } = await renderImportPage()
+    dropOn(dropZone(), [xlsx('epics.xlsx')])
+    const region = await previewed('epics.xlsx')
+    const apply = screen.getByRole('button', { name: 'Apply' })
+    await waitFor(() => expect((apply as HTMLButtonElement).disabled).toBe(false))
+    await user.click(apply)
+    // An answer changed while the apply is in flight schedules a preview.
+    await user.click(within(region).getByRole('checkbox', { name: 'Mark them cancelled' }))
+    expect(await within(card('epics.xlsx')).findByText('Applied: 7 new and 30 changed records.')).toBeTruthy()
+    const afterApply = previews('imp-1').length
+    await sleep(DEBOUNCE_WAIT)
+    expect(previews('imp-1')).toHaveLength(afterApply)
+    expect(within(card('epics.xlsx')).queryByRole('alert')).toBeNull()
+  })
+})
+
+describe('RecordsImport: apply stays in step with the preview', () => {
+  const cell = { measureKey: 'epics_on_time', subjectId: 'billing', period: '2026-M10' }
+  /** As in the API: a typed value is listed until it is chosen in useRecords, and only for today's as-of date. */
+  function typedUntilChosen(body: PreviewBody) {
+    const p = epicsPreview()
+    const chosen = body.answers?.useRecords?.some((c) => c.measureKey === cell.measureKey && c.subjectId === cell.subjectId)
+    return chosen || body.asOf !== todayISO() ? { ...p, story: { ...p.story, typed: [] } } : p
+  }
+
+  async function settled() {
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Apply' }) as HTMLButtonElement).disabled).toBe(false))
+  }
+
+  it('keeps a "Use records" choice visible after the preview stops listing it', async () => {
+    fake.previews['epics.xlsx'] = typedUntilChosen
+    const { user } = await renderImportPage()
+    dropOn(dropZone(), [xlsx('epics.xlsx')])
+    const region = await previewed('epics.xlsx')
+    await user.click(within(region).getByRole('checkbox', { name: /Use records for this month/ }))
+    await waitFor(() => expect(previews('imp-1').at(-1)?.answers?.useRecords).toEqual([cell]))
+    await settled()
+    const box = within(region).getByRole('checkbox', { name: /Use records for this month/ }) as HTMLInputElement
+    expect(box.checked).toBe(true)
+
+    // Still chosen, and still visible, after the as-of date changes.
+    fireEvent.change(within(region).getByLabelText('As of'), { target: { value: '2026-10-31' } })
+    await waitFor(() => expect(previews('imp-1').at(-1)?.asOf).toBe('2026-10-31'))
+    await settled()
+    expect((within(region).getByRole('checkbox', { name: /Use records for this month/ }) as HTMLInputElement).checked).toBe(true)
+
+    await user.click(screen.getByRole('button', { name: 'Apply' }))
+    await waitFor(() => expect(requestsTo(fake, 'POST', '/imports/imp-1/apply')).toHaveLength(1))
+    expect(requestsTo(fake, 'POST', '/imports/imp-1/apply')[0]?.body).toEqual({ answers: { useRecords: [cell] } })
+  })
+
+  it('drops a typed value that was not chosen once the preview no longer lists it', async () => {
+    fake.previews['epics.xlsx'] = typedUntilChosen
+    const { user } = await renderImportPage()
+    dropOn(dropZone(), [xlsx('epics.xlsx')])
+    const region = await previewed('epics.xlsx')
+    expect(within(region).getByRole('heading', { name: 'Your typed numbers vs records' })).toBeTruthy()
+    fireEvent.change(within(region).getByLabelText('As of'), { target: { value: '2026-10-31' } })
+    await waitFor(() => expect(previews('imp-1').at(-1)?.asOf).toBe('2026-10-31'))
+    await settled()
+    expect(within(region).queryByRole('heading', { name: 'Your typed numbers vs records' })).toBeNull()
+    await user.click(screen.getByRole('button', { name: 'Apply' }))
+    await waitFor(() => expect(requestsTo(fake, 'POST', '/imports/imp-1/apply')).toHaveLength(1))
+    expect(requestsTo(fake, 'POST', '/imports/imp-1/apply')[0]?.body).toEqual({ answers: {} })
+  })
+
+  it('previews again for another scorecard, without the old scorecard’s choices', async () => {
+    server.use(
+      http.get(`${API}/v1/scorecards`, () =>
+        HttpResponse.json({ scorecards: [{ id: 'sc-main', name: 'Main scorecard' }, { id: 'sc-ops', name: 'Operations' }] }),
+      ),
+      http.get(`${API}/v1/scorecards/sc-ops/versions`, () => HttpResponse.json({ versions: [] })),
+    )
+    const { user } = await renderImportPage()
+    dropOn(dropZone(), [xlsx('epics.xlsx')])
+    const region = await previewed('epics.xlsx')
+    await user.click(within(region).getByRole('checkbox', { name: /Use records for this month/ }))
+    await settled()
+
+    await user.selectOptions(screen.getByLabelText('Scorecard'), 'sc-ops')
+    expect((screen.getByRole('button', { name: 'Apply' }) as HTMLButtonElement).disabled).toBe(true)
+    await waitFor(() => expect(previews('imp-1').at(-1)?.scorecardId).toBe('sc-ops'))
+    expect(previews('imp-1').at(-1)?.answers).toEqual({})
+    await settled()
+    expect((within(region).getByRole('checkbox', { name: /Use records for this month/ }) as HTMLInputElement).checked).toBe(false)
+    await user.click(screen.getByRole('button', { name: 'Apply' }))
+    await waitFor(() => expect(requestsTo(fake, 'POST', '/imports/imp-1/apply')).toHaveLength(1))
+    expect(requestsTo(fake, 'POST', '/imports/imp-1/apply')[0]?.body).toEqual({ answers: {} })
   })
 })
 

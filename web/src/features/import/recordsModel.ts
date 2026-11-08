@@ -248,9 +248,19 @@ export interface ValueQuestion {
   suggested: string
 }
 
+export type TypedVsRecords = RecordsPreview['story']['typed'][number]
+
 export interface Questions {
   subjects: SubjectQuestion[]
   values: ValueQuestion[]
+  /**
+   * Typed values that differ from records: the latest preview's, plus any the
+   * admin chose to replace (the preview stops listing a cell once it is in
+   * `useRecords`, but the choice must stay visible to be undone).
+   */
+  typed: TypedVsRecords[]
+  /** The scorecard `typed` and the `useRecords` answers belong to; empty before the first preview. */
+  typedFor: string
 }
 
 /**
@@ -267,7 +277,7 @@ export interface AnswerState {
 }
 
 export function noQuestions(): Questions {
-  return { subjects: [], values: [] }
+  return { subjects: [], values: [], typed: [], typedFor: '' }
 }
 
 export function emptyAnswers(): AnswerState {
@@ -278,10 +288,13 @@ export function emptyAnswers(): AnswerState {
  * Adds the preview's questions to those already asked. Answered questions
  * drop out of the next preview, so they are kept here to stay on screen and
  * editable. A confident product match is preselected when first asked.
+ * Typed values follow the latest preview, keeping the ones chosen in
+ * `useRecords`; a preview for another scorecard starts them over.
  */
 export function mergeQuestions(
   prev: { questions: Questions; answers: AnswerState },
   preview: RecordsPreview,
+  scorecardId: string,
 ): { questions: Questions; answers: AnswerState } {
   const subjects = [...prev.questions.subjects]
   const values = [...prev.questions.values]
@@ -307,7 +320,38 @@ export function mergeQuestions(
       values.push({ field, value: vc.value, count: vc.count, suggested: vc.suggested })
     }
   }
-  return { questions: { subjects, values }, answers: { ...prev.answers, subjects: chosen } }
+  const sameScorecard = prev.questions.typedFor === scorecardId
+  const useRecords = sameScorecard ? prev.answers.useRecords : []
+  const listed = preview.story.typed
+  const kept = (sameScorecard ? prev.questions.typed : []).filter(
+    (t) => useRecords.some((c) => sameCell(c, t)) && !listed.some((l) => sameCell(l, t)),
+  )
+  return {
+    questions: { subjects, values, typed: [...listed, ...kept], typedFor: scorecardId },
+    answers: { ...prev.answers, subjects: chosen, useRecords },
+  }
+}
+
+/** The answers that apply to `scorecardId`: typed-value choices made for another scorecard do not. */
+export function answersFor(q: { questions: Questions; answers: AnswerState }, scorecardId: string): AnswerState {
+  const stale = q.questions.typedFor !== '' && q.questions.typedFor !== scorecardId
+  return stale ? { ...q.answers, useRecords: [] } : q.answers
+}
+
+/** "These rows share an ID: CHK-9 (rows 12 and 40). Fix them in the export and upload again." */
+export function duplicateNotes(problems: readonly RecordRowProblem[]): string[] {
+  const rows = new Map<string, number[]>()
+  for (const p of problems) {
+    if (p.kind !== 'duplicate_id') continue
+    const list = rows.get(p.value) ?? []
+    if (!list.includes(p.row)) list.push(p.row)
+    rows.set(p.value, list)
+  }
+  return [...rows].map(([id, list]) => {
+    const nums = list.sort((a, b) => a - b).map(String)
+    const where = nums.length === 1 ? `row ${nums[0]}` : `rows ${nums.slice(0, -1).join(', ')} and ${nums.at(-1)}`
+    return `These rows share an ID: ${id} (${where}). Fix them in the export and upload again.`
+  })
 }
 
 function sortedKeys(o: Record<string, unknown>): string[] {

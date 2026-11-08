@@ -18,10 +18,11 @@ import {
   type Questions,
   type RecordCellRef,
   type RecordContribution,
+  type TypedVsRecords as Typed,
+  duplicateNotes,
 } from './recordsModel'
 
 type StoryLine = RecordsPreview['story']['lines'][number]
-type Typed = RecordsPreview['story']['typed'][number]
 
 /** A titled part of one file's preview. Not a landmark: every file has the same parts. */
 function Section({ title, children }: { title: string; children: ReactNode }) {
@@ -205,7 +206,9 @@ export function StoryPreview({
   const typeName = recordType?.name ?? 'record'
   const notice = columnNotice(preview.columnsAdded, preview.columnsMissing)
   const problems = visibleProblems(preview.problems)
-  const asks = questions.subjects.length + questions.values.length > 0 || date !== null || preview.missing.length > 0
+  const duplicates = duplicateNotes(preview.problems)
+  const asks =
+    questions.subjects.length + questions.values.length + duplicates.length > 0 || date !== null || preview.missing.length > 0
   const label = (period: string) => {
     const p = parsePeriod(period)
     return p ? periodLabel(p, fy) : period
@@ -280,10 +283,10 @@ export function StoryPreview({
         )}
       </Section>
 
-      {story.typed.length > 0 && (
+      {questions.typed.length > 0 && (
         <Section title="Your typed numbers vs records">
           <ul className="space-y-2">
-            {story.typed.map((t) => {
+            {questions.typed.map((t) => {
               const cell = { measureKey: t.measureKey, subjectId: t.subjectId, period: t.period }
               return (
                 <TypedItem
@@ -313,6 +316,7 @@ export function StoryPreview({
             date={date}
             missing={preview.missing}
             fullExport={fullExport}
+            duplicates={duplicates}
           />
         </Section>
       )}
