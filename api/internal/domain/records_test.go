@@ -102,6 +102,7 @@ func TestRecordTypeValidate(t *testing.T) {
 		{"digit-first attribute key", func(r *RecordType) { r.Attributes[0].Key = "1abc" }, "attributes[0].key"},
 		{"dashed attribute key", func(r *RecordType) { r.Attributes[0].Key = "customer-ticket" }, "attributes[0].key"},
 		{"reserved attribute key", func(r *RecordType) { r.Attributes[0].Key = "min" }, "attributes[0].key"},
+		{"built-in list field attribute key", func(r *RecordType) { r.Attributes[0].Key = "priorDueDates" }, "attributes[0].key"},
 		{"built-in camelCase attribute key", func(r *RecordType) { r.Attributes[0].Key = "dueAt" }, "attributes[0].key"},
 		{"empty attribute key", func(r *RecordType) { r.Attributes[0].Key = "" }, "attributes[0].key"},
 		{"built-in attribute key", func(r *RecordType) { r.Attributes[0].Key = "title" }, "attributes[0].key"},
@@ -141,6 +142,12 @@ func TestRecordTypeAttributeKeysAcceptCamelCase(t *testing.T) {
 		if errs := rt.Validate(); errs != nil {
 			t.Errorf("key %q rejected: %v", key, errs)
 		}
+	}
+}
+
+func TestFieldKindOmitsPriorDueDates(t *testing.T) {
+	if k, ok := validRecordType().FieldKind("priorDueDates"); ok {
+		t.Fatalf("FieldKind reports priorDueDates as a plain %q field", k)
 	}
 }
 

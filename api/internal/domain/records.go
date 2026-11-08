@@ -144,6 +144,11 @@ var recordFieldKinds = map[string]AttrType{
 	"deliveredValue": AttrNumber,
 }
 
+// builtinListField is the built-in list-valued record field. It is not in
+// recordFieldKinds (it is not a plain date, number, or string, so FieldKind
+// must not report it), but attribute keys still may not shadow it.
+const builtinListField = "priorDueDates"
+
 // FieldKind returns the kind of the built-in field or custom attribute named
 // name, and whether it exists.
 func (rt RecordType) FieldKind(name string) (AttrType, bool) {
@@ -217,7 +222,7 @@ func (rt RecordType) Validate() []ValidationError {
 	for i, a := range rt.Attributes {
 		path := fmt.Sprintf("attributes[%d]", i)
 		v.checkAttributeKey(path+".key", a.Key)
-		if _, builtin := recordFieldKinds[a.Key]; builtin {
+		if _, builtin := recordFieldKinds[a.Key]; builtin || a.Key == builtinListField {
 			v.add(path+".key", "key %q is a built-in record field", a.Key)
 		}
 		if a.Key != "" {
