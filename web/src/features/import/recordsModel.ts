@@ -97,6 +97,8 @@ const REASON_LABEL: Record<string, string> = {
   priority_changed: 'priority changed',
   added: 'added',
   removed: 'no longer counted',
+  matched: 'counted',
+  pending: 'still due',
 }
 
 /** Why a record moved a number, in plain words: "slipped", "newly open P1". */

@@ -6,7 +6,7 @@ import { axe } from 'vitest-axe'
 import { describe, expect, it } from 'vitest'
 import { API, server, state } from '../../test/server'
 import { renderApp } from '../../test/utils'
-import { viewHandlers } from '../../test/viewFixtures'
+import { contributionHandlers, contributionMeasure, viewHandlers } from '../../test/viewFixtures'
 import { TableTab } from './TableTab'
 
 function LocationProbe() {
@@ -330,6 +330,27 @@ describe('TableTab', () => {
       expect(deleted?.searchParams.get('metricKey')).toBe('defect_rate')
       await waitFor(() => expect(urls.length).toBeGreaterThan(before))
       await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    })
+
+    it('asks for the records behind a cell only when its drawer opens', async () => {
+      const asked: URL[] = []
+      server.use(
+        ...contributionHandlers((url) => {
+          asked.push(url)
+          return { measures: [contributionMeasure()] }
+        }),
+        ...viewHandlers(),
+      )
+      renderApp(<TableTab scorecardId="sc-main" scorecardName="Main scorecard" />, {
+        route: '/scorecards/sc-main?period=2026-M10',
+      })
+      await screen.findByRole('table')
+      expect(asked).toHaveLength(0)
+      await userEvent.setup().click(within(cellAt('On-time delivery', 'Unit A', 'Oct')).getByRole('button'))
+      const dialog = await screen.findByRole('dialog')
+      expect(await within(dialog).findAllByText('Derived from 1 record')).toHaveLength(1)
+      expect(asked).toHaveLength(1)
+      expect(asked[0]?.searchParams.get('subject')).toBe('unit-a')
     })
 
     it('does not show the override form to viewers', async () => {

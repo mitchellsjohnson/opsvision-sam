@@ -1,24 +1,31 @@
 import * as Dialog from '@radix-ui/react-dialog'
-import { X } from 'lucide-react'
-import { useId, useState, type FormEvent, type ReactNode, type RefObject } from 'react'
+import clsx from 'clsx'
+import { ExternalLink, X } from 'lucide-react'
+import { useCallback, useId, useState, type FormEvent, type ReactNode, type RefObject } from 'react'
 import { ApiError } from '../../api/errors'
 import {
   useClearOverride,
+  useContributions,
   useHistory,
   useMe,
   usePutOverride,
   useVersions,
   type PutOverrideRequest,
+  type RecordContributions,
 } from '../../api/queries'
 import type { components } from '../../api/schema'
+import { parsePeriod } from '../../lib/period'
 import { StatusBadge } from '../../ui/StatusBadge'
-import { changeText, formatDateTime, formatMetricValue, overrideSentence } from './format'
-import { plainNumber, ratioParts } from './viewHelpers'
+import { fieldLabel, formatCount, reasonLabel } from '../import/recordsModel'
+import { changeText, formatDateTime, formatMetricValue, overrideSentence, periodEndDate, shortDate } from './format'
+import { derivedMeasureKeys, plainNumber, ratioParts } from './viewHelpers'
 
 type Schemas = components['schemas']
 type Cell = Schemas['Cell']
 type ViewRow = Schemas['ViewRow']
 type Version = Schemas['MethodologyVersion']
+type ContributionMeasure = Schemas['ContributionMeasure']
+type RecordContribution = Schemas['RecordContribution']
 
 /** The cell the drawer describes, with the labels the table already computed. */
 export interface DrawerTarget {
@@ -111,6 +118,15 @@ function DrawerBody({
   })
   const value = (n: number) => formatMetricValue(row.format, n)
 
+  const derived = derivedMeasureKeys(metric?.formula, version?.content.measures ?? [])
+  const wantsRecords = !cell.ytd && derived.length > 0
+  const contributions = useContributions(scorecardId, row.metricKey, row.subjectId, cell.period, wantsRecords)
+  const recordMeasures = mergeMeasures(contributions.data?.pages).filter((m) => derived.includes(m.measureKey))
+  const end = periodEndDate(cell.period, fiscalYearStartMonth)
+  const endYear = end === null ? undefined : Number(end.slice(0, 4))
+  const facts = recordFacts(recordMeasures, cell.period, end)
+  const typed = typedNotes(recordMeasures, ratio, componentKeys.length, measureName)
+
   return (
     <>
       <div className="flex items-start justify-between gap-4">
@@ -140,6 +156,8 @@ function DrawerBody({
           ) : (
             <span className="text-ink/80">No data</span>
           )}
+          {facts.through && <span className="mt-1 block text-xs text-ink/80">{facts.through}</span>}
+          {facts.due && <span className="mt-1 block text-xs text-ink/80">{facts.due}</span>}
         </Item>
         <Item label="Components">
           {componentKeys.length === 0 ? (
@@ -164,6 +182,11 @@ function DrawerBody({
               ))}
             </ul>
           )}
+          {typed.map((note) => (
+            <span key={note} className="mt-1 block text-xs font-medium">
+              {note}
+            </span>
+          ))}
         </Item>
         <Item label="Coverage">
           {cell.coverage.length === 2 ? (
@@ -195,6 +218,10 @@ function DrawerBody({
         </p>
       )}
 
+      {wantsRecords && (contributions.isPending || contributions.isError || recordMeasures.length > 0) && (
+        <Records query={contributions} measures={recordMeasures} measureName={measureName} year={endYear} />
+      )}
+
       <History scorecardId={scorecardId} target={target} measureName={measureName} />
 
       {isAdmin &&
@@ -212,6 +239,299 @@ function DrawerBody({
           />
         ))}
     </>
+  )
+}
+
+/** A derived measure with every page loaded so far; `complete` once no later page can add to it. */
+interface LoadedMeasure extends ContributionMeasure {
+  complete: boolean
+}
+
+/** Joins the pages of contributions by measure. Pages run through the measures in order. */
+function mergeMeasures(pages: readonly RecordContributions[] | undefined): LoadedMeasure[] {
+  const byKey = new Map<string, ContributionMeasure>()
+  for (const page of pages ?? []) {
+    for (const m of page.measures) {
+      const seen = byKey.get(m.measureKey)
+      byKey.set(m.measureKey, seen ? { ...seen, records: [...seen.records, ...m.records] } : m)
+    }
+  }
+  const more = pages !== undefined && pages.length > 0 && pages[pages.length - 1]?.nextCursor !== undefined
+  const list = [...byKey.values()]
+  return list.map((m, i) => ({ ...m, complete: !more || list.slice(i + 1).some((n) => n.records.length > 0) }))
+}
+
+/** "Through Nov 14" when records stop before the period ends; "2 still due this month" for open commitments. */
+function recordFacts(
+  measures: readonly LoadedMeasure[],
+  period: string,
+  end: string | null,
+): { through: string | null; due: string | null } {
+  const cutoff = measures
+    .map((m) => m.cutoff)
+    .filter((d): d is string => d !== undefined)
+    .sort()[0]
+  const year = end === null ? undefined : Number(end.slice(0, 4))
+  const through = cutoff !== undefined && end !== null && cutoff < end ? `Through ${shortDate(cutoff, year)}` : null
+  // Each commitments measure counts the same due items, so they are not added up.
+  const pending = Math.max(0, ...measures.map((m) => m.pending))
+  const grain = parsePeriod(period)?.grain ?? 'month'
+  return { through, due: pending > 0 ? `${formatCount(pending)} still due this ${grain}` : null }
+}
+
+/** "Entered · records give 47 / 66" for each typed value that wins over the value records give. */
+function typedNotes(
+  measures: readonly LoadedMeasure[],
+  ratio: [string, string] | null,
+  componentCount: number,
+  measureName: (key: string) => string,
+): string[] {
+  const typed = measures.filter((m) => m.value !== null && m.source !== '' && m.source !== 'records')
+  if (typed.length === 0) return []
+  const records = (key: string) => measures.find((m) => m.measureKey === key)?.recordsValue ?? null
+  if (ratio) {
+    const [a, b] = [records(ratio[0]), records(ratio[1])]
+    if (a !== null && b !== null) return [`Entered · records give ${plainNumber(a)} / ${plainNumber(b)}`]
+  }
+  const shown = typed.filter((m) => m.recordsValue !== null)
+  if (shown.length === 1 && componentCount <= 1) {
+    return [`Entered · records give ${plainNumber(shown[0]?.recordsValue as number)}`]
+  }
+  return shown.map((m) => `${measureName(m.measureKey)}: entered · records give ${plainNumber(m.recordsValue as number)}`)
+}
+
+const STATE_LABEL: Record<RecordContribution['state'], string> = {
+  open: 'Open',
+  done: 'Done',
+  cancelled: 'Cancelled',
+}
+
+const DATE_ORDER = ['createdAt', 'committedAt', 'dueAt', 'completedAt', 'measuredAt']
+
+function datesOf(c: RecordContribution): [string, string][] {
+  const rank = (k: string) => (DATE_ORDER.includes(k) ? DATE_ORDER.indexOf(k) : DATE_ORDER.length)
+  return Object.entries(c.dates).sort(([a], [b]) => rank(a) - rank(b) || a.localeCompare(b))
+}
+
+function countedAs(c: RecordContribution): string {
+  const label = reasonLabel(c.reason)
+  const text = label.charAt(0).toUpperCase() + label.slice(1)
+  return c.amount === 1 ? text : `${text} · adds ${plainNumber(c.amount)}`
+}
+
+function recordCount(n: number): string {
+  return `${formatCount(n)} ${n === 1 ? 'record' : 'records'}`
+}
+
+function RecordsSkeleton() {
+  return (
+    <div role="status" aria-label="Loading records" className="mt-2">
+      <div className="space-y-2 motion-safe:animate-pulse">
+        {Array.from({ length: 3 }, (_, i) => (
+          <div key={i} className="h-6 rounded bg-ink/10" />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function RetryAlert({ message, onRetry }: { message: string; onRetry: () => void }) {
+  return (
+    <div role="alert" className="mt-2 rounded-md border border-status-r bg-status-r-bg p-3 text-sm">
+      <p className="font-medium text-status-r">{message}</p>
+      <button
+        type="button"
+        onClick={onRetry}
+        className="mt-2 rounded-md border border-ink/40 bg-white px-3 py-1 text-sm font-medium"
+      >
+        Retry
+      </button>
+    </div>
+  )
+}
+
+/** The records behind the cell's derived measures, a page at a time. */
+function Records({
+  query,
+  measures,
+  measureName,
+  year,
+}: {
+  query: ReturnType<typeof useContributions>
+  measures: LoadedMeasure[]
+  measureName: (key: string) => string
+  /** The calendar year the period ends in; record dates in other years show their year. */
+  year: number | undefined
+}) {
+  const headingId = useId()
+  // After "Load more", focus moves to the first new record so the button can disappear safely.
+  const [focusIndex, setFocusIndex] = useState<number | null>(null)
+  const focusOnMount = useCallback((el: HTMLElement | null) => el?.focus(), [])
+  const loaded = measures.reduce((n, m) => n + m.records.length, 0)
+
+  let body
+  if (query.data === undefined) {
+    body = query.isError ? (
+      <RetryAlert message="Could not load the records." onRetry={() => void query.refetch()} />
+    ) : (
+      <RecordsSkeleton />
+    )
+  } else {
+    const starts = measures.map((_, i) => measures.slice(0, i).reduce((n, m) => n + m.records.length, 0))
+    body = (
+      <>
+        {measures.map((m, i) => {
+          const name = measureName(m.measureKey)
+          const first = starts[i] ?? 0
+          return (
+            <div key={m.measureKey} className="mt-3">
+              <h4 className="text-sm font-medium">{name}</h4>
+              <p className="text-sm text-ink/80">
+                {m.records.length > 0
+                  ? `Derived from ${m.complete ? '' : 'at least '}${recordCount(m.records.length)}`
+                  : m.complete
+                    ? 'No records counted in this period'
+                    : 'These records come after the ones shown. Choose Load more records to see them.'}
+              </p>
+              {m.records.length > 0 && (
+                <RecordTable
+                  name={name}
+                  records={m.records}
+                  firstIndex={first}
+                  focusIndex={focusIndex}
+                  focusRef={focusOnMount}
+                  year={year}
+                />
+              )}
+            </div>
+          )
+        })}
+        {query.isFetchNextPageError && (
+          <p role="alert" className="mt-3 text-sm font-medium text-status-r">
+            Could not load more records. Choose Load more records to try again.
+          </p>
+        )}
+        {query.hasNextPage && (
+          // aria-disabled rather than disabled, so focus stays on the button while the page loads.
+          <button
+            type="button"
+            aria-disabled={query.isFetchingNextPage}
+            onClick={() => {
+              if (query.isFetchingNextPage) return
+              setFocusIndex(loaded)
+              void query.fetchNextPage()
+            }}
+            className="mt-3 rounded-md border border-ink/40 bg-white px-3 py-1.5 text-sm font-medium aria-disabled:opacity-60"
+          >
+            {query.isFetchingNextPage ? 'Loading more records…' : 'Load more records'}
+          </button>
+        )}
+      </>
+    )
+  }
+
+  return (
+    <section aria-labelledby={headingId} className="mt-6">
+      <h3 id={headingId} className="text-base font-semibold">
+        Records behind this result
+      </h3>
+      {body}
+    </section>
+  )
+}
+
+function RecordTable({
+  name,
+  records,
+  firstIndex,
+  focusIndex,
+  focusRef,
+  year,
+}: {
+  name: string
+  records: RecordContribution[]
+  /** The position of the first of these records among all listed, for focus after "Load more". */
+  firstIndex: number
+  focusIndex: number | null
+  focusRef: (el: HTMLElement | null) => void
+  year: number | undefined
+}) {
+  const head = 'border-b border-ink/20 px-1.5 py-1 text-left font-semibold'
+  const cell = 'border-b border-ink/10 px-1.5 py-1 align-top break-words'
+  return (
+    <table className="mt-2 w-full table-fixed border-collapse text-xs">
+      <caption className="sr-only">{name}: records</caption>
+      <colgroup>
+        <col className="w-[32%]" />
+        <col className="w-[13%]" />
+        <col className="w-[15%]" />
+        <col className="w-[20%]" />
+        <col className="w-[20%]" />
+      </colgroup>
+      <thead>
+        <tr>
+          <th scope="col" className={head}>
+            Record
+          </th>
+          <th scope="col" className={head}>
+            Priority
+          </th>
+          <th scope="col" className={head}>
+            State
+          </th>
+          <th scope="col" className={head}>
+            Dates
+          </th>
+          <th scope="col" className={head}>
+            Counted as
+          </th>
+        </tr>
+      </thead>
+      <tbody>
+        {records.map((c, i) => {
+          const focusTarget = firstIndex + i === focusIndex
+          const dates = datesOf(c)
+          return (
+            <tr key={`${c.source}|${c.externalId}|${c.subjectId ?? ''}|${i}`}>
+              <th
+                scope="row"
+                ref={focusTarget ? focusRef : undefined}
+                tabIndex={focusTarget ? -1 : undefined}
+                className={clsx(cell, 'font-normal')}
+              >
+                {c.url ? (
+                  <a
+                    href={c.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-0.5 font-medium text-accent-deep underline"
+                  >
+                    {c.externalId}{' '}
+                    <ExternalLink aria-hidden="true" className="size-3 shrink-0" />
+                    <span className="sr-only">(opens in a new tab)</span>
+                  </a>
+                ) : (
+                  <span className="font-medium">{c.externalId}</span>
+                )}
+                <span className="block">{c.title}</span>
+              </th>
+              <td className={cell}>{c.priority === '' || c.priority === 'none' ? 'None' : c.priority}</td>
+              <td className={cell}>{STATE_LABEL[c.state] ?? c.state}</td>
+              <td className={cell}>
+                {dates.length === 0
+                  ? 'None'
+                  : dates.map(([k, d]) => (
+                      <span key={k} className="block">
+                        {fieldLabel(k)} {shortDate(d, year)}
+                      </span>
+                    ))}
+              </td>
+              <td className={cell}>{countedAs(c)}</td>
+            </tr>
+          )
+        })}
+      </tbody>
+    </table>
   )
 }
 

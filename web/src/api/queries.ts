@@ -1,4 +1,11 @@
-import { keepPreviousData, useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
+import {
+  keepPreviousData,
+  useInfiniteQuery,
+  useMutation,
+  useQueries,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query'
 import type { ViewRequest } from '../lib/period'
 import { apiErrorFromResponse } from './errors'
 import type { components } from './schema'
@@ -37,6 +44,7 @@ export type ApplyImportRequest = Schemas['ApplyImportRequest']
 export type RecordsSampleRequest = Schemas['RecordsSampleRequest']
 export type RecordsSample = Schemas['RecordsSample']
 export type RecordValueCount = Schemas['RecordValueCount']
+export type RecordContributions = Schemas['RecordContributions']
 export interface OverrideCell {
   metricKey: string
   subjectId: string
@@ -63,6 +71,8 @@ export const keys = {
   recordValues: (recordType: string, field: string) => ['recordValues', recordType, field] as const,
   history: (sc: string, measure: string, subject: string, period: string) =>
     ['history', sc, measure, subject, period] as const,
+  contributions: (sc: string, metric: string, subject: string, period: string) =>
+    ['contributions', sc, metric, subject, period] as const,
 }
 
 type Result<T> = { data?: T; error?: unknown; response: Response }
@@ -137,6 +147,7 @@ export function useSaveData(sc: string) {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['view', sc] }),
         queryClient.invalidateQueries({ queryKey: ['entry', sc] }),
+        queryClient.invalidateQueries({ queryKey: ['contributions', sc] }),
       ])
     },
   })
@@ -177,6 +188,26 @@ export function useHistory(
       unwrap(
         api.GET('/scorecards/{sc}/history', {
           params: { path: { sc }, query: { measure, subject, period } },
+        }),
+      ),
+  })
+}
+
+/** The records behind a metric cell, by derived measure; pages of 100 records across measures. */
+export function useContributions(sc: string, metric: string, subject: string, period: string, enabled = true) {
+  const api = useApi()
+  return useInfiniteQuery({
+    queryKey: keys.contributions(sc, metric, subject, period),
+    enabled,
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (last: RecordContributions) => last.nextCursor,
+    queryFn: ({ pageParam }) =>
+      unwrap(
+        api.GET('/scorecards/{sc}/records/contributions', {
+          params: {
+            path: { sc },
+            query: pageParam === undefined ? { metric, subject, period } : { metric, subject, period, cursor: pageParam },
+          },
         }),
       ),
   })
@@ -408,6 +439,7 @@ export function usePublishVersion(sc: string) {
         refreshVersions(queryClient, sc),
         queryClient.invalidateQueries({ queryKey: ['view', sc] }),
         queryClient.invalidateQueries({ queryKey: ['entry', sc] }),
+        queryClient.invalidateQueries({ queryKey: ['contributions', sc] }),
       ])
     },
   })
@@ -479,6 +511,7 @@ export function useApplyImport() {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['view'] }),
         queryClient.invalidateQueries({ queryKey: ['entry'] }),
+        queryClient.invalidateQueries({ queryKey: ['contributions'] }),
         queryClient.invalidateQueries({ queryKey: ['versions'] }),
         queryClient.invalidateQueries({ queryKey: ['diff'] }),
       ])
@@ -576,6 +609,7 @@ export function useApplyRecords() {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['view'] }),
         queryClient.invalidateQueries({ queryKey: ['entry'] }),
+        queryClient.invalidateQueries({ queryKey: ['contributions'] }),
         queryClient.invalidateQueries({ queryKey: keys.importTemplates }),
         queryClient.invalidateQueries({ queryKey: keys.recordTypes }),
         queryClient.invalidateQueries({ queryKey: keys.orgUnits }),

@@ -71,6 +71,9 @@ describe('copy', () => {
     expect(reasonLabel('newly_open', 'none')).toBe('newly open')
     expect(reasonLabel('removed')).toBe('no longer counted')
     expect(reasonLabel('priority_changed')).toBe('priority changed')
+    expect(reasonLabel('matched')).toBe('counted')
+    expect(reasonLabel('pending')).toBe('still due')
+    expect(reasonLabel('open_days')).toBe('open days')
   })
 
   it('summarizes a story line by reason, with the record IDs', () => {

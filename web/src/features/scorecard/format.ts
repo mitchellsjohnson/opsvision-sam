@@ -1,5 +1,5 @@
 import type { components } from '../../api/schema'
-import { parsePeriod, prev } from '../../lib/period'
+import { calendarMonth, lastMonth, parsePeriod, prev } from '../../lib/period'
 import { shortLabel } from './columns'
 
 const DECIMALS: Record<string, number> = {
@@ -31,6 +31,25 @@ export function formatMetricValue(format: string, value: number): string {
 export function formatDate(iso: string): string {
   const d = new Date(iso)
   return Number.isNaN(d.getTime()) ? iso : d.toISOString().slice(0, 10)
+}
+
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+/** `Nov 14` for the calendar date `2026-11-14`, with the year when it is not `year`: `Dec 30, 2025`. */
+export function shortDate(date: string, year?: number): string {
+  const [y, m, d] = date.split('-').map(Number)
+  const name = MONTHS[(m ?? 0) - 1]
+  if (!name || !d) return date
+  return year === undefined || y === year ? `${name} ${d}` : `${name} ${d}, ${y}`
+}
+
+/** The last calendar day (`yyyy-mm-dd`) of a fiscal period, or null for an invalid period. */
+export function periodEndDate(period: string, fyStart: number): string | null {
+  const parsed = parsePeriod(period)
+  if (!parsed) return null
+  const { year, month } = calendarMonth(lastMonth(parsed), fyStart)
+  const day = new Date(Date.UTC(year, month, 0)).getUTCDate()
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
 }
 
 /** `yyyy-mm-dd hh:mm UTC` for an ISO timestamp. */

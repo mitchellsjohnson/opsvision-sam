@@ -8,6 +8,9 @@ type ViewRow = Schemas['ViewRow']
 type ScorecardView = Schemas['ScorecardView']
 type MethodologyVersion = Schemas['MethodologyVersion']
 type Override = Schemas['Override']
+type ContributionMeasure = Schemas['ContributionMeasure']
+type RecordContribution = Schemas['RecordContribution']
+type RecordContributions = Schemas['RecordContributions']
 
 // All data is synthetic.
 
@@ -222,6 +225,76 @@ export interface ViewHandlerOptions {
   onView?: (url: URL) => void
   /** Overrides the default view response. */
   respond?: (url: URL) => Response | undefined
+}
+
+const DERIVE: Record<string, Schemas['DeriveRule']> = {
+  closed: { recordType: 'epic', op: 'commitments', outcome: 'met' },
+  total: { recordType: 'epic', op: 'commitments', outcome: 'resolved' },
+  defects: {
+    recordType: 'defect',
+    op: 'daily_open_weighted',
+    weights: { P1: 64, P2: 16, P3: 4, P4: 2, none: 1 },
+  },
+}
+
+/** The versions with ver-1's measures derived from records: on-time and resolved epics, weighted open defects. */
+export const derivedVersions: MethodologyVersion[] = versions.map((v) =>
+  v.id !== 'ver-1'
+    ? v
+    : {
+        ...v,
+        content: {
+          ...v.content,
+          measures: v.content.measures.map((m) => ({ ...m, source: 'derived' as const, derive: DERIVE[m.key] })),
+        },
+      },
+)
+
+/** One record's part in a derived value; an on-time Checkout epic unless overridden. */
+export function contribution(over: Partial<RecordContribution> = {}): RecordContribution {
+  return {
+    source: 'tracker',
+    externalId: 'CHK-101',
+    title: 'Saved cards at checkout',
+    url: 'https://tracker.example.test/browse/CHK-101',
+    priority: 'none',
+    state: 'done',
+    amount: 1,
+    reason: 'met',
+    dates: { dueAt: '2026-10-20', completedAt: '2026-10-18' },
+    subjectId: 'root',
+    ...over,
+  }
+}
+
+/** One derived measure of a cell, computed from records alone unless overridden. */
+export function contributionMeasure(over: Partial<ContributionMeasure> = {}): ContributionMeasure {
+  return {
+    measureKey: 'closed',
+    value: null,
+    source: '',
+    recordsValue: 1,
+    cutoff: '2026-10-31',
+    pending: 0,
+    records: [contribution()],
+    ...over,
+  }
+}
+
+/**
+ * Handlers for the records behind a cell: ver-1 with derived measures, and
+ * the contributions `respond` returns for each request (by URL).
+ */
+export function contributionHandlers(
+  respond: (url: URL) => RecordContributions | Response | Promise<RecordContributions | Response>,
+) {
+  return [
+    http.get(`${API}/v1/scorecards/sc-main/versions`, () => HttpResponse.json({ versions: derivedVersions })),
+    http.get(`${API}/v1/scorecards/sc-main/records/contributions`, async ({ request }) => {
+      const out = await respond(new URL(request.url))
+      return out instanceof Response ? out : HttpResponse.json(out)
+    }),
+  ]
 }
 
 /** MSW handlers for the scorecard view, versions and history endpoints. */

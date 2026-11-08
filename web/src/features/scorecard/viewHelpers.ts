@@ -62,6 +62,18 @@ export function ratioParts(
   return [match[1], match[2]]
 }
 
+/**
+ * The keys of the derived measures a formula references that records can
+ * explain (a `days_in_period` measure counts days, not records).
+ */
+export function derivedMeasureKeys(formula: string | undefined, measures: readonly Schemas['Measure'][]): string[] {
+  if (formula === undefined) return []
+  const names = new Set(formula.match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? [])
+  return measures
+    .filter((m) => names.has(m.key) && m.source === 'derived' && m.derive && m.derive.op !== 'days_in_period')
+    .map((m) => m.key)
+}
+
 /** A number with thousands separators and up to two decimals. */
 export function plainNumber(n: number): string {
   return n.toLocaleString('en-US', { maximumFractionDigits: 2 })

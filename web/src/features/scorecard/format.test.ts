@@ -1,5 +1,23 @@
 import { describe, expect, it } from 'vitest'
-import { changeText, formatDate, formatMetricValue, withDirection } from './format'
+import { changeText, formatDate, formatMetricValue, periodEndDate, shortDate, withDirection } from './format'
+
+describe('shortDate', () => {
+  it('names the month and day, adding the year only when it differs', () => {
+    expect(shortDate('2026-11-14')).toBe('Nov 14')
+    expect(shortDate('2026-11-04', 2026)).toBe('Nov 4')
+    expect(shortDate('2025-12-30', 2026)).toBe('Dec 30, 2025')
+  })
+})
+
+describe('periodEndDate', () => {
+  it('is the last calendar day of a fiscal period', () => {
+    expect(periodEndDate('2026-M11', 1)).toBe('2026-11-30')
+    expect(periodEndDate('2026-M02', 1)).toBe('2026-02-28')
+    expect(periodEndDate('2027-M05', 7)).toBe('2026-11-30')
+    expect(periodEndDate('2026-Q4', 1)).toBe('2026-12-31')
+    expect(periodEndDate('nope', 1)).toBeNull()
+  })
+})
 
 describe('formatMetricValue', () => {
   it('formats by metric format', () => {
