@@ -27,7 +27,8 @@ type Commitment struct {
 
 // Commitments returns r's commitments in date-history order. Every committed
 // due date is its own commitment: the latest revision's prior due dates, then
-// each revision's due date, with consecutive repeats removed. A date that
+// each revision's due date that is not one of them, with consecutive repeats
+// removed. A date that
 // moves later is missed and slipped; a date that moves earlier is replaced
 // without an entry. The record's latest state decides the last date: done on
 // or before it is met, cancelled on or before it is dropped, otherwise it is
@@ -74,25 +75,29 @@ func Commitments(r domain.Record, cutoff domain.Date) []Commitment {
 }
 
 // dueDates returns latest's prior due dates followed by each revision's due
-// date in AsOf order, as calendar days, with consecutive repeats removed.
+// date in AsOf order that is not already a prior due date, as calendar days,
+// with consecutive repeats removed. Prior due dates can repeat dates the
+// revisions also tracked; each date counts once.
 func dueDates(r domain.Record, latest domain.RecordFields) []time.Time {
 	var out []time.Time
-	add := func(d domain.Date) {
-		if d.IsZero() {
-			return
-		}
-		t := dayOf(d)
+	add := func(t time.Time) {
 		if n := len(out); n > 0 && out[n-1].Equal(t) {
 			return
 		}
 		out = append(out, t)
 	}
+	prior := make(map[time.Time]bool, len(latest.PriorDueDates))
 	for _, d := range latest.PriorDueDates {
-		add(d)
+		if d.IsZero() {
+			continue
+		}
+		t := dayOf(d)
+		prior[t] = true
+		add(t)
 	}
 	for _, rv := range r.Revisions {
-		if rv.Fields.DueAt != nil {
-			add(*rv.Fields.DueAt)
+		if d := rv.Fields.DueAt; d != nil && !d.IsZero() && !prior[dayOf(*d)] {
+			add(dayOf(*d))
 		}
 	}
 	return out

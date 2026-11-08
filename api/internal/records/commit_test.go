@@ -117,6 +117,30 @@ func TestPriorDueDatesPrepended(t *testing.T) {
 	})
 }
 
+func TestPriorDueDatesOverlapTrackedSlips(t *testing.T) {
+	build := func(latest domain.RecordFields) domain.Record {
+		latest.PriorDueDates = []domain.Date{day("2026-12-15"), day("2027-02-10")}
+		return epic(
+			rev("2026-11-30", open("2026-12-15")),
+			rev("2027-01-05", open("2027-02-10")),
+			rev("2027-03-05", latest),
+		)
+	}
+
+	checkCommitments(t, Commitments(build(open("2027-03-31")), day("2027-04-30")), []Commitment{
+		{Due: day("2026-12-15"), Outcome: OutcomeMissed, Slipped: true},
+		{Due: day("2027-02-10"), Outcome: OutcomeMissed, Slipped: true},
+		{Due: day("2027-03-31"), Outcome: OutcomeMissed},
+	})
+
+	done := build(closed(domain.StateDone, "2027-03-31", "2027-03-20"))
+	checkCommitments(t, Commitments(done, day("2027-04-30")), []Commitment{
+		{Due: day("2026-12-15"), Outcome: OutcomeMissed, Slipped: true},
+		{Due: day("2027-02-10"), Outcome: OutcomeMissed, Slipped: true},
+		{Due: day("2027-03-31"), Outcome: OutcomeMet},
+	})
+}
+
 func TestCommitmentsIgnoreTimeOfDay(t *testing.T) {
 	// The same calendar date at two times of day is one date, not a slip.
 	noon := domain.Date{Time: time.Date(2026, 12, 15, 12, 0, 0, 0, time.UTC)}
