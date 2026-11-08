@@ -1315,8 +1315,8 @@ func TestRecordTypeEditKeepsDerivation(t *testing.T) {
 	without := rt
 	without.Priorities = []string{"P0", "P1", "P2", "P4"}
 	got := e.expectError(t, 409, "conflict", admin, "PUT", "/record-types/defect", without)
-	if !strings.Contains(got.Error.Message, "Defect points in 2026 uses priority P3") {
-		t.Errorf("message = %q", got.Error.Message)
+	if !strings.Contains(got.Error.Message, "Defect points in 2026 uses priority P3") || !hasDetail(got, "priorities") {
+		t.Errorf("error = %+v", got.Error)
 	}
 	renamed := rt
 	renamed.Priorities = []string{"P0", "P1", "P2", "P3", "Low"}
@@ -1342,8 +1342,8 @@ func TestRecordTypeAttributeInUse(t *testing.T) {
 	removed := rt
 	removed.Attributes = []map[string]string{}
 	got := e.expectError(t, 409, "conflict", admin, "PUT", "/record-types/defect", removed)
-	if !strings.Contains(got.Error.Message, "Defect points in Customer defects uses Customer ticket") {
-		t.Errorf("message = %q", got.Error.Message)
+	if !strings.Contains(got.Error.Message, "Defect points in Customer defects uses Customer ticket") || !hasDetail(got, "attributes") {
+		t.Errorf("error = %+v", got.Error)
 	}
 	retyped := rt
 	retyped.Attributes = []map[string]string{{"key": "customerTicket", "name": "Customer ticket", "type": "string"}}

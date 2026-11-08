@@ -119,12 +119,15 @@ func (s *Server) PutRecordType(ctx context.Context, req PutRecordTypeRequestObje
 		return nil, err
 	}
 	if before != nil {
-		msg, err := s.recordTypeEditInUse(ctx, tenantID, *before, rt)
+		path, msg, err := s.recordTypeEditInUse(ctx, tenantID, *before, rt)
 		if err != nil {
 			return nil, err
 		}
 		if msg != "" {
-			return nil, conflict(msg)
+			// The detail tells this refusal apart from a stale revision.
+			e := conflict(msg)
+			e.details = []detail{{Path: path, Message: msg}}
+			return nil, e
 		}
 	}
 	if err := s.store.PutRecordType(ctx, tenantID, rt, b.Revision); err != nil {
@@ -154,8 +157,9 @@ func (s *Server) PutRecordType(ctx context.Context, req PutRecordTypeRequestObje
 // recordTypeEditInUse returns a plain message naming the first derive rule,
 // in any methodology version of any scorecard, that uses a priority or
 // attribute the edit from before to after removes or renames (or an
-// attribute whose type it changes), and "" when there is none.
-func (s *Server) recordTypeEditInUse(ctx context.Context, tenantID string, before, after domain.RecordType) (string, error) {
+// attribute whose type it changes), with the path of what it uses
+// ("priorities" or "attributes"), and "" when there is none.
+func (s *Server) recordTypeEditInUse(ctx context.Context, tenantID string, before, after domain.RecordType) (path, msg string, err error) {
 	gone := map[string]bool{}
 	for _, pr := range before.Priorities {
 		if pr != domain.PriorityNone && !slices.Contains(after.Priorities, pr) {
@@ -170,16 +174,16 @@ func (s *Server) recordTypeEditInUse(ctx context.Context, tenantID string, befor
 		}
 	}
 	if len(gone) == 0 && len(changed) == 0 {
-		return "", nil
+		return "", "", nil
 	}
 	cards, err := s.store.ListScorecards(ctx, tenantID)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	for _, sc := range cards {
 		versions, err := s.store.ListVersions(ctx, tenantID, sc.ID)
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
 		for _, v := range versions {
 			vname := v.Name
@@ -197,18 +201,18 @@ func (s *Server) recordTypeEditInUse(ctx context.Context, tenantID string, befor
 				pris, fields := records.DeriveRefs(*m.Derive)
 				for _, pr := range pris {
 					if gone[pr] {
-						return fmt.Sprintf("%s in %s uses priority %s. Change that rule before removing or renaming the priority.", mname, vname, pr), nil
+						return "priorities", fmt.Sprintf("%s in %s uses priority %s. Change that rule before removing or renaming the priority.", mname, vname, pr), nil
 					}
 				}
 				for _, f := range fields {
 					if name, ok := changed[f]; ok {
-						return fmt.Sprintf("%s in %s uses %s. Change that rule before removing, renaming, or retyping it.", mname, vname, name), nil
+						return "attributes", fmt.Sprintf("%s in %s uses %s. Change that rule before removing, renaming, or retyping it.", mname, vname, name), nil
 					}
 				}
 			}
 		}
 	}
-	return "", nil
+	return "", "", nil
 }
 
 // recordValuesLimit is how many distinct values ListRecordValues returns.

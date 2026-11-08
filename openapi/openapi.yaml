@@ -1070,8 +1070,9 @@ paths:
         which must not exist yet. A stale revision fails with 409. Removing
         or renaming a priority or attribute, or changing an attribute's type,
         that a derive rule of any methodology version uses also fails with
-        409, naming the measure and version. Adding priorities and
-        attributes is always allowed.
+        409, naming the measure and version; that 409 carries one detail, at
+        `priorities` or `attributes`, which a stale revision's does not.
+        Adding priorities and attributes is always allowed.
       requestBody:
         required: true
         content:

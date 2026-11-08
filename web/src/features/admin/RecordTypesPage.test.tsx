@@ -139,6 +139,17 @@ describe('RecordTypesPage', () => {
     )
   })
 
+  it('says which rule uses a priority it cannot remove', async () => {
+    const { user } = await setup()
+    const editor = await openEditor(user, 'Defect')
+    const message = 'Defect points in 2026 uses priority P4. Change that rule before removing or renaming the priority.'
+    fake.failNext.set('PUT /record-types/defect', { status: 409, code: 'conflict', message, details: [{ path: 'priorities', message }] })
+    await user.click(within(editor).getByRole('button', { name: 'Remove P4' }))
+    await user.click(within(editor).getByRole('button', { name: 'Save Defect' }))
+    expect(await within(editor).findByText(message)).toBeTruthy()
+    expect(within(editor).queryByText(/changed somewhere else/)).toBeNull()
+  })
+
   it('shows server errors at the field they belong to', async () => {
     const { user } = await setup()
     const editor = await openEditor(user, 'Defect')

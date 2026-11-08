@@ -264,8 +264,11 @@ function RecordTypeEditor({
       setStale(false)
       setStatus(`Saved ${saved.name}.`)
     } catch (err) {
-      if (err instanceof ApiError && err.status === 409) setStale(true)
-      else setErrors(errorsFrom(err))
+      // A 409 with a detail is a priority or field a rule still uses; without one, a stale revision.
+      if (err instanceof ApiError && err.status === 409) {
+        if (err.details.length === 0) setStale(true)
+        else setErrors({ fields: {}, general: err.details.map((d) => d.message) })
+      } else setErrors(errorsFrom(err))
       focusErrors()
     }
   }
