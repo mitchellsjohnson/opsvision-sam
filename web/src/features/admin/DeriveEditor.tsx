@@ -391,6 +391,7 @@ export function DeriveEditor({ sc, recordTypes, value, onChange, lockRecordType,
           legend="Which records count"
           fields={fields}
           rows={value.conditions}
+          recordType={p.recordType}
           knownValues={knownValues}
           onChange={(rows) => onChange({ ...value, conditions: rows, params: { ...p, where: toWhere(rows, dates) } })}
         />
@@ -650,7 +651,14 @@ export function DeriveRuleEditor({
           {rows === null ? (
             <CannotShow onReset={() => setRows2([])} />
           ) : (
-            <ConditionBuilder legend="Which records count" fields={fields} rows={rows} knownValues={knownValues} onChange={setRows2} />
+            <ConditionBuilder
+              legend="Which records count"
+              fields={fields}
+              rows={rows}
+              recordType={rule.recordType}
+              knownValues={knownValues}
+              onChange={setRows2}
+            />
           )}
           <SampleLine sc={sc} recordType={rule.recordType} bucketBy={ruleBucket(rule)} where={where} />
         </>

@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react'
+import { useRecordValues } from '../../api/queries'
 import {
   dateFieldsOf,
   defaultValue,
@@ -16,7 +17,9 @@ export interface ConditionBuilderProps {
   fields: readonly ConditionField[]
   rows: readonly ConditionRow[]
   onChange: (rows: ConditionRow[]) => void
-  /** Values seen for text fields (such as products and teams), offered as suggestions. */
+  /** The record type whose stored values the value pickers offer. */
+  recordType?: string
+  /** Values to offer for text fields when the stored records have none (such as products and teams). */
   knownValues?: Readonly<Record<string, readonly string[]>>
   /** Problems with the whole filter, such as one the server reported. */
   errors?: readonly string[]
@@ -41,11 +44,12 @@ function ListInput({
       .split(',')
       .map((x) => x.trim())
       .filter((x) => x !== '')
+  const key = value.join('\u0000')
   const [text, setText] = useState(value.join(', '))
-  const [seen, setSeen] = useState(value)
-  if (value !== seen) {
-    setSeen(value)
-    if (parse(text).join('\u0000') !== value.join('\u0000')) setText(value.join(', '))
+  const [seen, setSeen] = useState(key)
+  if (key !== seen) {
+    setSeen(key)
+    if (parse(text).join('\u0000') !== key) setText(value.join(', '))
   }
   return (
     <input
@@ -57,7 +61,7 @@ function ListInput({
       onChange={(e) => {
         setText(e.target.value)
         const next = parse(e.target.value)
-        setSeen(next)
+        setSeen(next.join('\u0000'))
         onChange(next)
       }}
     />
@@ -66,10 +70,19 @@ function ListInput({
 
 /**
  * Rows of field · operator · value that must all hold. Values are picked
- * from lists wherever the field has known values. Unfinished rows are shown
- * as such and left out of the filter.
+ * from lists wherever the field has known values: the values stored records
+ * hold, else `knownValues`. Unfinished rows are shown as such and left out of
+ * the filter.
  */
-export function ConditionBuilder({ legend, fields, rows, onChange, knownValues = {}, errors = [] }: ConditionBuilderProps) {
+export function ConditionBuilder({
+  legend,
+  fields,
+  rows,
+  onChange,
+  recordType = '',
+  knownValues = {},
+  errors = [],
+}: ConditionBuilderProps) {
   const id = useId()
   const addRef = useRef<HTMLButtonElement>(null)
   const focusRow = useRef<number | null>(null)
@@ -112,7 +125,6 @@ export function ConditionBuilder({ legend, fields, rows, onChange, knownValues =
             const kind = f?.kind ?? 'text'
             const ops = opsFor(kind)
             const done = isComplete(row, dates)
-            const listId = f && knownValues[f.key]?.length ? `${id}-values-${f.key}` : undefined
             return (
               <li key={i} data-row={i} className="flex flex-wrap items-start gap-2">
                 <select
@@ -145,17 +157,12 @@ export function ConditionBuilder({ legend, fields, rows, onChange, knownValues =
                   row={row}
                   field={f}
                   fields={fields}
-                  listId={listId}
+                  recordType={recordType}
+                  known={f ? knownValues[f.key] : undefined}
+                  listId={`${id}-values-${i}`}
                   hintId={`${id}-list-hint`}
                   onChange={(value) => setRow(i, { ...row, value })}
                 />
-                {listId && f && (
-                  <datalist id={listId}>
-                    {(knownValues[f.key] ?? []).map((v) => (
-                      <option key={v} value={v} />
-                    ))}
-                  </datalist>
-                )}
                 <button
                   type="button"
                   className={`${secondaryButton} mt-1`}
@@ -194,11 +201,34 @@ export function ConditionBuilder({ legend, fields, rows, onChange, knownValues =
   )
 }
 
+/** How many stored values "is one of" offers as checkboxes. */
+const CHECKBOX_LIMIT = 20
+
+interface Suggestion {
+  value: string
+  count?: number
+}
+
+/** The values to offer for a text field: what stored records hold, else the known values. */
+function useSuggestions(recordType: string, field: ConditionField | undefined, known: readonly string[] | undefined): Suggestion[] {
+  const suggestable = field?.kind === 'text' && field.key !== 'title'
+  const stored = useRecordValues(recordType, field?.key ?? '', suggestable)
+  if (!suggestable) return []
+  if (stored.data && stored.data.length > 0) return stored.data
+  return (known ?? []).map((value) => ({ value }))
+}
+
+function countLabel(s: Suggestion): string {
+  return s.count === undefined ? s.value : `${s.value} (${s.count.toLocaleString('en-US')})`
+}
+
 function ValueEditor({
   n,
   row,
   field,
   fields,
+  recordType,
+  known,
   listId,
   hintId,
   onChange,
@@ -207,10 +237,13 @@ function ValueEditor({
   row: ConditionRow
   field: ConditionField | undefined
   fields: readonly ConditionField[]
-  listId?: string
+  recordType: string
+  known: readonly string[] | undefined
+  listId: string
   hintId: string
   onChange: (value: ConditionRow['value']) => void
 }) {
+  const suggestions = useSuggestions(recordType, field, known)
   const label = `Condition ${n} value`
   if (row.op === 'is_empty' || row.op === 'not_empty' || !field) return null
   const text = typeof row.value === 'string' ? row.value : ''
@@ -285,16 +318,60 @@ function ValueEditor({
       />
     )
   }
+
+  const datalist =
+    suggestions.length > 0 ? (
+      <datalist id={listId}>
+        {suggestions.map((s) => (
+          <option key={s.value} value={s.value} label={countLabel(s)} />
+        ))}
+      </datalist>
+    ) : null
+  const list = datalist ? listId : undefined
+
   if (row.op === 'one_of') {
+    const chosen = Array.isArray(row.value) ? row.value : []
+    const offered = suggestions.slice(0, CHECKBOX_LIMIT)
+    if (offered.length === 0) {
+      return <ListInput label={`Condition ${n} values`} describedBy={hintId} value={chosen} onChange={onChange} />
+    }
+    const offeredValues = new Set(offered.map((s) => s.value))
+    const others = chosen.filter((v) => !offeredValues.has(v))
     return (
-      <ListInput
-        label={`Condition ${n} values`}
-        describedBy={hintId}
-        listId={listId}
-        value={Array.isArray(row.value) ? row.value : []}
-        onChange={onChange}
-      />
+      <div className="space-y-1 pt-2">
+        <fieldset className="flex flex-wrap gap-x-3 gap-y-1">
+          <legend className="sr-only">{`Condition ${n} values`}</legend>
+          {offered.map((s) => (
+            <label key={s.value} className="flex items-center gap-1 text-sm">
+              <input
+                type="checkbox"
+                checked={chosen.includes(s.value)}
+                onChange={(e) =>
+                  onChange([
+                    ...offered.map((x) => x.value).filter((v) => (v === s.value ? e.target.checked : chosen.includes(v))),
+                    ...others,
+                  ])
+                }
+              />
+              {countLabel(s)}
+            </label>
+          ))}
+        </fieldset>
+        <ListInput
+          label={`Condition ${n} other values`}
+          describedBy={hintId}
+          listId={list}
+          value={others}
+          onChange={(next) => onChange([...chosen.filter((v) => offeredValues.has(v)), ...next])}
+        />
+        {datalist}
+      </div>
     )
   }
-  return <input aria-label={label} className={`${inputClass} w-auto`} list={listId} value={text} onChange={(e) => onChange(e.target.value)} />
+  return (
+    <>
+      <input aria-label={label} className={`${inputClass} w-auto`} list={list} value={text} onChange={(e) => onChange(e.target.value)} />
+      {datalist}
+    </>
+  )
 }

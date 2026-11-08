@@ -1076,6 +1076,44 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
 
+  /record-types/{id}/values:
+    parameters:
+      - $ref: '#/components/parameters/RecordTypeId'
+    get:
+      operationId: listRecordValues
+      tags: [Records]
+      summary: The values stored records hold in one field (admin only)
+      description: |
+        Up to 100 distinct non-empty values of `field` (a record field or an
+        attribute key of the type) across the stored records of the type,
+        each record as of its latest revision, most common first and ties by
+        value. Numbers, yes/no values and dates are written as text
+        (`12.5`, `true`, `2026-09-03`). An unknown record type is 404; an
+        unknown field is 400 at `field`.
+      parameters:
+        - name: field
+          in: query
+          required: true
+          description: A record field or attribute key, such as `category` or `customerTicket`.
+          schema: { type: string }
+      responses:
+        '200':
+          description: The values, most common first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [values]
+                properties:
+                  values:
+                    type: array
+                    maxItems: 100
+                    items: { $ref: '#/components/schemas/RecordValueCount' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
   /scorecards/{sc}/records/sample:
     parameters:
       - $ref: '#/components/parameters/ScorecardId'
@@ -2159,6 +2197,22 @@ components:
             is a RecordTemplate for one of the tenant's record types. Unknown
             fields and invalid mappings are rejected with 400.
           additionalProperties: true
+        revision:
+          type: integer
+          minimum: 1
+          readOnly: true
+          description: Counts the saves that changed the template (1 after the first). Ignored on PUT.
+        lastUsed:
+          type: string
+          format: date-time
+          readOnly: true
+          description: When an import last applied the template; absent if never. Ignored on PUT.
+    RecordValueCount:
+      type: object
+      required: [value, count]
+      properties:
+        value: { type: string }
+        count: { type: integer, minimum: 1 }
     ImportCounts:
       type: object
       required: [dataPoints, overrides, versionText, legacyNotes]

@@ -682,6 +682,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/record-types/{id}/values": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Record type ID. */
+                id: components["parameters"]["RecordTypeId"];
+            };
+            cookie?: never;
+        };
+        /**
+         * The values stored records hold in one field (admin only)
+         * @description Up to 100 distinct non-empty values of `field` (a record field or an
+         *     attribute key of the type) across the stored records of the type,
+         *     each record as of its latest revision, most common first and ties by
+         *     value. Numbers, yes/no values and dates are written as text
+         *     (`12.5`, `true`, `2026-09-03`). An unknown record type is 404; an
+         *     unknown field is 400 at `field`.
+         */
+        get: operations["listRecordValues"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/scorecards/{sc}/records/sample": {
         parameters: {
             query?: never;
@@ -1377,6 +1405,17 @@ export interface components {
             body: {
                 [key: string]: unknown;
             };
+            /** @description Counts the saves that changed the template (1 after the first). Ignored on PUT. */
+            readonly revision?: number;
+            /**
+             * Format: date-time
+             * @description When an import last applied the template; absent if never. Ignored on PUT.
+             */
+            readonly lastUsed?: string;
+        };
+        RecordValueCount: {
+            value: string;
+            count: number;
         };
         ImportCounts: {
             dataPoints: number;
@@ -3041,6 +3080,38 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             409: components["responses"]["Conflict"];
+        };
+    };
+    listRecordValues: {
+        parameters: {
+            query: {
+                /** @description A record field or attribute key, such as `category` or `customerTicket`. */
+                field: string;
+            };
+            header?: never;
+            path: {
+                /** @description Record type ID. */
+                id: components["parameters"]["RecordTypeId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The values, most common first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        values: components["schemas"]["RecordValueCount"][];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
         };
     };
     sampleRecords: {

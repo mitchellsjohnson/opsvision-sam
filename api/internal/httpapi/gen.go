@@ -1059,11 +1059,17 @@ type ImportTemplate struct {
 	// Id Client-supplied identifier.
 	//
 	// Example: team-alpha
-	Id   Id     `json:"id"`
-	Name string `json:"name"`
+	Id Id `json:"id"`
+
+	// LastUsed When an import last applied the template; absent if never. Ignored on PUT.
+	LastUsed *time.Time `json:"lastUsed,omitempty"`
+	Name     string     `json:"name"`
 
 	// Profile `legacy_workbook` or `records`; `csv` is rejected.
 	Profile ImportTemplateProfile `json:"profile"`
+
+	// Revision Counts the saves that changed the template (1 after the first). Ignored on PUT.
+	Revision *int `json:"revision,omitempty"`
 }
 
 // ImportTemplateProfile `legacy_workbook` or `records`; `csv` is rejected.
@@ -1693,6 +1699,12 @@ type RecordType struct {
 	TrackedFrom map[string]MonthPeriod `json:"trackedFrom"`
 }
 
+// RecordValueCount defines model for RecordValueCount.
+type RecordValueCount struct {
+	Count int    `json:"count"`
+	Value string `json:"value"`
+}
+
 // RecordsApplied defines model for RecordsApplied.
 type RecordsApplied struct {
 	// Counts Row counts; `missing` counts records.
@@ -2157,6 +2169,12 @@ type GetOrgTreeParams struct {
 	Month *MonthPeriod `form:"month,omitempty" json:"month,omitempty"`
 }
 
+// ListRecordValuesParams defines parameters for ListRecordValues.
+type ListRecordValuesParams struct {
+	// Field A record field or attribute key, such as `category` or `customerTicket`.
+	Field string `form:"field" json:"field"`
+}
+
 // GetDataEntryParams defines parameters for GetDataEntry.
 type GetDataEntryParams struct {
 	Period Period `form:"period" json:"period"`
@@ -2383,6 +2401,9 @@ type ServerInterface interface {
 	// PutRecordType Create or replace a record type (admin only)
 	// (PUT /record-types/{id})
 	PutRecordType(w http.ResponseWriter, r *http.Request, id RecordTypeId)
+	// ListRecordValues The values stored records hold in one field (admin only)
+	// (GET /record-types/{id}/values)
+	ListRecordValues(w http.ResponseWriter, r *http.Request, id RecordTypeId, params ListRecordValuesParams)
 	// ListScorecards List scorecards
 	// (GET /scorecards)
 	ListScorecards(w http.ResponseWriter, r *http.Request)
@@ -3035,6 +3056,48 @@ func (siw *ServerInterfaceWrapper) PutRecordType(w http.ResponseWriter, r *http.
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.PutRecordType(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListRecordValues operation middleware
+func (siw *ServerInterfaceWrapper) ListRecordValues(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id RecordTypeId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListRecordValuesParams
+
+	// ------------- Required query parameter "field" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "field", r.URL.Query(), &params.Field, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "field"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "field", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListRecordValues(w, r, id, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3933,6 +3996,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/imports/{id}/apply", wrapper.ApplyImport)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/record-types", wrapper.ListRecordTypes)
 	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/record-types/{id}", wrapper.PutRecordType)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/record-types/{id}/values", wrapper.ListRecordValues)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/scorecards/{sc}/records/sample", wrapper.SampleRecords)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/scorecards/{sc}/records/contributions", wrapper.ListRecordContributions)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/import-templates", wrapper.ListImportTemplates)
@@ -6030,6 +6094,87 @@ func (response PutRecordType409JSONResponse) VisitPutRecordTypeResponse(w http.R
 	return err
 }
 
+type ListRecordValuesRequestObject struct {
+	Id     RecordTypeId `json:"id"`
+	Params ListRecordValuesParams
+}
+
+type ListRecordValuesResponseObject interface {
+	VisitListRecordValuesResponse(w http.ResponseWriter) error
+}
+
+type ListRecordValues200JSONResponse struct {
+	Values []RecordValueCount `json:"values"`
+}
+
+func (response ListRecordValues200JSONResponse) VisitListRecordValuesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListRecordValues400JSONResponse struct{ BadRequestJSONResponse }
+
+func (response ListRecordValues400JSONResponse) VisitListRecordValuesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListRecordValues401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response ListRecordValues401JSONResponse) VisitListRecordValuesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListRecordValues403JSONResponse struct{ ForbiddenJSONResponse }
+
+func (response ListRecordValues403JSONResponse) VisitListRecordValuesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListRecordValues404JSONResponse struct{ NotFoundJSONResponse }
+
+func (response ListRecordValues404JSONResponse) VisitListRecordValuesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type ListScorecardsRequestObject struct {
 }
 
@@ -7533,6 +7678,9 @@ type StrictServerInterface interface {
 	// PutRecordType Create or replace a record type (admin only)
 	// (PUT /record-types/{id})
 	PutRecordType(ctx context.Context, request PutRecordTypeRequestObject) (PutRecordTypeResponseObject, error)
+	// ListRecordValues The values stored records hold in one field (admin only)
+	// (GET /record-types/{id}/values)
+	ListRecordValues(ctx context.Context, request ListRecordValuesRequestObject) (ListRecordValuesResponseObject, error)
 	// ListScorecards List scorecards
 	// (GET /scorecards)
 	ListScorecards(ctx context.Context, request ListScorecardsRequestObject) (ListScorecardsResponseObject, error)
@@ -8468,6 +8616,33 @@ func (sh *strictHandler) PutRecordType(w http.ResponseWriter, r *http.Request, i
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(PutRecordTypeResponseObject); ok {
 		if err := validResponse.VisitPutRecordTypeResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListRecordValues operation middleware
+func (sh *strictHandler) ListRecordValues(w http.ResponseWriter, r *http.Request, id RecordTypeId, params ListRecordValuesParams) {
+	var request ListRecordValuesRequestObject
+
+	request.Id = id
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListRecordValues(ctx, request.(ListRecordValuesRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListRecordValues")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListRecordValuesResponseObject); ok {
+		if err := validResponse.VisitListRecordValuesResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

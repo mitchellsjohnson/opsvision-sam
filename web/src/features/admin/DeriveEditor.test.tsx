@@ -36,13 +36,22 @@ function describedText(el: HTMLElement) {
     .join(' ')
 }
 
-function Harness({ types, onValue }: { types: RecordType[]; onValue?: (v: PresetChoice) => void }) {
+function Harness({
+  types,
+  onValue,
+  knownValues,
+}: {
+  types: RecordType[]
+  onValue?: (v: PresetChoice) => void
+  knownValues?: Record<string, string[]>
+}) {
   const [value, setValue] = useState(() => newPresetChoice(types[0]!, 'weighted_open'))
   return (
     <DeriveEditor
       sc="sc-main"
       recordTypes={types}
       value={value}
+      knownValues={knownValues}
       onChange={(v) => {
         setValue(v)
         onValue?.(v)
@@ -67,6 +76,45 @@ describe('DeriveEditor', () => {
     expect((screen.getByLabelText('Condition 1 value') as HTMLSelectElement).value).toBe('yes')
     expect(await screen.findByText('Last month this matches 1 record (Billing 1)')).toBeTruthy()
     expect(samples().at(-1)?.body).toMatchObject({ recordType: 'defect', where: 'customerTicket' })
+  })
+
+  it('offers the values stored records hold as checkboxes and suggestions', async () => {
+    const user = userEvent.setup()
+    renderApp(<Harness types={rules.recordTypes} />)
+    await user.click(screen.getByRole('button', { name: 'Add condition' }))
+    expect((screen.getByLabelText('Condition 1 field') as HTMLSelectElement).value).toBe('category')
+
+    // "is": a text box suggesting the stored values.
+    const input = screen.getByLabelText('Condition 1 value')
+    await waitFor(() => expect(input.getAttribute('list')).not.toBeNull())
+    const options = [...document.querySelectorAll(`#${input.getAttribute('list')} option`)].map((o) => o.getAttribute('value'))
+    expect(options).toEqual(['Bug', 'Defect', 'Sub-task'])
+    expect(rules.requests.some((r) => r.path === '/record-types/defect/values?field=category')).toBe(true)
+
+    // "is one of": the stored values as checkboxes, most common first, with others typed.
+    await user.selectOptions(screen.getByLabelText('Condition 1 operator'), 'one_of')
+    const group = screen.getByRole('group', { name: 'Condition 1 values' })
+    expect(within(group).getAllByRole('checkbox').map((c) => c.closest('label')?.textContent)).toEqual([
+      'Bug (7)',
+      'Defect (1)',
+      'Sub-task (1)',
+    ])
+    await user.click(within(group).getByRole('checkbox', { name: 'Bug (7)' }))
+    await user.type(screen.getByLabelText('Condition 1 other values'), 'Story')
+    await waitFor(() => expect(samples().at(-1)?.body).toMatchObject({ where: "category in ['Bug', 'Story']" }))
+    await user.click(within(group).getByRole('checkbox', { name: 'Defect (1)' }))
+    await waitFor(() => expect(samples().at(-1)?.body).toMatchObject({ where: "category in ['Bug', 'Defect', 'Story']" }))
+  })
+
+  it('falls back to the known values when stored records have none', async () => {
+    const user = userEvent.setup()
+    renderApp(<Harness types={rules.recordTypes} knownValues={{ subjectKey: ['Billing', 'Checkout'] }} />)
+    await user.click(screen.getByRole('button', { name: 'Add condition' }))
+    await user.selectOptions(screen.getByLabelText('Condition 1 field'), 'subjectKey')
+    await user.selectOptions(screen.getByLabelText('Condition 1 operator'), 'one_of')
+    const group = await screen.findByRole('group', { name: 'Condition 1 values' })
+    expect(within(group).getAllByRole('checkbox').map((c) => c.closest('label')?.textContent)).toEqual(['Billing', 'Checkout'])
+    expect(rules.requests.some((r) => r.path === '/record-types/defect/values?field=subjectKey')).toBe(true)
   })
 
   it('asks only for the blanks of the chosen preset, in plain language', async () => {

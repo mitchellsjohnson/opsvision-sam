@@ -9,17 +9,17 @@ type RecordType = Schemas['RecordType']
 type ImportTemplate = Schemas['ImportTemplate']
 type RecordsSample = Schemas['RecordsSample']
 type RecordsSampleRequest = Schemas['RecordsSampleRequest']
+type RecordValueCount = Schemas['RecordValueCount']
 
 // All data is synthetic: the Acme Demo products and fictional tracker keys.
 
-/** A saved template as the API lists it, with the last time it was applied. */
-export type ListedTemplate = ImportTemplate & { lastUsed?: string; revision?: number }
-
 export interface RulesFake {
   recordTypes: RecordType[]
-  templates: ListedTemplate[]
+  templates: ImportTemplate[]
   /** What POST records/sample answers with for a condition that compiles. */
   sample: RecordsSample
+  /** What GET /record-types/{id}/values answers, by record type and field (empty when absent). */
+  values: Record<string, Record<string, RecordValueCount[]>>
   requests: RecordedRequest[]
   failNext: Map<string, { status: number; code: string; message: string; details?: { path: string; message: string }[] }>
 }
@@ -29,7 +29,7 @@ export function sampleOf(total: number, bySubject: [string, string, number][]): 
 }
 
 export function newRulesFake(): RulesFake {
-  const templates: ListedTemplate[] = recordsTemplates()
+  const templates: ImportTemplate[] = recordsTemplates()
   const defects = templates.find((t) => t.id === 'defects-export')
   if (defects) Object.assign(defects, { lastUsed: '2026-10-31T14:05:00Z', revision: 3 })
   return {
@@ -41,6 +41,15 @@ export function newRulesFake(): RulesFake {
       ['identity', 'Identity', 12],
       ['analytics', 'Analytics', 9],
     ]),
+    values: {
+      defect: {
+        category: [
+          { value: 'Bug', count: 7 },
+          { value: 'Defect', count: 1 },
+          { value: 'Sub-task', count: 1 },
+        ],
+      },
+    },
     requests: [],
     failNext: new Map(),
   }
@@ -80,13 +89,24 @@ export function rulesHandlers(fake: RulesFake) {
       fake.recordTypes.sort((a, b) => a.id.localeCompare(b.id))
       return HttpResponse.json(stored)
     }),
+    http.get(`${API}/v1/record-types/:id/values`, ({ request, params }) => {
+      const id = String(params.id)
+      const field = new URL(request.url).searchParams.get('field') ?? ''
+      fake.requests.push({ method: 'GET', path: `/record-types/${id}/values?field=${field}`, body: undefined })
+      if (!fake.recordTypes.some((t) => t.id === id)) {
+        return errorResponse({ status: 404, code: 'not_found', message: `record type ${id} not found` })
+      }
+      return HttpResponse.json({ values: fake.values[id]?.[field] ?? [] })
+    }),
     http.get(`${API}/v1/import-templates`, () => HttpResponse.json({ templates: fake.templates })),
     http.put(`${API}/v1/import-templates/:id`, async ({ request, params }) => {
       const w = await write(request, `/import-templates/${String(params.id)}`)
       if (w.failure) return w.failure
-      const t = w.body as ListedTemplate
+      const t = w.body as ImportTemplate
       const i = fake.templates.findIndex((x) => x.id === t.id)
-      const stored = { ...t, lastUsed: fake.templates[i]?.lastUsed }
+      const prev = fake.templates[i]
+      // As in the API: revision and lastUsed are read-only.
+      const stored: ImportTemplate = { ...t, revision: (prev?.revision ?? 0) + 1, lastUsed: prev?.lastUsed }
       if (i >= 0) fake.templates[i] = stored
       else fake.templates.push(stored)
       return HttpResponse.json(stored)

@@ -141,6 +141,81 @@ func (s *Server) PutRecordType(ctx context.Context, req PutRecordTypeRequestObje
 	return PutRecordType200JSONResponse(out), nil
 }
 
+// recordValuesLimit is how many distinct values ListRecordValues returns.
+const recordValuesLimit = 100
+
+// ListRecordValues lists the distinct non-empty values one field holds
+// across the stored records of a type (each as of its latest revision), most
+// common first, for the condition builder's value pickers. Revisions whose
+// snapshot is not stored are left over from a failed partial apply and are
+// ignored, as derivation ignores them. Admins only.
+func (s *Server) ListRecordValues(ctx context.Context, req ListRecordValuesRequestObject) (ListRecordValuesResponseObject, error) {
+	p, err := tenantAdmin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	tenantID := p.Tenant.ID
+	rt, _, err := s.recordType(ctx, tenantID, req.Id)
+	if err != nil {
+		return nil, err
+	}
+	if rt == nil {
+		return nil, notFound("record type " + req.Id + " not found")
+	}
+	kind, ok := rt.FieldKind(req.Params.Field)
+	if !ok {
+		var pr problems
+		pr.add("field", "unknown field %q on record type %q", req.Params.Field, rt.ID)
+		return nil, pr.err()
+	}
+
+	snaps, err := s.store.ListSnapshots(ctx, tenantID, rt.ID)
+	if err != nil {
+		return nil, err
+	}
+	stored := make(map[string]bool, len(snaps))
+	for _, sn := range snaps {
+		stored[sn.ID] = true
+	}
+	recs, err := s.store.ListRecords(ctx, tenantID, rt.ID)
+	if err != nil {
+		return nil, err
+	}
+	counts := map[string]int{}
+	for _, r := range recs {
+		kept := make([]domain.RecordRevision, 0, len(r.Revisions))
+		for _, rv := range r.Revisions {
+			if stored[rv.SnapshotID] {
+				kept = append(kept, rv)
+			}
+		}
+		if len(kept) == 0 {
+			continue
+		}
+		r.Revisions = kept
+		v, ok, err := records.FieldText(records.Latest(r), req.Params.Field, kind)
+		if err != nil || !ok {
+			continue // a mistyped attribute value is no value
+		}
+		counts[v]++
+	}
+
+	out := make([]RecordValueCount, 0, len(counts))
+	for v, n := range counts {
+		out = append(out, RecordValueCount{Value: v, Count: n})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Count != out[j].Count {
+			return out[i].Count > out[j].Count
+		}
+		return out[i].Value < out[j].Value
+	})
+	if len(out) > recordValuesLimit {
+		out = out[:recordValuesLimit]
+	}
+	return ListRecordValues200JSONResponse{Values: out}, nil
+}
+
 // recordType returns the tenant's record type id (nil when there is none)
 // and all of its record types.
 func (s *Server) recordType(ctx context.Context, tenantID, id string) (*domain.RecordType, []domain.RecordType, error) {

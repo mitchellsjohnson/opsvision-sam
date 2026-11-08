@@ -504,7 +504,16 @@ func apiTemplate(t store.Template) ImportTemplate {
 	if body == nil {
 		body = map[string]interface{}{}
 	}
-	return ImportTemplate{Id: t.ID, Name: t.Name, Profile: ImportTemplateProfile(t.Profile), Body: body}
+	out := ImportTemplate{Id: t.ID, Name: t.Name, Profile: ImportTemplateProfile(t.Profile), Body: body}
+	if t.Revision > 0 {
+		rev := t.Revision
+		out.Revision = &rev
+	}
+	if t.LastUsed != nil {
+		used := t.LastUsed.UTC()
+		out.LastUsed = &used
+	}
+	return out
 }
 
 func apiTemplates(ts []store.Template) []ImportTemplate {
@@ -567,6 +576,15 @@ func (s *Server) PutImportTemplate(ctx context.Context, req PutImportTemplateReq
 	}
 	if err := s.store.PutTemplate(ctx, tenantID, t); err != nil {
 		return nil, err
+	}
+	stored, err := s.store.ListTemplates(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	for _, e := range stored {
+		if e.ID == t.ID {
+			t = e // the store assigns the revision
+		}
 	}
 	after := apiTemplate(t)
 	if err := s.audit(ctx, p, tenantID, "import_template.put", "import_template", t.ID, before, after); err != nil {

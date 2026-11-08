@@ -734,6 +734,145 @@ func TestSampleWhereError400(t *testing.T) {
 	}
 }
 
+// ---- record values ------------------------------------------------------------------
+
+type recordValuesJSON struct {
+	Values []struct {
+		Value string `json:"value"`
+		Count int    `json:"count"`
+	} `json:"values"`
+}
+
+func (v recordValuesJSON) String() string {
+	parts := make([]string, len(v.Values))
+	for i, x := range v.Values {
+		parts[i] = fmt.Sprintf("%s=%d", x.Value, x.Count)
+	}
+	return strings.Join(parts, " ")
+}
+
+func TestListRecordValues(t *testing.T) {
+	e := newTestEnv(t)
+	seedRecords(t, e)
+	applyDefects(t, e)
+	ctx := context.Background()
+	// Revisions whose snapshot was never stored (a failed partial apply): a
+	// newer one for CHK-102 and the only one of BIL-999. Both are ignored.
+	lost := func(id, category string) store.RecordRevisionWrite {
+		return store.RecordRevisionWrite{Source: "tracker", ExternalID: id, Type: "defect", Rev: domain.RecordRevision{
+			AsOf: domain.Date{Time: time.Date(2026, 9, 30, 0, 0, 0, 0, time.UTC)}, SnapshotID: "lost",
+			Fields: domain.RecordFields{SubjectKey: "Billing", Category: category, State: domain.StateOpen},
+		}}
+	}
+	if err := e.store.ApplySnapshot(ctx, "t1", domain.Snapshot{ID: "tmp", RecordType: "defect", Source: "tracker",
+		AsOf: domain.Date{Time: time.Date(2026, 9, 30, 0, 0, 0, 0, time.UTC)}},
+		[]store.RecordRevisionWrite{lost("CHK-102", "Story"), lost("BIL-999", "Orphaned")}); err != nil {
+		t.Fatal(err)
+	}
+
+	admin := e.tokens["t1-admin"]
+	cases := []struct{ field, want string }{
+		// The mobile app rows were ignored on apply, so nine records are stored.
+		{"category", "Bug=7 Defect=1 Sub-task=1"},
+		{"subjectKey", "Checkout=4 Billing=3 Analytics=2"},
+		// BIL-203 has no priority: it is none, as conditions see it.
+		{"priority", "P1=2 P2=2 P3=2 P4=2 none=1"},
+		{"completedAt", "2026-06-02=1 2026-07-01=1 2026-07-30=1 2026-08-19=1"},
+		{"planned", ""},
+	}
+	for _, c := range cases {
+		var got recordValuesJSON
+		e.expect(t, 200, admin, "GET", "/record-types/defect/values?field="+c.field, nil, &got)
+		if got.Values == nil {
+			t.Errorf("%s: values is null, want a list", c.field)
+		}
+		if got.String() != c.want {
+			t.Errorf("%s: values = %q, want %q", c.field, got.String(), c.want)
+		}
+	}
+}
+
+func TestListRecordValuesLimitAndAttributes(t *testing.T) {
+	e := newTestEnv(t)
+	ctx := context.Background()
+	rt := domain.RecordType{ID: "epic", Name: "Epic", Attributes: []domain.AttributeDef{
+		{Key: "customerTicket", Name: "Customer ticket", Type: domain.AttrBool},
+		{Key: "team", Name: "Team", Type: domain.AttrString},
+	}}
+	if err := e.store.PutRecordType(ctx, "t1", rt, 0); err != nil {
+		t.Fatal(err)
+	}
+	asOf := domain.Date{Time: time.Date(2026, 9, 30, 0, 0, 0, 0, time.UTC)}
+	var revs []store.RecordRevisionWrite
+	for i := range 150 {
+		attrs := map[string]any{"team": fmt.Sprintf("team-%03d", i)}
+		if i%3 == 0 {
+			attrs["customerTicket"] = true
+		} else if i%3 == 1 {
+			attrs["customerTicket"] = false
+		}
+		if i < 5 {
+			attrs["team"] = "platform" // the most common value comes first
+		}
+		revs = append(revs, store.RecordRevisionWrite{Source: "tracker", ExternalID: fmt.Sprintf("EP-%d", i), Type: "epic",
+			Rev: domain.RecordRevision{AsOf: asOf, SnapshotID: "s1", Fields: domain.RecordFields{SubjectKey: "Checkout", State: domain.StateOpen, Attributes: attrs}}})
+	}
+	if err := e.store.ApplySnapshot(ctx, "t1", domain.Snapshot{ID: "s1", RecordType: "epic", Source: "tracker", AsOf: asOf}, revs); err != nil {
+		t.Fatal(err)
+	}
+	admin := e.tokens["t1-admin"]
+
+	var team recordValuesJSON
+	e.expect(t, 200, admin, "GET", "/record-types/epic/values?field=team", nil, &team)
+	if len(team.Values) != 100 {
+		t.Fatalf("team: %d values, want the limit of 100", len(team.Values))
+	}
+	if first := team.Values[0]; first.Value != "platform" || first.Count != 5 {
+		t.Errorf("team: first = %+v, want platform=5", first)
+	}
+	if second := team.Values[1]; second.Value != "team-005" || second.Count != 1 {
+		t.Errorf("team: second = %+v, want team-005=1 (ties by value)", second)
+	}
+
+	// Records without the attribute have no value, rather than false.
+	var ticket recordValuesJSON
+	e.expect(t, 200, admin, "GET", "/record-types/epic/values?field=customerTicket", nil, &ticket)
+	if ticket.String() != "false=50 true=50" {
+		t.Errorf("customerTicket: values = %q, want false=50 true=50", ticket.String())
+	}
+}
+
+func TestListRecordValuesErrors(t *testing.T) {
+	e := newTestEnv(t)
+	seedRecords(t, e)
+	applyDefects(t, e)
+	admin := e.tokens["t1-admin"]
+	got := e.expectError(t, 400, "invalid", admin, "GET", "/record-types/defect/values?field=nosuchfield", nil)
+	if !hasDetail(got, "field") {
+		t.Errorf("details = %+v, want field", got.Error.Details)
+	}
+	e.expectError(t, 400, "invalid", admin, "GET", "/record-types/defect/values", nil)
+	e.expectError(t, 404, "not_found", admin, "GET", "/record-types/nope/values?field=category", nil)
+	e.expectError(t, 403, "forbidden", e.tokens["t1-contributor"], "GET", "/record-types/defect/values?field=category", nil)
+}
+
+func TestCrossTenantRecordValues(t *testing.T) {
+	e := newTestEnv(t)
+	seedRecords(t, e)
+	applyDefects(t, e)
+	other := e.tokens["t2-admin"]
+	// t2 has no defect type: t1's records are not reachable from t2.
+	e.expectError(t, 404, "not_found", other, "GET", "/record-types/defect/values?field=category", nil)
+	if err := e.store.PutRecordType(context.Background(), "t2", domain.RecordType{ID: "defect", Name: "Defect"}, 0); err != nil {
+		t.Fatal(err)
+	}
+	var got recordValuesJSON
+	e.expect(t, 200, other, "GET", "/record-types/defect/values?field=category", nil, &got)
+	if len(got.Values) != 0 {
+		t.Errorf("t2 sees values %q of t1's records", got.String())
+	}
+}
+
 // ---- recalculation and restatement -------------------------------------------------
 
 func TestPublishRecalculates(t *testing.T) {
@@ -1071,6 +1210,59 @@ func TestTemplatePutKeepsLastUsed(t *testing.T) {
 	tpls, _ = e.store.ListTemplates(ctx, "t1")
 	if tpls[0].LastUsed == nil || !tpls[0].LastUsed.Equal(used) {
 		t.Errorf("after replace = %+v, want lastUsed kept", tpls[0])
+	}
+}
+
+func TestTemplateListsLastUsedAndRevision(t *testing.T) {
+	e := newTestEnv(t)
+	seedRecords(t, e)
+	admin := e.tokens["t1-admin"]
+	type tplJSON struct {
+		ID       string     `json:"id"`
+		Name     string     `json:"name"`
+		Revision *int       `json:"revision"`
+		LastUsed *time.Time `json:"lastUsed"`
+	}
+	list := func() tplJSON {
+		t.Helper()
+		var out struct {
+			Templates []tplJSON `json:"templates"`
+		}
+		e.expect(t, 200, admin, "GET", "/import-templates", nil, &out)
+		for _, tp := range out.Templates {
+			if tp.ID == "defects" {
+				return tp
+			}
+		}
+		t.Fatalf("no defects template in %+v", out.Templates)
+		return tplJSON{}
+	}
+
+	e.putRecordsTemplate(t, "defects")
+	if got := list(); got.Revision == nil || *got.Revision != 1 || got.LastUsed != nil {
+		t.Fatalf("before any apply = %+v, want revision 1 and no lastUsed", got)
+	}
+
+	applyDefects(t, e)
+	got := list()
+	if got.Revision == nil || *got.Revision != 1 {
+		t.Errorf("after apply: revision = %v, want 1 (applying does not change the template)", got.Revision)
+	}
+	if got.LastUsed == nil || !got.LastUsed.Equal(testNow) {
+		t.Errorf("after apply: lastUsed = %v, want %v", got.LastUsed, testNow)
+	}
+
+	// Both are read-only: values sent on PUT are ignored, and the response is the stored template.
+	var put tplJSON
+	e.expect(t, 200, admin, "PUT", "/import-templates/defects", map[string]any{
+		"id": "defects", "name": "Renamed", "profile": "records", "body": defectsTemplate(),
+		"revision": 40, "lastUsed": "2020-01-01T00:00:00Z",
+	}, &put)
+	if put.Revision == nil || *put.Revision != 2 || put.LastUsed == nil || !put.LastUsed.Equal(testNow) {
+		t.Errorf("PUT response = %+v, want revision 2 and lastUsed kept", put)
+	}
+	if got := list(); *got.Revision != 2 || !got.LastUsed.Equal(testNow) || got.Name != "Renamed" {
+		t.Errorf("after PUT = %+v", got)
 	}
 }
 

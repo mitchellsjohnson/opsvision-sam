@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -312,6 +313,40 @@ func FieldDate(f domain.RecordFields, name string) (domain.Date, bool, error) {
 		return domain.Date{}, false, nil
 	}
 	return domain.Date{Time: t}, true, nil
+}
+
+// FieldText returns the field or attribute name of f as text, as conditions
+// see it: numbers in their shortest form, yes/no as true or false, dates as
+// YYYY-MM-DD, and a missing priority as none. It is false when the value is
+// empty or missing (an attribute the record does not carry counts as
+// missing, not as its zero value). It fails when an attribute holds a value
+// of another type than kind.
+func FieldText(f domain.RecordFields, name string, kind domain.AttrType) (string, bool, error) {
+	if _, builtin := recordFieldKind(name); !builtin && f.Attributes[name] == nil {
+		return "", false, nil
+	}
+	v, err := fieldValue(f, name, kind)
+	if err != nil {
+		return "", false, err
+	}
+	switch v := v.(type) {
+	case string:
+		return v, v != "", nil
+	case float64:
+		return strconv.FormatFloat(v, 'f', -1, 64), true, nil
+	case bool:
+		return strconv.FormatBool(v), true, nil
+	case time.Time:
+		return v.Format(time.DateOnly), true, nil
+	}
+	return "", false, nil
+}
+
+// recordFieldKind reports whether name is a built-in record field rather
+// than an attribute.
+func recordFieldKind(name string) (domain.AttrType, bool) {
+	var none domain.RecordType
+	return none.FieldKind(name)
 }
 
 // fieldValue returns the run-time value of the field or attribute name in f:

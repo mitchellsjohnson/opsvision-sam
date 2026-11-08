@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link } from 'react-router'
-import { useImportTemplates, usePutImportTemplate, useRecordTypes, type SavedTemplate } from '../../api/queries'
+import { useImportTemplates, usePutImportTemplate, useRecordTypes, type ImportTemplate } from '../../api/queries'
 import { errorsFrom } from './adminModel'
 import { QueryState, TextAreaField, linkButton, primaryButton, secondaryButton } from './formUi'
 
@@ -18,7 +18,7 @@ export function editMappingHref(templateId: string): string {
   return `/admin/import/setup?${new URLSearchParams({ template: templateId, step: 'columns' }).toString()}`
 }
 
-function TemplateJson({ template, onSaved }: { template: SavedTemplate; onSaved: (name: string) => void }) {
+function TemplateJson({ template, onSaved }: { template: ImportTemplate; onSaved: (name: string) => void }) {
   const put = usePutImportTemplate()
   const [text, setText] = useState(() => JSON.stringify(template.body, null, 2))
   const [errors, setErrors] = useState<string[]>([])

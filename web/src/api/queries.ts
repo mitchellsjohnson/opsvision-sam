@@ -36,8 +36,7 @@ export type RecordsPreview = Schemas['RecordsPreview']
 export type ApplyImportRequest = Schemas['ApplyImportRequest']
 export type RecordsSampleRequest = Schemas['RecordsSampleRequest']
 export type RecordsSample = Schemas['RecordsSample']
-/** A saved template as listed; `lastUsed` is when it was last applied (RFC 3339), absent if never. */
-export type SavedTemplate = ImportTemplate & { lastUsed?: string; revision?: number }
+export type RecordValueCount = Schemas['RecordValueCount']
 export interface OverrideCell {
   metricKey: string
   subjectId: string
@@ -61,6 +60,7 @@ export const keys = {
   importTemplates: ['importTemplates'] as const,
   recordTypes: ['recordTypes'] as const,
   recordsSample: (sc: string, body: RecordsSampleRequest) => ['recordsSample', sc, body] as const,
+  recordValues: (recordType: string, field: string) => ['recordValues', recordType, field] as const,
   history: (sc: string, measure: string, subject: string, period: string) =>
     ['history', sc, measure, subject, period] as const,
 }
@@ -433,7 +433,7 @@ export function useImportTemplates() {
   const api = useApi()
   return useQuery({
     queryKey: keys.importTemplates,
-    queryFn: async (): Promise<SavedTemplate[]> => (await unwrap(api.GET('/import-templates'))).templates,
+    queryFn: async () => (await unwrap(api.GET('/import-templates'))).templates,
   })
 }
 
@@ -515,6 +515,22 @@ export function usePutRecordType() {
     mutationFn: (body: RecordType) =>
       unwrap(api.PUT('/record-types/{id}', { params: { path: { id: body.id } }, body })),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: keys.recordTypes }),
+  })
+}
+
+/** The distinct values stored records hold in one field, most common first (at most 100). */
+export function useRecordValues(recordType: string, field: string, enabled = true) {
+  const api = useApi()
+  return useQuery({
+    queryKey: keys.recordValues(recordType, field),
+    enabled: enabled && recordType !== '' && field !== '',
+    staleTime: 60_000,
+    queryFn: async () =>
+      (
+        await unwrap(
+          api.GET('/record-types/{id}/values', { params: { path: { id: recordType }, query: { field } } }),
+        )
+      ).values,
   })
 }
 
