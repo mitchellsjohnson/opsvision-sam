@@ -569,6 +569,59 @@ func TestNonEmptyTransform(t *testing.T) {
 	}
 }
 
+func TestNonEmptyMissingColumnIsAbsent(t *testing.T) {
+	headers := []string{"Key", "Product", "Status", "Created"} // no Linked tickets column
+	tbl := csvTable(headers,
+		[]string{"D-1", "Checkout", "Open", "2026-05-01"},
+		[]string{"D-2", "Billing", "Open", "2026-05-02"},
+	)
+
+	t.Run("column", func(t *testing.T) {
+		tpl := miniTemplate(nil)
+		tpl.Attributes = map[string]FieldMap{"customerTicket": {Column: "Linked tickets", Transform: "nonEmpty"}}
+		rows, _, problems := Normalize(tpl, defectType, tbl)
+		if len(rows) != 2 || len(problems) != 0 {
+			t.Fatalf("rows=%d problems=%+v; a missing optional column should not stop the file", len(rows), problems)
+		}
+		for _, r := range rows {
+			if v, ok := r.Fields.Attributes["customerTicket"]; ok || r.Fields.Attributes != nil {
+				t.Errorf("%s: customerTicket = %v (present=%v), want absent", r.ExternalID, v, ok)
+			}
+		}
+	})
+
+	t.Run("template", func(t *testing.T) {
+		tpl := miniTemplate(nil)
+		tpl.Attributes = map[string]FieldMap{"customerTicket": {Template: "{Linked tickets}{Escalation}", Transform: "nonEmpty"}}
+		rows, _, _ := Normalize(tpl, defectType, tbl)
+		if len(rows) != 2 || rows[0].Fields.Attributes != nil || rows[1].Fields.Attributes != nil {
+			t.Fatalf("rows = %+v; a template with no placeholder column in the file is absent", rows)
+		}
+	})
+
+	t.Run("template with one column present", func(t *testing.T) {
+		tpl := miniTemplate(nil)
+		tpl.Attributes = map[string]FieldMap{"customerTicket": {Template: "{Linked tickets}{Escalation}", Transform: "nonEmpty"}}
+		rows, _, _ := Normalize(tpl, defectType, csvTable(append(headers, "Escalation"),
+			[]string{"D-1", "Checkout", "Open", "2026-05-01", "ESC-1"},
+			[]string{"D-2", "Billing", "Open", "2026-05-02", ""},
+		))
+		if len(rows) != 2 || rows[0].Fields.Attributes["customerTicket"] != true || rows[1].Fields.Attributes["customerTicket"] != false {
+			t.Fatalf("rows = %+v; with a placeholder column present the answer is definite", rows)
+		}
+	})
+
+	t.Run("column present but empty is still false", func(t *testing.T) {
+		tpl := miniTemplate(nil)
+		tpl.Attributes = map[string]FieldMap{"customerTicket": {Column: "Linked tickets", Transform: "nonEmpty"}}
+		rows, _, _ := Normalize(tpl, defectType, csvTable(append(headers, "Linked tickets"),
+			[]string{"D-1", "Checkout", "Open", "2026-05-01", ""}))
+		if len(rows) != 1 || rows[0].Fields.Attributes["customerTicket"] != false {
+			t.Fatalf("rows = %+v", rows)
+		}
+	})
+}
+
 func TestRowNumbersFallBack(t *testing.T) {
 	// A table without RowNums numbers rows from 1.
 	tbl := Table{Headers: miniHeaders, Format: "csv", Rows: [][]string{{"D-1", "Checkout", "Open", "2026-05-01", "", "", ""}}}

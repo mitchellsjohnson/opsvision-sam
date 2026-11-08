@@ -157,6 +157,32 @@ func (n *normalizer) cell(cells []string, column string) string {
 	return strings.TrimSpace(cells[i])
 }
 
+// sourceMissing reports that fm reads from the file, but none of the columns it
+// names are in the file's headers: its column, or every {Column} placeholder of
+// its template. Constants never read the file.
+func (n *normalizer) sourceMissing(fm FieldMap) bool {
+	has := func(column string) bool {
+		_, ok := n.cols[strings.TrimSpace(column)]
+		return ok
+	}
+	switch {
+	case fm.Column != "":
+		return !has(fm.Column)
+	case fm.Template != "":
+		names := placeholder.FindAllStringSubmatch(fm.Template, -1)
+		if len(names) == 0 {
+			return false
+		}
+		for _, m := range names {
+			if has(m[1]) {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
 func (n *normalizer) skip(cells []string) bool {
 	for _, rule := range n.t.SkipRows {
 		v := n.cell(cells, rule.Column)
@@ -515,6 +541,11 @@ func (b *rowBuilder) attribute(fm FieldMap, def domain.AttributeDef) (any, bool)
 	key := def.Key
 	tr := transformFor(fm, def.Type)
 	if tr == TransformNonEmpty {
+		// A column the file does not have says nothing about the row, so the
+		// attribute is absent rather than false.
+		if b.n.sourceMissing(fm) {
+			return nil, false
+		}
 		return b.n.raw(fm, b.cells) != "", true
 	}
 	val, raw, unmapped := b.text(fm)
