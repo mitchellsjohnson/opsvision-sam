@@ -71,13 +71,18 @@ func (a Agg) Valid() bool {
 	return false
 }
 
-// Measure is a raw input quantity that formulas reference by Key.
+// Measure is a raw input quantity that formulas reference by Key. Source is
+// "" or "entered" for values that are typed or imported, and "derived" for
+// values computed from records by Derive; the empty string keeps all stored
+// methodology JSON valid.
 type Measure struct {
-	Key     string `json:"key"`
-	Name    string `json:"name"`
-	Unit    string `json:"unit"`
-	OrgAgg  Agg    `json:"orgAgg"`
-	TimeAgg Agg    `json:"timeAgg"`
+	Key     string      `json:"key"`
+	Name    string      `json:"name"`
+	Unit    string      `json:"unit"`
+	OrgAgg  Agg         `json:"orgAgg"`
+	TimeAgg Agg         `json:"timeAgg"`
+	Source  string      `json:"source,omitempty"`
+	Derive  *DeriveRule `json:"derive,omitempty"`
 }
 
 // Direction says which way is better for a metric.

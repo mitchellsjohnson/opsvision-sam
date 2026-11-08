@@ -15,12 +15,14 @@ const (
 	SourceAPI    = "api"
 	SourceSAM    = "sam"
 	SourceLegacy = "legacy"
+	// SourceRecords marks values derived from uploaded records.
+	SourceRecords = "records"
 )
 
 // ValidSource reports whether s is a known data source.
 func ValidSource(s string) bool {
 	switch s {
-	case SourceGrid, SourceImport, SourceAPI, SourceSAM, SourceLegacy:
+	case SourceGrid, SourceImport, SourceAPI, SourceSAM, SourceLegacy, SourceRecords:
 		return true
 	}
 	return false
@@ -38,6 +40,9 @@ type DataPoint struct {
 	EnteredBy  string        `json:"enteredBy"`
 	EnteredAt  time.Time     `json:"enteredAt"`
 	Revision   int           `json:"revision"`
+	// Deleted marks a history tombstone: the value was removed at this
+	// revision. It is never set on a live data point.
+	Deleted bool `json:"deleted,omitempty"`
 }
 
 // Override replaces a computed metric value and/or status for a subject and

@@ -1163,6 +1163,11 @@ components:
       description: A month, quarter, half, or fiscal year.
       pattern: '^\d{4}-(M(0[1-9]|1[0-2])|Q[1-4]|H[12]|FY)$'
       example: 2026-M10
+    Date:
+      type: string
+      format: date
+      description: A calendar date; time zones are ignored.
+      example: '2026-09-03'
     MonthPeriod:
       type: string
       description: A month.
@@ -1427,6 +1432,82 @@ components:
         unit: { type: string }
         orgAgg: { $ref: '#/components/schemas/Agg' }
         timeAgg: { $ref: '#/components/schemas/Agg' }
+        source:
+          type: string
+          description: |
+            Where values come from. `entered` (or absent) means typed or
+            imported; `derived` means computed from records by `derive`.
+          enum: [entered, derived]
+        derive:
+          $ref: '#/components/schemas/DeriveRule'
+    DeriveRule:
+      type: object
+      description: |
+        Turns records into a measure's value per subject per period. Required
+        on `derived` measures and rejected on `entered` ones. Which other
+        fields apply depends on `op`: `count`, `sum`, and `age_sum` need
+        `bucketBy`; `sum` needs `field`; `age_sum` needs `ageFrom`;
+        `commitments` needs `outcome`; `daily_open_weighted` needs a weight
+        for every priority of the record type plus `none`.
+      required: [recordType, op]
+      properties:
+        recordType: { $ref: '#/components/schemas/Id' }
+        op:
+          type: string
+          enum: [count, sum, daily_open_weighted, commitments, days_in_period, age_sum]
+        bucketBy:
+          type: string
+          description: A date field (`createdAt`, `committedAt`, `dueAt`, `completedAt`, `measuredAt`) or a date attribute key.
+        field:
+          type: string
+          description: A number field or number attribute key (for `sum`).
+        where:
+          type: string
+          description: A condition over record fields and attributes.
+        outcome:
+          type: string
+          description: Which commitments count (for `commitments`).
+          enum: [resolved, met]
+        ageFrom:
+          type: string
+          description: Date field or date attribute key the age starts at.
+        ageTo:
+          type: string
+          description: Date field or date attribute key the age ends at; empty means the period end.
+        weights:
+          type: object
+          description: Weight per priority value, including `none` (for `daily_open_weighted`).
+          additionalProperties: { type: number, format: double }
+    AttributeDef:
+      type: object
+      description: A custom attribute of a record type.
+      required: [key, name, type]
+      properties:
+        key: { $ref: '#/components/schemas/Key' }
+        name: { type: string }
+        type:
+          type: string
+          enum: [string, number, bool, date]
+    RecordType:
+      type: object
+      description: |
+        A tenant-level kind of record (defect, epic, ...). `none` is always an
+        implicit priority. `trackedFrom` maps a record source to the first
+        month derived values are produced for it.
+      required: [id, name, priorities, attributes, trackedFrom, revision]
+      properties:
+        id: { $ref: '#/components/schemas/Key' }
+        name: { type: string }
+        priorities:
+          type: array
+          items: { type: string }
+        attributes:
+          type: array
+          items: { $ref: '#/components/schemas/AttributeDef' }
+        trackedFrom:
+          type: object
+          additionalProperties: { $ref: '#/components/schemas/MonthPeriod' }
+        revision: { type: integer, minimum: 0 }
     Subject:
       type: object
       description: What a metric is reported at. `kind` is `level` or `item_kind`.

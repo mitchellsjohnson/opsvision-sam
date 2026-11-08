@@ -85,6 +85,18 @@ func (m Methodology) Validate(scale []StatusLevel) []ValidationError {
 		if !ms.TimeAgg.Valid() {
 			v.add(path+".timeAgg", "invalid aggregation %q", ms.TimeAgg)
 		}
+		switch ms.Source {
+		case "", MeasureEntered:
+			if ms.Derive != nil {
+				v.add(path+".derive", "derive is only allowed on derived measures")
+			}
+		case MeasureDerived:
+			if ms.Derive == nil {
+				v.add(path+".derive", "derived measures need a derive rule")
+			}
+		default:
+			v.add(path+".source", "invalid source %q", ms.Source)
+		}
 	}
 
 	seenMetrics := make(map[string]bool, len(m.Metrics))

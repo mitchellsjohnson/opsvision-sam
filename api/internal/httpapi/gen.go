@@ -20,28 +20,28 @@ import (
 
 // Defines values for Agg.
 const (
-	Average Agg = "average"
-	Latest  Agg = "latest"
-	Max     Agg = "max"
-	Min     Agg = "min"
-	None    Agg = "none"
-	Sum     Agg = "sum"
+	AggAverage Agg = "average"
+	AggLatest  Agg = "latest"
+	AggMax     Agg = "max"
+	AggMin     Agg = "min"
+	AggNone    Agg = "none"
+	AggSum     Agg = "sum"
 )
 
 // Valid indicates whether the value is a known member of the Agg enum.
 func (e Agg) Valid() bool {
 	switch e {
-	case Average:
+	case AggAverage:
 		return true
-	case Latest:
+	case AggLatest:
 		return true
-	case Max:
+	case AggMax:
 		return true
-	case Min:
+	case AggMin:
 		return true
-	case None:
+	case AggNone:
 		return true
-	case Sum:
+	case AggSum:
 		return true
 	default:
 		return false
@@ -108,6 +108,54 @@ func (e DataPointSource) Valid() bool {
 	case Legacy:
 		return true
 	case Sam:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for DeriveRuleOp.
+const (
+	DeriveRuleOpAgeSum            DeriveRuleOp = "age_sum"
+	DeriveRuleOpCommitments       DeriveRuleOp = "commitments"
+	DeriveRuleOpCount             DeriveRuleOp = "count"
+	DeriveRuleOpDailyOpenWeighted DeriveRuleOp = "daily_open_weighted"
+	DeriveRuleOpDaysInPeriod      DeriveRuleOp = "days_in_period"
+	DeriveRuleOpSum               DeriveRuleOp = "sum"
+)
+
+// Valid indicates whether the value is a known member of the DeriveRuleOp enum.
+func (e DeriveRuleOp) Valid() bool {
+	switch e {
+	case DeriveRuleOpAgeSum:
+		return true
+	case DeriveRuleOpCommitments:
+		return true
+	case DeriveRuleOpCount:
+		return true
+	case DeriveRuleOpDailyOpenWeighted:
+		return true
+	case DeriveRuleOpDaysInPeriod:
+		return true
+	case DeriveRuleOpSum:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for DeriveRuleOutcome.
+const (
+	Met      DeriveRuleOutcome = "met"
+	Resolved DeriveRuleOutcome = "resolved"
+)
+
+// Valid indicates whether the value is a known member of the DeriveRuleOutcome enum.
+func (e DeriveRuleOutcome) Valid() bool {
+	switch e {
+	case Met:
+		return true
+	case Resolved:
 		return true
 	default:
 		return false
@@ -240,6 +288,24 @@ func (e ImportTemplateProfile) Valid() bool {
 	case ImportTemplateProfileCsv:
 		return true
 	case ImportTemplateProfileLegacyWorkbook:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for MeasureSource.
+const (
+	Derived MeasureSource = "derived"
+	Entered MeasureSource = "entered"
+)
+
+// Valid indicates whether the value is a known member of the MeasureSource enum.
+func (e MeasureSource) Valid() bool {
+	switch e {
+	case Derived:
+		return true
+	case Entered:
 		return true
 	default:
 		return false
@@ -664,6 +730,47 @@ type DataWrite struct {
 	Value *MeasureValue `json:"value,omitempty"`
 }
 
+// DeriveRule Turns records into a measure's value per subject per period. Required
+// on `derived` measures and rejected on `entered` ones. Which other
+// fields apply depends on `op`: `count`, `sum`, and `age_sum` need
+// `bucketBy`; `sum` needs `field`; `age_sum` needs `ageFrom`;
+// `commitments` needs `outcome`; `daily_open_weighted` needs a weight
+// for every priority of the record type plus `none`.
+type DeriveRule struct {
+	// AgeFrom Date field or date attribute key the age starts at.
+	AgeFrom *string `json:"ageFrom,omitempty"`
+
+	// AgeTo Date field or date attribute key the age ends at; empty means the period end.
+	AgeTo *string `json:"ageTo,omitempty"`
+
+	// BucketBy A date field (`createdAt`, `committedAt`, `dueAt`, `completedAt`, `measuredAt`) or a date attribute key.
+	BucketBy *string `json:"bucketBy,omitempty"`
+
+	// Field A number field or number attribute key (for `sum`).
+	Field *string      `json:"field,omitempty"`
+	Op    DeriveRuleOp `json:"op"`
+
+	// Outcome Which commitments count (for `commitments`).
+	Outcome *DeriveRuleOutcome `json:"outcome,omitempty"`
+
+	// RecordType Client-supplied identifier.
+	//
+	// Example: team-alpha
+	RecordType Id `json:"recordType"`
+
+	// Weights Weight per priority value, including `none` (for `daily_open_weighted`).
+	Weights *map[string]float64 `json:"weights,omitempty"`
+
+	// Where A condition over record fields and attributes.
+	Where *string `json:"where,omitempty"`
+}
+
+// DeriveRuleOp defines model for DeriveRule.Op.
+type DeriveRuleOp string
+
+// DeriveRuleOutcome Which commitments count (for `commitments`).
+type DeriveRuleOutcome string
+
 // Direction defines model for Direction.
 type Direction string
 
@@ -874,6 +981,14 @@ type Me struct {
 
 // Measure defines model for Measure.
 type Measure struct {
+	// Derive Turns records into a measure's value per subject per period. Required
+	// on `derived` measures and rejected on `entered` ones. Which other
+	// fields apply depends on `op`: `count`, `sum`, and `age_sum` need
+	// `bucketBy`; `sum` needs `field`; `age_sum` needs `ageFrom`;
+	// `commitments` needs `outcome`; `daily_open_weighted` needs a weight
+	// for every priority of the record type plus `none`.
+	Derive *DeriveRule `json:"derive,omitempty"`
+
 	// Key Measure or metric key.
 	//
 	// Example: open_defects
@@ -883,10 +998,18 @@ type Measure struct {
 	// OrgAgg Aggregation across org units or across time.
 	OrgAgg Agg `json:"orgAgg"`
 
+	// Source Where values come from. `entered` (or absent) means typed or
+	// imported; `derived` means computed from records by `derive`.
+	Source *MeasureSource `json:"source,omitempty"`
+
 	// TimeAgg Aggregation across org units or across time.
 	TimeAgg Agg    `json:"timeAgg"`
 	Unit    string `json:"unit"`
 }
+
+// MeasureSource Where values come from. `entered` (or absent) means typed or
+// imported; `derived` means computed from records by `derive`.
+type MeasureSource string
 
 // MeasureValue The value, or null when not applicable.
 type MeasureValue = float64

@@ -659,6 +659,12 @@ export interface components {
          */
         Period: string;
         /**
+         * Format: date
+         * @description A calendar date; time zones are ignored.
+         * @example 2026-09-03
+         */
+        Date: string;
+        /**
          * @description A month.
          * @example 2026-M10
          */
@@ -836,6 +842,67 @@ export interface components {
             unit: string;
             orgAgg: components["schemas"]["Agg"];
             timeAgg: components["schemas"]["Agg"];
+            /**
+             * @description Where values come from. `entered` (or absent) means typed or
+             *     imported; `derived` means computed from records by `derive`.
+             * @enum {string}
+             */
+            source?: "entered" | "derived";
+            derive?: components["schemas"]["DeriveRule"];
+        };
+        /**
+         * @description Turns records into a measure's value per subject per period. Required
+         *     on `derived` measures and rejected on `entered` ones. Which other
+         *     fields apply depends on `op`: `count`, `sum`, and `age_sum` need
+         *     `bucketBy`; `sum` needs `field`; `age_sum` needs `ageFrom`;
+         *     `commitments` needs `outcome`; `daily_open_weighted` needs a weight
+         *     for every priority of the record type plus `none`.
+         */
+        DeriveRule: {
+            recordType: components["schemas"]["Id"];
+            /** @enum {string} */
+            op: "count" | "sum" | "daily_open_weighted" | "commitments" | "days_in_period" | "age_sum";
+            /** @description A date field (`createdAt`, `committedAt`, `dueAt`, `completedAt`, `measuredAt`) or a date attribute key. */
+            bucketBy?: string;
+            /** @description A number field or number attribute key (for `sum`). */
+            field?: string;
+            /** @description A condition over record fields and attributes. */
+            where?: string;
+            /**
+             * @description Which commitments count (for `commitments`).
+             * @enum {string}
+             */
+            outcome?: "resolved" | "met";
+            /** @description Date field or date attribute key the age starts at. */
+            ageFrom?: string;
+            /** @description Date field or date attribute key the age ends at; empty means the period end. */
+            ageTo?: string;
+            /** @description Weight per priority value, including `none` (for `daily_open_weighted`). */
+            weights?: {
+                [key: string]: number;
+            };
+        };
+        /** @description A custom attribute of a record type. */
+        AttributeDef: {
+            key: components["schemas"]["Key"];
+            name: string;
+            /** @enum {string} */
+            type: "string" | "number" | "bool" | "date";
+        };
+        /**
+         * @description A tenant-level kind of record (defect, epic, ...). `none` is always an
+         *     implicit priority. `trackedFrom` maps a record source to the first
+         *     month derived values are produced for it.
+         */
+        RecordType: {
+            id: components["schemas"]["Key"];
+            name: string;
+            priorities: string[];
+            attributes: components["schemas"]["AttributeDef"][];
+            trackedFrom: {
+                [key: string]: components["schemas"]["MonthPeriod"];
+            };
+            revision: number;
         };
         /** @description What a metric is reported at. `kind` is `level` or `item_kind`. */
         Subject: {
