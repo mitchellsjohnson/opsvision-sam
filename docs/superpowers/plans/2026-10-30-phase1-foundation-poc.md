@@ -645,6 +645,10 @@ docs/deploy/private-deployment.md  docs/user/getting-started.md
 - [ ] **Step 2:** FAIL. **Step 3:** Implement. **Step 4:** PASS.
 - [ ] **Step 5: Commit** `feat(web): methodology editor and import page`.
 
+### Tasks R1–R13: Records ingestion
+
+Run the tasks in `docs/superpowers/plans/2026-11-08-records-ingestion.md` here, after Task 26c and before Task 27. That plan also amends Task 30.
+
 ### Task 27: Infrastructure templates and access modes
 
 **Files:**
