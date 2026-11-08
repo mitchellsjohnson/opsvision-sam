@@ -836,6 +836,45 @@ func templateColumns(t Template) (all []string, required map[string]bool) {
 	return all, required
 }
 
+// ColumnChanges compares template t with a file's headers (trimmed, as
+// Normalize reads them): added are the file's columns t does not use, in file
+// order, and missing the columns t uses that the file lacks, in template
+// order. It is the comparison Inspect reports for a recognized template.
+func ColumnChanges(t Template, headers []string) (added, missing []string) {
+	cols, _ := templateColumns(t)
+	present, used := map[string]bool{}, map[string]bool{}
+	for _, c := range cols {
+		used[c] = true
+	}
+	for _, h := range headers {
+		if h = strings.TrimSpace(h); h != "" && !present[h] {
+			present[h] = true
+			if !used[h] {
+				added = append(added, h)
+			}
+		}
+	}
+	for _, c := range cols {
+		if !present[c] {
+			missing = append(missing, c)
+		}
+	}
+	return added, missing
+}
+
+// SuggestValue suggests the meaning of a raw value no map covers: a priority
+// of rt (or none) for "priority", a state for "state", and "" otherwise or when
+// there is no suggestion.
+func SuggestValue(field, raw string, rt domain.RecordType) string {
+	switch field {
+	case "priority":
+		return suggestPriority(raw, rt.AllPriorities())
+	case "state":
+		return suggestState(raw)
+	}
+	return ""
+}
+
 // recognize finds the saved template this file's headers fit: every column of
 // its required fields is in the file (headers compared exactly, after
 // trimming, as Normalize reads them). The one that reads the most columns of

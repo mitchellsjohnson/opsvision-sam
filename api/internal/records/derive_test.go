@@ -260,6 +260,23 @@ func TestAgeSum(t *testing.T) {
 	wantValue(t, out, "ios", mon(2026, 10), 11)
 }
 
+func TestAgeSumClampsToCutoff(t *testing.T) {
+	// ANL-4 opened in October and closed in November: its October cell ages it
+	// only through October 31, because it was still open then.
+	f := domain.RecordFields{SubjectKey: "iOS App", State: domain.StateDone, CreatedAt: day("2026-10-20"), CompletedAt: dp("2026-11-05")}
+	m := measure("idea_age_days_sum", domain.DeriveRule{RecordType: "idea", Op: domain.OpAgeSum,
+		BucketBy: "createdAt", AgeFrom: "createdAt", AgeTo: "completedAt"})
+	in := deriveInput(t, map[string]string{"idea": "2026-11-14"}, rec("idea", "ANL-4", rev("2026-11-14", f)))
+	oct := wantValue(t, derive(t, in, m, mon(2026, 10)), "ios", mon(2026, 10), 11)
+	if got := oct.Contributions[0].Dates["completedAt"]; got.String() != "2026-11-05" {
+		t.Errorf("contribution completedAt = %s, want the record's 2026-11-05", got)
+	}
+
+	// A record bucketed by completion in the period is never past the cutoff.
+	m.Derive.BucketBy = "completedAt"
+	wantValue(t, derive(t, in, m, mon(2026, 11)), "ios", mon(2026, 11), 16)
+}
+
 func slipEpic() domain.Record {
 	return rec("epic", "PAY-12",
 		rev("2026-11-30", domain.RecordFields{SubjectKey: "Checkout", State: domain.StateOpen, CreatedAt: day("2026-11-01"), DueAt: dp("2026-12-15")}),

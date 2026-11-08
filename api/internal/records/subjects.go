@@ -18,9 +18,11 @@ const (
 // include key, compared case-insensitively after trimming. problem is
 // "unmatched" when nothing matches, "ambiguous" when more than one subject
 // does, and "parent" (with the unit's ID) when the unit has child units in
-// month. Otherwise problem is "".
+// month. Otherwise problem is "". Org units not active in month are ignored.
+// It builds a Resolver for one answer; build one with NewResolver to resolve
+// many keys.
 func ResolveSubject(in DeriveInput, key string, month period.Period) (subjectID string, problem string) {
-	return newResolver(in).resolve(key, month)
+	return NewResolver(in).Resolve(key, month)
 }
 
 // subjectRef is one org unit or tracked item that carries a source key.
@@ -38,8 +40,10 @@ type resolution struct {
 	id, problem string
 }
 
-// resolver indexes source keys and caches answers by (key, month).
-type resolver struct {
+// Resolver indexes the source keys of in's org units and tracked items and
+// caches answers by (key, month). Derivation and import previews share it so
+// they agree on every match. It is not safe for concurrent use.
+type Resolver struct {
 	in    DeriveInput
 	byKey map[string][]subjectRef
 	cache map[resolveKey]resolution
@@ -47,8 +51,9 @@ type resolver struct {
 
 func normKey(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
 
-func newResolver(in DeriveInput) *resolver {
-	r := &resolver{in: in, byKey: map[string][]subjectRef{}, cache: map[resolveKey]resolution{}}
+// NewResolver indexes in's source keys.
+func NewResolver(in DeriveInput) *Resolver {
+	r := &Resolver{in: in, byKey: map[string][]subjectRef{}, cache: map[resolveKey]resolution{}}
 	add := func(ref subjectRef, keys []string) {
 		seen := map[string]bool{}
 		for _, k := range keys {
@@ -70,13 +75,20 @@ func newResolver(in DeriveInput) *resolver {
 	return r
 }
 
-func (r *resolver) resolve(key string, month period.Period) (string, string) {
+// Resolve answers ResolveSubject for key in month.
+func (r *Resolver) Resolve(key string, month period.Period) (subjectID string, problem string) {
 	ck := resolveKey{normKey(key), month}
 	if res, ok := r.cache[ck]; ok {
 		return res.id, res.problem
 	}
+	var refs []subjectRef
+	for _, ref := range r.byKey[ck.key] {
+		if !ref.unit || r.in.Tree.ActiveAt(ref.id, month) {
+			refs = append(refs, ref)
+		}
+	}
 	var res resolution
-	switch refs := r.byKey[ck.key]; {
+	switch {
 	case len(refs) == 0:
 		res.problem = SubjectUnmatched
 	case len(refs) > 1:

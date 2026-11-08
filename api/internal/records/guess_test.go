@@ -681,6 +681,12 @@ func TestHeaderDiff(t *testing.T) {
 		t.Errorf("Missing = %q, want %q", in.Missing, want)
 	}
 
+	// ColumnChanges reports the same lists for one template.
+	added, missing := ColumnChanges(st.T, tbl.Headers)
+	if !reflect.DeepEqual(added, in.Added) || !reflect.DeepEqual(missing, in.Missing) {
+		t.Errorf("ColumnChanges = %q, %q; want %q, %q", added, missing, in.Added, in.Missing)
+	}
+
 	// A missing required column is not recognized.
 	tbl2 := csvTable([]string{"Product", "Status", "Created"}, []string{"X", "Done", "2026-01-02"})
 	in = Inspect(tbl2, nil, []SavedTemplate{st})
@@ -785,5 +791,21 @@ func TestInspectLargeFile(t *testing.T) {
 	}
 	if g, ok := guessFor(in, "externalId"); !ok || g.Column != "Key" {
 		t.Errorf("externalId = %+v", g)
+	}
+}
+
+func TestSuggestValue(t *testing.T) {
+	rt := domain.RecordType{ID: "defect", Priorities: []string{"P1", "P2", "P3", "P4"}}
+	cases := []struct{ field, raw, want string }{
+		{"priority", "Urgent", "P1"},
+		{"priority", "Whenever", ""},
+		{"state", "Won't Do", "cancelled"},
+		{"state", "Triage", "open"},
+		{"category", "bug", ""},
+	}
+	for _, c := range cases {
+		if got := SuggestValue(c.field, c.raw, rt); got != c.want {
+			t.Errorf("SuggestValue(%q, %q) = %q, want %q", c.field, c.raw, got, c.want)
+		}
 	}
 }

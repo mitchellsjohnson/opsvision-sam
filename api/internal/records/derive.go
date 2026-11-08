@@ -126,7 +126,7 @@ func Derive(in DeriveInput, m domain.Measure, periods []period.Period) ([]Derive
 		return nil, err
 	}
 
-	d := &deriver{in: in, rule: rule, rt: rt, cond: cond, res: newResolver(in), windows: windows, latest: latest}
+	d := &deriver{in: in, rule: rule, rt: rt, cond: cond, res: NewResolver(in), windows: windows, latest: latest}
 	if rule.Op != domain.OpDaysInPeriod {
 		for i := range in.Records {
 			r := &in.Records[i]
@@ -205,7 +205,7 @@ type deriver struct {
 	rule    domain.DeriveRule
 	rt      domain.RecordType
 	cond    *Cond
-	res     *resolver
+	res     *Resolver
 	windows []*window
 	latest  domain.Date
 }
@@ -213,7 +213,7 @@ type deriver struct {
 // cell returns the cell of w for the subject key matches in month, or nil
 // when the key does not resolve to a subject with a value in w.
 func (d *deriver) cell(w *window, key string, month period.Period) *Derived {
-	id, problem := d.res.resolve(key, month)
+	id, problem := d.res.Resolve(key, month)
 	if problem != "" {
 		return nil
 	}
@@ -285,6 +285,7 @@ func (d *deriver) bucketed(r *domain.Record) error {
 			}
 			if ok {
 				con.Dates[d.rule.AgeTo] = domain.Date{Time: to}
+				to = minTime(to, w.cut) // still open through the cutoff
 			} else {
 				to = w.cut // still open, or no ageTo: age through the cutoff
 			}
