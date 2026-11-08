@@ -7,8 +7,10 @@ export type PresetId = 'on_time' | 'weighted_open' | 'within_budget' | 'expected
 
 /** The blanks a preset asks for. Which ones apply depends on the preset. */
 export interface PresetParams {
-  /** Record type key; the measure keys start with it. */
+  /** Record type key; the measure keys start with it unless keyPrefix is set. */
   recordType: string
+  /** What the measure and metric keys start with instead, e.g. `epics` for existing `epics_committed`. */
+  keyPrefix?: string
   /** The record type's name, for measure and metric names (default: the key). */
   recordTypeName?: string
   /** The filter: which records count. Empty counts every record. */
@@ -149,8 +151,8 @@ function bands(statusKeys: readonly string[], op: '>=' | '<=', green: number, ye
 
 /** The measures and metric a preset produces for the params, before merging. */
 function plan(content: Methodology, id: PresetId, p: PresetParams): Planned {
-  const t = p.recordType
-  const T = p.recordTypeName || t
+  const t = p.keyPrefix || p.recordType
+  const T = p.recordTypeName || p.recordType
   const where = p.where?.trim() || undefined
   const statusKeys = p.statusKeys && p.statusKeys.length > 0 ? p.statusKeys : ['G', 'Y', 'R']
   const metric = (key: string, name: string, over: Partial<Metric>): Metric => ({
@@ -160,7 +162,7 @@ function plan(content: Methodology, id: PresetId, p: PresetParams): Planned {
     reportedAt: p.reportedAt ?? [],
     ...over,
   })
-  const base = { recordType: t }
+  const base = { recordType: p.recordType }
 
   switch (id) {
     case 'on_time':

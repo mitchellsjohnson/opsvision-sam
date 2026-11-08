@@ -32,7 +32,8 @@ function rowsText(n: number) {
   return `${formatCount(n)} ${n === 1 ? 'row' : 'rows'}`
 }
 
-function SubjectPicker({
+/** One product or team value with its best matches, every product and team, ignore, and (for a parent unit) a shared team. */
+export function SubjectPicker({
   q,
   choice,
   options,

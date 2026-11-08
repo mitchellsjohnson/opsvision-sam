@@ -12,6 +12,7 @@ import { ImportPage } from './features/admin/ImportPage'
 import { MethodologyPage } from './features/admin/MethodologyPage'
 import { RecordTypesPage } from './features/admin/RecordTypesPage'
 import { TemplatesPage } from './features/admin/TemplatesPage'
+import { SetupWizard } from './features/import/setup/SetupWizard'
 
 export function App() {
   return (
@@ -28,6 +29,7 @@ export function App() {
           <Route path="members" element={<MembersPage />} />
           <Route path="methodology" element={<MethodologyPage />} />
           <Route path="import" element={<ImportPage />} />
+          <Route path="import/setup" element={<SetupWizard />} />
           <Route path="record-types" element={<RecordTypesPage />} />
           <Route path="templates" element={<TemplatesPage />} />
         </Route>

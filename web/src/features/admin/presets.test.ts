@@ -317,4 +317,14 @@ describe('applyPreset', () => {
     })
     expect(presetKeys('count', { recordType: 'epic' })).toEqual({ measures: ['epic_count'] })
   })
+
+  it('builds keys from keyPrefix while the rules still read the record type', () => {
+    expect(presetKeys('on_time', { recordType: 'epic', keyPrefix: 'epics' })).toEqual({
+      measures: ['epics_committed', 'epics_on_time'],
+      metric: 'epics_on_time_pct',
+    })
+    const { content } = applyPreset(empty(), 'on_time', { recordType: 'epic', keyPrefix: 'epics' })
+    expect(measure(content, 'epics_committed').derive).toMatchObject({ recordType: 'epic', outcome: 'resolved' })
+    expect(onlyMetric(content).formula).toBe('epics_on_time / epics_committed * 100')
+  })
 })

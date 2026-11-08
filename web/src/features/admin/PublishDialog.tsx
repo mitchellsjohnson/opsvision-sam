@@ -9,6 +9,7 @@ function PublishForm({
   version,
   fiscal,
   now,
+  defaultMonth,
   close,
   onPublished,
 }: {
@@ -16,12 +17,13 @@ function PublishForm({
   version: MethodologyVersion
   fiscal: number
   now: string
+  defaultMonth?: string
   close: () => void
   onPublished: (message: string) => void
 }) {
   const publish = usePublishVersion(sc)
   const { formRef, focusErrors } = useFocusOnError()
-  const [month, setMonth] = useState(addMonths(now, 1))
+  const [month, setMonth] = useState(defaultMonth ?? addMonths(now, 1))
   const [messages, setMessages] = useState<string[]>([])
 
   async function submit(e: FormEvent) {
@@ -49,7 +51,7 @@ function PublishForm({
         label="Effective month"
         hint="The first month scorecards use this version."
         value={month}
-        options={monthOptions(now, fiscal)}
+        options={monthOptions(now, fiscal, defaultMonth)}
         onChange={(e) => setMonth(e.target.value)}
       />
       <FormError messages={messages} />
@@ -66,6 +68,8 @@ export function PublishDialog({
   now,
   disabled,
   onPublished,
+  triggerLabel = 'Publish…',
+  defaultMonth,
 }: {
   sc: string
   version: MethodologyVersion
@@ -73,10 +77,13 @@ export function PublishDialog({
   now: string
   disabled: boolean
   onPublished: (message: string) => void
+  triggerLabel?: string
+  /** The effective month the form starts at (default: next month). */
+  defaultMonth?: string
 }) {
   return (
     <FormDialog
-      triggerLabel="Publish…"
+      triggerLabel={triggerLabel}
       triggerClassName={primaryButton}
       triggerDisabled={disabled}
       title={`Publish ${version.name}`}
@@ -84,7 +91,15 @@ export function PublishDialog({
       wide
     >
       {(close) => (
-        <PublishForm sc={sc} version={version} fiscal={fiscal} now={now} close={close} onPublished={onPublished} />
+        <PublishForm
+          sc={sc}
+          version={version}
+          fiscal={fiscal}
+          now={now}
+          defaultMonth={defaultMonth}
+          close={close}
+          onPublished={onPublished}
+        />
       )}
     </FormDialog>
   )

@@ -571,11 +571,13 @@ export function useApplyRecords() {
     mutationFn: ({ id, body }: { id: string; body: ApplyImportRequest }) =>
       unwrap(api.POST('/imports/{id}/apply', { params: { path: { id } }, body })),
     onSuccess: async () => {
-      // Apply saves answered source keys, shared units and templates, and recalculates derived values.
+      // Apply saves answered source keys, shared units and templates, a first tracked-from
+      // month, and recalculates derived values.
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['view'] }),
         queryClient.invalidateQueries({ queryKey: ['entry'] }),
         queryClient.invalidateQueries({ queryKey: keys.importTemplates }),
+        queryClient.invalidateQueries({ queryKey: keys.recordTypes }),
         queryClient.invalidateQueries({ queryKey: keys.orgUnits }),
         queryClient.invalidateQueries({ queryKey: ['orgTree'] }),
         queryClient.invalidateQueries({ queryKey: keys.items }),

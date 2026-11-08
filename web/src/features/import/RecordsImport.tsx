@@ -81,7 +81,8 @@ function Spinner() {
   return <Loader2 aria-hidden="true" className="size-4 shrink-0 motion-safe:animate-spin" />
 }
 
-function useSubjects() {
+/** Leaf units and tracked items records can belong to, and every unit's and item's name by ID. */
+export function useSubjects() {
   const units = useOrgUnits()
   const items = useItems()
   return useMemo(() => {
@@ -96,7 +97,8 @@ function useSubjects() {
   }, [units.data, items.data])
 }
 
-function useMeasureNames(scorecardId: string) {
+/** Measure names by key across a scorecard's versions, newest first. */
+export function useMeasureNames(scorecardId: string) {
   const versions = useVersions(scorecardId)
   return useMemo(() => {
     const out = new Map<string, string>()
