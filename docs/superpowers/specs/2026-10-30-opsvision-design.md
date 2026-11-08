@@ -44,7 +44,7 @@ Contributor and viewer roles can be scoped to an org-unit subtree, a set of metr
 
 - Not a BI tool or data warehouse; no ad hoc query builder.
 - No built-in connectors (issue trackers, BI tools, monitors). The ingestion API and file import cover automation.
-- No item-level records (each concept, epic, incident) in v1; the data model leaves room for them.
+- No connectors or scheduled pulls for item-level records (each defect, epic, concept). Records arrive by monthly file upload in v1; see `2026-10-31-records-ingestion-design.md`.
 - No billing or self-serve signup by default.
 - No native mobile app; the web app is responsive.
 
@@ -188,6 +188,7 @@ The first adopter will add an "open-source risk policy SLO" metric reported by s
 ### 6.4 Import and export
 
 - **Import** Excel (.xlsx) or CSV. Parsing is deterministic Go code. The user (or SAM) maps columns/rows to measures, org units, and periods; the mapping is saved as a **template** for repeat monthly uploads. Every import produces a **preview change set** (adds, changes, conflicts, unmatched rows) that the user applies.
+- **Records import:** monthly uploads of raw defects and work units (tracker exports), deduplicated, with guided mapping and measures derived by versioned rules. Specified in `2026-10-31-records-ingestion-design.md`.
 - **Legacy scorecard adapter:** parses the workbook's text cell formats (`48|66 | 72% | Y`, `87% (172/198)`, `74/98 (75.5%)`, `$10471k`, `99.64% | R`, free-text not-applicable reasons) into measures plus a recorded status. This is generic and ships in the repo; the mapping template for the first adopter's workbook lives only in their tenant.
 - **Backfill:** the first adopter imports the 2022 baseline through 2026 data, and the 2024, 2025, and 2026 methodology tabs as published versions, through the shipped importer. 2022–2023 have no methodology tab; they are scored under a "Legacy (pre-2024)" version cloned from 2024, with mismatches handled as overrides.
 - **Legacy cell comments** from the workbook are imported (phase 2) as read-only "legacy notes" on the matching data point or metric, with author names kept as plain text (not matched to user accounts).
@@ -330,7 +331,7 @@ DynamoDB single table, every key prefixed by tenant. Data volume is small (order
 
 | Phase | Target | Scope |
 |---|---|---|
-| 1. Foundation + POC | ~2026-11-20 | Repo, CI, dev environment, Auth0 tenants and roles, org units and levels, tracked items, metric engine, methodology versions (authoring UI may start minimal), grid entry, Charts and Table tabs, legacy adapter and backfill so the POC shows the real history |
+| 1. Foundation + POC | ~2026-11-20 | Repo, CI, dev environment, Auth0 tenants and roles, org units and levels, tracked items, metric engine, methodology versions (authoring UI may start minimal), grid entry, Charts and Table tabs, legacy adapter and backfill so the POC shows the real history; then records import and derived measures (for the December close) |
 | 2. Close + import/export | ~2026-12-04 | Owners, due rules, close board, lock, email reminders, comments and @mentions, Excel/CSV import with templates, Excel/PDF/PNG export, methodology diff and publish |
 | 3. SAM | ~2026-12-15 | Agent Lambda, read tools, docs search, change sets, file import via chat, model config, budgets, evals |
 | 4. Briefs | ~2026-12-23 | Live month-to-date brief, publish and history, audience versions, export, board-deck and lookback views |
@@ -350,7 +351,7 @@ Each phase gets its own implementation plan.
 
 - React + Go, mono-repo, Auth0, AWS in the task-vision shape, MIT, public, no company mentions.
 - Methodology is versioned; history is frozen; restatement is a comparison view.
-- Period totals in v1; item-level records later.
+- Period totals typed or imported, or derived from uploaded item-level records (defects and work units) by versioned rules; see `2026-10-31-records-ingestion-design.md`.
 - Ingestion: grid, Excel/CSV with templates, SAM chat, token API. Connectors later.
 - Full monthly close (owners, board, reminders, lock).
 - SAM proposes change sets; user applies; methodology changes as drafts.
