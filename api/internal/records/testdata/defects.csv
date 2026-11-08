@@ -1,0 +1,12 @@
+Issue key,Summary,Issue Type,Priority,Status,Product,Created,Resolved,Linked tickets
+CHK-101,"Refund total rounds incorrectly, off by a cent",Bug,Highest,In Review,Checkout,2026-09-03 14:22,,SUP-4410
+CHK-102,Coupon field accepts expired codes,Bug,High,Done,Checkout,2026-08-11 09:05,2026-08-19 16:40,
+CHK-103,Wallet button hidden on small screens,Bug,Medium,In Progress,iOS App,05/Sep/26 2:15 PM,,
+CHK-104,Address autocomplete freezes the form,Bug,Low,Open,Android App,2026-09-12 11:48,,SUP-4502; SUP-4519
+BIL-201,Invoice PDF missing tax line,Bug,Medium,Closed,Billing,2026-07-02 10:15,2026-07-30 11:00,SUP-4387
+BIL-202,Proration off by one day,Defect,Low,Won't Do,Billing,2026-06-18 13:30,2026-07-01 08:45,
+BIL-203,Credit memo numbering skips,Bug,,Open,Billing,02/Sep/26 9:30 AM,,
+ANL-301,Dashboard export truncates rows,Bug,High,In Progress,Analytics,2026-09-10 08:00,,
+ANL-302,Date picker resets filters,Bug,Low,Open,Analytics,2026-09-14 15:12,,
+PAY-1042,Retry storm on declined cards,Bug,Highest,Closed,Checkout,2026-05-20 07:55,2026-06-02 17:20,SUP-4101
+CHK-101-1,Add rounding regression test,Sub-task,Medium,Open,Checkout,2026-09-03 15:00,,
