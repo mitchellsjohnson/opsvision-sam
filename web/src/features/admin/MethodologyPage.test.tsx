@@ -1,10 +1,11 @@
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { http, HttpResponse } from 'msw'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { axe } from 'vitest-axe'
 import { adminHandlers, newAdminFake } from '../../test/adminFixtures'
 import { methodologyHandlers, newMethodologyFake, type MethodologyFake } from '../../test/methodologyFixtures'
-import { server } from '../../test/server'
+import { API, server } from '../../test/server'
 import { renderApp } from '../../test/utils'
 import { currentMonth } from '../../lib/period'
 import { addMonths } from './adminModel'
@@ -445,6 +446,29 @@ describe('MethodologyPage publishing', () => {
     await waitFor(() => expect(within(within(table).getByRole('row', { name: /FY27 proposal/ })).getByText('Published')).toBeTruthy())
     expect(await screen.findByText(/cannot be edited/)).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Publish…' })).toBeNull()
+  })
+
+  it('says plainly when the version published but the numbers from records were not updated', async () => {
+    const { user } = await setup()
+    server.use(
+      http.post(`${API}/v1/scorecards/sc-main/versions/ver-2/publish`, () =>
+        HttpResponse.json({
+          ...fake.versions.find((v) => v.id === 'ver-2')!,
+          status: 'published',
+          effectiveFrom: when(),
+          recalculated: 0,
+          recalculationError: 'derived values could not be recalculated; they update with the next records upload or publish',
+        }),
+      ),
+    )
+    await openDraft(user)
+    await user.click(screen.getByRole('button', { name: 'Publish…' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Publish FY27 proposal' })
+    await user.click(within(dialog).getByRole('button', { name: 'Publish' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    const notice = await screen.findByText(/but the numbers that come from records couldn’t be updated yet/)
+    expect(notice.textContent).toMatch(/^Published FY27 proposal, effective .*\. They update with your next records upload or publish\.$/)
+    expect(notice.className).not.toContain('text-status-g')
   })
 
   it('lists the details when the server refuses (400) and keeps the dialog open', async () => {

@@ -853,3 +853,77 @@ describe('accessibility', () => {
     expect((await axe(container)).violations).toEqual([])
   })
 })
+
+describe('rows derived from records', () => {
+  const derivedRows = (canEdit: boolean, typed: boolean): EntryRow[] => [
+    row('closed', 'unit-a', { value: 40, revision: 3, canEdit }),
+    row('defects', 'unit-c', {
+      value: typed ? 9 : 47,
+      revision: 2,
+      canEdit,
+      derived: true,
+      source: typed ? 'grid' : 'records',
+      ...(typed ? { recordsValue: 47 } : {}),
+    }),
+  ]
+
+  it('shows contributors the value with "From records" in place of an input', async () => {
+    setup(derivedRows(false, false))
+    await ready()
+    expect(screen.queryByRole('textbox', { name: 'Value, Defects, Unit C' })).toBeNull()
+    const cells = within(screen.getByRole('row', { name: /Unit C/ })).getAllByRole('cell')
+    expect(cells[1]?.textContent).toContain('47')
+    expect(cells[1]?.textContent).toContain('From records')
+  })
+
+  it('lets admins type over a derived value, marked "From records"', async () => {
+    const { user, h } = setup(derivedRows(true, false))
+    await ready()
+    const input = value('Defects', 'Unit C')
+    expect(input.value).toBe('47')
+    expect(within(screen.getByRole('row', { name: /Unit C/ })).getByText('From records')).toBeTruthy()
+    await typeInto(user, input, '50')
+    await user.click(saveButton())
+    await waitFor(() => expect(h.saves).toHaveLength(1))
+    expect(h.saves[0]).toEqual([{ measureKey: 'defects', subjectId: 'unit-c', period: PERIOD, expectedRevision: 2, value: 50 }])
+  })
+
+  it('says what records give beside a typed value, and "Use records" clears it', async () => {
+    const { user, h } = setup(derivedRows(true, true))
+    server.use(
+      http.post(`${API}/v1/scorecards/sc-main/data\\:batch`, async ({ request }) => {
+        const body = (await request.json()) as { writes: DataWrite[] }
+        h.saves.push(body.writes)
+        const r = h.rows.find((x) => x.measureKey === 'defects') as EntryRow
+        Object.assign(r, { value: 47, source: 'records', revision: 4, recordsValue: undefined })
+        return HttpResponse.json({
+          saved: [{ measureKey: 'defects', subjectId: 'unit-c', period: PERIOD, value: 47, naReason: '', source: 'records', enteredBy: 'me@example.test', enteredAt: '2026-10-06T12:00:00Z', revision: 4 }],
+        })
+      }),
+    )
+    await ready()
+    const tr = screen.getByRole('row', { name: /Unit C/ })
+    expect(within(tr).getByText('Typed · records give 47')).toBeTruthy()
+    await user.click(within(tr).getByRole('button', { name: 'Use records, Defects, Unit C' }))
+    await waitFor(() => expect(h.saves).toHaveLength(1))
+    expect(h.saves[0]).toEqual([{ measureKey: 'defects', subjectId: 'unit-c', period: PERIOD, expectedRevision: 2, clear: true }])
+    await waitFor(() => expect(value('Defects', 'Unit C').value).toBe('47'))
+    const after = screen.getByRole('row', { name: /Unit C/ })
+    expect(within(after).getByText('From records')).toBeTruthy()
+    expect(within(after).queryByRole('button', { name: /Use records/ })).toBeNull()
+    expect(screen.getByRole('status').textContent).toBe('Defects, Unit C now uses the value from records.')
+  })
+
+  it('has no axe violations with derived rows', async () => {
+    const { container } = setup(derivedRows(true, true))
+    await ready()
+    expect((await axe(container)).violations).toEqual([])
+  })
+
+  it('offers no "Use records" to contributors', async () => {
+    setup(derivedRows(false, true))
+    await ready()
+    expect(screen.queryByRole('button', { name: /Use records/ })).toBeNull()
+    expect(within(screen.getByRole('row', { name: /Unit C/ })).getByText('Typed · records give 47')).toBeTruthy()
+  })
+})

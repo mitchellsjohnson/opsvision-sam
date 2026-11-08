@@ -104,6 +104,15 @@ function conflictsOf(error: ApiError): Record<string, Conflict> | null {
   return out
 }
 
+/** A saved value as text, for a row shown without inputs. */
+function savedText(saved: Saved): string {
+  if (saved.kind === 'value') return plainNumber(saved.value)
+  if (saved.kind === 'na') return `not applicable (${saved.reason})`
+  return '—'
+}
+
+const derivedBadge = 'ml-2 inline-flex rounded-full border border-accent/50 px-2 py-0.5 text-xs font-medium text-accent-deep'
+
 const inputBase =
   'w-32 rounded-md border px-2 py-1 text-sm tabular-nums disabled:opacity-60'
 
@@ -444,6 +453,43 @@ function GridBody({
     setDrafts((prev) => omit(prev, key))
   }
 
+  /** Use records: clears the typed value so the value records give comes back. */
+  function restoreFromRecords(item: Item) {
+    const { row } = item
+    setBanner(null)
+    setStatus('')
+    save.mutate(
+      { writes: [{ measureKey: row.measureKey, subjectId: row.subjectId, period: row.period, expectedRevision: row.revision, clear: true }] },
+      {
+        onSuccess: (result) => {
+          setBases((prev) => {
+            const next = { ...prev }
+            for (const point of result.saved) {
+              next[rowKey(point)] = {
+                supersedes: Math.max(row.revision, point.revision),
+                revision: point.revision,
+                saved: point.deleted ? { kind: 'blank' } : savedOf(point),
+              }
+            }
+            return next
+          })
+          setDrafts((prev) => omit(prev, item.key))
+          setStatus(`${row.measureName}, ${row.subjectName} now uses the value from records.`)
+        },
+        onError: (error) => {
+          const conflicting = error instanceof ApiError ? conflictsOf(error) : null
+          if (conflicting) setConflicts((prev) => ({ ...prev, ...conflicting }))
+          setBanner({
+            message: conflicting
+              ? 'Nothing was changed. This value was changed by someone else; choose Use theirs or Keep mine.'
+              : `Nothing was changed. ${error instanceof Error ? error.message : 'Something went wrong.'}`,
+            retry: false,
+          })
+        },
+      },
+    )
+  }
+
   function revertAll() {
     setDrafts({})
     setConflicts({})
@@ -690,9 +736,20 @@ function GridBody({
     ))
   }
 
+  /** "From records", or for a typed value "Typed · records give 47" when records differ. */
+  function derivedLabel(item: Item): string | null {
+    const { row, saved } = item
+    if (!row.derived) return null
+    if (row.source === undefined || row.source === 'records') return 'From records'
+    const differs = row.recordsValue !== undefined && !(saved.kind === 'value' && saved.value === row.recordsValue)
+    return differs ? `Typed · records give ${plainNumber(row.recordsValue as number)}` : 'Typed'
+  }
+
   function renderRow(item: Item) {
     const { row, draft, analysis } = item
     const readOnly = !row.canEdit
+    const derived = derivedLabel(item)
+    const typedOverRecords = row.derived === true && row.source !== undefined && row.source !== 'records'
     const dirty = analysis.dirty
     const conflict = conflicts[item.key]
     const notes = noteFor(item)
@@ -749,7 +806,7 @@ function GridBody({
                 <span aria-hidden="true">edited</span>
               </span>
             )}
-            {readOnly && (
+            {readOnly && !derived && (
               <span className="ml-2 inline-flex items-center gap-1 text-xs font-normal text-ink/80">
                 <Lock aria-hidden="true" size={12} />
                 <span>read-only</span>
@@ -757,8 +814,26 @@ function GridBody({
             )}
           </th>
           <td className="px-3 py-2">{row.measureName}</td>
-          <td className="px-3 py-2">{field('value', 'Value')}</td>
-          <td className="px-3 py-2">{field('reason', 'Not-applicable reason')}</td>
+          <td className="px-3 py-2">
+            {derived && readOnly ? (
+              <span className="tabular-nums">{savedText(item.saved)}</span>
+            ) : (
+              field('value', 'Value')
+            )}
+            {derived && <span className={derivedBadge}>{derived}</span>}
+            {typedOverRecords && row.canEdit && (
+              <button
+                type="button"
+                onClick={() => restoreFromRecords(item)}
+                disabled={save.isPending}
+                aria-label={`Use records, ${row.measureName}, ${row.subjectName}`}
+                className="ml-2 rounded-md border border-ink/30 bg-white px-2 py-1 text-xs font-medium hover:bg-cream disabled:opacity-60"
+              >
+                Use records
+              </button>
+            )}
+          </td>
+          <td className="px-3 py-2">{derived && readOnly ? null : field('reason', 'Not-applicable reason')}</td>
           <td className={clsx('px-3 py-2', showPreview && previewStale && 'opacity-60')}>
             {cell ? (
               <span className="inline-flex items-center gap-2" aria-busy={previewStale || undefined}>
