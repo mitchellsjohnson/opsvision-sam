@@ -1523,6 +1523,7 @@ export interface components {
             score: number;
             candidates: components["schemas"]["Id"][];
         };
+        /** @description What an uploaded export looks like. `lastUploadAsOf` is the as-of date of the newest stored upload for the matched template's record type and source; it is absent when no template matched or nothing has been uploaded for them yet. */
         RecordInspection: {
             headers: string[];
             rowCount: number;
@@ -1548,6 +1549,7 @@ export interface components {
             added: string[];
             /** @description Columns the matched template uses that the file lacks. */
             missing: string[];
+            lastUploadAsOf?: components["schemas"]["Date"];
         };
         RecordsInspectResult: {
             inspection: components["schemas"]["RecordInspection"];

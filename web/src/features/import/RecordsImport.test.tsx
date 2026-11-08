@@ -107,7 +107,7 @@ describe('RecordsImport: drop and preview', () => {
 
     const defects = await previewed('defects.csv')
     const epics = await previewed('epics.xlsx')
-    expect(within(defects).getByText(lineText('Looks like your Defects export: 1,204 rows, 37 changed since your last upload.'))).toBeTruthy()
+    expect(within(defects).getByText(lineText('Looks like your Defects export: 1,204 rows, 37 changed since your October 31 upload.'))).toBeTruthy()
     expect(within(defects).getByText('Defects export').tagName).toBe('EM')
     expect(within(epics).getByText(lineText('Looks like your Epics export: 316 rows, 12 changed since your last upload.'))).toBeTruthy()
 
@@ -123,6 +123,15 @@ describe('RecordsImport: drop and preview', () => {
       templateId: 'defects-export',
       answers: {},
     } satisfies PreviewBody)
+  })
+
+  it('names the year of a last upload from another year', async () => {
+    const year = new Date().getFullYear() - 1
+    fake.inspections['defects.csv']!.inspection.lastUploadAsOf = `${year}-12-30`
+    await renderImportPage()
+    dropOn(dropZone(), [csv('defects.csv')])
+    const defects = await previewed('defects.csv')
+    expect(within(defects).getByText(lineText(`Looks like your Defects export: 1,204 rows, 37 changed since your December 30, ${year} upload.`))).toBeTruthy()
   })
 
   it('first previews without answers, then with the preselected product match', async () => {
@@ -407,6 +416,46 @@ describe('Scorecard page: upload records', () => {
     const dialog = await screen.findByRole('dialog', { name: 'Upload records' })
     expect(await within(dialog).findByRole('region', { name: 'epics.xlsx' })).toBeTruthy()
     await waitFor(() => expect(previews('imp-1')[0]?.scorecardId).toBe('sc-main'))
+  })
+
+  it('asks before discarding previews that are not applied', async () => {
+    const user = renderScorecard()
+    const button = await screen.findByRole('button', { name: 'Upload records' })
+    await user.click(button)
+    const dialog = await screen.findByRole('dialog', { name: 'Upload records' })
+    dropOn(within(dialog).getByRole('group', { name: 'Drop files to upload' }), [xlsx('epics.xlsx')])
+    await within(dialog).findByRole('heading', { name: 'What changes on the scorecard' })
+
+    await user.keyboard('{Escape}')
+    const confirm = await screen.findByRole('alertdialog', { name: 'Discard these uploads?' })
+    expect(confirm.contains(document.activeElement)).toBe(true)
+    expect((await axe(confirm)).violations).toEqual([])
+    await user.click(within(confirm).getByRole('button', { name: 'Keep reviewing' }))
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
+    expect(screen.getByRole('dialog', { name: 'Upload records' })).toBeTruthy()
+    expect(screen.getByRole('region', { name: 'epics.xlsx' })).toBeTruthy()
+
+    await user.click(within(screen.getByRole('dialog', { name: 'Upload records' })).getByRole('button', { name: 'Close' }))
+    const again = await screen.findByRole('alertdialog', { name: 'Discard these uploads?' })
+    await user.click(within(again).getByRole('button', { name: 'Discard' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+    expect(document.activeElement).toBe(button)
+    expect(requestsTo(fake, 'POST', '/imports/imp-1/apply')).toHaveLength(0)
+  })
+
+  it('closes without asking once every file is applied', async () => {
+    const user = renderScorecard()
+    await user.click(await screen.findByRole('button', { name: 'Upload records' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Upload records' })
+    dropOn(within(dialog).getByRole('group', { name: 'Drop files to upload' }), [xlsx('epics.xlsx')])
+    const apply = await within(dialog).findByRole('button', { name: 'Apply' })
+    await waitFor(() => expect((apply as HTMLButtonElement).disabled).toBe(false))
+    await user.click(apply)
+    await within(dialog).findByText('Applied: 7 new and 30 changed records.')
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(screen.queryByRole('alertdialog')).toBeNull()
   })
 
   it('shows no "Upload records" to people who are not admins', async () => {

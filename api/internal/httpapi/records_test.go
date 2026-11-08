@@ -374,6 +374,52 @@ func TestRecordsUploadInspectPreviewApply(t *testing.T) {
 	}
 }
 
+func TestInspectLastUploadAsOf(t *testing.T) {
+	e := newTestEnv(t)
+	seedRecords(t, e)
+	admin := e.tokens["t1-admin"]
+	inspect := func(id string) map[string]any {
+		t.Helper()
+		var out struct {
+			Inspection map[string]any `json:"inspection"`
+		}
+		e.expect(t, 200, admin, "POST", "/imports/"+id+"/inspect", nil, &out)
+		return out.Inspection
+	}
+
+	// No template matches: absent.
+	other := e.createCSVImport(t, "t1", []byte("Ticket,Owner\nT-1,Ana\n"))
+	if v, ok := inspect(other)["lastUploadAsOf"]; ok {
+		t.Errorf("unmatched file: lastUploadAsOf = %v, want absent", v)
+	}
+
+	// A template matches, but nothing has been uploaded for it: absent.
+	e.putRecordsTemplate(t, "defects")
+	first := e.createCSVImport(t, "t1", readDefects(t))
+	if v, ok := inspect(first)["lastUploadAsOf"]; ok {
+		t.Errorf("no snapshot yet: lastUploadAsOf = %v, want absent", v)
+	}
+
+	// A later snapshot of the same record type from another source does not count.
+	at := time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC)
+	if err := e.store.ApplySnapshot(context.Background(), "t1", domain.Snapshot{
+		ID: "snap-other", RecordType: "defect", Source: "helpdesk", AsOf: domain.Date{Time: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)},
+		CreatedAt: at, Counts: map[string]int{},
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// After applying the defects export as of 2026-09-15, the next upload names that date.
+	e.expect(t, 200, admin, "POST", "/imports/"+first+"/records-preview", previewBody(defectAnswers()), nil)
+	e.expect(t, 200, admin, "POST", "/imports/"+first+"/apply", map[string]any{"answers": defectAnswers()}, nil)
+	next := e.createCSVImport(t, "t1", readDefects(t))
+	got := inspect(next)
+	if got["matchedTemplateId"] != "defects" || got["lastUploadAsOf"] != "2026-09-15" {
+		t.Errorf("after apply: matchedTemplateId = %v, lastUploadAsOf = %v, want defects and 2026-09-15",
+			got["matchedTemplateId"], got["lastUploadAsOf"])
+	}
+}
+
 func TestRecordsPreviewInlineTemplateAndXLSXUpload(t *testing.T) {
 	e := newTestEnv(t)
 	seedRecords(t, e)

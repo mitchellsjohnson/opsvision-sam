@@ -246,7 +246,7 @@ export function newRecordsFake(): RecordsFake {
   return {
     templates: recordsTemplates(),
     inspections: {
-      'defects.csv': inspection('defects-export', 1204),
+      'defects.csv': inspection('defects-export', 1204, { lastUploadAsOf: `${new Date().getFullYear()}-10-31` }),
       'epics.xlsx': inspection('epics-export', 316, { headers: ['Key', 'Team', 'Due date'], suggestedType: 'epic' }),
       'mystery.csv': inspection('', 52, { suggestedType: '' }),
     },

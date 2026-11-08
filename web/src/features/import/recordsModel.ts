@@ -52,10 +52,11 @@ const MONTHS = [
   'July', 'August', 'September', 'October', 'November', 'December',
 ]
 
-/** `October 31` for `2026-10-31`. */
-export function longDate(iso: string): string {
-  const [, m, d] = iso.split('-').map(Number)
-  return `${MONTHS[(m ?? 1) - 1]} ${d}`
+/** `October 31` for `2026-10-31`, with the year only when it is not this year's: `December 30, 2025`. */
+export function longDate(iso: string, today: string = todayISO()): string {
+  const [y, m, d] = iso.split('-').map(Number)
+  const day = `${MONTHS[(m ?? 1) - 1]} ${d}`
+  return iso.slice(0, 4) === today.slice(0, 4) ? day : `${day}, ${y}`
 }
 
 export function formatCount(n: number): string {
@@ -64,19 +65,22 @@ export function formatCount(n: number): string {
 
 // ---- Copy -------------------------------------------------------------------
 
-/** "Looks like your *Defects export*: 1,204 rows, 37 changed since your last upload." */
+/** "Looks like your *Defects export*: 1,204 rows, 37 changed since your October 31 upload." */
 export function recognitionParts({
   name,
   rows,
   changed,
   lastUpload,
+  today,
 }: {
   name: string
   rows: number
   changed: number
+  /** The as-of date of the last upload of this export, when there was one. */
   lastUpload?: string
+  today?: string
 }): { lead: string; name: string; rest: string } {
-  const since = lastUpload ? `your ${longDate(lastUpload)} upload` : 'your last upload'
+  const since = lastUpload ? `your ${longDate(lastUpload, today)} upload` : 'your last upload'
   return {
     lead: 'Looks like your ',
     name,

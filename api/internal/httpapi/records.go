@@ -325,7 +325,8 @@ func (s *Server) InspectImport(ctx context.Context, req InspectImportRequestObje
 	if err != nil {
 		return nil, err
 	}
-	ins := records.Inspect(tbl, types, savedRecordTemplates(tpls))
+	saved := savedRecordTemplates(tpls)
+	ins := records.Inspect(tbl, types, saved)
 	values := map[string]int{}
 	for _, vc := range ins.Values["subjectKey"] {
 		values[vc.Value] += vc.Count
@@ -334,7 +335,32 @@ func (s *Server) InspectImport(ctx context.Context, req InspectImportRequestObje
 	if err != nil {
 		return nil, err
 	}
+	if out.LastUploadAsOf, err = s.lastUploadAsOf(ctx, tenantID, ins.MatchedTemplateID, saved); err != nil {
+		return nil, err
+	}
 	return InspectImport200JSONResponse{Inspection: out, Subjects: apiSubjectSuggestions(records.SuggestSubjects(values, units, items))}, nil
+}
+
+// lastUploadAsOf is the as-of date of the newest snapshot of the matched
+// template's record type and source, or nil when no template matched or no
+// snapshot exists.
+func (s *Server) lastUploadAsOf(ctx context.Context, tenantID, templateID string, saved []records.SavedTemplate) (*Date, error) {
+	i := slices.IndexFunc(saved, func(t records.SavedTemplate) bool { return t.ID == templateID })
+	if templateID == "" || i < 0 {
+		return nil, nil
+	}
+	t := saved[i].T
+	snaps, err := s.store.ListSnapshots(ctx, tenantID, t.RecordType)
+	if err != nil {
+		return nil, err
+	}
+	// Newest as-of first.
+	for _, sn := range snaps {
+		if sn.Source == t.Source {
+			return &Date{Time: sn.AsOf.Time}, nil
+		}
+	}
+	return nil, nil
 }
 
 func apiInspection(in records.Inspection) (RecordInspection, error) {

@@ -2357,6 +2357,11 @@ components:
           items: { $ref: '#/components/schemas/Id' }
     RecordInspection:
       type: object
+      description: >-
+        What an uploaded export looks like. `lastUploadAsOf` is the as-of date
+        of the newest stored upload for the matched template's record type and
+        source; it is absent when no template matched or nothing has been
+        uploaded for them yet.
       required: [headers, rowCount, samples, suggestedType, guesses, values, dateFormats, ambiguousDates, draft, matchedTemplateId, added, missing]
       properties:
         headers:
@@ -2403,6 +2408,7 @@ components:
           type: array
           description: Columns the matched template uses that the file lacks.
           items: { type: string }
+        lastUploadAsOf: { $ref: '#/components/schemas/Date' }
     RecordsInspectResult:
       type: object
       required: [inspection, subjects]

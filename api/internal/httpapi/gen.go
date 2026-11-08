@@ -1564,7 +1564,7 @@ type RecordFileSpec struct {
 // RecordFileSpecFormat defines model for RecordFileSpec.Format.
 type RecordFileSpecFormat string
 
-// RecordInspection defines model for RecordInspection.
+// RecordInspection What an uploaded export looks like. `lastUploadAsOf` is the as-of date of the newest stored upload for the matched template's record type and source; it is absent when no template matched or nothing has been uploaded for them yet.
 type RecordInspection struct {
 	// Added Columns of the file the matched template does not use.
 	Added []string `json:"added"`
@@ -1579,6 +1579,11 @@ type RecordInspection struct {
 	Draft   RecordTemplate `json:"draft"`
 	Guesses []ColumnGuess  `json:"guesses"`
 	Headers []string       `json:"headers"`
+
+	// LastUploadAsOf A calendar date; time zones are ignored.
+	//
+	// Example: 2026-09-03
+	LastUploadAsOf *Date `json:"lastUploadAsOf,omitempty"`
 
 	// MatchedTemplateId The saved template this file looks like; empty when none.
 	MatchedTemplateId string `json:"matchedTemplateId"`
@@ -1704,6 +1709,7 @@ type RecordsApplied struct {
 
 // RecordsInspectResult defines model for RecordsInspectResult.
 type RecordsInspectResult struct {
+	// Inspection What an uploaded export looks like. `lastUploadAsOf` is the as-of date of the newest stored upload for the matched template's record type and source; it is absent when no template matched or nothing has been uploaded for them yet.
 	Inspection RecordInspection    `json:"inspection"`
 	Subjects   []SubjectSuggestion `json:"subjects"`
 }

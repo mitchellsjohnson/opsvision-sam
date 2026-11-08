@@ -48,13 +48,17 @@ describe('copy', () => {
       name: 'Defects export',
       rest: ': 1,204 rows, 37 changed since your last upload.',
     })
-    expect(recognitionParts({ name: 'Defects export', rows: 1, changed: 0, lastUpload: '2026-10-31' }).rest).toBe(
+    expect(recognitionParts({ name: 'Defects export', rows: 1, changed: 0, lastUpload: '2026-10-31', today: '2026-11-08' }).rest).toBe(
       ': 1 row, 0 changed since your October 31 upload.',
+    )
+    expect(recognitionParts({ name: 'Defects export', rows: 9, changed: 2, lastUpload: '2025-12-30', today: '2026-01-05' }).rest).toBe(
+      ': 9 rows, 2 changed since your December 30, 2025 upload.',
     )
   })
 
   it('formats dates and today as calendar dates', () => {
-    expect(longDate('2026-10-31')).toBe('October 31')
+    expect(longDate('2026-10-31', '2026-11-08')).toBe('October 31')
+    expect(longDate('2025-10-31', '2026-11-08')).toBe('October 31, 2025')
     expect(todayISO(new Date(2026, 10, 8, 23, 30))).toBe('2026-11-08')
   })
 

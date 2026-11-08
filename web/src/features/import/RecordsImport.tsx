@@ -256,6 +256,7 @@ function FileImport({
       name: templateName,
       rows: inspection?.rowCount ?? 0,
       changed: preview.counts.new + preview.counts.changed,
+      lastUpload: inspection?.lastUploadAsOf,
     })
     return (
       <p>
@@ -389,13 +390,21 @@ export interface RecordsImportProps {
   prepared?: readonly PreparedFile[]
   /** Replaces the default hand-off to the setup page for an unrecognized file. */
   onNeedsSetup?: (file: File, result: RecordsInspectResult, importId: string) => void
+  /** Told whether any file has a preview that is not applied yet (or is still on its way). */
+  onPendingChange?: (pending: boolean) => void
 }
 
 /**
  * The records import: drop exports (several at once), read what each changes,
  * answer what it asks, then one Apply applies every ready file in order.
  */
-export function RecordsImport({ scorecardId: fixedScorecard, initialFiles = [], prepared = [], onNeedsSetup }: RecordsImportProps) {
+export function RecordsImport({
+  scorecardId: fixedScorecard,
+  initialFiles = [],
+  prepared = [],
+  onNeedsSetup,
+  onPendingChange,
+}: RecordsImportProps) {
   const scorecards = useScorecards()
   const apply = useApplyRecords()
   const [initialRejected] = useState(() => partitionFiles(initialFiles).rejected)
@@ -433,6 +442,10 @@ export function RecordsImport({ scorecardId: fixedScorecard, initialFiles = [], 
   const ready = live.filter((x) => x.status.state === 'ready')
   const busy = live.some((x) => x.status.state === 'busy')
   const allNothing = live.length > 0 && live.every((x) => x.status.state === 'nothing')
+  const pending = busy || ready.length > 0
+  useEffect(() => {
+    onPendingChange?.(pending)
+  }, [pending, onPendingChange])
 
   async function applyAll() {
     setApplying(true)
@@ -562,7 +575,13 @@ export function RecordsImport({ scorecardId: fixedScorecard, initialFiles = [], 
   )
 }
 
-/** The records import in a dialog, for the scorecard page. */
+const dangerButton =
+  'rounded-md bg-status-r px-3 py-1.5 text-sm font-medium text-white hover:bg-status-r/90 disabled:opacity-60'
+
+/**
+ * The records import in a dialog, for the scorecard page. Closing it with
+ * previews not yet applied asks first: they would be lost.
+ */
 export function UploadRecordsDialog({
   open,
   onOpenChange,
@@ -577,8 +596,21 @@ export function UploadRecordsDialog({
   /** Where focus goes on close; the dialog may open from a drop, without a trigger. */
   returnFocusTo: RefObject<HTMLElement | null>
 }) {
+  const [pending, setPending] = useState(false)
+  const [confirming, setConfirming] = useState(false)
+  const resumeFocus = useRef<HTMLElement | null>(null)
+
+  function requestOpenChange(next: boolean) {
+    if (next || !pending) {
+      onOpenChange(next)
+      return
+    }
+    resumeFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    setConfirming(true)
+  }
+
   return (
-    <Dialog.Root open={open} onOpenChange={onOpenChange}>
+    <Dialog.Root open={open} onOpenChange={requestOpenChange}>
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-40 bg-ink/40" />
         <Dialog.Content
@@ -592,13 +624,51 @@ export function UploadRecordsDialog({
             Drop your tracker exports to see what changes on this scorecard. Nothing is saved until you apply.
           </Dialog.Description>
           <div className="mt-4">
-            <RecordsImport scorecardId={scorecardId} initialFiles={initialFiles} />
+            <RecordsImport scorecardId={scorecardId} initialFiles={initialFiles} onPendingChange={setPending} />
           </div>
           <Dialog.Close asChild>
             <button type="button" aria-label="Close" className="absolute right-3 top-3 rounded-md p-1 hover:bg-white">
               <X aria-hidden="true" className="size-5" />
             </button>
           </Dialog.Close>
+
+          <Dialog.Root open={confirming} onOpenChange={setConfirming}>
+            <Dialog.Portal>
+              <Dialog.Overlay className="fixed inset-0 z-50 bg-ink/40" />
+              <Dialog.Content
+                role="alertdialog"
+                onCloseAutoFocus={(e) => {
+                  e.preventDefault()
+                  resumeFocus.current?.focus()
+                }}
+                className="fixed left-1/2 top-1/2 z-50 w-[min(94vw,28rem)] -translate-x-1/2 -translate-y-1/2 rounded-lg bg-white p-6 shadow-xl"
+              >
+                <Dialog.Title className="text-lg font-semibold text-accent-deep">Discard these uploads?</Dialog.Title>
+                <Dialog.Description className="mt-1 text-sm text-ink/80">
+                  Nothing from them has been applied yet. To see these previews again, you’d drop the files again.
+                </Dialog.Description>
+                <div className="mt-4 flex justify-end gap-2">
+                  <Dialog.Close asChild>
+                    <button type="button" className={secondaryButton}>
+                      Keep reviewing
+                    </button>
+                  </Dialog.Close>
+                  <button
+                    type="button"
+                    className={dangerButton}
+                    onClick={() => {
+                      // Focus goes back to the page, not into the dialog that is closing.
+                      resumeFocus.current = null
+                      setConfirming(false)
+                      onOpenChange(false)
+                    }}
+                  >
+                    Discard
+                  </button>
+                </div>
+              </Dialog.Content>
+            </Dialog.Portal>
+          </Dialog.Root>
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>
