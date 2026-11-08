@@ -162,7 +162,7 @@ export function setupPreview(): RecordsPreview {
   return emptyPreview({
     counts: { new: 1180, changed: 0, unchanged: 0, skipped: 0, missing: 0, unmatched: 3, errors: 0 },
     story: {
-      nothingChanged: false,
+      nothingChanged: false, sameRecords: false, warnings: [],
       lines: [
         {
           period: '2026-M10',

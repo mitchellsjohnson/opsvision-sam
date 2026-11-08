@@ -1,6 +1,7 @@
 package recordimport
 
 import (
+	"slices"
 	"testing"
 
 	"opsvision/internal/domain"
@@ -175,6 +176,105 @@ func TestDraftPreview(t *testing.T) {
 	}
 	if _, _, ok := f.value("epics_done", "checkout", oct); ok {
 		t.Errorf("Build stored a draft value")
+	}
+}
+
+// editVersion replaces v1's content with edit's result, bypassing publish
+// validation, as a record type edit after publishing would leave it.
+func (f *fixture) editVersion(scorecardID string, edit func(*domain.Methodology)) {
+	f.t.Helper()
+	v, err := f.st.GetVersion(f.ctx, acme.ID, scorecardID, "v1")
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	edit(&v.Content)
+	if err := f.st.PutVersion(f.ctx, acme.ID, v, v.Revision); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+func TestBadMeasureDoesNotStopTheOthers(t *testing.T) {
+	f := newFixture(t)
+	f.editVersion(scID, func(m *domain.Methodology) {
+		m.Measures = append(m.Measures,
+			// triagedAt is not a field of epics: this measure cannot be derived.
+			derivedMeasure("epics_triaged", "Epics triaged", domain.DeriveRule{RecordType: "epic", Op: domain.OpCount, BucketBy: "triagedAt"}),
+			derivedMeasure("epic_points", "Epic points", domain.DeriveRule{RecordType: "epic", Op: domain.OpDailyOpenWeighted, Weights: map[string]float64{"none": 1}}))
+	})
+	// A records point the bad measure got before is kept, not deleted.
+	kept := 7.0
+	if _, err := f.st.PutDataPoints(f.ctx, acme.ID, scID, []store.DataWrite{{Point: domain.DataPoint{
+		MeasureKey: "epics_triaged", SubjectID: "checkout", Period: oct, Value: &kept, Source: domain.SourceRecords},
+		ExpectedRevision: store.Unconditional}}); err != nil {
+		t.Fatal(err)
+	}
+	// P0 is added to epics after the weighted rule was published.
+	if err := f.st.PutRecordType(f.ctx, acme.ID, domain.RecordType{ID: "epic", Name: "Epic", Priorities: []string{"P0"},
+		TrackedFrom: map[string]period.Period{"tracker": oct}}, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	p := f.build(octoberEpics(), "2026-10-31", Answers{})
+	if w, ok := writeFor(p.Writes, "epics_on_time", "checkout", oct); !ok || *w.Point.Value != 2 {
+		t.Errorf("epics_on_time checkout = %+v (%v), want 2", w, ok)
+	}
+	for _, w := range p.Writes {
+		if w.Point.MeasureKey == "epics_triaged" {
+			t.Errorf("the bad measure got a write: %+v", w)
+		}
+	}
+	want := []string{
+		"P0 has no weight in Epic points, so it counts as 0. Add a weight in the methodology.",
+		"We couldn't work out Epics triaged from records, so its values stay as they are. Check its rule in the methodology.",
+	}
+	got := append([]string(nil), p.Story.Warnings...)
+	slices.Sort(got)
+	if !slices.Equal(got, want) {
+		t.Errorf("warnings = %q, want %q", got, want)
+	}
+	f.apply(p, Answers{})
+	if v, src, ok := f.value("epics_triaged", "checkout", oct); !ok || v != 7 || src != domain.SourceRecords {
+		t.Errorf("epics_triaged after apply = %v (%s, %v), want the stored 7 kept", v, src, ok)
+	}
+	if v, _, _ := f.value("epics_on_time", "checkout", oct); v != 2 {
+		t.Errorf("epics_on_time after apply = %v, want 2", v)
+	}
+	if ws := f.recalc(nil); len(ws) != 0 {
+		t.Errorf("recalculating after apply writes %+v", ws)
+	}
+}
+
+func TestApplyRecalculatesEveryScorecard(t *testing.T) {
+	f := newFixture(t)
+	if err := f.st.PutScorecard(f.ctx, acme.ID, domain.Scorecard{ID: "sc2", Name: "Portfolio"}); err != nil {
+		t.Fatal(err)
+	}
+	v, err := f.st.GetVersion(f.ctx, acme.ID, scID, "v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	v.ScorecardID, v.Revision = "sc2", 0
+	if err := f.st.PutVersion(f.ctx, acme.ID, v, 0); err != nil {
+		t.Fatal(err)
+	}
+	f.load(octoberEpics(), "2026-10-31")
+	for _, sc := range []string{scID, "sc2"} {
+		pts, _, err := f.st.ListData(f.ctx, acme.ID, sc, []int{2026})
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, dp := range pts {
+			if dp.MeasureKey == "epics_on_time" && dp.SubjectID == "checkout" && dp.Period == oct {
+				found = dp.Value != nil && *dp.Value == 2 && dp.Source == domain.SourceRecords && dp.EnteredBy == "admin-1"
+			}
+		}
+		if !found {
+			t.Errorf("scorecard %s: epics_on_time checkout October missing or wrong in %+v", sc, pts)
+		}
+	}
+	if ws, err := Recalculate(f.ctx, f.st, acme, "sc2", never, nil); err != nil || len(ws) != 0 {
+		t.Errorf("sc2 recalculation after apply = %+v, %v; want nothing to do", ws, err)
 	}
 }
 

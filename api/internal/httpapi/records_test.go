@@ -492,7 +492,7 @@ func TestRecordsApplyTwiceConflict(t *testing.T) {
 	e := newTestEnv(t)
 	seedRecords(t, e)
 	id := applyDefects(t, e)
-	e.expectError(t, 409, "conflict", e.tokens["t1-admin"], "POST", "/imports/"+id+"/apply", map[string]any{"answers": defectAnswers()})
+	e.expectError(t, 409, "already_applied", e.tokens["t1-admin"], "POST", "/imports/"+id+"/apply", map[string]any{"answers": defectAnswers()})
 	// A preview of an applied import conflicts too.
 	e.expectError(t, 409, "conflict", e.tokens["t1-admin"], "POST", "/imports/"+id+"/records-preview", previewBody(defectAnswers()))
 }
@@ -505,13 +505,13 @@ func TestRecordsApplyStalePreview409(t *testing.T) {
 	id := e.createCSVImport(t, "t1", readDefects(t))
 	plan := previewPlan(t, e, id, previewBody(defectAnswers()))
 
-	got := e.expectError(t, 409, "conflict", admin, "POST", "/imports/"+id+"/apply", map[string]any{"planId": plan, "answers": map[string]any{}})
+	got := e.expectError(t, 409, "preview_out_of_date", admin, "POST", "/imports/"+id+"/apply", map[string]any{"planId": plan, "answers": map[string]any{}})
 	if !strings.Contains(got.Error.Message, "preview is out of date") {
 		t.Errorf("message = %q", got.Error.Message)
 	}
 	other := defectAnswers()
 	other["ignoreValues"] = []string{"iOS App"}
-	e.expectError(t, 409, "conflict", admin, "POST", "/imports/"+id+"/apply", map[string]any{"planId": plan, "answers": other})
+	e.expectError(t, 409, "preview_out_of_date", admin, "POST", "/imports/"+id+"/apply", map[string]any{"planId": plan, "answers": other})
 	if _, ok := storedPoint(t, e, "defect_points_sum", "checkout", sep2026); ok {
 		t.Fatal("a stale apply stored derived points")
 	}
@@ -520,7 +520,7 @@ func TestRecordsApplyStalePreview409(t *testing.T) {
 	e.expect(t, 200, admin, "POST", "/imports/"+id+"/apply", map[string]any{"planId": plan, "answers": same}, nil)
 	// An import that was never previewed cannot be applied as records.
 	fresh := e.createCSVImport(t, "t1", readDefects(t))
-	e.expectError(t, 409, "conflict", admin, "POST", "/imports/"+fresh+"/apply", map[string]any{"planId": plan, "answers": defectAnswers()})
+	e.expectError(t, 409, "preview_out_of_date", admin, "POST", "/imports/"+fresh+"/apply", map[string]any{"planId": plan, "answers": defectAnswers()})
 }
 
 func TestRecordsApplyRequiresTheLatestPlan(t *testing.T) {
@@ -536,12 +536,12 @@ func TestRecordsApplyRequiresTheLatestPlan(t *testing.T) {
 	}
 
 	// The same answers, but the plan of an earlier preview: not the one stored.
-	got := e.expectError(t, 409, "conflict", admin, "POST", "/imports/"+id+"/apply", map[string]any{"planId": older, "answers": defectAnswers()})
+	got := e.expectError(t, 409, "preview_out_of_date", admin, "POST", "/imports/"+id+"/apply", map[string]any{"planId": older, "answers": defectAnswers()})
 	if !strings.Contains(got.Error.Message, "preview is out of date") {
 		t.Errorf("message = %q", got.Error.Message)
 	}
 	// No planId at all.
-	e.expectError(t, 409, "conflict", admin, "POST", "/imports/"+id+"/apply", map[string]any{"answers": defectAnswers()})
+	e.expectError(t, 409, "preview_out_of_date", admin, "POST", "/imports/"+id+"/apply", map[string]any{"answers": defectAnswers()})
 	if _, ok := storedPoint(t, e, "defect_points_sum", "checkout", sep2026); ok {
 		t.Fatal("an apply of an older plan stored derived points")
 	}
@@ -558,6 +558,45 @@ func TestRecordsApplyRequiresTheLatestPlan(t *testing.T) {
 	if _, ok := storedPoint(t, e, "defect_points_sum", "checkout", sep2026); !ok {
 		t.Error("applying the latest plan stored no derived points")
 	}
+}
+
+// racingRecordTypeStore fails PutRecordType with a conflict while race is set,
+// as when another admin saved the record type meanwhile.
+type racingRecordTypeStore struct {
+	store.Store
+	race *bool
+}
+
+func (r racingRecordTypeStore) PutRecordType(ctx context.Context, tenantID string, rt domain.RecordType, expected int) error {
+	if *r.race {
+		return fmt.Errorf("record type %s: %w", rt.ID, store.ErrConflict)
+	}
+	return r.Store.PutRecordType(ctx, tenantID, rt, expected)
+}
+
+func TestRecordsApplyConflictCodes(t *testing.T) {
+	race := false
+	e := newTestEnvWith(t, func(st store.Store) store.Store { return racingRecordTypeStore{Store: st, race: &race} })
+	seedRecords(t, e)
+	admin := e.tokens["t1-admin"]
+	e.putRecordsTemplate(t, "defects")
+	id := e.createCSVImport(t, "t1", readDefects(t))
+	plan := previewPlan(t, e, id, previewBody(defectAnswers()))
+
+	// A record type edit races the apply: a plain conflict, and nothing applied.
+	race = true
+	got := e.expectError(t, 409, "conflict", admin, "POST", "/imports/"+id+"/apply", map[string]any{"planId": plan, "answers": defectAnswers()})
+	if !strings.Contains(got.Error.Message, "try again") {
+		t.Errorf("race message = %q", got.Error.Message)
+	}
+	race = false
+
+	// The plan's snapshot is stored meanwhile (a double submit): already applied.
+	if err := e.store.ApplySnapshot(context.Background(), "t1", domain.Snapshot{ID: plan, RecordType: "defect", Source: "tracker",
+		AsOf: domain.Date{Time: time.Date(2026, 9, 15, 0, 0, 0, 0, time.UTC)}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	e.expectError(t, 409, "already_applied", admin, "POST", "/imports/"+id+"/apply", map[string]any{"planId": plan, "answers": defectAnswers()})
 }
 
 func TestContributorCannotApplyRecords(t *testing.T) {
@@ -1187,6 +1226,132 @@ func TestRecordTypeStaleRevision409(t *testing.T) {
 	if len(list.RecordTypes) != 0 {
 		t.Errorf("t2 sees t1's record types: %+v", list)
 	}
+}
+
+type recordTypeJSON struct {
+	ID          string              `json:"id"`
+	Name        string              `json:"name"`
+	Priorities  []string            `json:"priorities"`
+	Attributes  []map[string]string `json:"attributes"`
+	TrackedFrom map[string]string   `json:"trackedFrom"`
+	Revision    int                 `json:"revision"`
+}
+
+func getRecordType(t *testing.T, e *testEnv, id string) recordTypeJSON {
+	t.Helper()
+	var list struct {
+		RecordTypes []recordTypeJSON `json:"recordTypes"`
+	}
+	e.expect(t, 200, e.tokens["t1-admin"], "GET", "/record-types", nil, &list)
+	for _, rt := range list.RecordTypes {
+		if rt.ID == id {
+			return rt
+		}
+	}
+	t.Fatalf("no record type %q", id)
+	return recordTypeJSON{}
+}
+
+func TestRecordTypeEditKeepsDerivation(t *testing.T) {
+	e := newTestEnv(t)
+	seedRecords(t, e)
+	applyDefects(t, e)
+	admin := e.tokens["t1-admin"]
+
+	// P0 is added after the weighted rule was published: allowed.
+	rt := getRecordType(t, e, "defect")
+	rt.Priorities = append([]string{"P0"}, rt.Priorities...)
+	e.expect(t, 200, admin, "PUT", "/record-types/defect", rt, &rt)
+
+	// Preview a P0 defect: the preview works and says P0 counts as 0.
+	csv := "Issue key,Summary,Issue Type,Priority,Status,Product,Created,Resolved\n" +
+		"CHK-900,Checkout crash,Bug,Blocker,Open,Checkout,2026-09-16 09:00,\n"
+	id := e.createCSVImport(t, "t1", []byte(csv))
+	answers := map[string]any{"valueMaps": map[string]any{"priority": map[string]string{"Blocker": "P0"}}}
+	body := map[string]any{"scorecardId": "sc", "asOf": "2026-09-20", "templateId": "defects", "answers": answers}
+	var pv struct {
+		PlanID string `json:"planId"`
+		Story  struct {
+			Warnings []string `json:"warnings"`
+		} `json:"story"`
+	}
+	e.expect(t, 200, admin, "POST", "/imports/"+id+"/records-preview", body, &pv)
+	want := "P0 has no weight in Defect points, so it counts as 0. Add a weight in the methodology."
+	if len(pv.Story.Warnings) != 1 || pv.Story.Warnings[0] != want {
+		t.Errorf("preview warnings = %q, want [%q]", pv.Story.Warnings, want)
+	}
+
+	// Apply works, and the P0 defect adds nothing.
+	e.expect(t, 200, admin, "POST", "/imports/"+id+"/apply", map[string]any{"planId": pv.PlanID, "answers": answers}, nil)
+	var c contributionsJSON
+	e.expect(t, 200, admin, "GET", contributionsPath("checkout", ""), nil, &c)
+	var chk900 map[string]any
+	for _, m := range c.Measures {
+		for _, r := range m.Records {
+			if r["externalId"] == "CHK-900" {
+				chk900 = r
+			}
+		}
+	}
+	if chk900 == nil || chk900["amount"] != 0.0 || chk900["priority"] != "P0" {
+		t.Errorf("CHK-900 contribution = %v, want P0 with amount 0", chk900)
+	}
+
+	// Publishing a later version recalculates every period, including the
+	// ones under the version without a P0 weight.
+	withP0 := map[string]float64{"P0": 128, "P1": 64, "P2": 16, "P3": 4, "P4": 2, "none": 1}
+	v := saveDraft(t, e, newDraft(t, e, "sc", "2026 v2", ""), defectMethodology(withP0))
+	var out struct {
+		Status             string  `json:"status"`
+		RecalculationError *string `json:"recalculationError"`
+	}
+	e.expect(t, 200, admin, "POST", "/scorecards/sc/versions/"+v.ID+"/publish", map[string]any{"effectiveFrom": "2026-M10"}, &out)
+	if out.Status != "published" || out.RecalculationError != nil {
+		t.Errorf("publish = %+v, want no recalculation error", out)
+	}
+
+	// Removing or renaming a priority a rule uses is refused, naming the rule.
+	rt = getRecordType(t, e, "defect")
+	without := rt
+	without.Priorities = []string{"P0", "P1", "P2", "P4"}
+	got := e.expectError(t, 409, "conflict", admin, "PUT", "/record-types/defect", without)
+	if !strings.Contains(got.Error.Message, "Defect points in 2026 uses priority P3") {
+		t.Errorf("message = %q", got.Error.Message)
+	}
+	renamed := rt
+	renamed.Priorities = []string{"P0", "P1", "P2", "P3", "Low"}
+	e.expectError(t, 409, "conflict", admin, "PUT", "/record-types/defect", renamed)
+	if after := getRecordType(t, e, "defect"); after.Revision != rt.Revision {
+		t.Errorf("a refused edit was saved: revision %d -> %d", rt.Revision, after.Revision)
+	}
+}
+
+func TestRecordTypeAttributeInUse(t *testing.T) {
+	e := newTestEnv(t)
+	seedRecords(t, e)
+	admin := e.tokens["t1-admin"]
+	rt := getRecordType(t, e, "defect")
+	rt.Attributes = []map[string]string{{"key": "customerTicket", "name": "Customer ticket", "type": "bool"}}
+	e.expect(t, 200, admin, "PUT", "/record-types/defect", rt, &rt)
+
+	// A draft whose rule reads the attribute.
+	m := defectMethodology(defectWeights)
+	m.Measures[0].Derive.Where = "customerTicket == true"
+	saveDraft(t, e, newDraft(t, e, "sc", "Customer defects", ""), m)
+
+	removed := rt
+	removed.Attributes = []map[string]string{}
+	got := e.expectError(t, 409, "conflict", admin, "PUT", "/record-types/defect", removed)
+	if !strings.Contains(got.Error.Message, "Defect points in Customer defects uses Customer ticket") {
+		t.Errorf("message = %q", got.Error.Message)
+	}
+	retyped := rt
+	retyped.Attributes = []map[string]string{{"key": "customerTicket", "name": "Customer ticket", "type": "string"}}
+	e.expectError(t, 409, "conflict", admin, "PUT", "/record-types/defect", retyped)
+	// A new display name, or another attribute, is fine.
+	ok := rt
+	ok.Attributes = []map[string]string{{"key": "customerTicket", "name": "From a customer", "type": "bool"}, {"key": "team", "name": "Team", "type": "string"}}
+	e.expect(t, 200, admin, "PUT", "/record-types/defect", ok, nil)
 }
 
 // ---- source keys ---------------------------------------------------------------------

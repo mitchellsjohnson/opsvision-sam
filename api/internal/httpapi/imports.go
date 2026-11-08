@@ -298,7 +298,14 @@ func (s *Server) ApplyImport(ctx context.Context, req ApplyImportRequestObject) 
 		return nil, err
 	}
 	if im.Status != importParsed {
-		return nil, conflict(fmt.Sprintf("import is %s; only a parsed import can be applied", im.Status))
+		msg := fmt.Sprintf("import is %s; only a parsed import can be applied", im.Status)
+		switch {
+		case im.Status == importApplied && im.Profile == profileRecords:
+			return nil, alreadyApplied("this upload was already applied")
+		case im.Status == importUploaded && req.Body != nil && req.Body.PlanId != nil:
+			return nil, previewOutOfDate("the preview is missing; preview the import again")
+		}
+		return nil, conflict(msg)
 	}
 	if im.Profile == profileRecords {
 		return s.applyRecords(ctx, p, objs, im, req.Body)

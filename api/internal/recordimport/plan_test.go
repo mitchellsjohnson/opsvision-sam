@@ -293,6 +293,35 @@ func TestReuploadIsNoOp(t *testing.T) {
 	}
 }
 
+func TestReuploadLaterAsOf(t *testing.T) {
+	f := newFixture(t)
+	f.load(octoberEpics(), "2026-11-01")
+
+	// The same export, uploaded a few days later: only the date moves. No
+	// epic is due in November, so no derived value changes either.
+	later := f.build(octoberEpics(), "2026-11-04", Answers{})
+	if later.Counts != (Counts{Unchanged: 3}) || len(later.Revisions) != 0 || len(later.Writes) != 0 {
+		t.Fatalf("later re-upload counts = %+v, revisions %v, writes %+v", later.Counts, revisionIDs(later.Revisions), later.Writes)
+	}
+	if later.Story.NothingChanged || !later.Story.SameRecords {
+		t.Errorf("later re-upload: nothingChanged = %v, sameRecords = %v; want false, true", later.Story.NothingChanged, later.Story.SameRecords)
+	}
+	if prev := later.Story.PreviousAsOf; prev == nil || prev.String() != "2026-11-01" {
+		t.Errorf("previousAsOf = %v, want 2026-11-01", prev)
+	}
+	f.apply(later, Answers{})
+	in, err := LoadDeriveInput(f.ctx, f.st, acme, scID)
+	if err != nil || in.LatestAsOf["epic"].String() != "2026-11-04" {
+		t.Fatalf("latest as-of after apply = %v (%v), want 2026-11-04", in.LatestAsOf, err)
+	}
+
+	// The same date again changes nothing at all.
+	again := f.build(octoberEpics(), "2026-11-04", Answers{})
+	if !again.Story.NothingChanged || again.Story.SameRecords {
+		t.Errorf("same-date re-upload: nothingChanged = %v, sameRecords = %v; want true, false", again.Story.NothingChanged, again.Story.SameRecords)
+	}
+}
+
 func TestApplyRecordsAuditAndRefusesTwice(t *testing.T) {
 	f := newFixture(t)
 	p := f.load(octoberEpics(), "2026-10-31")

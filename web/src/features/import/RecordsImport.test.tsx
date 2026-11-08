@@ -243,7 +243,7 @@ describe('RecordsImport: the story', () => {
   it('says when nothing changed, in place of Apply', async () => {
     fake.previews['defects.csv'] = emptyPreview({
       counts: { new: 0, changed: 0, unchanged: 1204, skipped: 0, missing: 0, unmatched: 0, errors: 0 },
-      story: { nothingChanged: true, lines: [], more: 0, typed: [], lockedWaiting: [] },
+      story: { nothingChanged: true, sameRecords: false, warnings: [], lines: [], more: 0, typed: [], lockedWaiting: [] },
     })
     await renderImportPage()
     dropOn(dropZone(), [csv('defects.csv')])

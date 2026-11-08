@@ -208,20 +208,54 @@ func (e Direction) Valid() bool {
 	}
 }
 
+// Defines values for EntryRowSource.
+const (
+	EntryRowSourceApi     EntryRowSource = "api"
+	EntryRowSourceGrid    EntryRowSource = "grid"
+	EntryRowSourceImport  EntryRowSource = "import"
+	EntryRowSourceLegacy  EntryRowSource = "legacy"
+	EntryRowSourceRecords EntryRowSource = "records"
+	EntryRowSourceSam     EntryRowSource = "sam"
+)
+
+// Valid indicates whether the value is a known member of the EntryRowSource enum.
+func (e EntryRowSource) Valid() bool {
+	switch e {
+	case EntryRowSourceApi:
+		return true
+	case EntryRowSourceGrid:
+		return true
+	case EntryRowSourceImport:
+		return true
+	case EntryRowSourceLegacy:
+		return true
+	case EntryRowSourceRecords:
+		return true
+	case EntryRowSourceSam:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ErrorErrorCode.
 const (
-	ErrorErrorCodeConflict       ErrorErrorCode = "conflict"
-	ErrorErrorCodeForbidden      ErrorErrorCode = "forbidden"
-	ErrorErrorCodeInvalid        ErrorErrorCode = "invalid"
-	ErrorErrorCodeNotFound       ErrorErrorCode = "not_found"
-	ErrorErrorCodeNotImplemented ErrorErrorCode = "not_implemented"
-	ErrorErrorCodeTooLarge       ErrorErrorCode = "too_large"
-	ErrorErrorCodeUnauthorized   ErrorErrorCode = "unauthorized"
+	ErrorErrorCodeAlreadyApplied   ErrorErrorCode = "already_applied"
+	ErrorErrorCodeConflict         ErrorErrorCode = "conflict"
+	ErrorErrorCodeForbidden        ErrorErrorCode = "forbidden"
+	ErrorErrorCodeInvalid          ErrorErrorCode = "invalid"
+	ErrorErrorCodeNotFound         ErrorErrorCode = "not_found"
+	ErrorErrorCodeNotImplemented   ErrorErrorCode = "not_implemented"
+	ErrorErrorCodePreviewOutOfDate ErrorErrorCode = "preview_out_of_date"
+	ErrorErrorCodeTooLarge         ErrorErrorCode = "too_large"
+	ErrorErrorCodeUnauthorized     ErrorErrorCode = "unauthorized"
 )
 
 // Valid indicates whether the value is a known member of the ErrorErrorCode enum.
 func (e ErrorErrorCode) Valid() bool {
 	switch e {
+	case ErrorErrorCodeAlreadyApplied:
+		return true
 	case ErrorErrorCodeConflict:
 		return true
 	case ErrorErrorCodeForbidden:
@@ -231,6 +265,8 @@ func (e ErrorErrorCode) Valid() bool {
 	case ErrorErrorCodeNotFound:
 		return true
 	case ErrorErrorCodeNotImplemented:
+		return true
+	case ErrorErrorCodePreviewOutOfDate:
 		return true
 	case ErrorErrorCodeTooLarge:
 		return true
@@ -872,6 +908,11 @@ type DataPointSource string
 
 // DataWrite defines model for DataWrite.
 type DataWrite struct {
+	// Clear Admins only: delete the stored point instead of writing a value
+	// (send no value or naReason). On a derived measure the value
+	// records give then comes back at once.
+	Clear *bool `json:"clear,omitempty"`
+
 	// ExpectedRevision The revision the client last saw; 0 for a new data point.
 	ExpectedRevision int `json:"expectedRevision"`
 
@@ -957,8 +998,13 @@ type EntryGrid struct {
 
 // EntryRow defines model for EntryRow.
 type EntryRow struct {
-	// CanEdit Whether the caller's role and scope allow editing this row.
+	// CanEdit Whether the caller's role and scope allow editing this row. A
+	// derived row is editable by admins only.
 	CanEdit bool `json:"canEdit"`
+
+	// Derived The measure is derived from records in the version in force. Only
+	// set when true.
+	Derived *bool `json:"derived,omitempty"`
 
 	// MeasureKey Measure or metric key.
 	//
@@ -976,8 +1022,15 @@ type EntryRow struct {
 	// write's `period`.
 	Period Period `json:"period"`
 
+	// RecordsValue On a derived row whose stored value was typed: the value records
+	// give, when records cover the period.
+	RecordsValue *float64 `json:"recordsValue,omitempty"`
+
 	// Revision Send back as `expectedRevision`. Zero when nothing is stored.
 	Revision int `json:"revision"`
+
+	// Source Where the stored value came from; absent when nothing is stored.
+	Source *EntryRowSource `json:"source,omitempty"`
 
 	// SubjectId Client-supplied identifier.
 	//
@@ -988,6 +1041,9 @@ type EntryRow struct {
 	// Value The value, or null when not applicable.
 	Value *MeasureValue `json:"value,omitempty"`
 }
+
+// EntryRowSource Where the stored value came from; absent when nothing is stored.
+type EntryRowSource string
 
 // Error defines model for Error.
 type Error struct {
@@ -1645,11 +1701,24 @@ type RecordSkipRule struct {
 // `more` counts lines beyond the first 50. `lockedWaiting` is empty
 // until months can be locked.
 type RecordStory struct {
-	Lines          []RecordStoryLine `json:"lines"`
-	LockedWaiting  []RecordStoryLine `json:"lockedWaiting"`
-	More           int               `json:"more"`
-	NothingChanged bool              `json:"nothingChanged"`
-	Typed          []TypedVsRecords  `json:"typed"`
+	Lines         []RecordStoryLine `json:"lines"`
+	LockedWaiting []RecordStoryLine `json:"lockedWaiting"`
+	More          int               `json:"more"`
+
+	// NothingChanged True only when applying would change nothing, not even how far the data runs.
+	NothingChanged bool `json:"nothingChanged"`
+
+	// PreviousAsOf The as-of date of the latest earlier upload from the same source, if any.
+	PreviousAsOf *Date `json:"previousAsOf,omitempty"`
+
+	// SameRecords The upload has no new or changed records, but its as-of date is
+	// later than `previousAsOf`, so applying moves how far the data runs.
+	SameRecords bool             `json:"sameRecords"`
+	Typed       []TypedVsRecords `json:"typed"`
+
+	// Warnings Plain-language notes on what derivation worked around (a priority
+	// with no weight counts as 0) or could not derive.
+	Warnings []string `json:"warnings"`
 }
 
 // RecordStoryLine One metric cell an import changes. `reasons` lists, by reason

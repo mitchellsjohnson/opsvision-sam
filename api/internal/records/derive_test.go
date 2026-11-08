@@ -503,12 +503,111 @@ func TestDeriveRejectsBadRule(t *testing.T) {
 	bad := []domain.Measure{
 		{Key: "entered"},
 		measure("unknown_type", domain.DeriveRule{RecordType: "release", Op: domain.OpCount, BucketBy: "createdAt"}),
-		measure("bad_where", domain.DeriveRule{RecordType: "defect", Op: domain.OpCount, BucketBy: "createdAt", Where: "nope == 1"}),
+		measure("bad_where", domain.DeriveRule{RecordType: "defect", Op: domain.OpCount, BucketBy: "createdAt", Where: "category =="}),
+		measure("unknown_bucket", domain.DeriveRule{RecordType: "defect", Op: domain.OpCount, BucketBy: "triagedAt"}),
 	}
 	for _, m := range bad {
 		if _, err := Derive(in, m, []period.Period{mon(2026, 11)}); err == nil {
 			t.Errorf("Derive(%s): want an error", m.Key)
 		}
+	}
+}
+
+// withTypes returns in with the record type of id replaced by edit's result.
+func withTypes(in DeriveInput, id string, edit func(*domain.RecordType)) DeriveInput {
+	types := make([]domain.RecordType, len(in.Types))
+	copy(types, in.Types)
+	for i := range types {
+		if types[i].ID == id {
+			types[i].Priorities = append([]string{}, types[i].Priorities...)
+			types[i].Attributes = append([]domain.AttributeDef{}, types[i].Attributes...)
+			edit(&types[i])
+		}
+	}
+	in.Types = types
+	return in
+}
+
+func TestDeriveNewPriorityCountsZero(t *testing.T) {
+	nov := mon(2026, 11)
+	in := deriveInput(t, map[string]string{"defect": "2026-11-30"},
+		rec("defect", "CHK-1", rev("2026-10-31", openDefect("Checkout", "P1"))),
+		rec("defect", "CHK-2", rev("2026-10-31", openDefect("Checkout", "P0"))),
+	)
+	// P0 is added to the record type after the rule was published.
+	in = withTypes(in, "defect", func(rt *domain.RecordType) { rt.Priorities = append([]string{"P0"}, rt.Priorities...) })
+	d := wantValue(t, derive(t, in, pointsSum, nov), "checkout", nov, 30*64)
+	for _, c := range d.Contributions {
+		if c.ExternalID == "CHK-2" && c.Amount != 0 {
+			t.Errorf("P0 contribution = %v, want 0", c.Amount)
+		}
+	}
+
+	rt := in.Types[0]
+	got := DeriveWarnings(pointsSum, rt)
+	want := "P0 has no weight in defect_points_sum, so it counts as 0. Add a weight in the methodology."
+	if len(got) != 1 || got[0] != want {
+		t.Errorf("warnings = %q, want [%q]", got, want)
+	}
+	if w := DeriveWarnings(pointsSum, deriveTypes[0]); len(w) != 0 {
+		t.Errorf("warnings for the unchanged type = %q, want none", w)
+	}
+}
+
+func TestDeriveUnknownAttributeNeverMatches(t *testing.T) {
+	nov := mon(2026, 11)
+	p1 := openDefect("Checkout", "P1")
+	p1.CreatedAt = day("2026-11-03")
+	p2 := openDefect("Checkout", "P2")
+	p2.CreatedAt = day("2026-11-04")
+	p2.Attributes = map[string]any{"team": "core"}
+	in := deriveInput(t, map[string]string{"defect": "2026-11-30"},
+		rec("defect", "CHK-1", rev("2026-11-30", p1)),
+		rec("defect", "CHK-2", rev("2026-11-30", p2)),
+	)
+	cases := []struct {
+		where string
+		want  float64
+	}{
+		{"team == 'core'", 0},
+		{"!(team == 'core')", 0},
+		{"team == 'core' || priority == 'P1'", 1},
+		{"team == 'core' && priority == 'P2'", 0},
+		{"withinBudget || priority == 'P2'", 1},
+		{"triaged > createdAt || priority == 'P2'", 1},
+		{"priority == 'P9' || priority == 'P1'", 1},
+	}
+	for _, c := range cases {
+		m := measure("defects_opened", domain.DeriveRule{RecordType: "defect", Op: domain.OpCount, BucketBy: "createdAt", Where: c.where})
+		out, err := Derive(in, m, []period.Period{nov})
+		if err != nil {
+			t.Errorf("%s: %v", c.where, err)
+			continue
+		}
+		if d := cell(t, out, "checkout", nov); d.Value != c.want {
+			t.Errorf("%s = %v, want %v", c.where, d.Value, c.want)
+		}
+	}
+	m := measure("defects_opened", domain.DeriveRule{RecordType: "defect", Op: domain.OpCount, BucketBy: "createdAt", Where: "team == 'core'"})
+	want := `The condition in defects_opened uses "team", which this record type no longer has, so that part never matches. Update the rule in the methodology.`
+	if got := DeriveWarnings(m, deriveTypes[0]); len(got) != 1 || got[0] != want {
+		t.Errorf("warnings = %q, want [%q]", got, want)
+	}
+}
+
+func TestDeriveRefs(t *testing.T) {
+	r := domain.DeriveRule{RecordType: "defect", Op: domain.OpSum, BucketBy: "triagedAt", Field: "points",
+		Where: "team == 'core' && priority in ['P1', 'P2'] || 'P3' == priority || category == 'bug'"}
+	pris, fields := DeriveRefs(r)
+	if fmt.Sprint(pris) != "[P1 P2 P3]" {
+		t.Errorf("priorities = %v", pris)
+	}
+	if fmt.Sprint(fields) != "[category points priority team triagedAt]" {
+		t.Errorf("fields = %v", fields)
+	}
+	w := domain.DeriveRule{RecordType: "defect", Op: domain.OpDailyOpenWeighted, Weights: map[string]float64{"P2": 1, "P1": 2, "none": 1}}
+	if pris, _ := DeriveRefs(w); fmt.Sprint(pris) != "[P1 P2 none]" {
+		t.Errorf("weighted priorities = %v", pris)
 	}
 }
 

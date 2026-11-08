@@ -134,7 +134,7 @@ export function emptyPreview(over: Partial<RecordsPreview> = {}): RecordsPreview
   return {
     planId: 'plan-0',
     counts: { ...NO_COUNTS },
-    story: { nothingChanged: false, lines: [], more: 0, typed: [], lockedWaiting: [] },
+    story: { nothingChanged: false, sameRecords: false, warnings: [], lines: [], more: 0, typed: [], lockedWaiting: [] },
     problems: [],
     unmatched: [],
     parents: [],
@@ -151,7 +151,7 @@ export function defectsPreview(): RecordsPreview {
   return emptyPreview({
     counts: { new: 7, changed: 30, unchanged: 1150, skipped: 0, missing: 0, unmatched: 17, errors: 1 },
     story: {
-      nothingChanged: false,
+      nothingChanged: false, sameRecords: false, warnings: [],
       lines: [
         {
           period: '2026-M10',
@@ -196,7 +196,7 @@ export function epicsPreview(): RecordsPreview {
   return emptyPreview({
     counts: { new: 2, changed: 10, unchanged: 300, skipped: 4, missing: 2, unmatched: 0, errors: 0 },
     story: {
-      nothingChanged: false,
+      nothingChanged: false, sameRecords: false, warnings: [],
       lines: [
         {
           period: '2026-M10',

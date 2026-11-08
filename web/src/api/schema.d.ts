@@ -632,7 +632,15 @@ export interface paths {
          *     the answered source keys and shared units, then recalculates derived
          *     values; `saveTemplate` also saves the template with the answered
          *     value maps and date order. The response's `records` describes what
-         *     was applied. An import can be applied once.
+         *     was applied. An import can be applied once. Derived values are
+         *     recalculated for every scorecard of the tenant, since records belong
+         *     to the tenant; `answers.useRecords` names cells of the previewed one.
+         *
+         *     A records 409 carries one of these codes: `already_applied` (this
+         *     preview was applied already), `preview_out_of_date` (the plan or the
+         *     answers are not the stored preview's, or the preview is missing:
+         *     preview again), or `conflict` (a record type, template, or source key
+         *     changed meanwhile: try again).
          */
         post: operations["applyImport"];
         delete?: never;
@@ -672,7 +680,11 @@ export interface paths {
         /**
          * Create or replace a record type (admin only)
          * @description `revision` is the revision the client loaded: 0 creates the type,
-         *     which must not exist yet. A stale revision fails with 409.
+         *     which must not exist yet. A stale revision fails with 409. Removing
+         *     or renaming a priority or attribute, or changing an attribute's type,
+         *     that a derive rule of any methodology version uses also fails with
+         *     409, naming the measure and version. Adding priorities and
+         *     attributes is always allowed.
          */
         put: operations["putRecordType"];
         post?: never;
@@ -828,7 +840,7 @@ export interface components {
         Error: {
             error: {
                 /** @enum {string} */
-                code: "not_found" | "forbidden" | "conflict" | "invalid" | "unauthorized" | "not_implemented" | "too_large";
+                code: "not_found" | "forbidden" | "conflict" | "invalid" | "unauthorized" | "not_implemented" | "too_large" | "already_applied" | "preview_out_of_date";
                 message: string;
                 details?: components["schemas"]["ErrorDetail"][];
             };
@@ -1363,8 +1375,27 @@ export interface components {
             naReason: string;
             /** @description Send back as `expectedRevision`. Zero when nothing is stored. */
             revision: number;
-            /** @description Whether the caller's role and scope allow editing this row. */
+            /**
+             * @description Whether the caller's role and scope allow editing this row. A
+             *     derived row is editable by admins only.
+             */
             canEdit: boolean;
+            /**
+             * @description The measure is derived from records in the version in force. Only
+             *     set when true.
+             */
+            derived?: boolean;
+            /**
+             * @description Where the stored value came from; absent when nothing is stored.
+             * @enum {string}
+             */
+            source?: "grid" | "import" | "api" | "sam" | "legacy" | "records";
+            /**
+             * Format: double
+             * @description On a derived row whose stored value was typed: the value records
+             *     give, when records cover the period.
+             */
+            recordsValue?: number;
         };
         EntryGrid: {
             period: components["schemas"]["Period"];
@@ -1379,6 +1410,12 @@ export interface components {
             naReason?: string;
             /** @description The revision the client last saw; 0 for a new data point. */
             expectedRevision: number;
+            /**
+             * @description Admins only: delete the stored point instead of writing a value
+             *     (send no value or naReason). On a derived measure the value
+             *     records give then comes back at once.
+             */
+            clear?: boolean;
         };
         DataBatchRequest: {
             writes: components["schemas"]["DataWrite"][];
@@ -1680,7 +1717,20 @@ export interface components {
          *     until months can be locked.
          */
         RecordStory: {
+            /** @description True only when applying would change nothing, not even how far the data runs. */
             nothingChanged: boolean;
+            /**
+             * @description The upload has no new or changed records, but its as-of date is
+             *     later than `previousAsOf`, so applying moves how far the data runs.
+             */
+            sameRecords: boolean;
+            /** @description The as-of date of the latest earlier upload from the same source, if any. */
+            previousAsOf?: components["schemas"]["Date"];
+            /**
+             * @description Plain-language notes on what derivation worked around (a priority
+             *     with no weight counts as 0) or could not derive.
+             */
+            warnings: string[];
             lines: components["schemas"]["RecordStoryLine"][];
             more: number;
             typed: components["schemas"]["TypedVsRecords"][];

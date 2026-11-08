@@ -52,12 +52,22 @@ type TypedVsRecords struct {
 // lines beyond the first 50. Typed lists, for each subject and period where a
 // typed value disagrees with records, every typed derived measure there.
 // LockedWaiting is empty in phase 1, which has no month lock.
+//
+// NothingChanged is true only when applying would change nothing at all,
+// not even how far the data runs. SameRecords is true when the upload has
+// no new or changed records but runs later than the last upload from its
+// source, whose as-of date is PreviousAsOf. Warnings say, in plain
+// language, what derivation worked around (a priority with no weight) or
+// could not derive.
 type Story struct {
 	NothingChanged bool
+	SameRecords    bool
+	PreviousAsOf   *domain.Date
 	Lines          []StoryLine
 	More           int
 	Typed          []TypedVsRecords
 	LockedWaiting  []StoryLine
+	Warnings       []string
 }
 
 type storyInput struct {

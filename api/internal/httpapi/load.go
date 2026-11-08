@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"log/slog"
 	"sort"
 
 	"opsvision/internal/domain"
@@ -78,7 +79,9 @@ func (s *Server) restateDerived(ctx context.Context, tenant domain.Tenant, score
 	for _, key := range keys {
 		vals, err := records.Derive(din, derived[key], restatePeriods(in.Cal, years, grains[key]))
 		if err != nil {
-			return err
+			// The measure gets no restated values; the others still do.
+			slog.Warn("httpapi: restatement: a derived measure could not be derived", "tenant", tenant.ID, "version", restate, "measure", key, "err", err)
+			continue
 		}
 		for _, d := range vals {
 			if typed[slot{d.MeasureKey, d.SubjectID, d.Period}] {

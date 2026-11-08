@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -46,6 +47,11 @@ const (
 type Cond struct {
 	prog   *vm.Program // nil matches everything
 	fields map[string]domain.AttrType
+	// missing names fields the record type does not have; they always read
+	// as missing.
+	missing map[string]bool
+	never   bool // matches nothing
+	lenient bool // while checking: priority and state values are not checked
 }
 
 // CompileWhere validates src against rt and compiles it. The empty condition
@@ -54,6 +60,142 @@ type Cond struct {
 // and &&, ||, !. Function calls are not allowed and the result must be a
 // bool. Errors start with "where: " and name the problem.
 func CompileWhere(src string, rt domain.RecordType) (*Cond, error) {
+	return compileWhere(src, rt, nil)
+}
+
+// CompileWhereLenient compiles src for derivation, when rt may have changed
+// since the rule was checked. A name rt does not have reads as missing, so
+// a comparison with it never matches; priority and state values rt does
+// not list are allowed. It returns the unknown names, sorted. When no
+// typing of the unknown names compiles, the condition matches nothing.
+// Other problems are errors, as for CompileWhere.
+func CompileWhereLenient(src string, rt domain.RecordType) (*Cond, []string, error) {
+	if strings.TrimSpace(src) == "" {
+		return &Cond{}, nil, nil
+	}
+	tree, err := parser.Parse(src)
+	if err != nil {
+		return nil, nil, whereError(err)
+	}
+	unknown := unknownNames(tree.Node, rt)
+	if len(unknown) == 0 {
+		c, err := compileWhere(src, rt, map[string]bool{})
+		return c, nil, err
+	}
+	missing := make(map[string]bool, len(unknown))
+	for _, n := range unknown {
+		missing[n] = true
+	}
+	for _, kind := range []domain.AttrType{domain.AttrString, domain.AttrNumber, domain.AttrBool, domain.AttrDate} {
+		ext := rt
+		ext.Attributes = slices.Clone(rt.Attributes)
+		for _, n := range unknown {
+			ext.Attributes = append(ext.Attributes, domain.AttributeDef{Key: n, Name: n, Type: kind})
+		}
+		if c, err := compileWhere(src, ext, missing); err == nil {
+			return c, unknown, nil
+		}
+	}
+	return &Cond{never: true}, unknown, nil
+}
+
+// unknownNames lists the identifiers of n that are not fields of rt, sorted.
+func unknownNames(n ast.Node, rt domain.RecordType) []string {
+	var out []string
+	walkIdents(n, func(name string) {
+		if _, ok := fieldKind(rt, name); !ok && !slices.Contains(out, name) {
+			out = append(out, name)
+		}
+	})
+	slices.Sort(out)
+	return out
+}
+
+// walkIdents calls fn with the name of every identifier in n.
+func walkIdents(n ast.Node, fn func(string)) {
+	switch n := n.(type) {
+	case *ast.IdentifierNode:
+		fn(n.Value)
+	case *ast.UnaryNode:
+		walkIdents(n.Node, fn)
+	case *ast.BinaryNode:
+		walkIdents(n.Left, fn)
+		walkIdents(n.Right, fn)
+	case *ast.ArrayNode:
+		for _, el := range n.Nodes {
+			walkIdents(el, fn)
+		}
+	case *ast.ConditionalNode:
+		walkIdents(n.Cond, fn)
+		walkIdents(n.Exp1, fn)
+		walkIdents(n.Exp2, fn)
+	}
+}
+
+// WhereRefs lists the fields and attributes src reads and the priority
+// values it compares priority with, each sorted and distinct. A src that
+// does not parse references nothing.
+func WhereRefs(src string) (fields, priorities []string) {
+	if strings.TrimSpace(src) == "" {
+		return nil, nil
+	}
+	tree, err := parser.Parse(src)
+	if err != nil {
+		return nil, nil
+	}
+	add := func(list *[]string, s string) {
+		if !slices.Contains(*list, s) {
+			*list = append(*list, s)
+		}
+	}
+	walkIdents(tree.Node, func(name string) { add(&fields, name) })
+	var visit func(ast.Node)
+	visit = func(n ast.Node) {
+		switch n := n.(type) {
+		case *ast.UnaryNode:
+			visit(n.Node)
+		case *ast.ConditionalNode:
+			visit(n.Cond)
+			visit(n.Exp1)
+			visit(n.Exp2)
+		case *ast.BinaryNode:
+			visit(n.Left)
+			visit(n.Right)
+			var lits []ast.Node
+			switch n.Operator {
+			case "==", "!=":
+				if isIdent(n.Left, "priority") {
+					lits = []ast.Node{n.Right}
+				} else if isIdent(n.Right, "priority") {
+					lits = []ast.Node{n.Left}
+				}
+			case "in":
+				if arr, ok := n.Right.(*ast.ArrayNode); ok && isIdent(n.Left, "priority") {
+					lits = arr.Nodes
+				}
+			}
+			for _, l := range lits {
+				if s, ok := l.(*ast.StringNode); ok {
+					add(&priorities, s.Value)
+				}
+			}
+		}
+	}
+	visit(tree.Node)
+	slices.Sort(fields)
+	slices.Sort(priorities)
+	return fields, priorities
+}
+
+func isIdent(n ast.Node, name string) bool {
+	id, ok := n.(*ast.IdentifierNode)
+	return ok && id.Value == name
+}
+
+// compileWhere compiles src against rt. A non-nil missing compiles it
+// leniently: those fields always read as missing, and priority and state
+// values are not checked.
+func compileWhere(src string, rt domain.RecordType, missing map[string]bool) (*Cond, error) {
 	if strings.TrimSpace(src) == "" {
 		return &Cond{}, nil
 	}
@@ -64,7 +206,7 @@ func CompileWhere(src string, rt domain.RecordType) (*Cond, error) {
 	if err != nil {
 		return nil, whereError(err)
 	}
-	c := &Cond{fields: map[string]domain.AttrType{}}
+	c := &Cond{fields: map[string]domain.AttrType{}, missing: missing, lenient: missing != nil}
 	if err := c.check(tree.Node, rt); err != nil {
 		return nil, fmt.Errorf("where: %w", err)
 	}
@@ -90,23 +232,31 @@ func CompileWhere(src string, rt domain.RecordType) (*Cond, error) {
 		expr.Function(fnAnd, logicAnd, new(func(any, any) any)),
 		expr.Function(fnOr, logicOr, new(func(any, any) any)),
 		expr.Function(fnNot, logicNot, new(func(any) any)),
-		expr.Patch(&unknownPatcher{fields: c.fields}),
+		expr.Patch(&unknownPatcher{fields: c.fields, missing: missing}),
 	)
 	if err != nil {
 		return nil, whereError(err)
 	}
 	c.prog = prog
+	c.lenient = false
 	return c, nil
 }
 
 // Match reports whether f satisfies the condition. It returns an error only
 // when an attribute value has the wrong type for its declaration.
 func (c *Cond) Match(f domain.RecordFields) (bool, error) {
+	if c != nil && c.never {
+		return false, nil
+	}
 	if c == nil || c.prog == nil {
 		return true, nil
 	}
 	env := make(map[string]any, len(c.fields))
 	for name, kind := range c.fields {
+		if c.missing[name] {
+			env[name] = nil
+			continue
+		}
 		v, err := fieldValue(f, name, kind)
 		if err != nil {
 			return false, err
@@ -171,6 +321,9 @@ func (c *Cond) check(n ast.Node, rt domain.RecordType) error {
 			}
 		default:
 			return fmt.Errorf("operator %q is not allowed", n.Operator)
+		}
+		if c.lenient {
+			return nil
 		}
 		return checkKnownValues(n, rt)
 	case *ast.ArrayNode:
@@ -496,7 +649,8 @@ func attrValue(key string, kind domain.AttrType, v any) (any, error) {
 // "all present ? comparison : nil", and &&, || and ! become the three-valued
 // functions, so an unknown comparison never matches.
 type unknownPatcher struct {
-	fields map[string]domain.AttrType
+	fields  map[string]domain.AttrType
+	missing map[string]bool
 }
 
 func (p *unknownPatcher) Visit(node *ast.Node) {
@@ -528,7 +682,7 @@ func (p *unknownPatcher) presentGuard(n ast.Node) ast.Node {
 	walk = func(n ast.Node) {
 		switch n := n.(type) {
 		case *ast.IdentifierNode:
-			if seen[n.Value] || !nullable(n.Value, p.fields[n.Value]) {
+			if seen[n.Value] || !(p.missing[n.Value] || nullable(n.Value, p.fields[n.Value])) {
 				return
 			}
 			seen[n.Value] = true

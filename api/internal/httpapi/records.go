@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"maps"
 	"math"
 	"slices"
@@ -117,6 +118,15 @@ func (s *Server) PutRecordType(ctx context.Context, req PutRecordTypeRequestObje
 	if err != nil {
 		return nil, err
 	}
+	if before != nil {
+		msg, err := s.recordTypeEditInUse(ctx, tenantID, *before, rt)
+		if err != nil {
+			return nil, err
+		}
+		if msg != "" {
+			return nil, conflict(msg)
+		}
+	}
 	if err := s.store.PutRecordType(ctx, tenantID, rt, b.Revision); err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			if b.Revision == 0 {
@@ -139,6 +149,66 @@ func (s *Server) PutRecordType(ctx context.Context, req PutRecordTypeRequestObje
 		return nil, err
 	}
 	return PutRecordType200JSONResponse(out), nil
+}
+
+// recordTypeEditInUse returns a plain message naming the first derive rule,
+// in any methodology version of any scorecard, that uses a priority or
+// attribute the edit from before to after removes or renames (or an
+// attribute whose type it changes), and "" when there is none.
+func (s *Server) recordTypeEditInUse(ctx context.Context, tenantID string, before, after domain.RecordType) (string, error) {
+	gone := map[string]bool{}
+	for _, pr := range before.Priorities {
+		if pr != domain.PriorityNone && !slices.Contains(after.Priorities, pr) {
+			gone[pr] = true
+		}
+	}
+	changed := map[string]string{} // attribute key -> its name before
+	for _, a := range before.Attributes {
+		i := slices.IndexFunc(after.Attributes, func(x domain.AttributeDef) bool { return x.Key == a.Key })
+		if i < 0 || after.Attributes[i].Type != a.Type {
+			changed[a.Key] = a.Name
+		}
+	}
+	if len(gone) == 0 && len(changed) == 0 {
+		return "", nil
+	}
+	cards, err := s.store.ListScorecards(ctx, tenantID)
+	if err != nil {
+		return "", err
+	}
+	for _, sc := range cards {
+		versions, err := s.store.ListVersions(ctx, tenantID, sc.ID)
+		if err != nil {
+			return "", err
+		}
+		for _, v := range versions {
+			vname := v.Name
+			if vname == "" {
+				vname = v.ID
+			}
+			for _, m := range v.Content.Measures {
+				if m.Derive == nil || m.Derive.RecordType != before.ID {
+					continue
+				}
+				mname := m.Name
+				if mname == "" {
+					mname = m.Key
+				}
+				pris, fields := records.DeriveRefs(*m.Derive)
+				for _, pr := range pris {
+					if gone[pr] {
+						return fmt.Sprintf("%s in %s uses priority %s. Change that rule before removing or renaming the priority.", mname, vname, pr), nil
+					}
+				}
+				for _, f := range fields {
+					if name, ok := changed[f]; ok {
+						return fmt.Sprintf("%s in %s uses %s. Change that rule before removing, renaming, or retyping it.", mname, vname, name), nil
+					}
+				}
+			}
+		}
+	}
+	return "", nil
 }
 
 // recordValuesLimit is how many distinct values ListRecordValues returns.
@@ -874,10 +944,12 @@ func apiRecordsPreview(p recordimport.Plan) RecordsPreview {
 		Counts: apiRecordCounts(p.Counts),
 		Story: RecordStory{
 			NothingChanged: p.Story.NothingChanged,
+			SameRecords:    p.Story.SameRecords,
 			Lines:          apiStoryLines(p.Story.Lines),
 			More:           p.Story.More,
 			Typed:          make([]TypedVsRecords, 0, len(p.Story.Typed)),
 			LockedWaiting:  apiStoryLines(p.Story.LockedWaiting),
+			Warnings:       strs(p.Story.Warnings),
 		},
 		Problems:       make([]RecordRowProblem, 0, len(p.Problems)),
 		Unmatched:      apiSubjectSuggestions(p.Unmatched),
@@ -886,6 +958,9 @@ func apiRecordsPreview(p recordimport.Plan) RecordsPreview {
 		Missing:        strs(p.Missing),
 		ColumnsAdded:   strs(p.ColumnsAdded),
 		ColumnsMissing: strs(p.ColumnsMissing),
+	}
+	if p.Story.PreviousAsOf != nil {
+		out.Story.PreviousAsOf = &Date{Time: p.Story.PreviousAsOf.Time}
 	}
 	for _, t := range p.Story.Typed {
 		out.Story.Typed = append(out.Story.Typed, TypedVsRecords{
@@ -937,7 +1012,7 @@ func (s *Server) applyRecords(ctx context.Context, p auth.Principal, objs object
 
 	rc, _, err := objs.Get(ctx, recordsPlanKey(tenantID, im.ID))
 	if errors.Is(err, objects.ErrNotFound) {
-		return nil, conflict("the preview is missing; preview the import again")
+		return nil, previewOutOfDate("the preview is missing; preview the import again")
 	}
 	if err != nil {
 		return nil, err
@@ -949,10 +1024,10 @@ func (s *Server) applyRecords(ctx context.Context, p auth.Principal, objs object
 	}
 	// Previews can overlap; only the one the caller saw may be applied.
 	if planID == "" || planID != doc.Plan.Snapshot.ID {
-		return nil, conflict("preview is out of date: this is not the latest preview of the import; preview the import again")
+		return nil, previewOutOfDate("preview is out of date: this is not the latest preview of the import; preview the import again")
 	}
 	if canonicalAnswers(ans) != canonicalAnswers(doc.Answers) {
-		return nil, conflict("preview is out of date: these answers differ from the previewed ones; preview the import again")
+		return nil, previewOutOfDate("preview is out of date: these answers differ from the previewed ones; preview the import again")
 	}
 
 	units, err := s.store.ListOrgUnits(ctx, tenantID)
@@ -989,8 +1064,11 @@ func (s *Server) applyRecords(ctx context.Context, p auth.Principal, objs object
 	}
 
 	err = recordimport.Apply(ctx, s.store, *p.Tenant, doc.ScorecardID, doc.Plan, doc.Answers, p.UserID)
-	if errors.Is(err, store.ErrConflict) {
-		return nil, conflict("this preview was already applied; preview the import again")
+	switch {
+	case errors.Is(err, recordimport.ErrAlreadyApplied):
+		return nil, alreadyApplied("this preview was already applied")
+	case errors.Is(err, store.ErrConflict):
+		return nil, conflict("something changed while applying, such as a record type or template; try again")
 	}
 	if err != nil {
 		return nil, fmt.Errorf("httpapi: apply records import %s: %w", im.ID, err)
@@ -1233,7 +1311,9 @@ func (s *Server) ListRecordContributions(ctx context.Context, req ListRecordCont
 		}
 		vals, err := records.Derive(din, m, []period.Period{per})
 		if err != nil {
-			return nil, err
+			// One bad rule does not hide the other measures' records.
+			slog.Warn("httpapi: contributions: a derived measure could not be derived", "tenant", tenantID, "measure", m.Key, "err", err)
+			vals = nil
 		}
 		var values []float64
 		for _, d := range vals {

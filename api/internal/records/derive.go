@@ -3,6 +3,7 @@ package records
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"time"
 
@@ -101,14 +102,19 @@ func Derive(in DeriveInput, m domain.Measure, periods []period.Period) ([]Derive
 	if !found {
 		return nil, fmt.Errorf("derive %s: unknown record type %q", m.Key, rule.RecordType)
 	}
-	if errs := domain.ValidateDerive(domain.Methodology{Measures: []domain.Measure{m}}, []domain.RecordType{rt}); errs != nil {
+	rule.Weights = completeWeights(rule, rt)
+	checked := m
+	checked.Derive = &domain.DeriveRule{}
+	*checked.Derive = rule
+	checked.Derive.Weights = knownWeights(rule.Weights, rt)
+	if errs := domain.ValidateDerive(domain.Methodology{Measures: []domain.Measure{checked}}, []domain.RecordType{rt}); errs != nil {
 		joined := make([]error, len(errs))
 		for i, e := range errs {
 			joined[i] = e
 		}
 		return nil, fmt.Errorf("derive %s: %w", m.Key, errors.Join(joined...))
 	}
-	cond, err := CompileWhere(rule.Where, rt)
+	cond, _, err := CompileWhereLenient(rule.Where, rt)
 	if err != nil {
 		return nil, fmt.Errorf("derive %s: %w", m.Key, err)
 	}
@@ -157,6 +163,98 @@ func Derive(in DeriveInput, m domain.Measure, periods []period.Period) ([]Derive
 		}
 	}
 	return out, nil
+}
+
+// completeWeights returns a weighted rule's weights with 0 for each priority
+// of rt the rule has no weight for (one added since the rule was published).
+// Other rules keep their weights as they are.
+func completeWeights(rule domain.DeriveRule, rt domain.RecordType) map[string]float64 {
+	if rule.Op != domain.OpDailyOpenWeighted {
+		return rule.Weights
+	}
+	out := make(map[string]float64, len(rule.Weights)+1)
+	for p, w := range rule.Weights {
+		out[p] = w
+	}
+	for _, p := range rt.AllPriorities() {
+		if _, ok := out[p]; !ok {
+			out[p] = 0
+		}
+	}
+	return out
+}
+
+// knownWeights returns the weights of the priorities rt lists. A weight for
+// a priority rt no longer has weighs only stored records that still carry it.
+func knownWeights(weights map[string]float64, rt domain.RecordType) map[string]float64 {
+	if weights == nil {
+		return nil
+	}
+	known := map[string]bool{}
+	for _, p := range rt.AllPriorities() {
+		known[p] = true
+	}
+	out := make(map[string]float64, len(weights))
+	for p, w := range weights {
+		if known[p] {
+			out[p] = w
+		}
+	}
+	return out
+}
+
+// DeriveWarnings lists, in plain language, what derivation works around in
+// m's rule because rt changed after the rule was checked: a priority with no
+// weight counts as 0, and a field rt no longer has never matches. A measure
+// without a derive rule, or for another record type, has none.
+func DeriveWarnings(m domain.Measure, rt domain.RecordType) []string {
+	if m.Derive == nil || m.Derive.RecordType != rt.ID {
+		return nil
+	}
+	rule := *m.Derive
+	name := m.Name
+	if name == "" {
+		name = m.Key
+	}
+	var out []string
+	if rule.Op == domain.OpDailyOpenWeighted {
+		for _, p := range rt.AllPriorities() {
+			if _, ok := rule.Weights[p]; ok {
+				continue
+			}
+			if p == domain.PriorityNone {
+				out = append(out, fmt.Sprintf("Records with no priority have no weight in %s, so they count as 0. Add a weight in the methodology.", name))
+				continue
+			}
+			out = append(out, fmt.Sprintf("%s has no weight in %s, so it counts as 0. Add a weight in the methodology.", p, name))
+		}
+	}
+	if _, unknown, err := CompileWhereLenient(rule.Where, rt); err == nil {
+		for _, f := range unknown {
+			out = append(out, fmt.Sprintf("The condition in %s uses %q, which this record type no longer has, so that part never matches. Update the rule in the methodology.", name, f))
+		}
+	}
+	return out
+}
+
+// DeriveRefs lists the priorities and the fields or attributes rule uses,
+// each sorted and distinct: the priorities it weighs or compares with, and
+// the fields its condition, bucket, sum, and ages read.
+func DeriveRefs(rule domain.DeriveRule) (priorities, fields []string) {
+	fields, priorities = WhereRefs(rule.Where)
+	for p := range rule.Weights {
+		if !slices.Contains(priorities, p) {
+			priorities = append(priorities, p)
+		}
+	}
+	for _, f := range []string{rule.BucketBy, rule.Field, rule.AgeFrom, rule.AgeTo} {
+		if f != "" && !slices.Contains(fields, f) {
+			fields = append(fields, f)
+		}
+	}
+	slices.Sort(priorities)
+	slices.Sort(fields)
+	return priorities, fields
 }
 
 // trackedFrom returns the first day of rt's earliest tracked-from month

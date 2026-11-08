@@ -19,6 +19,9 @@ const (
 	codeNotImplemented = "not_implemented"
 	codeTooLarge       = "too_large"
 	codeInternal       = "internal"
+	// Records apply conflicts the client handles differently.
+	codeAlreadyApplied   = "already_applied"
+	codePreviewOutOfDate = "preview_out_of_date"
 )
 
 // detail is one validation problem; path looks like `levels[0].id`.
@@ -65,6 +68,14 @@ func notFound(msg string) *apiError {
 
 func conflict(msg string) *apiError {
 	return &apiError{status: http.StatusConflict, code: codeConflict, message: msg}
+}
+
+func alreadyApplied(msg string) *apiError {
+	return &apiError{status: http.StatusConflict, code: codeAlreadyApplied, message: msg}
+}
+
+func previewOutOfDate(msg string) *apiError {
+	return &apiError{status: http.StatusConflict, code: codePreviewOutOfDate, message: msg}
 }
 
 func tooLarge(msg string) *apiError {

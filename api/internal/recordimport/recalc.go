@@ -3,7 +3,9 @@ package recordimport
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"math"
+	"slices"
 	"sort"
 
 	"opsvision/internal/domain"
@@ -201,14 +203,39 @@ func isDerived(m domain.Measure) bool { return m.Source == domain.MeasureDerived
 // derived is every derived value by slot.
 type derived map[CellRef]records.Derived
 
+// measurePeriod names one measure in one period.
+type measurePeriod struct {
+	measureKey string
+	p          period.Period
+}
+
+// deriveNotes is what derivation reports beside the values: plain-language
+// warnings, and the measures and periods whose values could not be derived
+// (their stored points are left as they are).
+type deriveNotes struct {
+	warnings []string
+	failed   map[measurePeriod]bool
+}
+
+func (n *deriveNotes) warn(msg string) {
+	if !slices.Contains(n.warnings, msg) {
+		n.warnings = append(n.warnings, msg)
+	}
+}
+
+func (n deriveNotes) failedAt(k CellRef) bool { return n.failed[measurePeriod{k.MeasureKey, k.Period}] }
+
 // deriveAll derives every derived measure for each month of the span, and for
 // each quarter, half and year containing one of those months at which a metric
-// using the measure reports, each under its period's version.
-func (w *world) deriveAll() (derived, error) {
+// using the measure reports, each under its period's version. A measure that
+// cannot be derived is logged and noted, gets no values, and does not stop
+// the others.
+func (w *world) deriveAll() (derived, deriveNotes) {
 	out := derived{}
+	notes := deriveNotes{failed: map[measurePeriod]bool{}}
 	from, to, ok := w.span()
 	if !ok {
-		return out, nil
+		return out, notes
 	}
 	var periods []period.Period
 	seen := map[period.Period]bool{}
@@ -227,6 +254,7 @@ func (w *world) deriveAll() (derived, error) {
 
 	type group struct {
 		m       domain.Measure
+		version string
 		periods []period.Period
 	}
 	groups := map[string]*group{}
@@ -247,7 +275,7 @@ func (w *world) deriveAll() (derived, error) {
 			gk := v.ID + "\x00" + m.Key
 			g, ok := groups[gk]
 			if !ok {
-				g = &group{m: m}
+				g = &group{m: m, version: v.Name}
 				groups[gk] = g
 				order = append(order, gk)
 			}
@@ -257,15 +285,32 @@ func (w *world) deriveAll() (derived, error) {
 	in := w.deriveInput()
 	for _, gk := range order {
 		g := groups[gk]
+		if i := slices.IndexFunc(w.types, func(rt domain.RecordType) bool { return rt.ID == g.m.Derive.RecordType }); i >= 0 {
+			for _, msg := range records.DeriveWarnings(g.m, w.types[i]) {
+				notes.warn(msg)
+			}
+		}
 		vals, err := records.Derive(in, g.m, g.periods)
 		if err != nil {
-			return nil, err
+			slog.Warn("recordimport: a derived measure could not be derived", "measure", g.m.Key, "version", g.version, "err", err)
+			for _, p := range g.periods {
+				notes.failed[measurePeriod{g.m.Key, p}] = true
+			}
+			notes.warn(fmt.Sprintf("We couldn't work out %s from records, so its values stay as they are. Check its rule in the methodology.", measureName(g.m)))
+			continue
 		}
 		for _, d := range vals {
 			out[CellRef{d.MeasureKey, d.SubjectID, d.Period}] = d
 		}
 	}
-	return out, nil
+	return out, notes
+}
+
+func measureName(m domain.Measure) string {
+	if m.Name != "" {
+		return m.Name
+	}
+	return m.Key
 }
 
 // reportsAt reports whether a measure gets values at grain g: always for
@@ -300,9 +345,10 @@ func refOf(dp domain.DataPoint) CellRef { return CellRef{dp.MeasureKey, dp.Subje
 // writesFor returns the writes that bring the stored points cur to the
 // derived values want, skipping locked periods. A slot whose point did not
 // come from records keeps it unless use lists the slot. A records point no
-// longer derived is deleted. Writes are unconditional, ordered by period,
+// longer derived is deleted, unless its measure could not be derived for the
+// period (notes.failed). Writes are unconditional, ordered by period,
 // measure, then subject.
-func writesFor(want derived, cur map[CellRef]domain.DataPoint, locked func(period.Period) bool, use map[CellRef]bool) []store.DataWrite {
+func writesFor(want derived, notes deriveNotes, cur map[CellRef]domain.DataPoint, locked func(period.Period) bool, use map[CellRef]bool) []store.DataWrite {
 	var out []store.DataWrite
 	for k, d := range want {
 		if locked(k.Period) {
@@ -323,7 +369,7 @@ func writesFor(want derived, cur map[CellRef]domain.DataPoint, locked func(perio
 		})
 	}
 	for k, dp := range cur {
-		if _, ok := want[k]; ok || dp.Source != domain.SourceRecords || locked(k.Period) {
+		if _, ok := want[k]; ok || dp.Source != domain.SourceRecords || locked(k.Period) || notes.failedAt(k) {
 			continue
 		}
 		out = append(out, store.DataWrite{
@@ -390,13 +436,10 @@ func Recalculate(ctx context.Context, st store.Store, tenant domain.Tenant, scor
 	if err != nil {
 		return nil, err
 	}
-	want, err := w.deriveAll()
-	if err != nil {
-		return nil, err
-	}
+	want, notes := w.deriveAll()
 	pts, _, err := st.ListData(ctx, tenant.ID, scorecardID, w.dataYears())
 	if err != nil {
 		return nil, err
 	}
-	return writesFor(want, pointsBySlot(pts), locked, useSet(use)), nil
+	return writesFor(want, notes, pointsBySlot(pts), locked, useSet(use)), nil
 }

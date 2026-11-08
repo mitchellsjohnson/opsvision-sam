@@ -36,6 +36,10 @@ const auditChannel = "import"
 // than one subject.
 const ProblemAmbiguousSubject = "ambiguous_subject"
 
+// ErrAlreadyApplied is returned by Apply for a plan whose snapshot is already
+// stored. It wraps store.ErrConflict.
+var ErrAlreadyApplied = fmt.Errorf("the plan was already applied: %w", store.ErrConflict)
+
 // Hooks for tests.
 var (
 	now   = func() time.Time { return time.Now().UTC() }
@@ -688,14 +692,8 @@ func Build(ctx context.Context, st store.Store, tenant domain.Tenant, scorecardI
 		after.types[ti] = nt
 	}
 
-	wantBefore, err := before.deriveAll()
-	if err != nil {
-		return Plan{}, err
-	}
-	wantAfter, err := after.deriveAll()
-	if err != nil {
-		return Plan{}, err
-	}
+	wantBefore, _ := before.deriveAll()
+	wantAfter, notes := after.deriveAll()
 	years := slices.Compact(slices.Sorted(slices.Values(append(before.dataYears(), after.dataYears()...))))
 	pts, ovs, err := st.ListData(ctx, tenant.ID, scorecardID, years)
 	if err != nil {
@@ -703,7 +701,7 @@ func Build(ctx context.Context, st store.Store, tenant domain.Tenant, scorecardI
 	}
 	cur := pointsBySlot(pts)
 	use := useSet(ans.UseRecords)
-	p.Writes = writesFor(wantAfter, cur, func(period.Period) bool { return false }, use)
+	p.Writes = writesFor(wantAfter, notes, cur, func(period.Period) bool { return false }, use)
 
 	p.Story, err = buildStory(storyInput{
 		tenant: tenant, before: before, after: &after, data: pts, overrides: ovs, cur: cur, use: use,
@@ -712,8 +710,26 @@ func Build(ctx context.Context, st store.Store, tenant domain.Tenant, scorecardI
 	if err != nil {
 		return Plan{}, err
 	}
-	p.Story.NothingChanged = len(p.Revisions) == 0 && len(p.Writes) == 0
+	p.Story.Warnings = notes.warnings
+	prev, hasPrev := lastUpload(before.snapshots[rt.ID], t.Source)
+	if hasPrev {
+		p.Story.PreviousAsOf = &prev
+	}
+	laterDate := hasPrev && prev.Before(asOf)
+	p.Story.SameRecords = len(p.Revisions) == 0 && laterDate
+	p.Story.NothingChanged = len(p.Revisions) == 0 && len(p.Writes) == 0 && !laterDate
 	return p, nil
+}
+
+// lastUpload is the as-of date of the newest snapshot from source, and
+// false when there is none. snaps are newest as-of first.
+func lastUpload(snaps []domain.Snapshot, source string) (domain.Date, bool) {
+	for _, s := range snaps {
+		if s.Source == source {
+			return s.AsOf, true
+		}
+	}
+	return domain.Date{}, false
 }
 
 func countsMap(c Counts) map[string]int {
@@ -776,12 +792,14 @@ func mergeRevisions(recs []domain.Record, revs []store.RecordRevisionWrite) []do
 // Apply stores a plan built with ans: in order, the shared units (each
 // "<Parent name> (shared)" child takes over its parent's source keys), the
 // answered source keys, the record type's tracked-from month when its
-// source has none, the snapshot with its revisions, and the derived values
-// recalculated from the stored records (typed values are kept unless
-// ans.UseRecords lists them). It then appends one audit entry, records.import,
+// source has none, the snapshot with its revisions, and the derived values of
+// every scorecard of the tenant recalculated from the stored records (typed
+// values are kept unless ans.UseRecords, which names slots of scorecardID,
+// lists them). It then appends one audit entry, records.import,
 // with the counts. A source key another subject already holds is refused
-// before anything is written. Applying the same plan twice conflicts at the
-// snapshot (store.ErrConflict); the org writes before it are idempotent.
+// before anything is written. Applying the same plan twice fails at the
+// snapshot with ErrAlreadyApplied (a store.ErrConflict); the org writes
+// before it are idempotent. Other conflicts are races with an edit.
 func Apply(ctx context.Context, st store.Store, tenant domain.Tenant, scorecardID string, p Plan, ans Answers, actor string) error {
 	if p.Snapshot.ID == "" {
 		return errors.New("apply plan: the plan has no snapshot")
@@ -871,25 +889,49 @@ func Apply(ctx context.Context, st store.Store, tenant domain.Tenant, scorecardI
 		sn.Counts = countsMap(p.Counts)
 	}
 	if err := st.ApplySnapshot(ctx, tenant.ID, sn, p.Revisions); err != nil {
+		if errors.Is(err, store.ErrConflict) {
+			return fmt.Errorf("apply plan: snapshot %s: %w", sn.ID, ErrAlreadyApplied)
+		}
 		return fmt.Errorf("apply plan: saving snapshot %s: %w", sn.ID, err)
 	}
 
-	writes, err := Recalculate(ctx, st, tenant, scorecardID, func(period.Period) bool { return false }, ans.UseRecords)
+	// Records belong to the tenant, so every scorecard's derived values move.
+	// The typed slots the admin chose records for are the previewed
+	// scorecard's.
+	cards, err := st.ListScorecards(ctx, tenant.ID)
 	if err != nil {
-		return fmt.Errorf("apply plan: recalculating derived values: %w", err)
+		return err
 	}
-	for i := range writes {
-		writes[i].Point.EnteredBy, writes[i].Point.EnteredAt = actor, at
-	}
-	if len(writes) > 0 {
-		if _, err := st.PutDataPoints(ctx, tenant.ID, scorecardID, writes); err != nil {
-			return fmt.Errorf("apply plan: saving derived values: %w", err)
+	ids := []string{scorecardID}
+	for _, sc := range cards {
+		if sc.ID != scorecardID {
+			ids = append(ids, sc.ID)
 		}
+	}
+	written := 0
+	for _, id := range ids {
+		var use []CellRef
+		if id == scorecardID {
+			use = ans.UseRecords
+		}
+		writes, err := Recalculate(ctx, st, tenant, id, func(period.Period) bool { return false }, use)
+		if err != nil {
+			return fmt.Errorf("apply plan: recalculating derived values of scorecard %s: %w", id, err)
+		}
+		for i := range writes {
+			writes[i].Point.EnteredBy, writes[i].Point.EnteredAt = actor, at
+		}
+		if len(writes) > 0 {
+			if _, err := st.PutDataPoints(ctx, tenant.ID, id, writes); err != nil {
+				return fmt.Errorf("apply plan: saving derived values of scorecard %s: %w", id, err)
+			}
+		}
+		written += len(writes)
 	}
 
 	counts := countsMap(p.Counts)
 	counts["revisions"] = len(p.Revisions)
-	counts["dataPoints"] = len(writes)
+	counts["dataPoints"] = written
 	after, err := json.Marshal(counts)
 	if err != nil {
 		return err
