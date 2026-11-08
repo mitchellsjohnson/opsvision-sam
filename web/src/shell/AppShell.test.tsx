@@ -20,7 +20,7 @@ function shell(route = '/scorecards/sc-main?period=2026-M10', auth = testAuth())
   )
 }
 
-const ADMIN_LINKS = ['Org', 'Items', 'Members', 'Methodology', 'Import']
+const ADMIN_LINKS = ['Org', 'Items', 'Members', 'Methodology', 'Import', 'Record types', 'Templates']
 
 describe('AppShell', () => {
   it('shows the admin navigation to admins', async () => {

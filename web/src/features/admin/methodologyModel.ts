@@ -8,6 +8,7 @@ export type Band = Schemas['Band']
 export type ScaleStep = Schemas['ScaleStep']
 export type Category = Schemas['Category']
 export type Measure = Schemas['Measure']
+export type DeriveRule = Schemas['DeriveRule']
 export type StatusRule = Schemas['StatusRule']
 export type RuleType = Schemas['RuleType']
 

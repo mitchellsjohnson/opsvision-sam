@@ -17,6 +17,8 @@ const ADMIN_LINKS = [
   { to: '/admin/members', label: 'Members' },
   { to: '/admin/methodology', label: 'Methodology' },
   { to: '/admin/import', label: 'Import' },
+  { to: '/admin/record-types', label: 'Record types' },
+  { to: '/admin/templates', label: 'Templates' },
 ]
 
 function navClass({ isActive }: { isActive: boolean }) {

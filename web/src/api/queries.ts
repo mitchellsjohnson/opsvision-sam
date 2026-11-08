@@ -1,4 +1,4 @@
-import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
+import { keepPreviousData, useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ViewRequest } from '../lib/period'
 import { apiErrorFromResponse } from './errors'
 import type { components } from './schema'
@@ -34,6 +34,10 @@ export type RecordsInspectResult = Schemas['RecordsInspectResult']
 export type RecordsPreviewRequest = Schemas['RecordsPreviewRequest']
 export type RecordsPreview = Schemas['RecordsPreview']
 export type ApplyImportRequest = Schemas['ApplyImportRequest']
+export type RecordsSampleRequest = Schemas['RecordsSampleRequest']
+export type RecordsSample = Schemas['RecordsSample']
+/** A saved template as listed; `lastUsed` is when it was last applied (RFC 3339), absent if never. */
+export type SavedTemplate = ImportTemplate & { lastUsed?: string; revision?: number }
 export interface OverrideCell {
   metricKey: string
   subjectId: string
@@ -56,6 +60,7 @@ export const keys = {
   diff: (sc: string, v: string, against: string) => ['diff', sc, v, against] as const,
   importTemplates: ['importTemplates'] as const,
   recordTypes: ['recordTypes'] as const,
+  recordsSample: (sc: string, body: RecordsSampleRequest) => ['recordsSample', sc, body] as const,
   history: (sc: string, measure: string, subject: string, period: string) =>
     ['history', sc, measure, subject, period] as const,
 }
@@ -428,7 +433,7 @@ export function useImportTemplates() {
   const api = useApi()
   return useQuery({
     queryKey: keys.importTemplates,
-    queryFn: async () => (await unwrap(api.GET('/import-templates'))).templates,
+    queryFn: async (): Promise<SavedTemplate[]> => (await unwrap(api.GET('/import-templates'))).templates,
   })
 }
 
@@ -483,11 +488,45 @@ export function useApplyImport() {
 
 // ---- Admin: records import --------------------------------------------------
 
-export function useRecordTypes() {
-  const api = useApi()
-  return useQuery({
+function recordTypesQuery(api: ReturnType<typeof useApi>) {
+  return {
     queryKey: keys.recordTypes,
     queryFn: async () => (await unwrap(api.GET('/record-types'))).recordTypes,
+  }
+}
+
+export function useRecordTypes(enabled = true) {
+  const api = useApi()
+  return useQuery({ ...recordTypesQuery(api), enabled })
+}
+
+/** Loads the record types (from the cache when there), for handlers that need them now. */
+export function useLoadRecordTypes(): () => Promise<RecordType[]> {
+  const api = useApi()
+  const queryClient = useQueryClient()
+  return () => queryClient.ensureQueryData(recordTypesQuery(api))
+}
+
+/** Creates (revision 0) or replaces a record type against the revision the page loaded. */
+export function usePutRecordType() {
+  const api = useApi()
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (body: RecordType) =>
+      unwrap(api.PUT('/record-types/{id}', { params: { path: { id: body.id } }, body })),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: keys.recordTypes }),
+  })
+}
+
+/** How many stored records a condition matches in a period, per product or team. */
+export function useRecordsSample(sc: string, body: RecordsSampleRequest, enabled = true) {
+  const api = useApi()
+  return useQuery({
+    queryKey: keys.recordsSample(sc, body),
+    enabled,
+    retry: false,
+    placeholderData: keepPreviousData,
+    queryFn: () => unwrap(api.POST('/scorecards/{sc}/records/sample', { params: { path: { sc } }, body })),
   })
 }
 

@@ -1,20 +1,25 @@
 import * as Dialog from '@radix-ui/react-dialog'
 import { useEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
-import { useBlocker } from 'react-router'
+import { Link, useBlocker } from 'react-router'
 import { ApiError, type ErrorDetail } from '../../api/errors'
 import {
   useFiscalYearStartMonth,
   useItemKinds,
+  useLoadRecordTypes,
   useMe,
   useOrgLevels,
+  useOrgUnits,
   usePutVersion,
+  useRecordTypes,
   useValidateVersion,
   type MethodologyVersion,
 } from '../../api/queries'
 import { currentMonth } from '../../lib/period'
+import { DeriveEditor, DeriveRuleEditor, newPresetChoice, type PresetChoice } from './DeriveEditor'
 import { DiffView } from './DiffView'
 import { MetricForm } from './MetricForm'
 import { PublishDialog } from './PublishDialog'
+import { applyPreset, presetKeys } from './presets'
 import { errorsFrom, NO_ERRORS, type FormErrors } from './adminModel'
 import {
   FieldMessages,
@@ -30,14 +35,25 @@ import {
   AGG_OPTIONS,
   atPath,
   contentOf,
+  describeUnder,
   draftFrom,
   fingerprint,
   metricIndex,
   newMetric,
   nextUid,
   type DraftState,
+  type Measure,
   type MetricRow,
 } from './methodologyModel'
+
+const SOURCE_OPTIONS = [
+  { value: 'entered', label: 'Entered' },
+  { value: 'derived', label: 'Derived from records' },
+]
+
+function plural(n: number, one: string, many: string) {
+  return `${n} ${n === 1 ? one : many}`
+}
 
 export interface DraftEditorProps {
   sc: string
@@ -87,6 +103,15 @@ export function DraftEditor({ sc, version, versions, onReload, onNotice }: Draft
   const put = usePutVersion(sc)
   const validate = useValidateVersion(sc)
   const statusScale = me.data?.tenant?.statusScale ?? []
+  const [ruleIndex, setRuleIndex] = useState<number | null>(null)
+  const [presetOpen, setPresetOpen] = useState(false)
+  const [preset, setPreset] = useState<PresetChoice | null>(null)
+  const recordTypes = useRecordTypes(presetOpen || ruleIndex !== null)
+  const loadRecordTypes = useLoadRecordTypes()
+  const units = useOrgUnits()
+  const knownValues = { subjectKey: [...new Set((units.data?.units ?? []).flatMap((u) => u.sourceKeys))].sort() }
+  const firstType = recordTypes.data?.[0]
+  if (presetOpen && !preset && firstType) setPreset(newPresetChoice(firstType))
 
   const [draft, setDraftState] = useState<DraftState>(() => draftFrom(version))
   const draftRef = useRef(draft)
@@ -240,6 +265,13 @@ export function DraftEditor({ sc, version, versions, onReload, onNotice }: Draft
   const metricFormHeading = useRef<HTMLHeadingElement>(null)
   const categoriesHeading = useRef<HTMLHeadingElement>(null)
   const measuresHeading = useRef<HTMLHeadingElement>(null)
+  const ruleHeading = useRef<HTMLHeadingElement>(null)
+  const presetHeading = useRef<HTMLHeadingElement>(null)
+  const measureLabel = (i: number) => {
+    const m = draft.measures[i]
+    return m && (m.name || m.key) ? m.name || m.key : `Measure ${i + 1}`
+  }
+  const ruleMeasure = ruleIndex !== null ? draft.measures[ruleIndex] : undefined
 
   function setCategories(categories: DraftState['categories']) {
     setProblems((p) => p.filter((e) => !e.path.startsWith('categories')))
@@ -247,7 +279,58 @@ export function DraftEditor({ sc, version, versions, onReload, onNotice }: Draft
   }
   function setMeasures(measures: DraftState['measures']) {
     setProblems((p) => p.filter((e) => !e.path.startsWith('measures')))
-    update({ ...draft, measures })
+    update({ ...draftRef.current, measures })
+  }
+
+  function setMeasure(i: number, m: Measure) {
+    setMeasures(draftRef.current.measures.map((x, j) => (j === i ? m : x)))
+  }
+
+  async function setSource(i: number, source: string) {
+    const m = draftRef.current.measures[i]
+    if (!m) return
+    if (source !== 'derived') {
+      const entered = { ...m }
+      delete entered.source
+      delete entered.derive
+      setMeasure(i, entered)
+      if (ruleIndex === i) setRuleIndex(null)
+      return
+    }
+    const types = await loadRecordTypes().catch(() => [])
+    const derive = m.derive ?? { recordType: types[0]?.id ?? '', op: 'count' as const, bucketBy: 'completedAt' }
+    setMeasure(i, { ...m, source: 'derived', derive })
+    openRule(i)
+  }
+
+  function openRule(i: number) {
+    setRuleIndex(i)
+    setTimeout(() => ruleHeading.current?.focus(), 0)
+  }
+
+  function addPreset() {
+    if (!preset) return
+    const d = draftRef.current
+    const deepest = [...(levels.data ?? [])].sort((a, b) => b.depth - a.depth)[0]
+    const { content } = applyPreset(contentOf(d), preset.preset, {
+      ...preset.params,
+      statusKeys: statusScale.map((s) => s.key),
+      reportedAt: deepest ? [{ kind: 'level', id: deepest.id }] : [],
+    })
+    const added = content.metrics.slice(d.metrics.length).map((metric) => ({ uid: nextUid(), isNew: true, metric }))
+    setProblems([])
+    update({ ...d, measures: content.measures, metrics: [...d.metrics, ...added] })
+    const newMeasures = content.measures.length - d.measures.length
+    const reused = presetKeys(preset.preset, preset.params).measures.length - newMeasures
+    const parts = [
+      ...(newMeasures > 0 ? [plural(newMeasures, 'measure', 'measures')] : []),
+      ...(added.length > 0 ? [plural(added.length, 'metric', 'metrics')] : []),
+    ]
+    const reusedText = reused > 0 ? `${plural(reused, 'existing measure now comes', 'existing measures now come')} from records.` : ''
+    setStatus([parts.length > 0 ? `Added ${parts.join(' and ')} to the draft.` : '', reusedText].filter(Boolean).join(' '))
+    setPresetOpen(false)
+    setPreset(null)
+    measuresHeading.current?.focus()
   }
 
   const selectedIndex = draft.metrics.findIndex((r) => r.uid === selected)
@@ -266,14 +349,23 @@ export function DraftEditor({ sc, version, versions, onReload, onNotice }: Draft
       const i = metricIndex(e.path) ?? 0
       return `${metricLabel(i)}: ${e.path.replace(/^metrics\[\d+\]\.?/, '')}${e.path.replace(/^metrics\[\d+\]\.?/, '') ? ': ' : ''}${e.message}`
     })
+  const deriveIndex = (path: string) => {
+    const m = /^measures\[(\d+)\]\.derive/.exec(path)
+    return m ? Number(m[1]) : undefined
+  }
   const unplaced = problems
     .filter(
       (e) =>
         metricIndex(e.path) === undefined &&
         !/^categories\[\d+\]\.id$/.test(e.path) &&
-        !/^measures\[\d+\]\.key$/.test(e.path),
+        !/^measures\[\d+\]\.key$/.test(e.path) &&
+        (ruleIndex === null || deriveIndex(e.path) !== ruleIndex),
     )
-    .map((e) => (e.path ? `${e.path}: ${e.message}` : e.message))
+    .map((e) => {
+      const i = deriveIndex(e.path)
+      if (i !== undefined) return `Rule for ${measureLabel(i)}: ${e.message}`
+      return e.path ? `${e.path}: ${e.message}` : e.message
+    })
 
   return (
     <div ref={formRef} className="space-y-8">
@@ -417,6 +509,7 @@ export function DraftEditor({ sc, version, versions, onReload, onNotice }: Draft
                 <th scope="col" className="pr-2 font-medium">Unit</th>
                 <th scope="col" className="pr-2 font-medium">Across org units</th>
                 <th scope="col" className="pr-2 font-medium">Across time</th>
+                <th scope="col" className="pr-2 font-medium">Source</th>
                 <th scope="col"><span className="sr-only">Actions</span></th>
               </tr>
             </thead>
@@ -426,6 +519,8 @@ export function DraftEditor({ sc, version, versions, onReload, onNotice }: Draft
                 const errId = `meas-${i}-key-err`
                 const set = (patch: Partial<typeof m>) =>
                   setMeasures(draft.measures.map((x, j) => (j === i ? { ...x, ...patch } : x)))
+                const derived = m.source === 'derived'
+                const ruleProblems = ruleIndex === i ? 0 : describeUnder(problems, `measures[${i}].derive`).length
                 return (
                   <tr key={i} className="align-top">
                     <td className="pr-2">
@@ -469,18 +564,48 @@ export function DraftEditor({ sc, version, versions, onReload, onNotice }: Draft
                         ))}
                       </select>
                     </td>
-                    <td>
-                      <button
-                        type="button"
-                        className={`${secondaryButton} mt-1`}
-                        aria-label={`Remove measure ${m.name || m.key || i + 1}`}
-                        onClick={() => {
-                          setMeasures(draft.measures.filter((_, j) => j !== i))
-                          measuresHeading.current?.focus()
-                        }}
+                    <td className="pr-2">
+                      <select
+                        aria-label={`Measure ${i + 1} source`}
+                        className={inputClass}
+                        value={derived ? 'derived' : 'entered'}
+                        onChange={(e) => void setSource(i, e.target.value)}
                       >
-                        Remove
-                      </button>
+                        {SOURCE_OPTIONS.map((o) => (
+                          <option key={o.value} value={o.value}>{o.label}</option>
+                        ))}
+                      </select>
+                      {ruleProblems > 0 && (
+                        <p className="mt-1 text-sm font-medium text-status-r">
+                          {plural(ruleProblems, 'problem', 'problems')} in the rule
+                        </p>
+                      )}
+                    </td>
+                    <td>
+                      <span className="mt-1 flex gap-1">
+                        {derived && (
+                          <button
+                            type="button"
+                            className={secondaryButton}
+                            aria-label={`Edit rule for ${measureLabel(i)}`}
+                            onClick={() => openRule(i)}
+                          >
+                            Edit rule
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          className={secondaryButton}
+                          aria-label={`Remove measure ${m.name || m.key || i + 1}`}
+                          onClick={() => {
+                            setMeasures(draft.measures.filter((_, j) => j !== i))
+                            setRuleIndex(null)
+                            measuresHeading.current?.focus()
+                          }}
+                        >
+                          Remove
+                        </button>
+                      </span>
                     </td>
                   </tr>
                 )
@@ -488,15 +613,108 @@ export function DraftEditor({ sc, version, versions, onReload, onNotice }: Draft
             </tbody>
           </table>
         </div>
-        <button
-          type="button"
-          className={secondaryButton}
-          onClick={() =>
-            setMeasures([...draft.measures, { key: '', name: '', unit: '', orgAgg: 'sum', timeAgg: 'sum' }])
-          }
-        >
-          Add measure
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            className={secondaryButton}
+            onClick={() =>
+              setMeasures([...draft.measures, { key: '', name: '', unit: '', orgAgg: 'sum', timeAgg: 'sum' }])
+            }
+          >
+            Add measure
+          </button>
+          <button
+            type="button"
+            className={secondaryButton}
+            onClick={() => {
+              setPresetOpen(true)
+              setTimeout(() => presetHeading.current?.focus(), 0)
+            }}
+          >
+            Add measures from records
+          </button>
+        </div>
+
+        {presetOpen && (
+          <section aria-labelledby="preset-form-h" className="space-y-3 rounded-lg border border-ink/20 p-4">
+            <h3 id="preset-form-h" ref={presetHeading} tabIndex={-1} className="text-base font-semibold">
+              Add measures from records
+            </h3>
+            <p className="text-sm text-ink/80">
+              Pick what to calculate and which records count. The measures, and a metric for them, are added to this
+              draft; nothing changes for scorecards until you publish it.
+            </p>
+            {recordTypes.isPending && <p role="status">Loading record types…</p>}
+            {recordTypes.error && (
+              <p role="alert" className="font-medium text-status-r">
+                Could not load record types: {recordTypes.error.message}
+              </p>
+            )}
+            {recordTypes.data && recordTypes.data.length === 0 && (
+              <p className="text-sm">
+                There are no record types yet. Add one under{' '}
+                <Link className="underline" to="/admin/record-types">
+                  Record types
+                </Link>
+                , or set one up from a file on the Import page.
+              </p>
+            )}
+            {preset && recordTypes.data && (
+              <DeriveEditor sc={sc} recordTypes={recordTypes.data} value={preset} onChange={setPreset} knownValues={knownValues} />
+            )}
+            <div className="flex gap-2">
+              <button type="button" className={primaryButton} disabled={!preset} onClick={addPreset}>
+                Add to draft
+              </button>
+              <button
+                type="button"
+                className={secondaryButton}
+                onClick={() => {
+                  setPresetOpen(false)
+                  setPreset(null)
+                  measuresHeading.current?.focus()
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          </section>
+        )}
+
+        {ruleMeasure && ruleIndex !== null && (
+          <section aria-labelledby="rule-form-h" className="space-y-3 rounded-lg border border-ink/20 p-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h3 id="rule-form-h" ref={ruleHeading} tabIndex={-1} className="text-base font-semibold">
+                Rule for {measureLabel(ruleIndex)}
+              </h3>
+              <button
+                type="button"
+                className={linkButton}
+                onClick={() => {
+                  setRuleIndex(null)
+                  measuresHeading.current?.focus()
+                }}
+              >
+                Close rule
+              </button>
+            </div>
+            {recordTypes.isPending && <p role="status">Loading record types…</p>}
+            {recordTypes.data && (
+              <DeriveRuleEditor
+                key={ruleIndex}
+                sc={sc}
+                measure={ruleMeasure}
+                index={ruleIndex}
+                recordTypes={recordTypes.data}
+                errors={problems}
+                onChange={(m) => setMeasure(ruleIndex, m)}
+                onCheck={() => void check()}
+                checking={checking}
+                knownValues={knownValues}
+              />
+            )}
+          </section>
+        )}
       </Section>
 
       <Section id="metrics-h" title="Metrics" headingRef={metricsHeading}>

@@ -10,6 +10,8 @@ import { RequireAdmin } from './pages/RequireAdmin'
 import { ScorecardPage } from './features/scorecard/ScorecardPage'
 import { ImportPage } from './features/admin/ImportPage'
 import { MethodologyPage } from './features/admin/MethodologyPage'
+import { RecordTypesPage } from './features/admin/RecordTypesPage'
+import { TemplatesPage } from './features/admin/TemplatesPage'
 
 export function App() {
   return (
@@ -26,6 +28,8 @@ export function App() {
           <Route path="members" element={<MembersPage />} />
           <Route path="methodology" element={<MethodologyPage />} />
           <Route path="import" element={<ImportPage />} />
+          <Route path="record-types" element={<RecordTypesPage />} />
+          <Route path="templates" element={<TemplatesPage />} />
         </Route>
         <Route path="*" element={<NotFoundPage />} />
       </Route>
