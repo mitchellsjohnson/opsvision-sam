@@ -2594,8 +2594,12 @@ components:
         unitId: { $ref: '#/components/schemas/Id' }
     RecordsPreview:
       type: object
-      required: [counts, story, problems, unmatched, parents, newValues, missing, columnsAdded, columnsMissing]
+      required: [planId, counts, story, problems, unmatched, parents, newValues, missing, columnsAdded, columnsMissing]
       properties:
+        planId:
+          description: Identifies this preview's stored plan. Applying requires it, so only the preview on screen is applied.
+          allOf:
+            - $ref: '#/components/schemas/ServerId'
         counts: { $ref: '#/components/schemas/RecordCounts' }
         story: { $ref: '#/components/schemas/RecordStory' }
         problems:
@@ -2626,6 +2630,10 @@ components:
     ApplyImportRequest:
       type: object
       properties:
+        planId:
+          description: Required for a records import, as the `planId` of the preview being applied. A plan replaced by a later preview, or a missing one, fails with 409.
+          allOf:
+            - $ref: '#/components/schemas/ServerId'
         answers: { $ref: '#/components/schemas/RecordAnswers' }
         saveTemplate:
           type: object

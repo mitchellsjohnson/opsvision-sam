@@ -577,6 +577,9 @@ type ApplyImportRequest struct {
 	// "<name> (shared)" child.
 	Answers *RecordAnswers `json:"answers,omitempty"`
 
+	// PlanId Required for a records import, as the `planId` of the preview being applied. A plan replaced by a later preview, or a missing one, fails with 409.
+	PlanId *ServerId `json:"planId,omitempty"`
+
 	// SaveTemplate Save the template, with the answers' value maps and date order, under this ID and name.
 	SaveTemplate *struct {
 		// Id Client-supplied identifier.
@@ -1740,7 +1743,10 @@ type RecordsPreview struct {
 	// NewValues Raw values no map covers, by field.
 	NewValues map[string][]ValueCount `json:"newValues"`
 	Parents   []ParentMatch           `json:"parents"`
-	Problems  []RecordRowProblem      `json:"problems"`
+
+	// PlanId Identifies this preview's stored plan. Applying requires it, so only the preview on screen is applied.
+	PlanId   ServerId           `json:"planId"`
+	Problems []RecordRowProblem `json:"problems"`
 
 	// Story What an import changes on the scorecard, worst status changes first;
 	// `more` counts lines beyond the first 50. `lockedWaiting` is empty

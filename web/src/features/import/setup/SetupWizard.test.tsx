@@ -1,13 +1,13 @@
 import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { Link, Route, Routes, useLocation } from 'react-router'
+import { Link, Route, Routes, useLocation, useNavigate } from 'react-router'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { axe } from 'vitest-axe'
 import type { components } from '../../../api/schema'
 import { CSV_TYPE } from '../../../test/recordsFixtures'
 import { server } from '../../../test/server'
 import { renderApp } from '../../../test/utils'
-import { newWizardFake, wizardHandlers, wizardRequests, type WizardFake } from '../../../test/wizardFixtures'
+import { derivedEpicsVersions, newWizardFake, wizardHandlers, wizardRequests, type WizardFake } from '../../../test/wizardFixtures'
 import { SetupWizard } from './SetupWizard'
 
 type PreviewBody = components['schemas']['RecordsPreviewRequest']
@@ -26,6 +26,16 @@ beforeEach(() => {
 function Probe() {
   const l = useLocation()
   return <p data-testid="location">{l.pathname + l.search}</p>
+}
+
+/** The browser's Back button, for the memory router. */
+function BrowserBack() {
+  const navigate = useNavigate()
+  return (
+    <button type="button" onClick={() => void navigate(-1)}>
+      Browser back
+    </button>
+  )
 }
 
 const HEADINGS = {
@@ -49,6 +59,7 @@ async function renderWizard(route = '/admin/import/setup?upload=imp-1') {
         <Route path="/admin/templates" element={<h1>Templates</h1>} />
       </Routes>
       <Link to="/admin/org">Somewhere else</Link>
+      <BrowserBack />
       <Probe />
     </>,
     { route },
@@ -127,6 +138,28 @@ describe('SetupWizard: steps', () => {
     expect((screen.getByRole('combobox', { name: 'Title' }) as HTMLSelectElement).value).toBe('Status')
   })
 
+  it('goes back to a step that no longer passes when browser Back skips ahead', async () => {
+    const { user } = await renderWizard()
+    await walkTo(user, 'values')
+    await user.click(screen.getByRole('button', { name: 'Back' }))
+    await onStep('columns')
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Product or team' }), '')
+    // Browser Back returns to the values step's entry in the history.
+    await user.click(screen.getByRole('button', { name: 'Browser back' }))
+
+    expect(await onStep('columns')).toBeTruthy()
+    const product = screen.getByRole('combobox', { name: 'Product or team' })
+    expect(product.getAttribute('aria-invalid')).toBe('true')
+    expect(screen.getByText(/Choose the column with the product or team/)).toBeTruthy()
+    await waitFor(() => expect(document.activeElement).toBe(product))
+    expect(screen.getByTestId('location').textContent).toBe('/admin/import/setup?upload=imp-1&step=columns')
+
+    // Fixed, the admin carries on as usual.
+    await user.selectOptions(product, 'Product')
+    expect(screen.queryByText(/Choose the column with the product or team/)).toBeNull()
+    await next(user, 'values')
+  })
+
   it('asks before leaving with progress, and stays when asked to', async () => {
     const { user } = await renderWizard()
     await walkTo(user, 'columns')
@@ -196,14 +229,37 @@ describe('SetupWizard: values', () => {
   it('shows each value with its row count and suggested meaning', async () => {
     const { user } = await renderWizard()
     await walkTo(user, 'values')
-    const meaning = (name: RegExp) => (screen.getByRole('combobox', { name }) as HTMLSelectElement).value
-    expect(meaning(/“High” · 40 rows/)).toBe('P2')
-    expect(meaning(/“Highest” · 12 rows/)).toBe('P1')
-    expect(meaning(/“Medium” · 30 rows/)).toBe('P3')
-    expect(meaning(/“Low” · 9 rows/)).toBe('P4')
-    expect(meaning(/Blank · 3 rows/)).toBe('none')
-    expect(meaning(/“Won’t Do” · 4 rows/)).toBe('cancelled')
-    expect(meaning(/“In Review” · 10 rows/)).toBe('open')
+    const priority = within(screen.getByRole('group', { name: 'Priority' }))
+    const status = within(screen.getByRole('group', { name: 'Open or closed' }))
+    const meaning = (group: typeof priority, name: RegExp) => (group.getByRole('combobox', { name }) as HTMLSelectElement).value
+    expect(meaning(priority, /“High” · 40 rows/)).toBe('P2')
+    expect(meaning(priority, /“Highest” · 12 rows/)).toBe('P1')
+    expect(meaning(priority, /“Medium” · 30 rows/)).toBe('P3')
+    expect(meaning(priority, /“Low” · 9 rows/)).toBe('P4')
+    expect(meaning(priority, /Blank · 3 rows/)).toBe('none')
+    expect(meaning(status, /“Won’t Do” · 4 rows/)).toBe('cancelled')
+    expect(meaning(status, /“In Review” · 10 rows/)).toBe('open')
+  })
+
+  it('lists a yes/no custom field’s values with counts and a yes/no meaning', async () => {
+    const { user } = await renderWizard()
+    await walkTo(user, 'values')
+    const field = within(screen.getByRole('group', { name: 'Customer ticket' }))
+    const select = (name: RegExp) => field.getByRole('combobox', { name }) as HTMLSelectElement
+    expect(select(/“yes” · 1 row/).value).toBe('true')
+    expect(select(/Blank · 3 rows/).value).toBe('false')
+    expect(select(/“Linked” · 1 row/).value).toBe('')
+    expect(within(select(/“Linked” · 1 row/)).getAllByRole('option').map((o) => o.textContent)).toEqual(['Choose what it means', 'Yes', 'No'])
+    await user.selectOptions(select(/“Linked” · 1 row/), 'true')
+
+    await user.click(screen.getByRole('radio', { name: 'March 4 (month first)' }))
+    await walkToPreviewFrom(user, 'products')
+    await waitFor(() => expect(previews().length).toBeGreaterThan(0))
+    expect(previews().at(-1)?.template?.attributes?.customerTicket).toMatchObject({
+      column: 'Customer ticket',
+      default: 'false',
+      map: { Linked: 'true', yes: 'yes' },
+    })
   })
 
   it('asks the ambiguous date question once and sends the answer as the date order', async () => {
@@ -285,6 +341,41 @@ describe('SetupWizard: calculate', () => {
     expect(previews('imp-2').at(-1)).toMatchObject({ scorecardId: 'sc-main', draftVersionId: 'ver-11' })
   })
 
+  it('shows measures already derived by the same rule as "Already calculated", with no draft, and they update on Apply', async () => {
+    fake.versions = derivedEpicsVersions('same')
+    const { user } = await renderWizard('/admin/import/setup?upload=imp-2')
+    await walkTo(user, 'calculate')
+    expect(screen.queryByRole('checkbox', { name: 'On-time delivery' })).toBeNull()
+    expect(screen.getByText('Already calculated')).toBeTruthy()
+    expect(screen.getByText(/Epics committed and Epics delivered on time already come from records/)).toBeTruthy()
+
+    await next(user, 'preview')
+    await screen.findByRole('heading', { name: 'What changes on the scorecard' })
+    expect(previews('imp-2').at(-1)?.draftVersionId).toBeUndefined()
+    expect(wizardRequests(fake, 'POST', '/scorecards/sc-main/versions')).toHaveLength(0)
+    await user.click(screen.getByRole('button', { name: 'Apply' }))
+    expect(await screen.findByText('Your epics are in. 12 metrics updated.')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Publish now' })).toBeNull()
+  })
+
+  it('does not preselect measures derived by another rule, and says what choosing it adds', async () => {
+    fake.versions = derivedEpicsVersions('other')
+    const { user } = await renderWizard('/admin/import/setup?upload=imp-2')
+    await walkTo(user, 'calculate')
+    const onTime = screen.getByRole('checkbox', { name: 'On-time delivery' }) as HTMLInputElement
+    expect(onTime.checked).toBe(false)
+    expect(
+      screen.getByText(
+        'Your methodology already calculates Epics committed and Epics delivered on time another way. Choosing this adds separate measures beside them.',
+      ),
+    ).toBeTruthy()
+    expect(screen.queryByText(/Uses your measures/)).toBeNull()
+
+    await next(user, 'preview')
+    await waitFor(() => expect(previews('imp-2').length).toBeGreaterThan(0))
+    expect(wizardRequests(fake, 'POST', '/scorecards/sc-main/versions')).toHaveLength(0)
+  })
+
   it('previews without a draft when nothing is chosen', async () => {
     const { user } = await renderWizard('/admin/import/setup?upload=imp-2')
     await walkTo(user, 'calculate')
@@ -313,6 +404,7 @@ describe('SetupWizard: preview and apply', () => {
     const apply = wizardRequests(fake, 'POST', '/imports/imp-1/apply')
     expect(apply).toHaveLength(1)
     expect(apply[0]?.body).toEqual({
+      planId: fake.plans['imp-1'],
       answers: previews().at(-1)?.answers,
       saveTemplate: { id: 'defects-export-2', name: 'Defects export 2' },
     } satisfies ApplyBody)

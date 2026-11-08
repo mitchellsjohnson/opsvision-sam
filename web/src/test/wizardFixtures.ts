@@ -27,7 +27,7 @@ export function defectsInspection(): RecordsInspectResult {
         ['CHK-101', 'Refund total rounds', 'Checkout Svc', 'High', 'Open', '03/04/2026', '', '', 'yes'],
         ['CHK-102', 'Login loops forever', 'Identity', 'Highest', 'Done', '03/05/2026', '03/09/2026', '04/01/2026', ''],
         ['BIL-7', 'Invoice PDF is blank', 'Billing', 'Medium', 'Won’t Do', '03/06/2026', '03/07/2026', '', ''],
-        ['ANL-3', 'Chart legend overlaps', 'Analytics', 'Low', 'In Review', '03/07/2026', '', '', 'yes'],
+        ['ANL-3', 'Chart legend overlaps', 'Analytics', 'Low', 'In Review', '03/07/2026', '', '', 'Linked'],
         ['PAY-9', 'Card retry fails', 'Commerce', 'High', 'Closed', '03/08/2026', '03/10/2026', '', ''],
       ],
       suggestedType: 'defect',
@@ -217,6 +217,21 @@ export function wizardVersions(): MethodologyVersion[] {
   ]
 }
 
+/**
+ * The published methodology with the epics measures already derived from
+ * records: by On-time delivery's own rule (`same`), or by another rule.
+ */
+export function derivedEpicsVersions(rule: 'same' | 'other'): MethodologyVersion[] {
+  const versions = wizardVersions()
+  const content = versions[0]!.content
+  const where = rule === 'other' ? { where: "category == 'feature'" } : {}
+  content.measures = [
+    { ...content.measures[0]!, source: 'derived', derive: { recordType: 'epic', op: 'commitments', outcome: 'resolved', ...where } },
+    { ...content.measures[1]!, source: 'derived', derive: { recordType: 'epic', op: 'commitments', outcome: 'met', ...where } },
+  ]
+  return versions
+}
+
 export interface WizardFake {
   recordTypes: RecordType[]
   templates: ImportTemplate[]
@@ -224,6 +239,8 @@ export interface WizardFake {
   /** Inspect answers by import ID. */
   inspections: Record<string, RecordsInspectResult>
   preview: (body: RecordsPreviewRequest) => RecordsPreview
+  /** The planId of each import's latest preview. */
+  plans: Record<string, string>
   requests: RecordedRequest[]
 }
 
@@ -234,6 +251,7 @@ export function newWizardFake(): WizardFake {
     versions: wizardVersions(),
     inspections: { 'imp-1': defectsInspection(), 'imp-2': epicsInspection(), 'imp-9': defectsInspection() },
     preview: () => setupPreview(),
+    plans: {},
     requests: [],
   }
 }
@@ -251,6 +269,7 @@ export function wizardHandlers(fake: WizardFake) {
   }
   const V = `${API}/v1/scorecards/sc-main/versions`
   let uploads = 0
+  let plans = 0
   return [
     http.get(`${API}/v1/org/units`, () => HttpResponse.json({ units: acmeUnits })),
     http.get(`${API}/v1/org/levels`, () =>
@@ -296,12 +315,22 @@ export function wizardHandlers(fake: WizardFake) {
         : HttpResponse.json({ error: { code: 'not_found', message: 'import not found' } }, { status: 404 })
     }),
     http.post(`${API}/v1/imports/:id/records-preview`, async ({ request, params }) => {
-      const body = (await record(request, `/imports/${String(params.id)}/records-preview`)) as RecordsPreviewRequest
-      return HttpResponse.json(fake.preview(body))
+      const id = String(params.id)
+      const body = (await record(request, `/imports/${id}/records-preview`)) as RecordsPreviewRequest
+      const planId = `plan-${id}-${++plans}`
+      fake.plans[id] = planId
+      return HttpResponse.json({ ...fake.preview(body), planId })
     }),
     http.post(`${API}/v1/imports/:id/apply`, async ({ request, params }) => {
       const id = String(params.id)
-      await record(request, `/imports/${id}/apply`)
+      const body = (await record(request, `/imports/${id}/apply`)) as { planId?: string } | undefined
+      // As in the API: only the latest preview's plan can be applied.
+      if (body?.planId !== fake.plans[id]) {
+        return HttpResponse.json(
+          { error: { code: 'conflict', message: 'preview is out of date: this is not the latest preview of the import; preview the import again' } },
+          { status: 409 },
+        )
+      }
       return HttpResponse.json({
         id,
         status: 'applied',

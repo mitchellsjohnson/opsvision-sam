@@ -317,6 +317,7 @@ describe('RecordsImport: needs your input', () => {
     await user.click(apply)
     await waitFor(() => expect(requestsTo(fake, 'POST', '/imports/imp-1/apply')).toHaveLength(1))
     expect(requestsTo(fake, 'POST', '/imports/imp-1/apply')[0]?.body).toEqual({
+      planId: fake.plans['imp-1'],
       answers: { sourceKeys: { 'Checkout Svc': 'checkout' }, valueMaps: { priority: { Urgent: 'P1' } } },
       saveTemplate: { id: 'defects-export', name: 'Defects export' },
     } satisfies ApplyBody)
@@ -350,8 +351,9 @@ describe('RecordsImport: apply', () => {
     await waitFor(() => expect(requestsTo(fake, 'POST', `/imports/${importIdOf('epics.xlsx')}/apply`)).toHaveLength(1))
     const applies = fake.requests.filter((r) => r.path.endsWith('/apply'))
     expect(applies.map((r) => r.path)).toEqual([`/imports/${importIdOf('defects.csv')}/apply`, `/imports/${importIdOf('epics.xlsx')}/apply`])
-    expect(applies[0]?.body).toEqual({ answers: { sourceKeys: { 'Checkout Svc': 'checkout' } } })
+    expect(applies[0]?.body).toEqual({ planId: fake.plans[importIdOf('defects.csv')], answers: { sourceKeys: { 'Checkout Svc': 'checkout' } } })
     expect(applies[1]?.body).toEqual({
+      planId: fake.plans[importIdOf('epics.xlsx')],
       answers: { useRecords: [{ measureKey: 'epics_on_time', subjectId: 'billing', period: '2026-M10' }] },
     })
     const result = await screen.findByRole('status', { name: 'Import result' })
@@ -385,6 +387,7 @@ describe('RecordsImport: apply', () => {
     await user.click(apply)
     await waitFor(() => expect(requestsTo(fake, 'POST', '/imports/imp-setup/apply')).toHaveLength(1))
     expect(requestsTo(fake, 'POST', '/imports/imp-setup/apply')[0]?.body).toEqual({
+      planId: fake.plans['imp-setup'],
       answers: {},
       saveTemplate: { id: 'support-tickets', name: 'Support tickets' },
     } satisfies ApplyBody)
@@ -412,6 +415,26 @@ describe('RecordsImport: apply', () => {
     expect(within(card('epics.xlsx')).queryByRole('alert')).toBeNull()
     expect(within(card('epics.xlsx')).queryByRole('button', { name: 'Try again' })).toBeNull()
     expect(within(card('epics.xlsx')).getByRole('status').textContent).toBe('')
+  })
+
+  it('applies only the plan of the preview on screen', async () => {
+    const { user } = await renderImportPage()
+    dropOn(dropZone(), [xlsx('epics.xlsx')])
+    await previewed('epics.xlsx')
+    const apply = screen.getByRole('button', { name: 'Apply' })
+    await waitFor(() => expect((apply as HTMLButtonElement).disabled).toBe(false))
+    const onScreen = fake.plans['imp-1']
+    // Another preview of the same import replaced the stored plan (another tab, or a late request).
+    fake.plans['imp-1'] = 'plan-elsewhere'
+    await user.click(apply)
+    expect(await within(card('epics.xlsx')).findByText(/This preview was out of date/)).toBeTruthy()
+    expect((requestsTo(fake, 'POST', '/imports/imp-1/apply')[0]?.body as ApplyBody).planId).toBe(onScreen)
+
+    await waitFor(() => expect(fake.plans['imp-1']).not.toBe('plan-elsewhere'))
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Apply' }) as HTMLButtonElement).disabled).toBe(false))
+    await user.click(screen.getByRole('button', { name: 'Apply' }))
+    expect(await within(card('epics.xlsx')).findByText('Applied: 7 new and 30 changed records.')).toBeTruthy()
+    expect((requestsTo(fake, 'POST', '/imports/imp-1/apply')[1]?.body as ApplyBody).planId).toBe(fake.plans['imp-1'])
   })
 
   it('does not preview an applied file when an answer was still waiting to be sent', async () => {
@@ -469,7 +492,7 @@ describe('RecordsImport: apply stays in step with the preview', () => {
 
     await user.click(screen.getByRole('button', { name: 'Apply' }))
     await waitFor(() => expect(requestsTo(fake, 'POST', '/imports/imp-1/apply')).toHaveLength(1))
-    expect(requestsTo(fake, 'POST', '/imports/imp-1/apply')[0]?.body).toEqual({ answers: { useRecords: [cell] } })
+    expect(requestsTo(fake, 'POST', '/imports/imp-1/apply')[0]?.body).toEqual({ planId: fake.plans['imp-1'], answers: { useRecords: [cell] } })
   })
 
   it('drops a typed value that was not chosen once the preview no longer lists it', async () => {
@@ -484,7 +507,7 @@ describe('RecordsImport: apply stays in step with the preview', () => {
     expect(within(region).queryByRole('heading', { name: 'Your typed numbers vs records' })).toBeNull()
     await user.click(screen.getByRole('button', { name: 'Apply' }))
     await waitFor(() => expect(requestsTo(fake, 'POST', '/imports/imp-1/apply')).toHaveLength(1))
-    expect(requestsTo(fake, 'POST', '/imports/imp-1/apply')[0]?.body).toEqual({ answers: {} })
+    expect(requestsTo(fake, 'POST', '/imports/imp-1/apply')[0]?.body).toEqual({ planId: fake.plans['imp-1'], answers: {} })
   })
 
   it('previews again for another scorecard, without the old scorecard’s choices', async () => {
@@ -508,7 +531,7 @@ describe('RecordsImport: apply stays in step with the preview', () => {
     expect((within(region).getByRole('checkbox', { name: /Use records for this month/ }) as HTMLInputElement).checked).toBe(false)
     await user.click(screen.getByRole('button', { name: 'Apply' }))
     await waitFor(() => expect(requestsTo(fake, 'POST', '/imports/imp-1/apply')).toHaveLength(1))
-    expect(requestsTo(fake, 'POST', '/imports/imp-1/apply')[0]?.body).toEqual({ answers: {} })
+    expect(requestsTo(fake, 'POST', '/imports/imp-1/apply')[0]?.body).toEqual({ planId: fake.plans['imp-1'], answers: {} })
   })
 })
 

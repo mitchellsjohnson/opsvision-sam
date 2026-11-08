@@ -82,8 +82,12 @@ export interface WizardState {
   columns: Record<string, string>
   /** The column each custom field comes from; empty for none. */
   attributes: Record<string, string>
-  /** What each raw value means; empty for not answered. The blank value is the key ''. */
-  maps: { priority: Record<string, string>; state: Record<string, string> }
+  /**
+   * What each raw value means; empty for not answered. The blank value is the key ''.
+   * `yesNo` holds, per yes/no custom field, only the meanings the admin chose
+   * (or the saved template had); other values read as suggestYesNo says.
+   */
+  maps: { priority: Record<string, string>; state: Record<string, string>; yesNo: Record<string, Record<string, string>> }
   /** OpsVision's suggested priority meanings, restored when a type change makes them valid again. */
   suggestions: Record<string, string>
   /** Layouts that read each date column, by header. */
@@ -164,8 +168,46 @@ export function chooseType(state: WizardState, id: string, types: readonly Recor
   const rt = id === NEW_TYPE ? undefined : types.find((t) => t.id === id)
   const attributes = attributeColumns(rt, headers, undefined)
   for (const key of Object.keys(attributes)) if (state.attributes[key]) attributes[key] = state.attributes[key]
-  const next = { ...state, recordType: id, attributes }
+  const yesNo = yesNoMaps(rt, state.base)
+  for (const key of Object.keys(yesNo)) if (state.maps.yesNo[key]) yesNo[key] = { ...state.maps.yesNo[key] }
+  const next = { ...state, recordType: id, attributes, maps: { ...state.maps, yesNo } }
   return withValidPriorities(next, typePriorities(next, types))
+}
+
+// ---- Yes/no custom fields -----------------------------------------------------
+
+const YES = new Set(['true', 'yes', 'y', '1', 't', 'x'])
+const NO = new Set(['false', 'no', 'n', '0', 'f'])
+
+/** How a yes/no field reads a value with no answer: yes, no (blank cells too), or '' when it cannot tell. */
+export function suggestYesNo(raw: string): string {
+  const v = raw.trim().toLowerCase()
+  if (v === '' || NO.has(v)) return 'false'
+  return YES.has(v) ? 'true' : ''
+}
+
+/** A yes/no field that is read value by value (not by "has any text"). */
+function readsYesNo(def: { type: string }, saved: RecordFieldMap | undefined): boolean {
+  return def.type === 'bool' && ['', 'bool'].includes(saved?.transform ?? '')
+}
+
+/** One entry per yes/no field of the type, with the meanings a saved map gives. */
+function yesNoMaps(rt: RecordType | undefined, base: RecordTemplate): Record<string, Record<string, string>> {
+  const out: Record<string, Record<string, string>> = {}
+  for (const a of rt?.attributes ?? []) {
+    const saved = base.attributes?.[a.key]
+    if (!readsYesNo(a, saved)) continue
+    const m: Record<string, string> = {}
+    for (const [raw, meaning] of Object.entries(saved?.map ?? {})) if (suggestYesNo(raw) !== suggestYesNo(meaning)) m[raw] = suggestYesNo(meaning)
+    if (saved?.default) m[''] = suggestYesNo(saved.default)
+    out[a.key] = m
+  }
+  return out
+}
+
+/** What a yes/no field's value means: the admin's answer, else how it reads. */
+export function yesNoMeaning(state: WizardState, key: string, raw: string): string {
+  return state.maps.yesNo[key]?.[raw] ?? suggestYesNo(raw)
 }
 
 export function setNewType(state: WizardState, patch: Partial<WizardState['newType']>, types: readonly RecordType[]): WizardState {
@@ -253,7 +295,7 @@ export function initialState({
     nameEdited: false,
     columns: columnsOf(draft),
     attributes: attributeColumns(rt, ins.headers, draft.attributes),
-    maps: { priority: mapOf(draft, ins, 'priority'), state: mapOf(draft, ins, 'state') },
+    maps: { priority: mapOf(draft, ins, 'priority'), state: mapOf(draft, ins, 'state'), yesNo: yesNoMaps(rt, draft) },
     suggestions: suggestionsOf(ins),
     dateFormats: { ...ins.dateFormats },
     ambiguous: [...ins.ambiguousDates],
@@ -289,7 +331,7 @@ export function stateFromTemplate({
     nameEdited: true,
     columns: columnsOf(body),
     attributes,
-    maps: { priority: mapOf(body, ins, 'priority'), state: mapOf(body, ins, 'state') },
+    maps: { priority: mapOf(body, ins, 'priority'), state: mapOf(body, ins, 'state'), yesNo: yesNoMaps(rt, body) },
     suggestions: suggestionsOf(ins),
     dateFormats: { ...ins.dateFormats },
     ambiguous: [...ins.ambiguousDates],
@@ -351,6 +393,18 @@ export function valueRows(field: 'priority' | 'state', state: WizardState, ins: 
   return { fromSamples: true, rows }
 }
 
+/** The values of a yes/no field's column with row counts. The inspection counts only priority and status, so these come from the sample rows. */
+export function yesNoRows(key: string, state: WizardState, ins: Inspection): { value: string; count: number }[] {
+  const column = state.attributes[key] ?? ''
+  if (!column || !(key in state.maps.yesNo)) return []
+  const counts = new Map<string, number>()
+  for (const v of columnValues(column, ins)) if (v !== '') counts.set(v, (counts.get(v) ?? 0) + 1)
+  const blanks = columnValues(column, ins).filter((v) => v === '').length
+  const rows = [...counts].map(([value, count]) => ({ value, count }))
+  if (blanks > 0) rows.push({ value: '', count: blanks })
+  return rows
+}
+
 /** The ambiguous date columns a mapped date field reads. */
 export function ambiguousInUse(state: WizardState): string[] {
   const used = new Set([...DATE_FIELDS].map((f) => state.columns[f]).filter(Boolean))
@@ -401,29 +455,84 @@ export function offeredPresets(state: WizardState, types: readonly RecordType[])
   return out
 }
 
+/**
+ * How a preset fits the methodology:
+ * - `new`: none of its measures exist yet;
+ * - `entered`: some of its measures are typed in today and would come from records (preselected);
+ * - `calculated`: its measures already come from records by the same rule, so it adds nothing;
+ * - `otherRule`: a measure with its key already comes from records by another rule, so choosing
+ *   it adds separate measures beside that one.
+ */
+export type PresetFit = 'new' | 'entered' | 'calculated' | 'otherRule'
+
 export interface PresetChoiceInfo {
   id: PresetId
   /** The key prefix whose measures the methodology already has, else the record type. */
   keyPrefix: string
-  /** Measures of the methodology the preset would use. */
+  /** Measures of the methodology with the preset's keys. */
   existing: string[]
+  fit: PresetFit
 }
 
-/** For each offered preset, the measures the methodology already has for it, under the type's key or its plural. */
-export function presetChoices(content: Methodology | undefined, typeId: string, offered: readonly PresetId[]): PresetChoiceInfo[] {
-  const have = new Set((content?.measures ?? []).map((m) => m.key))
+/** What the presets need beyond the pick: the record type, its priorities, and where new metrics go. */
+export interface PresetContext {
+  recordType: string
+  recordTypeName: string
+  priorities: readonly string[]
+  statusKeys: readonly string[]
+  reportedAt: Metric['reportedAt']
+  /** Whether the file has a completed date, which ages run to. */
+  hasCompleted?: boolean
+}
+
+function presetParams(keyPrefix: string, ctx: PresetContext): PresetParams {
+  return {
+    recordType: ctx.recordType,
+    recordTypeName: ctx.recordTypeName,
+    keyPrefix,
+    weights: defaultWeights(ctx.priorities),
+    bucketBy: 'completedAt',
+    ageFrom: 'createdAt',
+    ageTo: ctx.hasCompleted === false ? '' : 'completedAt',
+    statusKeys: ctx.statusKeys,
+    reportedAt: ctx.reportedAt,
+  }
+}
+
+const NO_METHODOLOGY: Methodology = { categories: [], measures: [], metrics: [] }
+
+/**
+ * For each offered preset, the measures the methodology already has under the
+ * type's key or its plural, and how the preset fits them (see PresetFit).
+ */
+export function presetChoices(
+  content: Methodology | undefined,
+  offered: readonly PresetId[],
+  ctx: Pick<PresetContext, 'recordType' | 'priorities' | 'hasCompleted'>,
+): PresetChoiceInfo[] {
+  const have = content ?? NO_METHODOLOGY
+  const full: PresetContext = { recordTypeName: ctx.recordType, statusKeys: [], reportedAt: [], ...ctx }
   return offered.map((id) => {
-    for (const keyPrefix of [typeId, `${typeId}s`]) {
-      const existing = presetKeys(id, { recordType: typeId, keyPrefix }).measures.filter((k) => k.startsWith(`${keyPrefix}_`) && have.has(k))
-      if (existing.length > 0) return { id, keyPrefix, existing }
+    for (const keyPrefix of [ctx.recordType, `${ctx.recordType}s`]) {
+      const mine = (k: string) => k.startsWith(`${keyPrefix}_`)
+      const planned = presetKeys(id, presetParams(keyPrefix, full)).measures.filter(mine)
+      const existing = planned.filter((k) => have.measures.some((m) => m.key === k))
+      if (existing.length === 0) continue
+      const placed = applyPreset(have, id, presetParams(keyPrefix, full))
+      const fit: PresetFit = placed.kept.some((k) => mine(k.existing))
+        ? 'otherRule'
+        : JSON.stringify(draftContent(have, [{ id, keyPrefix }], full)) === JSON.stringify(have)
+          ? 'calculated'
+          : 'entered'
+      return { id, keyPrefix, existing, fit }
     }
-    return { id, keyPrefix: typeId, existing: [] }
+    return { id, keyPrefix: ctx.recordType, existing: [], fit: 'new' as const }
   })
 }
 
-/** The presets on by default: those whose measures the methodology already has. */
+/** The presets on by default: those that make typed-in measures come from records. */
 export function defaultPresets(choices: readonly PresetChoiceInfo[]): PresetId[] {
-  return choices.filter((c) => c.existing.length > 0).map((c) => c.id)
+  return choices.filter((c) => c.fit === 'entered').map((c) => c.id)
 }
 
 function usesKey(formula: string, key: string): boolean {
@@ -431,41 +540,27 @@ function usesKey(formula: string, key: string): boolean {
 }
 
 /**
- * The draft's content with the chosen presets added: their measures (existing
- * ones derived in place) and, unless a metric already uses all of them, their
- * metric.
+ * The draft's content with the chosen presets added: their measures (entered
+ * ones derived in place, same-rule ones reused, other-rule ones left alone with
+ * the preset's added beside them) and, unless a metric already uses every
+ * measure the preset ends up with, its metric.
  */
-export function draftContent(
-  content: Methodology,
-  picks: readonly { id: PresetId; keyPrefix: string }[],
-  ctx: {
-    recordType: string
-    recordTypeName: string
-    priorities: readonly string[]
-    statusKeys: readonly string[]
-    reportedAt: Metric['reportedAt']
-    /** Whether the file has a completed date, which ages run to. */
-    hasCompleted?: boolean
-  },
-): Methodology {
+export function draftContent(content: Methodology, picks: readonly { id: PresetId; keyPrefix: string }[], ctx: PresetContext): Methodology {
   let next = content
   for (const pick of picks) {
-    const params: PresetParams = {
-      recordType: ctx.recordType,
-      recordTypeName: ctx.recordTypeName,
-      keyPrefix: pick.keyPrefix,
-      weights: defaultWeights(ctx.priorities),
-      bucketBy: 'completedAt',
-      ageFrom: 'createdAt',
-      ageTo: ctx.hasCompleted === false ? '' : 'completedAt',
-      statusKeys: ctx.statusKeys,
-      reportedAt: ctx.reportedAt,
-    }
-    const keys = presetKeys(pick.id, params).measures
-    const covered = next.metrics.some((m) => keys.every((k) => usesKey(m.formula, k)))
-    next = applyPreset(next, pick.id, { ...params, withMetric: !covered }).content
+    const params = presetParams(pick.keyPrefix, ctx)
+    const placed = applyPreset(next, pick.id, params)
+    const renamed = new Map(placed.kept.map((k) => [k.existing, k.added]))
+    const used = presetKeys(pick.id, params).measures.map((k) => renamed.get(k) ?? k)
+    const covered = next.metrics.some((m) => used.every((k) => usesKey(m.formula, k)))
+    next = covered ? applyPreset(next, pick.id, { ...params, withMetric: false }).content : placed.content
   }
   return next
+}
+
+/** Whether the picks change the methodology at all; when they do not, no draft is needed. */
+export function draftNeeded(content: Methodology, picks: readonly { id: PresetId; keyPrefix: string }[], ctx: PresetContext): boolean {
+  return picks.length > 0 && JSON.stringify(draftContent(content, picks, ctx)) !== JSON.stringify(content)
 }
 
 // ---- Template and answers ---------------------------------------------------
@@ -530,7 +625,19 @@ export function templateFrom(state: WizardState): RecordTemplate {
   for (const [key, column] of Object.entries(state.attributes)) {
     if (column === '') continue
     const prev = base.attributes?.[key]
-    attributes[key] = prev?.column === column ? { ...prev } : { column }
+    const fm: RecordFieldMap = prev?.column === column ? { ...prev } : { column }
+    const answers = state.maps.yesNo[key]
+    if (answers) {
+      // A map only when an answer differs from how the value reads; then the
+      // usual yes/no spellings stay readable through it, as the API does.
+      const given = Object.entries(answers).filter(([raw, meaning]) => raw !== '' && meaning !== '')
+      if (given.some(([raw, meaning]) => meaning !== suggestYesNo(raw))) {
+        fm.map = Object.fromEntries([...[...YES, ...NO].map((v) => [v, v]), ...given])
+      } else delete fm.map
+      const blank = answers[''] ?? suggestYesNo('')
+      if (blank) fm.default = blank
+    }
+    attributes[key] = fm
   }
 
   const t: RecordTemplate = {

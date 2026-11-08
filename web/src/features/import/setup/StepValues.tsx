@@ -4,8 +4,11 @@ import { FieldMessages, inputClass } from '../../admin/formUi'
 import { dateQuestion, formatCount } from '../recordsModel'
 import {
   ambiguousInUse,
+  chosenType,
   typePriorities,
   valueRows,
+  yesNoMeaning,
+  yesNoRows,
   type StepErrors,
   type StepProps,
   type WizardState,
@@ -14,6 +17,11 @@ import {
 export function validateValues(state: WizardState): StepErrors {
   return ambiguousInUse(state).length > 0 && state.answers.dateOrder === '' ? { dateOrder: 'Choose how to read these dates.' } : {}
 }
+
+const YES_NO_OPTIONS = [
+  { value: 'true', label: 'Yes' },
+  { value: 'false', label: 'No' },
+]
 
 const STATE_OPTIONS = [
   { value: 'open', label: 'Open' },
@@ -94,14 +102,18 @@ export function StepValues({ state, update, result, recordTypes, errors }: StepP
   const priorities = typePriorities(state, recordTypes)
   const setMeaning = (field: 'priority' | 'state', value: string, meaning: string) =>
     update((s) => ({ ...s, maps: { ...s.maps, [field]: { ...s.maps[field], [value]: meaning } } }))
-  const nothing = !date && priority.rows.length === 0 && status.rows.length === 0
+  const yesNoFields = (chosenType(state, recordTypes)?.attributes ?? [])
+    .filter((a) => a.key in state.maps.yesNo)
+    .map((a) => ({ key: a.key, name: a.name || a.key, rows: yesNoRows(a.key, state, ins) }))
+    .filter((f) => f.rows.length > 0)
+  const nothing = !date && priority.rows.length === 0 && status.rows.length === 0 && yesNoFields.length === 0
 
   return (
     <div className="space-y-6">
       {nothing && (
         <p className="flex items-start gap-2 text-sm">
           <Info aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-accent-deep" />
-          Nothing to check here: this file has no priority or status column, and its dates read only one way.
+          Nothing to check here: this file has no priority, status or yes/no column, and its dates read only one way.
         </p>
       )}
 
@@ -166,6 +178,24 @@ export function StepValues({ state, update, result, recordTypes, errors }: StepP
           onChoose={(v, m) => setMeaning('state', v, m)}
         />
       )}
+
+      {yesNoFields.map((f) => (
+        <ValueTable
+          key={f.key}
+          title={f.name}
+          hint="Which values mean yes and which mean no. These come from the first rows of the file; the preview asks about any others."
+          rows={f.rows}
+          fromSamples={false}
+          options={YES_NO_OPTIONS}
+          meanings={Object.fromEntries(f.rows.map((r) => [r.value, yesNoMeaning(state, f.key, r.value)]))}
+          onChoose={(value, meaning) =>
+            update((s) => ({
+              ...s,
+              maps: { ...s.maps, yesNo: { ...s.maps.yesNo, [f.key]: { ...s.maps.yesNo[f.key], [value]: meaning } } },
+            }))
+          }
+        />
+      ))}
     </div>
   )
 }

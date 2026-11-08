@@ -172,10 +172,46 @@ export function SetupWizard() {
     )
   }
 
+  function validate(id: StepId, s: WizardState): StepErrors {
+    if (id === 'type') return validateType(s, recordTypes.data ?? [], ownTypeId)
+    if (id === 'columns') return validateColumns(s)
+    if (id === 'values') return validateValues(s)
+    return {}
+  }
+
+  // The URL can name a later step than the answers allow (browser Back and
+  // Forward skip Next): show the first earlier step that no longer passes, with its messages.
   const requestedIndex = steps.indexOf(params.get('step') as StepId)
-  const index = state ? Math.min(Math.max(requestedIndex, 0), reached) : 0
+  const wanted = state ? Math.min(Math.max(requestedIndex, 0), reached) : 0
+  let index = wanted
+  let blocked: StepErrors | null = null
+  for (let i = 0; state && i < wanted; i++) {
+    const errs = validate(steps[i] ?? 'type', state)
+    if (Object.keys(errs).length > 0) {
+      index = i
+      blocked = errs
+      break
+    }
+  }
   const step = steps[index] ?? steps[0] ?? 'type'
   const finished = applied !== null || savedMapping
+  // Kept as the step's messages, so they stay once the URL names this step.
+  if (blocked && JSON.stringify(blocked) !== JSON.stringify(errors)) setErrors(blocked)
+  const blockedStep = blocked ? step : ''
+  useEffect(() => {
+    if (blockedStep === '') return
+    setParams(
+      (prev) => {
+        const p = new URLSearchParams(prev)
+        p.set('step', blockedStep)
+        return p
+      },
+      { replace: true },
+    )
+    focusErrors()
+    // focusErrors is a new function each render; only a newly blocked step matters.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [blockedStep, setParams])
 
   // Focus moves to the new step's heading.
   const shown = useRef(index)
@@ -203,16 +239,9 @@ export function SetupWizard() {
     setTouched(true)
   }, [])
 
-  function validate(id: StepId, s: WizardState): StepErrors {
-    if (id === 'type') return validateType(s, recordTypes.data ?? [], ownTypeId)
-    if (id === 'columns') return validateColumns(s)
-    if (id === 'values') return validateValues(s)
-    return {}
-  }
-
   // A message stays until its field is fixed.
   const current = state ? validate(step, state) : {}
-  const shownErrors = Object.fromEntries(Object.entries(errors).filter(([k]) => k in current))
+  const shownErrors = blocked ?? Object.fromEntries(Object.entries(errors).filter(([k]) => k in current))
 
   function go(i: number) {
     const target = steps[i]

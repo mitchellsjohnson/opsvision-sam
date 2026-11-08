@@ -870,6 +870,7 @@ func apiStoryLines(ls []recordimport.StoryLine) []RecordStoryLine {
 
 func apiRecordsPreview(p recordimport.Plan) RecordsPreview {
 	out := RecordsPreview{
+		PlanId: p.Snapshot.ID,
 		Counts: apiRecordCounts(p.Counts),
 		Story: RecordStory{
 			NothingChanged: p.Story.NothingChanged,
@@ -906,7 +907,8 @@ func apiRecordsPreview(p recordimport.Plan) RecordsPreview {
 
 // ---- apply -----------------------------------------------------------------------------
 
-// applyRecords applies a records import's stored preview. The posted answers
+// applyRecords applies a records import's stored preview. The posted planId
+// must name that preview (a later preview replaces it) and the posted answers
 // must be the previewed ones; the stored plan is applied with them. The
 // previewed template's last-used time is set, and saveTemplate saves the
 // template with the answers' value maps and date order.
@@ -914,11 +916,15 @@ func (s *Server) applyRecords(ctx context.Context, p auth.Principal, objs object
 	tenantID := p.Tenant.ID
 	var pr problems
 	var ans recordimport.Answers
+	var planID string
 	var save *struct {
 		Id   Id     `json:"id"`
 		Name string `json:"name"`
 	}
 	if body != nil {
+		if body.PlanId != nil {
+			planID = *body.PlanId
+		}
 		ans = domainAnswers(body.Answers, &pr)
 		if save = body.SaveTemplate; save != nil {
 			pr.id("saveTemplate.id", save.Id)
@@ -940,6 +946,10 @@ func (s *Server) applyRecords(ctx context.Context, p auth.Principal, objs object
 	var doc storedRecordsPlan
 	if err := json.NewDecoder(io.LimitReader(rc, objects.MaxUploadBytes*8)).Decode(&doc); err != nil {
 		return nil, fmt.Errorf("httpapi: decode records plan of import %s: %w", im.ID, err)
+	}
+	// Previews can overlap; only the one the caller saw may be applied.
+	if planID == "" || planID != doc.Plan.Snapshot.ID {
+		return nil, conflict("preview is out of date: this is not the latest preview of the import; preview the import again")
 	}
 	if canonicalAnswers(ans) != canonicalAnswers(doc.Answers) {
 		return nil, conflict("preview is out of date: these answers differ from the previewed ones; preview the import again")

@@ -1,4 +1,4 @@
-import { Calculator } from 'lucide-react'
+import { Calculator, CheckCircle2 } from 'lucide-react'
 import { useId } from 'react'
 import { useScorecards, useVersions, type RecordType } from '../../../api/queries'
 import { QueryState, SelectField } from '../../admin/formUi'
@@ -9,6 +9,7 @@ import {
   defaultPresets,
   offeredPresets,
   presetChoices,
+  typePriorities,
   type StepProps,
   type WizardState,
 } from './wizardModel'
@@ -27,7 +28,11 @@ export function usePresetPlan(state: WizardState, recordTypes: readonly RecordTy
   const inForce = versionInForce(all)
   const typeId = chosenType(state, recordTypes)?.id ?? ''
   const offered = offeredPresets(state, recordTypes)
-  const choices = presetChoices(inForce?.content, typeId, offered)
+  const choices = presetChoices(inForce?.content, offered, {
+    recordType: typeId,
+    priorities: typePriorities(state, recordTypes),
+    hasCompleted: Boolean(state.columns.completedAt),
+  })
   const chosen = (state.presets ?? defaultPresets(choices)).filter((p) => offered.includes(p))
   return {
     scorecards: list,
@@ -74,14 +79,37 @@ export function StepCalculate({ state, update, recordTypes }: StepProps) {
       <fieldset className="space-y-3" aria-describedby={`${id}-hint`}>
         <legend className="font-medium">Calculations from these records</legend>
         <p id={`${id}-hint`} className="text-sm text-ink/80">
-          We picked the ones your methodology already counts. They go into a draft, so the scorecard only changes when
-          you publish it.
+          We picked the ones that turn numbers you type today into numbers from records. They go into a draft, so the
+          scorecard only changes when you publish it.
         </p>
         <ul className="grid gap-2 md:grid-cols-2">
           {plan.choices.map((c) => {
             const info = presetInfo(c.id)
             const inputId = `${id}-${c.id}`
-            const uses = c.existing.length > 0 ? `Uses your measures ${andList(c.existing.map((k) => measureName.get(k) ?? k))}.` : ''
+            const names = andList(c.existing.map((k) => measureName.get(k) ?? k))
+            if (c.fit === 'calculated') {
+              return (
+                <li key={c.id} className="flex items-start gap-3 rounded-md border border-ink/20 bg-white/60 p-3">
+                  <CheckCircle2 aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-status-g" />
+                  <div className="space-y-0.5">
+                    <p className="font-medium">
+                      {info.label}: <span className="text-status-g">Already calculated</span>
+                    </p>
+                    <p className="text-sm">{info.sentence}</p>
+                    <p className="text-sm text-ink/80">
+                      {names} already {c.existing.length === 1 ? 'comes' : 'come'} from records this way, so these
+                      numbers update when you apply.
+                    </p>
+                  </div>
+                </li>
+              )
+            }
+            const uses =
+              c.fit === 'entered'
+                ? `Uses your measures ${names}.`
+                : c.fit === 'otherRule'
+                  ? `Your methodology already calculates ${names} another way. Choosing this adds separate measures beside them.`
+                  : ''
             return (
               <li key={c.id} className="flex items-start gap-3 rounded-md border border-ink/20 bg-white p-3 has-[:checked]:border-accent">
                 <input

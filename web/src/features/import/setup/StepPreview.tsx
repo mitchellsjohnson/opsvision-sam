@@ -30,6 +30,7 @@ import {
   answersFrom,
   chosenType,
   draftContent,
+  draftNeeded,
   metricsChanged,
   pluralName,
   successText,
@@ -38,6 +39,7 @@ import {
   typeName,
   typePriorities,
   uniqueTemplate,
+  type PresetContext,
   type StepProps,
 } from './wizardModel'
 
@@ -159,7 +161,7 @@ export function StepPreview({
   useEffect(() => {
     if (applied || plan.loading || !contextReady) return
     const want = state.recordType === NEW_TYPE ? chosenType(state, recordTypes) : undefined
-    const ctx = {
+    const ctx: PresetContext = {
       recordType: typeId,
       recordTypeName: name,
       priorities: typePriorities(state, recordTypes),
@@ -167,7 +169,9 @@ export function StepPreview({
       reportedAt: deepest ? [{ kind: 'level' as const, id: deepest.id }] : [],
       hasCompleted: Boolean(state.columns.completedAt),
     }
-    const cloneFrom = plan.inForce?.id ?? plan.versions[0]?.id
+    const source = plan.inForce ?? plan.versions[0]
+    const cloneFrom = source?.id
+    const sourceContent = source?.content ?? { categories: [], measures: [], metrics: [] }
     let live = true
     const run = async (a: Artifacts): Promise<string | undefined> => {
       if (want) {
@@ -184,7 +188,9 @@ export function StepPreview({
         a.type = savedType
         onTypeSaved(savedType.id)
       }
-      if (picks.length === 0) return undefined
+      // Presets that change nothing (their measures already come from records) need no draft.
+      const base = a.draft && a.draft.sc === sc ? a.draft.base : sourceContent
+      if (!draftNeeded(base, picks, ctx)) return undefined
       if (!a.draft || a.draft.sc !== sc) {
         const created = await createVersion({ name: `${pluralName(name)} from records`, ...(cloneFrom ? { cloneFrom } : {}) })
         a.draft = { version: created, base: created.content, sc }
@@ -292,7 +298,8 @@ export function StepPreview({
     try {
       const res = await apply.mutateAsync({
         id: importId,
-        body: { answers: JSON.parse(answersJson), saveTemplate: { id: save.id, name: saveName } },
+        // The plan of the preview on screen; the API refuses any other.
+        body: { planId: shown.planId, answers: JSON.parse(answersJson), saveTemplate: { id: save.id, name: saveName } },
       })
       const draft = draftId ? artifacts.draft : undefined
       onApplied({

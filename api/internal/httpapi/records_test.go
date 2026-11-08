@@ -146,6 +146,7 @@ func previewBody(answers map[string]any) map[string]any {
 }
 
 type recordsPreviewJSON struct {
+	PlanID string `json:"planId"`
 	Counts struct {
 		New, Changed, Unchanged, Skipped, Missing, Unmatched, Errors int
 	} `json:"counts"`
@@ -169,6 +170,17 @@ type recordsPreviewJSON struct {
 	Missing   []string                    `json:"missing"`
 }
 
+// previewPlan previews import id with body as the tenant's admin and returns the preview's planId.
+func previewPlan(t *testing.T, e *testEnv, id string, body map[string]any) string {
+	t.Helper()
+	var pv recordsPreviewJSON
+	e.expect(t, 200, e.tokens["t1-admin"], "POST", "/imports/"+id+"/records-preview", body, &pv)
+	if pv.PlanID == "" {
+		t.Fatal("preview has no planId")
+	}
+	return pv.PlanID
+}
+
 // applyDefects runs the whole flow for the defects export with the standard
 // answers and returns the import ID.
 func applyDefects(t *testing.T, e *testEnv) string {
@@ -176,8 +188,8 @@ func applyDefects(t *testing.T, e *testEnv) string {
 	e.putRecordsTemplate(t, "defects")
 	id := e.createCSVImport(t, "t1", readDefects(t))
 	admin := e.tokens["t1-admin"]
-	e.expect(t, 200, admin, "POST", "/imports/"+id+"/records-preview", previewBody(defectAnswers()), nil)
-	e.expect(t, 200, admin, "POST", "/imports/"+id+"/apply", map[string]any{"answers": defectAnswers()}, nil)
+	plan := previewPlan(t, e, id, previewBody(defectAnswers()))
+	e.expect(t, 200, admin, "POST", "/imports/"+id+"/apply", map[string]any{"planId": plan, "answers": defectAnswers()}, nil)
 	return id
 }
 
@@ -304,7 +316,7 @@ func TestRecordsUploadInspectPreviewApply(t *testing.T) {
 	// Apply, saving the template under a new ID.
 	var applied map[string]any
 	e.expect(t, 200, admin, "POST", "/imports/"+id+"/apply", map[string]any{
-		"answers": defectAnswers(), "saveTemplate": map[string]string{"id": "defects-v2", "name": "Defects (saved)"},
+		"planId": pv.PlanID, "answers": defectAnswers(), "saveTemplate": map[string]string{"id": "defects-v2", "name": "Defects (saved)"},
 	}, &applied)
 	if applied["status"] != "applied" {
 		t.Errorf("apply response = %v", applied)
@@ -410,8 +422,8 @@ func TestInspectLastUploadAsOf(t *testing.T) {
 	}
 
 	// After applying the defects export as of 2026-09-15, the next upload names that date.
-	e.expect(t, 200, admin, "POST", "/imports/"+first+"/records-preview", previewBody(defectAnswers()), nil)
-	e.expect(t, 200, admin, "POST", "/imports/"+first+"/apply", map[string]any{"answers": defectAnswers()}, nil)
+	plan := previewPlan(t, e, first, previewBody(defectAnswers()))
+	e.expect(t, 200, admin, "POST", "/imports/"+first+"/apply", map[string]any{"planId": plan, "answers": defectAnswers()}, nil)
 	next := e.createCSVImport(t, "t1", readDefects(t))
 	got := inspect(next)
 	if got["matchedTemplateId"] != "defects" || got["lastUploadAsOf"] != "2026-09-15" {
@@ -491,24 +503,61 @@ func TestRecordsApplyStalePreview409(t *testing.T) {
 	admin := e.tokens["t1-admin"]
 	e.putRecordsTemplate(t, "defects")
 	id := e.createCSVImport(t, "t1", readDefects(t))
-	e.expect(t, 200, admin, "POST", "/imports/"+id+"/records-preview", previewBody(defectAnswers()), nil)
+	plan := previewPlan(t, e, id, previewBody(defectAnswers()))
 
-	got := e.expectError(t, 409, "conflict", admin, "POST", "/imports/"+id+"/apply", map[string]any{"answers": map[string]any{}})
+	got := e.expectError(t, 409, "conflict", admin, "POST", "/imports/"+id+"/apply", map[string]any{"planId": plan, "answers": map[string]any{}})
 	if !strings.Contains(got.Error.Message, "preview is out of date") {
 		t.Errorf("message = %q", got.Error.Message)
 	}
 	other := defectAnswers()
 	other["ignoreValues"] = []string{"iOS App"}
-	e.expectError(t, 409, "conflict", admin, "POST", "/imports/"+id+"/apply", map[string]any{"answers": other})
+	e.expectError(t, 409, "conflict", admin, "POST", "/imports/"+id+"/apply", map[string]any{"planId": plan, "answers": other})
 	if _, ok := storedPoint(t, e, "defect_points_sum", "checkout", sep2026); ok {
 		t.Fatal("a stale apply stored derived points")
 	}
 	// The same answers in another order still match.
 	same := map[string]any{"ignoreValues": []string{"Android App", "iOS App"}, "sourceKeys": map[string]string{"Analytics": "analytics"}}
-	e.expect(t, 200, admin, "POST", "/imports/"+id+"/apply", map[string]any{"answers": same}, nil)
+	e.expect(t, 200, admin, "POST", "/imports/"+id+"/apply", map[string]any{"planId": plan, "answers": same}, nil)
 	// An import that was never previewed cannot be applied as records.
 	fresh := e.createCSVImport(t, "t1", readDefects(t))
-	e.expectError(t, 409, "conflict", admin, "POST", "/imports/"+fresh+"/apply", map[string]any{"answers": defectAnswers()})
+	e.expectError(t, 409, "conflict", admin, "POST", "/imports/"+fresh+"/apply", map[string]any{"planId": plan, "answers": defectAnswers()})
+}
+
+func TestRecordsApplyRequiresTheLatestPlan(t *testing.T) {
+	e := newTestEnv(t)
+	seedRecords(t, e)
+	admin := e.tokens["t1-admin"]
+	e.putRecordsTemplate(t, "defects")
+	id := e.createCSVImport(t, "t1", readDefects(t))
+	older := previewPlan(t, e, id, previewBody(defectAnswers()))
+	latest := previewPlan(t, e, id, previewBody(defectAnswers()))
+	if older == latest {
+		t.Fatalf("two previews share planId %q", older)
+	}
+
+	// The same answers, but the plan of an earlier preview: not the one stored.
+	got := e.expectError(t, 409, "conflict", admin, "POST", "/imports/"+id+"/apply", map[string]any{"planId": older, "answers": defectAnswers()})
+	if !strings.Contains(got.Error.Message, "preview is out of date") {
+		t.Errorf("message = %q", got.Error.Message)
+	}
+	// No planId at all.
+	e.expectError(t, 409, "conflict", admin, "POST", "/imports/"+id+"/apply", map[string]any{"answers": defectAnswers()})
+	if _, ok := storedPoint(t, e, "defect_points_sum", "checkout", sep2026); ok {
+		t.Fatal("an apply of an older plan stored derived points")
+	}
+
+	var applied struct {
+		Records struct {
+			SnapshotID string `json:"snapshotId"`
+		} `json:"records"`
+	}
+	e.expect(t, 200, admin, "POST", "/imports/"+id+"/apply", map[string]any{"planId": latest, "answers": defectAnswers()}, &applied)
+	if applied.Records.SnapshotID != latest {
+		t.Errorf("applied snapshot %q, want the latest plan %q", applied.Records.SnapshotID, latest)
+	}
+	if _, ok := storedPoint(t, e, "defect_points_sum", "checkout", sep2026); !ok {
+		t.Error("applying the latest plan stored no derived points")
+	}
 }
 
 func TestContributorCannotApplyRecords(t *testing.T) {
@@ -647,8 +696,8 @@ func TestContributionsPaginate(t *testing.T) {
 	e.putRecordsTemplate(t, "defects")
 	id := e.createCSVImport(t, "t1", b.Bytes())
 	admin := e.tokens["t1-admin"]
-	e.expect(t, 200, admin, "POST", "/imports/"+id+"/records-preview", previewBody(map[string]any{}), nil)
-	e.expect(t, 200, admin, "POST", "/imports/"+id+"/apply", map[string]any{"answers": map[string]any{}}, nil)
+	plan := previewPlan(t, e, id, previewBody(map[string]any{}))
+	e.expect(t, 200, admin, "POST", "/imports/"+id+"/apply", map[string]any{"planId": plan, "answers": map[string]any{}}, nil)
 
 	var page1, page2 contributionsJSON
 	e.expect(t, 200, admin, "GET", contributionsPath("checkout", ""), nil, &page1)

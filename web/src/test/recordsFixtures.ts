@@ -132,6 +132,7 @@ const NO_COUNTS = { new: 0, changed: 0, unchanged: 0, skipped: 0, missing: 0, un
 
 export function emptyPreview(over: Partial<RecordsPreview> = {}): RecordsPreview {
   return {
+    planId: 'plan-0',
     counts: { ...NO_COUNTS },
     story: { nothingChanged: false, lines: [], more: 0, typed: [], lockedWaiting: [] },
     problems: [],
@@ -237,6 +238,8 @@ export interface RecordsFake {
   /** Preview answers by uploaded file name; may depend on the request. */
   previews: Record<string, RecordsPreview | ((body: RecordsPreviewRequest) => RecordsPreview)>
   applied: Record<string, ChangeSetPreview['records']>
+  /** The planId of each import's latest preview; apply needs it, as in the API. */
+  plans: Record<string, string>
   uploads: { url: string; contentType: string | null; authorization: string | null }[]
   requests: RecordedRequest[]
   failNext: Map<string, { status: number; code: string; message: string }>
@@ -252,6 +255,7 @@ export function newRecordsFake(): RecordsFake {
     },
     previews: { 'defects.csv': defectsPreview(), 'epics.xlsx': epicsPreview() },
     applied: {},
+    plans: {},
     uploads: [],
     requests: [],
     failNext: new Map(),
@@ -287,6 +291,7 @@ export function recordsHandlers(fake: RecordsFake, { withVersions = true } = {})
   const filenames = new Map<string, string>()
   // As in the API: an applied import cannot be previewed or applied again.
   const appliedIds = new Set<string>()
+  let planCount = 0
   const appliedConflict = () =>
     HttpResponse.json(
       { error: { code: 'conflict', message: 'import is applied; only an uploaded or previewed import can be previewed' } },
@@ -337,13 +342,21 @@ export function recordsHandlers(fake: RecordsFake, { withVersions = true } = {})
       const name = filenames.get(String(params.id)) ?? String(params.id)
       const p = fake.previews[name]
       if (!p) return HttpResponse.json({ error: { code: 'not_found', message: 'import not found' } }, { status: 404 })
-      return HttpResponse.json(typeof p === 'function' ? p(w.body as RecordsPreviewRequest) : p)
+      const planId = `plan-${String(params.id)}-${++planCount}`
+      fake.plans[String(params.id)] = planId
+      return HttpResponse.json({ ...(typeof p === 'function' ? p(w.body as RecordsPreviewRequest) : p), planId })
     }),
     http.post(`${API}/v1/imports/:id/apply`, async ({ request, params }) => {
       const id = String(params.id)
       const w = await record(request, `/imports/${id}/apply`)
       if (w.failure) return w.failure
       if (appliedIds.has(id)) return appliedConflict()
+      if ((w.body as { planId?: string } | undefined)?.planId !== fake.plans[id]) {
+        return HttpResponse.json(
+          { error: { code: 'conflict', message: 'preview is out of date: this is not the latest preview of the import; preview the import again' } },
+          { status: 409 },
+        )
+      }
       appliedIds.add(id)
       const name = filenames.get(id) ?? id
       const records = fake.applied[name] ?? {

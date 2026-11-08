@@ -1694,6 +1694,8 @@ export interface components {
             unitId: components["schemas"]["Id"];
         };
         RecordsPreview: {
+            /** @description Identifies this preview's stored plan. Applying requires it, so only the preview on screen is applied. */
+            planId: components["schemas"]["ServerId"];
             counts: components["schemas"]["RecordCounts"];
             story: components["schemas"]["RecordStory"];
             problems: components["schemas"]["RecordRowProblem"][];
@@ -1709,6 +1711,8 @@ export interface components {
             columnsMissing: string[];
         };
         ApplyImportRequest: {
+            /** @description Required for a records import, as the `planId` of the preview being applied. A plan replaced by a later preview, or a missing one, fails with 409. */
+            planId?: components["schemas"]["ServerId"];
             answers?: components["schemas"]["RecordAnswers"];
             /** @description Save the template, with the answers' value maps and date order, under this ID and name. */
             saveTemplate?: {

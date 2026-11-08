@@ -234,7 +234,8 @@ function FileImport({
     if (!current || !preview) return { state: 'busy' }
     if (preview.story.nothingChanged) return { state: 'nothing' }
     const answers = JSON.parse(answersJson) as ApplyImportRequest['answers']
-    const body: ApplyImportRequest = { answers }
+    // The plan of the preview on screen; the API refuses any other.
+    const body: ApplyImportRequest = { planId: preview.planId, answers }
     if (entry.prepared) body.saveTemplate = entry.prepared.saveAs
     else if (answers && answersUpdateTemplate(answers) && saved) body.saveTemplate = { id: saved.id, name: saved.name }
     return { state: 'ready', importId, body }

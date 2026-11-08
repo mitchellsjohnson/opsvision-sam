@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import { acmeItems, acmeUnits, recordTypes, recordsTemplates } from '../../../test/recordsFixtures'
-import { defectsInspection, epicsInspection, wizardVersions } from '../../../test/wizardFixtures'
+import { defectsInspection, derivedEpicsVersions, epicsInspection, wizardVersions } from '../../../test/wizardFixtures'
 import {
   NEW_TYPE,
   answersFrom,
   chooseType,
   confidenceOf,
+  defaultPresets,
   draftContent,
+  draftNeeded,
   initialState,
   missingRequired,
   offeredPresets,
@@ -20,6 +22,8 @@ import {
   typePriorities,
   uniqueTemplate,
   valueRows,
+  yesNoMeaning,
+  yesNoRows,
   type WizardState,
 } from './wizardModel'
 
@@ -53,6 +57,8 @@ describe('initialState', () => {
     expect(s.attributes).toEqual({ customerTicket: 'Customer ticket' })
     expect(s.maps.priority).toEqual({ High: 'P2', Medium: 'P3', Highest: 'P1', Low: 'P4', '': 'none' })
     expect(s.maps.state).toMatchObject({ Open: 'open', 'Won’t Do': 'cancelled', Closed: 'done' })
+    // Yes/no custom fields start with no answers: their values read as written.
+    expect(s.maps.yesNo).toEqual({ customerTicket: {} })
     // Confident and close matches are preselected; values already linked, and parent units, are not.
     expect(s.answers.subjects).toEqual({ 'Checkout Svc': 'to:checkout', Identity: 'to:identity' })
     expect(s.answers.dateOrder).toBe('')
@@ -92,7 +98,7 @@ describe('templateFrom', () => {
         completedAt: { column: 'Resolved', dateFormats: ['02/01/2006'] },
         dueAt: { column: 'Due date', dateFormats: ['01/02/2006'] },
       },
-      attributes: { customerTicket: { column: 'Customer ticket' } },
+      attributes: { customerTicket: { column: 'Customer ticket', default: 'false' } },
     })
   })
 
@@ -193,6 +199,32 @@ describe('values', () => {
   })
 })
 
+describe('yes/no custom fields', () => {
+  it('lists the values with counts, and maps only what does not read as yes or no', () => {
+    const s = defects()
+    const { inspection } = defectsInspection()
+    expect(yesNoRows('customerTicket', s, inspection)).toEqual([
+      { value: 'yes', count: 1 },
+      { value: 'Linked', count: 1 },
+      { value: '', count: 3 },
+    ])
+    expect(yesNoMeaning(s, 'customerTicket', 'yes')).toBe('true')
+    expect(yesNoMeaning(s, 'customerTicket', 'Linked')).toBe('')
+    expect(yesNoMeaning(s, 'customerTicket', '')).toBe('false')
+
+    const answered = { ...s, maps: { ...s.maps, yesNo: { customerTicket: { Linked: 'true' } } } }
+    const fm = templateFrom(answered).attributes?.customerTicket
+    expect(fm?.default).toBe('false')
+    expect(fm?.map).toMatchObject({ Linked: 'true', yes: 'yes', no: 'no' })
+  })
+
+  it('follows the record type: an epic has no yes/no fields', () => {
+    const s = chooseType(defects(), 'epic', recordTypes, defectsInspection().inspection.headers)
+    expect(s.maps.yesNo).toEqual({})
+    expect(templateFrom(s).attributes).toBeUndefined()
+  })
+})
+
 describe('productQuestions', () => {
   it('splits values already linked from those to ask about, with parent units flagged', () => {
     const { linked, asks } = productQuestions(defectsInspection().subjects, acmeUnits, acmeItems)
@@ -216,25 +248,57 @@ describe('presets', () => {
     expect(offeredPresets(epics(), recordTypes)).toEqual(['on_time', 'average_age', 'count'])
   })
 
-  it('preselects a preset whose measures the methodology already has, plural keys included', () => {
+  const epicCtx = { recordType: 'epic', priorities: [], hasCompleted: true }
+
+  it('preselects a preset whose measures are typed in today, plural keys included', () => {
     const content = wizardVersions()[0]!.content
-    const choices = presetChoices(content, 'epic', ['on_time', 'average_age', 'count'])
+    const choices = presetChoices(content, ['on_time', 'average_age', 'count'], epicCtx)
     expect(choices).toEqual([
-      { id: 'on_time', keyPrefix: 'epics', existing: ['epics_committed', 'epics_on_time'] },
-      { id: 'average_age', keyPrefix: 'epic', existing: [] },
-      { id: 'count', keyPrefix: 'epic', existing: [] },
+      { id: 'on_time', keyPrefix: 'epics', existing: ['epics_committed', 'epics_on_time'], fit: 'entered' },
+      { id: 'average_age', keyPrefix: 'epic', existing: [], fit: 'new' },
+      { id: 'count', keyPrefix: 'epic', existing: [], fit: 'new' },
     ])
+    expect(defaultPresets(choices)).toEqual(['on_time'])
+  })
+
+  it('does not preselect measures already derived: "already calculated" by the same rule, explained for another', () => {
+    const same = presetChoices(derivedEpicsVersions('same')[0]!.content, ['on_time'], epicCtx)
+    expect(same).toEqual([{ id: 'on_time', keyPrefix: 'epics', existing: ['epics_committed', 'epics_on_time'], fit: 'calculated' }])
+    expect(defaultPresets(same)).toEqual([])
+
+    const other = presetChoices(derivedEpicsVersions('other')[0]!.content, ['on_time'], epicCtx)
+    expect(other).toEqual([{ id: 'on_time', keyPrefix: 'epics', existing: ['epics_committed', 'epics_on_time'], fit: 'otherRule' }])
+    expect(defaultPresets(other)).toEqual([])
+  })
+
+  const ctx = {
+    recordType: 'epic',
+    recordTypeName: 'Epic',
+    priorities: [],
+    statusKeys: ['G', 'Y', 'R'],
+    reportedAt: [{ kind: 'level' as const, id: 'product' }],
+  }
+
+  it('changes nothing, and needs no draft, when the measures already come from records by the same rule', () => {
+    const content = derivedEpicsVersions('same')[0]!.content
+    expect(draftContent(content, [{ id: 'on_time', keyPrefix: 'epics' }], ctx)).toEqual(content)
+    expect(draftNeeded(content, [{ id: 'on_time', keyPrefix: 'epics' }], ctx)).toBe(false)
+    expect(draftNeeded(wizardVersions()[0]!.content, [{ id: 'on_time', keyPrefix: 'epics' }], ctx)).toBe(true)
+    expect(draftNeeded(wizardVersions()[0]!.content, [], ctx)).toBe(false)
+  })
+
+  it('adds separate measures beside another rule, with a metric that uses them', () => {
+    const content = derivedEpicsVersions('other')[0]!.content
+    const next = draftContent(content, [{ id: 'on_time', keyPrefix: 'epics' }], ctx)
+    expect(next.measures.slice(0, 2)).toEqual(content.measures)
+    expect(next.measures.map((m) => m.key)).toEqual(['epics_committed', 'epics_on_time', 'epics_committed_2', 'epics_on_time_2'])
+    const added = next.metrics.find((m) => m.key === 'epics_on_time_pct')
+    expect(added?.formula).toBe('epics_on_time_2 / epics_committed_2 * 100')
   })
 
   it('derives the existing measures in the draft, without a second metric for them', () => {
     const content = wizardVersions()[0]!.content
-    const next = draftContent(content, [{ id: 'on_time', keyPrefix: 'epics' }], {
-      recordType: 'epic',
-      recordTypeName: 'Epic',
-      priorities: [],
-      statusKeys: ['G', 'Y', 'R'],
-      reportedAt: [{ kind: 'level', id: 'product' }],
-    })
+    const next = draftContent(content, [{ id: 'on_time', keyPrefix: 'epics' }], ctx)
     expect(next.measures.find((m) => m.key === 'epics_committed')).toMatchObject({
       name: 'Epics committed',
       source: 'derived',
