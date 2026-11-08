@@ -155,6 +155,67 @@ func TestItemRoundTrip(t *testing.T) {
 
 	im := store.Import{ID: "i", Status: "s", ObjectKey: "k", Profile: "p", TemplateID: "t", CreatedBy: "c", CreatedAt: at, ChangeSet: json.RawMessage(`{"a":1}`)}
 	eq(t, "import", roundTrip(t, newImportItem("t1", im)).domain(), im)
-	tp := store.Template{ID: "t", Name: "N", Profile: "p", Body: json.RawMessage(`{"cols":[1]}`)}
-	eq(t, "template", roundTrip(t, newTemplateItem("t1", tp)).domain(), tp)
+	used := at.Add(time.Hour)
+	tp := store.Template{ID: "t", Name: "N", Profile: "p", Body: json.RawMessage(`{"cols":[1]}`), Revision: 3, LastUsed: &used}
+	eq(t, "template", roundTrip(t, newTemplateItem("t1", tp, 3)).domain(), tp)
+	eq(t, "template without last used", roundTrip(t, newTemplateItem("t1", store.Template{ID: "t"}, 1)).domain(), store.Template{ID: "t", Revision: 1})
+
+	// A tombstone keeps its flag, revision and identity.
+	tomb := domain.DataPoint{MeasureKey: "m", SubjectID: "u", Period: mth, Source: domain.SourceRecords, EnteredBy: "e", EnteredAt: at, Revision: 4, Deleted: true}
+	tk := keys{PK: dataPK("t1", "sc", mth.FY), SK: pointSK(mth, "m", "u")}
+	gotTomb, err := roundTrip(t, newPointItem(tk, tomb)).domain()
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, "tombstone", gotTomb, tomb)
+
+	rt := domain.RecordType{
+		ID: "defect", Name: "Defect", Priorities: []string{"high"}, Revision: 2,
+		Attributes:  []domain.AttributeDef{{Key: "customerTicket", Name: "Customer ticket", Type: domain.AttrString}},
+		TrackedFrom: map[string]period.Period{"tracker-a": mth},
+	}
+	rti, err := newRecordTypeItem("t1", rt, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rti.PK != "T#t1" || rti.SK != "RTYPE#defect" {
+		t.Errorf("record type keys = %+v", rti.keys)
+	}
+	gotRT, err := roundTrip(t, rti).domain()
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, "record type", gotRT, rt)
+
+	asOf, err := domain.ParseDate("2026-10-05")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sn := domain.Snapshot{ID: "s1", RecordType: "defect", Source: "tracker-a", TemplateID: "tpl", TemplateRevision: 2, AsOf: asOf, FileName: "f.csv", CreatedBy: "u", CreatedAt: at, Counts: map[string]int{"added": 1}}
+	gotSn, err := roundTrip(t, newSnapshotItem("t1", sn)).domain()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if si := newSnapshotItem("t1", sn); si.PK != "T#t1" || si.SK != "SNAP#defect#s1" {
+		t.Errorf("snapshot keys = %+v", si.keys)
+	}
+	if d := cmp.Diff(sn, gotSn, cmpopts.EquateEmpty(), cmp.Comparer(func(a, b domain.Date) bool { return a.Time.Equal(b.Time) })); d != "" {
+		t.Errorf("snapshot mismatch (-want +got):\n%s", d)
+	}
+
+	w := store.RecordRevisionWrite{Source: "tracker-a", ExternalID: "CHK#1", Type: "defect", Rev: domain.RecordRevision{AsOf: asOf, SnapshotID: "s1", Fields: domain.RecordFields{SubjectKey: "checkout", Title: "t", State: domain.StateOpen}}}
+	ri, err := newRecordRevItem("t1", w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ri.PK != "T#t1#REC#defect" || ri.SK != "R#tracker-a#CHK%231#2026-10-05" || ri.ExternalID != "CHK#1" {
+		t.Errorf("record revision item = %+v", ri)
+	}
+	gotRev, err := roundTrip(t, ri).revision()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotRev.SnapshotID != "s1" || gotRev.Fields.Title != "t" || !gotRev.AsOf.Time.Equal(asOf.Time) {
+		t.Errorf("record revision = %+v", gotRev)
+	}
 }

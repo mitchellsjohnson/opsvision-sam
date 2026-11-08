@@ -2,10 +2,12 @@ package dynamostore
 
 import (
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
+	"opsvision/internal/domain"
 	"opsvision/internal/period"
 )
 
@@ -41,6 +43,9 @@ const (
 	prefixTemplate  = "TEMPLATE#"
 	prefixPoint     = "DP#"
 	prefixOverride  = "OV#"
+	prefixRecType   = "RTYPE#"
+	prefixSnapshot  = "SNAP#"
+	prefixRecordRev = "R#"
 
 	versionMarker = "#VER#"
 )
@@ -57,12 +62,27 @@ func itemSK(id string) string          { return prefixItem + id }
 func scorecardSK(id string) string     { return prefixScorecard + id }
 func importSK(id string) string        { return prefixImport + id }
 func templateSK(id string) string      { return prefixTemplate + id }
+func recordTypeSK(id string) string    { return prefixRecType + id }
 func versionPrefix(scID string) string { return prefixScorecard + scID + versionMarker }
 
 func versionSK(scID, versionID string) string { return versionPrefix(scID) + versionID }
 
 func moveSK(unitID string, month period.Period) string {
 	return prefixMove + unitID + "#" + month.String()
+}
+
+// snapshotPrefix is the SK prefix shared by every snapshot of one record type.
+func snapshotPrefix(recordType string) string { return prefixSnapshot + recordType + "#" }
+
+func snapshotSK(recordType, id string) string { return snapshotPrefix(recordType) + id }
+
+// recordPK is the partition of every record revision of one record type.
+func recordPK(tid, recordType string) string { return "T#" + tid + "#REC#" + recordType }
+
+// recordSK is the sort key of one record revision. Source and external ID are
+// escaped with url.PathEscape because external IDs may contain '#'.
+func recordSK(source, externalID string, asOf domain.Date) string {
+	return prefixRecordRev + url.PathEscape(source) + "#" + url.PathEscape(externalID) + "#" + asOf.String()
 }
 
 // tenantFromGSISK extracts the tenant ID from a membership's GSI1SK.

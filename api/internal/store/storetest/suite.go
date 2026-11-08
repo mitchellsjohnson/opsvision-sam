@@ -65,6 +65,17 @@ func Run(t *testing.T, newStore func(t *testing.T) store.Store) {
 		{"ListsAreSorted", listsAreSorted},
 		{"ReturnedValuesAreCopies", returnedValuesAreCopies},
 		{"ConcurrentWritersOneWins", concurrentWritersOneWins},
+		{"TemplateRevisionIncrements", templateRevisionIncrements},
+		{"RecordTypeRevision", recordTypeRevision},
+		{"ApplySnapshotGroupsRevisions", applySnapshotGroupsRevisions},
+		{"ApplySnapshotLargeBatch", applySnapshotLargeBatch},
+		{"ApplySnapshotDuplicateIDConflict", applySnapshotDuplicateIDConflict},
+		{"SnapshotsNewestFirst", snapshotsNewestFirst},
+		{"RecordsCrossTenant", recordsCrossTenant},
+		{"ExternalIDWithHash", externalIDWithHash},
+		{"DeleteDataPoint", deleteDataPoint},
+		{"DeleteDataPointRevisionChecks", deleteDataPointRevisionChecks},
+		{"DeleteDataPointCrossTenant", deleteDataPointCrossTenant},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) { c.fn(t, newStore(t)) })
@@ -91,7 +102,8 @@ func wantErr(t *testing.T, err, target error) {
 // are equal, because stores are not required to preserve that distinction.
 func wantEq[T any](t *testing.T, what string, got, want T) {
 	t.Helper()
-	if d := cmp.Diff(want, got, cmpopts.EquateEmpty()); d != "" {
+	sameDate := cmp.Comparer(func(a, b domain.Date) bool { return a.Time.Equal(b.Time) })
+	if d := cmp.Diff(want, got, cmpopts.EquateEmpty(), sameDate); d != "" {
 		t.Fatalf("%s mismatch (-want +got):\n%s", what, d)
 	}
 }
@@ -839,6 +851,8 @@ func importsAndTemplates(t *testing.T, s store.Store) {
 	must(t, s.PutTemplate(ctx, tn, tpls[0]))
 	list, err := s.ListTemplates(ctx, tn)
 	must(t, err)
+	// The store assigns Revision: t-b was saved twice, t-a once.
+	tpls[0].Revision, tpls[1].Revision = 2, 1
 	wantEq(t, "templates", list, []store.Template{tpls[1], tpls[0]})
 
 	// DeleteTemplate removes one template; a missing one is ErrNotFound.
@@ -1358,4 +1372,534 @@ func concurrentWritersOneWins(t *testing.T, s store.Store) {
 		}
 		wantErr(t, err, store.ErrNotFound) // a losing create must not claim its org
 	}
+}
+
+// --- templates, record types, records, snapshots ---------------------------
+
+func templateRevisionIncrements(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	tn, other := newTenant(t, s), newTenant(t, s)
+	used := at(20)
+
+	list := func(tenant string) map[string]store.Template {
+		t.Helper()
+		ts, err := s.ListTemplates(ctx, tenant)
+		must(t, err)
+		out := map[string]store.Template{}
+		for _, tp := range ts {
+			out[tp.ID] = tp
+		}
+		return out
+	}
+
+	// The first save is revision 1, whatever the caller sends.
+	must(t, s.PutTemplate(ctx, tn, store.Template{ID: "a", Name: "A", Revision: 99}))
+	wantEq(t, "first save", list(tn)["a"].Revision, 1)
+
+	must(t, s.PutTemplate(ctx, tn, store.Template{ID: "a", Name: "A2", Revision: 1}))
+	must(t, s.PutTemplate(ctx, tn, store.Template{ID: "a", Name: "A3", LastUsed: &used}))
+	got := list(tn)["a"]
+	wantEq(t, "third save revision", got.Revision, 3)
+	wantEq(t, "name", got.Name, "A3")
+	if got.LastUsed == nil || !got.LastUsed.Equal(used) {
+		t.Fatalf("LastUsed = %v, want %v", got.LastUsed, used)
+	}
+
+	// Revisions are per template and per tenant.
+	must(t, s.PutTemplate(ctx, tn, store.Template{ID: "b", Name: "B"}))
+	wantEq(t, "other template", list(tn)["b"].Revision, 1)
+	must(t, s.PutTemplate(ctx, other, store.Template{ID: "a", Name: "Other A"}))
+	wantEq(t, "other tenant", list(other)["a"].Revision, 1)
+	wantEq(t, "tenant unchanged", list(tn)["a"].Revision, 3)
+
+	// Delete then recreate starts over.
+	must(t, s.DeleteTemplate(ctx, tn, "a"))
+	must(t, s.PutTemplate(ctx, tn, store.Template{ID: "a", Name: "Again"}))
+	wantEq(t, "recreated", list(tn)["a"].Revision, 1)
+}
+
+func recordType(id, name string) domain.RecordType {
+	return domain.RecordType{
+		ID: id, Name: name,
+		Priorities: []string{"high", "low"},
+		Attributes: []domain.AttributeDef{{Key: "customerTicket", Name: "Customer ticket", Type: domain.AttrString}},
+		TrackedFrom: map[string]period.Period{
+			"tracker-a": month(2026, 4),
+		},
+	}
+}
+
+func recordTypeRevision(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	tn := newTenant(t, s)
+
+	rt := recordType("defect", "Defect")
+	rt.Revision = 42 // ignored
+	must(t, s.PutRecordType(ctx, tn, rt, 0))
+	wantErr(t, s.PutRecordType(ctx, tn, rt, 0), store.ErrConflict) // exists
+
+	got, err := s.ListRecordTypes(ctx, tn)
+	must(t, err)
+	want := recordType("defect", "Defect")
+	want.Revision = 1
+	wantEq(t, "created", got, []domain.RecordType{want})
+
+	rt.Name = "Defect v2"
+	rt.TrackedFrom = map[string]period.Period{"tracker-a": month(2026, 4), "tracker-b": month(2026, 7)}
+	must(t, s.PutRecordType(ctx, tn, rt, 1))
+	got, err = s.ListRecordTypes(ctx, tn)
+	must(t, err)
+	want.Name, want.TrackedFrom, want.Revision = rt.Name, rt.TrackedFrom, 2
+	wantEq(t, "updated", got, []domain.RecordType{want})
+
+	wantErr(t, s.PutRecordType(ctx, tn, rt, 1), store.ErrConflict)                         // stale
+	wantErr(t, s.PutRecordType(ctx, tn, rt, 5), store.ErrConflict)                         // too new
+	wantErr(t, s.PutRecordType(ctx, tn, rt, -1), store.ErrConflict)                        // unconditional is not allowed
+	wantErr(t, s.PutRecordType(ctx, tn, recordType("epic", "Epic"), 3), store.ErrConflict) // missing
+	got, err = s.ListRecordTypes(ctx, tn)
+	must(t, err)
+	wantEq(t, "unchanged by conflicts", got, []domain.RecordType{want})
+
+	// Listed by ID; another tenant sees none and can use the same ID.
+	must(t, s.PutRecordType(ctx, tn, recordType("bug", "Bug"), 0))
+	got, err = s.ListRecordTypes(ctx, tn)
+	must(t, err)
+	wantEq(t, "ids", []string{got[0].ID, got[1].ID}, []string{"bug", "defect"})
+
+	other := newTenant(t, s)
+	got, err = s.ListRecordTypes(ctx, other)
+	wantEmpty(t, "other tenant types", got, err)
+	must(t, s.PutRecordType(ctx, other, recordType("defect", "Theirs"), 0))
+	got, err = s.ListRecordTypes(ctx, tn)
+	must(t, err)
+	wantEq(t, "own tenant unchanged", got[1].Name, "Defect v2")
+}
+
+func date(t *testing.T, s string) domain.Date {
+	t.Helper()
+	d, err := domain.ParseDate(s)
+	must(t, err)
+	return d
+}
+
+func fields(t *testing.T, subject, title, createdAt string) domain.RecordFields {
+	t.Helper()
+	due := date(t, "2026-11-15")
+	planned := 3.5
+	return domain.RecordFields{
+		SubjectKey: subject, Title: title, Priority: "high", Status: "In progress",
+		State:         domain.StateOpen,
+		CreatedAt:     date(t, createdAt),
+		DueAt:         &due,
+		PriorDueDates: []domain.Date{date(t, "2026-11-01")},
+		Planned:       &planned,
+		Attributes:    map[string]any{"customerTicket": "PAY-7", "escalated": true, "points": 5.0},
+	}
+}
+
+func revWrite(t *testing.T, typ, source, ext, snap, asOf, title string) store.RecordRevisionWrite {
+	t.Helper()
+	return store.RecordRevisionWrite{
+		Source: source, ExternalID: ext, Type: typ,
+		Rev: domain.RecordRevision{AsOf: date(t, asOf), SnapshotID: snap, Fields: fields(t, "checkout", title, "2026-10-01")},
+	}
+}
+
+func snapshot(t *testing.T, id, typ, source, asOf string, created int) domain.Snapshot {
+	t.Helper()
+	return domain.Snapshot{
+		ID: id, RecordType: typ, Source: source, TemplateID: "tpl-1", TemplateRevision: 2,
+		AsOf: date(t, asOf), FileName: id + ".csv", CreatedBy: "user-1", CreatedAt: at(created),
+		Counts: map[string]int{"added": 2, "updated": 1},
+	}
+}
+
+func applySnapshotGroupsRevisions(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	tn := newTenant(t, s)
+
+	s1 := snapshot(t, "snap-1", "defect", "tracker-a", "2026-10-05", 5)
+	r1 := []store.RecordRevisionWrite{
+		revWrite(t, "defect", "tracker-b", "CHK-2", "snap-1", "2026-10-05", "b2 first"),
+		revWrite(t, "defect", "tracker-a", "CHK-10", "snap-1", "2026-10-05", "a10 first"),
+		revWrite(t, "defect", "tracker-a", "CHK-9", "snap-1", "2026-10-05", "a9 first"),
+		revWrite(t, "epic", "tracker-a", "CHK-1", "snap-1", "2026-10-05", "an epic"),
+	}
+	must(t, s.ApplySnapshot(ctx, tn, s1, r1))
+
+	s2 := snapshot(t, "snap-2", "defect", "tracker-a", "2026-10-12", 12)
+	r2 := []store.RecordRevisionWrite{
+		revWrite(t, "defect", "tracker-a", "CHK-9", "snap-2", "2026-10-12", "a9 second"),
+	}
+	must(t, s.ApplySnapshot(ctx, tn, s2, r2))
+
+	// Applying a revision for an existing (record, asOf) replaces it.
+	s3 := snapshot(t, "snap-3", "defect", "tracker-a", "2026-10-12", 13)
+	r3 := []store.RecordRevisionWrite{
+		revWrite(t, "defect", "tracker-a", "CHK-9", "snap-3", "2026-10-12", "a9 second, corrected"),
+	}
+	must(t, s.ApplySnapshot(ctx, tn, s3, r3))
+
+	got, err := s.ListRecords(ctx, tn, "defect")
+	must(t, err)
+	// Sorted by Source then ExternalID (CHK-10 < CHK-9 as strings); revisions by AsOf.
+	want := []domain.Record{
+		{Source: "tracker-a", ExternalID: "CHK-10", Type: "defect", Revisions: []domain.RecordRevision{r1[1].Rev}},
+		{Source: "tracker-a", ExternalID: "CHK-9", Type: "defect", Revisions: []domain.RecordRevision{r1[2].Rev, r3[0].Rev}},
+		{Source: "tracker-b", ExternalID: "CHK-2", Type: "defect", Revisions: []domain.RecordRevision{r1[0].Rev}},
+	}
+	wantEq(t, "defect records", got, want)
+
+	epics, err := s.ListRecords(ctx, tn, "epic")
+	must(t, err)
+	wantEq(t, "epic records", epics, []domain.Record{
+		{Source: "tracker-a", ExternalID: "CHK-1", Type: "epic", Revisions: []domain.RecordRevision{r1[3].Rev}},
+	})
+
+	none, err := s.ListRecords(ctx, tn, "story")
+	wantEmpty(t, "unknown type", none, err)
+
+	snaps, err := s.ListSnapshots(ctx, tn, "defect")
+	must(t, err)
+	wantEq(t, "snapshots", snaps, []domain.Snapshot{s3, s2, s1})
+
+	// Returned values are copies: mutating them never reaches the store.
+	got[0].Revisions[0].Fields.Title = "mutated"
+	*got[0].Revisions[0].Fields.DueAt = date(t, "2030-01-01")
+	got[0].Revisions[0].Fields.Attributes["customerTicket"] = "mutated"
+	got[0].Revisions[0].Fields.PriorDueDates[0] = date(t, "2030-01-01")
+	snaps[0].Counts["added"] = 99
+	again, err := s.ListRecords(ctx, tn, "defect")
+	must(t, err)
+	wantEq(t, "records after caller mutation", again, want)
+	snapsAgain, err := s.ListSnapshots(ctx, tn, "defect")
+	must(t, err)
+	wantEq(t, "snapshots after caller mutation", snapsAgain, []domain.Snapshot{s3, s2, s1})
+}
+
+func applySnapshotLargeBatch(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	tn := newTenant(t, s)
+
+	const n = 130 // more than any single DynamoDB batch or transaction holds
+	snap := snapshot(t, "snap-big", "defect", "tracker-a", "2026-10-05", 5)
+	revs := make([]store.RecordRevisionWrite, 0, n+1)
+	for i := range n {
+		revs = append(revs, revWrite(t, "defect", "tracker-a", fmt.Sprintf("CHK-%03d", i), "snap-big", "2026-10-05", "t"))
+	}
+	// A repeated key inside one batch must not break the write; the last wins.
+	dup := revWrite(t, "defect", "tracker-a", "CHK-000", "snap-big", "2026-10-05", "last wins")
+	revs = append(revs, dup)
+	must(t, s.ApplySnapshot(ctx, tn, snap, revs))
+
+	got, err := s.ListRecords(ctx, tn, "defect")
+	must(t, err)
+	wantEq(t, "record count", len(got), n)
+	wantEq(t, "first record", got[0].Revisions, []domain.RecordRevision{dup.Rev})
+	for i, r := range got {
+		wantEq(t, "id order", r.ExternalID, fmt.Sprintf("CHK-%03d", i))
+		wantEq(t, "revisions per record", len(r.Revisions), 1)
+	}
+}
+
+func applySnapshotDuplicateIDConflict(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	tn := newTenant(t, s)
+
+	s1 := snapshot(t, "snap-1", "defect", "tracker-a", "2026-10-05", 5)
+	first := []store.RecordRevisionWrite{revWrite(t, "defect", "tracker-a", "CHK-1", "snap-1", "2026-10-05", "first")}
+	must(t, s.ApplySnapshot(ctx, tn, s1, first))
+
+	// Same ID again: conflict, and none of its revisions are stored.
+	dup := snapshot(t, "snap-1", "defect", "tracker-a", "2026-10-19", 19)
+	second := []store.RecordRevisionWrite{
+		revWrite(t, "defect", "tracker-a", "CHK-1", "snap-1", "2026-10-19", "second"),
+		revWrite(t, "defect", "tracker-a", "CHK-2", "snap-1", "2026-10-19", "new record"),
+	}
+	wantErr(t, s.ApplySnapshot(ctx, tn, dup, second), store.ErrConflict)
+
+	recs, err := s.ListRecords(ctx, tn, "defect")
+	must(t, err)
+	wantEq(t, "records unchanged", recs, []domain.Record{
+		{Source: "tracker-a", ExternalID: "CHK-1", Type: "defect", Revisions: []domain.RecordRevision{first[0].Rev}},
+	})
+	snaps, err := s.ListSnapshots(ctx, tn, "defect")
+	must(t, err)
+	wantEq(t, "snapshots unchanged", snaps, []domain.Snapshot{s1})
+
+	// The same ID in another record type or tenant is a different snapshot.
+	must(t, s.ApplySnapshot(ctx, tn, snapshot(t, "snap-1", "epic", "tracker-a", "2026-10-05", 5), nil))
+	must(t, s.ApplySnapshot(ctx, newTenant(t, s), s1, first))
+
+	// A new ID for the same upload applies cleanly (the retry path).
+	retry := snapshot(t, "snap-1b", "defect", "tracker-a", "2026-10-19", 20)
+	must(t, s.ApplySnapshot(ctx, tn, retry, second))
+	recs, err = s.ListRecords(ctx, tn, "defect")
+	must(t, err)
+	wantEq(t, "record count after retry", len(recs), 2)
+	wantEq(t, "revisions after retry", len(recs[0].Revisions), 2)
+}
+
+func snapshotsNewestFirst(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	tn := newTenant(t, s)
+
+	in := []domain.Snapshot{
+		snapshot(t, "mid", "defect", "tracker-a", "2026-10-12", 12),
+		snapshot(t, "old", "defect", "tracker-a", "2026-10-05", 30),
+		snapshot(t, "new", "defect", "tracker-b", "2026-10-19", 1),
+		snapshot(t, "tie-later", "defect", "tracker-b", "2026-10-12", 14),
+		snapshot(t, "other-type", "epic", "tracker-a", "2026-10-30", 3),
+	}
+	for _, sn := range in {
+		must(t, s.ApplySnapshot(ctx, tn, sn, nil))
+	}
+	got, err := s.ListSnapshots(ctx, tn, "defect")
+	must(t, err)
+	var ids []string
+	for _, sn := range got {
+		ids = append(ids, sn.ID)
+	}
+	wantEq(t, "newest first", ids, []string{"new", "tie-later", "mid", "old"})
+	wantEq(t, "full snapshot", got[2], in[0])
+
+	none, err := s.ListSnapshots(ctx, tn, "story")
+	wantEmpty(t, "unknown type", none, err)
+}
+
+func recordsCrossTenant(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	a, b := newTenant(t, s), newTenant(t, s)
+
+	must(t, s.PutRecordType(ctx, a, recordType("defect", "Defect"), 0))
+	snap := snapshot(t, "snap-1", "defect", "tracker-a", "2026-10-05", 5)
+	revs := []store.RecordRevisionWrite{revWrite(t, "defect", "tracker-a", "CHK-1", "snap-1", "2026-10-05", "mine")}
+	must(t, s.ApplySnapshot(ctx, a, snap, revs))
+
+	rts, err := s.ListRecordTypes(ctx, b)
+	wantEmpty(t, "types", rts, err)
+	recs, err := s.ListRecords(ctx, b, "defect")
+	wantEmpty(t, "records", recs, err)
+	snaps, err := s.ListSnapshots(ctx, b, "defect")
+	wantEmpty(t, "snapshots", snaps, err)
+
+	// The same keys in B neither conflict with nor alter A.
+	theirs := []store.RecordRevisionWrite{revWrite(t, "defect", "tracker-a", "CHK-1", "snap-1", "2026-10-05", "theirs")}
+	must(t, s.ApplySnapshot(ctx, b, snap, theirs))
+	recs, err = s.ListRecords(ctx, a, "defect")
+	must(t, err)
+	wantEq(t, "A's records", recs, []domain.Record{
+		{Source: "tracker-a", ExternalID: "CHK-1", Type: "defect", Revisions: []domain.RecordRevision{revs[0].Rev}},
+	})
+	recs, err = s.ListRecords(ctx, b, "defect")
+	must(t, err)
+	wantEq(t, "B's records", recs, []domain.Record{
+		{Source: "tracker-a", ExternalID: "CHK-1", Type: "defect", Revisions: []domain.RecordRevision{theirs[0].Rev}},
+	})
+}
+
+func externalIDWithHash(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	tn := newTenant(t, s)
+
+	// IDs and sources containing '#', '/', '%' and spaces must stay distinct
+	// records and round-trip unchanged.
+	type key struct{ source, ext string }
+	keys := []key{
+		{"tracker-a", "CHK#1"},
+		{"tracker-a", "CHK"},
+		{"tracker-a", "CHK#1#2"},
+		{"tracker-a#CHK", "1"},
+		{"tracker-a", "CHK%231"},
+		{"tracker a", "path/with slash"},
+		{"tracker-a", "CHK#1" + "#"},
+	}
+	snap := snapshot(t, "snap-1", "defect", "tracker-a", "2026-10-05", 5)
+	var revs []store.RecordRevisionWrite
+	for _, k := range keys {
+		revs = append(revs, revWrite(t, "defect", k.source, k.ext, "snap-1", "2026-10-05", k.source+"|"+k.ext))
+	}
+	must(t, s.ApplySnapshot(ctx, tn, snap, revs))
+
+	got, err := s.ListRecords(ctx, tn, "defect")
+	must(t, err)
+	wantEq(t, "record count", len(got), len(keys))
+	byKey := map[key]domain.Record{}
+	for _, r := range got {
+		byKey[key{r.Source, r.ExternalID}] = r
+	}
+	for _, k := range keys {
+		r, ok := byKey[k]
+		if !ok {
+			t.Fatalf("record %q/%q missing from %d records", k.source, k.ext, len(got))
+		}
+		wantEq(t, "title for "+k.source+"|"+k.ext, r.Revisions[0].Fields.Title, k.source+"|"+k.ext)
+	}
+}
+
+func deleteDataPoint(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	tn := newTenant(t, s)
+	p := month(2026, 3)
+	keep := point("m2", "u1", p, 20)
+
+	saved, err := s.PutDataPoints(ctx, tn, "sc", []store.DataWrite{
+		{Point: point("m1", "u1", p, 10), ExpectedRevision: store.MustNotExist},
+		{Point: keep, ExpectedRevision: store.MustNotExist},
+	})
+	must(t, err)
+	wantEq(t, "initial revision", saved[0].Revision, 1)
+
+	del := point("m1", "u1", p, 0)
+	del.EnteredBy, del.EnteredAt = "deleter", at(9)
+	out, err := s.PutDataPoints(ctx, tn, "sc", []store.DataWrite{{Point: del, ExpectedRevision: 1, Delete: true}})
+	must(t, err)
+	wantEq(t, "one result", len(out), 1)
+	if !out[0].Deleted || out[0].Revision != 2 {
+		t.Fatalf("delete result = %+v, want a tombstone at revision 2", out[0])
+	}
+
+	// Gone from ListData; the other point is untouched.
+	cur := current(t, s, tn, "sc", 2026)
+	wantEq(t, "current points", len(cur), 1)
+	wantEq(t, "remaining point", cur[0].MeasureKey, "m2")
+	wantEq(t, "remaining value", *cur[0].Value, 20.0)
+
+	// History keeps the original and ends with a tombstone.
+	hist, err := s.History(ctx, tn, "sc", "m1", "u1", p)
+	must(t, err)
+	wantEq(t, "history length", len(hist), 2)
+	tomb := hist[0]
+	if !tomb.Deleted || tomb.Revision != 2 || tomb.Source != domain.SourceRecords || tomb.Value != nil {
+		t.Fatalf("tombstone = %+v", tomb)
+	}
+	wantEq(t, "tombstone actor", tomb.EnteredBy, "deleter")
+	wantEq(t, "tombstone identity", [3]any{tomb.MeasureKey, tomb.SubjectID, tomb.Period}, [3]any{"m1", "u1", p})
+	if hist[1].Deleted || hist[1].Revision != 1 || *hist[1].Value != 10 {
+		t.Fatalf("original revision = %+v", hist[1])
+	}
+
+	// Deleting a missing point is a no-op: no error, no new history.
+	for _, exp := range []int{store.Unconditional, store.MustNotExist} {
+		out, err = s.PutDataPoints(ctx, tn, "sc", []store.DataWrite{{Point: del, ExpectedRevision: exp, Delete: true}})
+		must(t, err)
+		wantEq(t, "no-op result count", len(out), 1)
+		wantEq(t, "no-op result revision", out[0].Revision, 0)
+	}
+	_, err = s.PutDataPoints(ctx, tn, "sc", []store.DataWrite{{Point: point("never", "u1", p, 0), ExpectedRevision: store.Unconditional, Delete: true}})
+	must(t, err)
+	hist, err = s.History(ctx, tn, "sc", "m1", "u1", p)
+	must(t, err)
+	wantEq(t, "history after no-op deletes", len(hist), 2)
+	hist, err = s.History(ctx, tn, "sc", "never", "u1", p)
+	wantEmpty(t, "history of never-written point", hist, err)
+
+	// A later write behaves as new and continues the numbering past the
+	// tombstone, so history is never overwritten.
+	stale := point("m1", "u1", p, 77)
+	_, err = s.PutDataPoints(ctx, tn, "sc", []store.DataWrite{{Point: stale, ExpectedRevision: 1}})
+	wantErr(t, err, store.ErrConflict) // the pre-delete revision is gone
+	var ce *store.ConflictError
+	if !errors.As(err, &ce) || len(ce.Conflicts) != 1 || ce.Conflicts[0].Current != nil {
+		t.Fatalf("conflict = %+v, want Current nil for a deleted point", ce)
+	}
+	_, err = s.PutDataPoints(ctx, tn, "sc", []store.DataWrite{{Point: stale, ExpectedRevision: 2}})
+	wantErr(t, err, store.ErrConflict) // the tombstone is not a live revision
+
+	out, err = s.PutDataPoints(ctx, tn, "sc", []store.DataWrite{{Point: stale, ExpectedRevision: store.MustNotExist}})
+	must(t, err)
+	wantEq(t, "recreated revision", out[0].Revision, 3)
+	if out[0].Deleted {
+		t.Fatal("a live write must not be a tombstone")
+	}
+	cur = current(t, s, tn, "sc", 2026)
+	wantEq(t, "current after recreate", len(cur), 2)
+	hist, err = s.History(ctx, tn, "sc", "m1", "u1", p)
+	must(t, err)
+	wantEq(t, "history after recreate", len(hist), 3)
+	wantEq(t, "history tombstone kept", hist[1].Deleted, true)
+	wantEq(t, "history newest value", *hist[0].Value, 77.0)
+}
+
+func deleteDataPointRevisionChecks(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	tn := newTenant(t, s)
+	p := month(2026, 3)
+
+	_, err := s.PutDataPoints(ctx, tn, "sc", []store.DataWrite{
+		{Point: point("m1", "u1", p, 1), ExpectedRevision: store.MustNotExist},
+		{Point: point("m2", "u1", p, 2), ExpectedRevision: store.MustNotExist},
+	})
+	must(t, err)
+	_, err = s.PutDataPoints(ctx, tn, "sc", []store.DataWrite{{Point: point("m1", "u1", p, 11), ExpectedRevision: 1}})
+	must(t, err) // m1 is now revision 2
+
+	// A stale revision conflicts like a write and carries the current point.
+	_, err = s.PutDataPoints(ctx, tn, "sc", []store.DataWrite{{Point: point("m1", "u1", p, 0), ExpectedRevision: 1, Delete: true}})
+	wantErr(t, err, store.ErrConflict)
+	var ce *store.ConflictError
+	if !errors.As(err, &ce) || len(ce.Conflicts) != 1 {
+		t.Fatalf("error = %v, want one conflict", err)
+	}
+	if c := ce.Conflicts[0]; !c.Write.Delete || c.Current == nil || c.Current.Revision != 2 {
+		t.Fatalf("conflict = %+v", c)
+	}
+	// MustNotExist against an existing point conflicts too; a positive
+	// revision against a missing point conflicts.
+	_, err = s.PutDataPoints(ctx, tn, "sc", []store.DataWrite{{Point: point("m1", "u1", p, 0), ExpectedRevision: store.MustNotExist, Delete: true}})
+	wantErr(t, err, store.ErrConflict)
+	_, err = s.PutDataPoints(ctx, tn, "sc", []store.DataWrite{{Point: point("missing", "u1", p, 0), ExpectedRevision: 1, Delete: true}})
+	wantErr(t, err, store.ErrConflict)
+	wantEq(t, "nothing deleted by conflicts", len(current(t, s, tn, "sc", 2026)), 2)
+
+	// A conflict anywhere in the batch deletes nothing.
+	_, err = s.PutDataPoints(ctx, tn, "sc", []store.DataWrite{
+		{Point: point("m2", "u1", p, 0), ExpectedRevision: 1, Delete: true},
+		{Point: point("m1", "u1", p, 5), ExpectedRevision: 1},
+	})
+	wantErr(t, err, store.ErrConflict)
+	wantEq(t, "batch rolled back", len(current(t, s, tn, "sc", 2026)), 2)
+	hist, err := s.History(ctx, tn, "sc", "m2", "u1", p)
+	must(t, err)
+	wantEq(t, "m2 history untouched", len(hist), 1)
+
+	// Writes in a batch see earlier deletes: delete then re-create at the
+	// next revision, then Unconditional delete of the result.
+	out, err := s.PutDataPoints(ctx, tn, "sc", []store.DataWrite{
+		{Point: point("m2", "u1", p, 0), ExpectedRevision: 1, Delete: true},
+		{Point: point("m2", "u1", p, 3), ExpectedRevision: store.MustNotExist},
+	})
+	must(t, err)
+	wantEq(t, "batch revisions", []int{out[0].Revision, out[1].Revision}, []int{2, 3})
+	cur := current(t, s, tn, "sc", 2026)
+	wantEq(t, "m2 live again", len(cur), 2)
+
+	_, err = s.PutDataPoints(ctx, tn, "sc", []store.DataWrite{{Point: point("m2", "u1", p, 0), ExpectedRevision: store.Unconditional, Delete: true}})
+	must(t, err)
+	cur = current(t, s, tn, "sc", 2026)
+	wantEq(t, "unconditional delete", len(cur), 1)
+	wantEq(t, "survivor", cur[0].MeasureKey, "m1")
+	hist, err = s.History(ctx, tn, "sc", "m2", "u1", p)
+	must(t, err)
+	wantEq(t, "m2 history", []int{hist[0].Revision, hist[1].Revision, hist[2].Revision, hist[3].Revision}, []int{4, 3, 2, 1})
+	wantEq(t, "m2 tombstones", []bool{hist[0].Deleted, hist[1].Deleted, hist[2].Deleted, hist[3].Deleted}, []bool{true, false, true, false})
+}
+
+func deleteDataPointCrossTenant(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	a, b := newTenant(t, s), newTenant(t, s)
+	p := month(2026, 3)
+	for _, tn := range []string{a, b} {
+		_, err := s.PutDataPoints(ctx, tn, "sc", []store.DataWrite{{Point: point("m1", "u1", p, 1), ExpectedRevision: store.MustNotExist}})
+		must(t, err)
+	}
+	_, err := s.PutDataPoints(ctx, a, "sc", []store.DataWrite{{Point: point("m1", "u1", p, 0), ExpectedRevision: 1, Delete: true}})
+	must(t, err)
+	wantEq(t, "A's points", len(current(t, s, a, "sc", 2026)), 0)
+	cur := current(t, s, b, "sc", 2026)
+	wantEq(t, "B's points", len(cur), 1)
+	wantEq(t, "B's revision", cur[0].Revision, 1)
+	hist, err := s.History(ctx, b, "sc", "m1", "u1", p)
+	must(t, err)
+	wantEq(t, "B's history", len(hist), 1)
 }

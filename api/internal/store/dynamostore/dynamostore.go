@@ -41,6 +41,7 @@ type API interface {
 	Query(ctx context.Context, in *dynamodb.QueryInput, opts ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error)
 	TransactWriteItems(ctx context.Context, in *dynamodb.TransactWriteItemsInput, opts ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error)
 	BatchGetItem(ctx context.Context, in *dynamodb.BatchGetItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.BatchGetItemOutput, error)
+	BatchWriteItem(ctx context.Context, in *dynamodb.BatchWriteItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.BatchWriteItemOutput, error)
 }
 
 var (
@@ -766,12 +767,16 @@ type pointKey struct {
 }
 
 // step is one planned write: the point to store (with its new revision) and
-// the revision it replaces (0 if the point did not exist).
+// the revision it replaces (0 if the point did not exist). A delete stores a
+// tombstone: the current item stays, marked Deleted and holding the new
+// revision, so numbering continues past it and the next write is conditioned
+// on it.
 type step struct {
 	write   store.DataWrite
 	key     pointKey
 	saved   domain.DataPoint
-	prevRev int
+	prevRev int  // the stored revision this step replaces, a tombstone's included
+	noop    bool // a delete of a missing point; writes nothing
 }
 
 func clonePoint(p domain.DataPoint) domain.DataPoint {
@@ -822,7 +827,11 @@ func (s *Store) plan(ctx context.Context, tid, scID string, writes []store.DataW
 	var conflicts []store.DataConflict
 	for _, w := range writes {
 		k := pointKey{w.Point.MeasureKey, w.Point.SubjectID, w.Point.Period}
-		cur := state[k]
+		last := state[k] // the newest stored revision, possibly a tombstone
+		var cur *domain.DataPoint
+		if last != nil && !last.Deleted {
+			cur = last
+		}
 		var ok bool
 		switch {
 		case w.ExpectedRevision == store.Unconditional:
@@ -833,7 +842,7 @@ func (s *Store) plan(ctx context.Context, tid, scID string, writes []store.DataW
 			ok = cur != nil && cur.Revision == w.ExpectedRevision
 		}
 		if !ok {
-			c := store.DataConflict{Write: store.DataWrite{Point: clonePoint(w.Point), ExpectedRevision: w.ExpectedRevision}}
+			c := store.DataConflict{Write: store.DataWrite{Point: clonePoint(w.Point), ExpectedRevision: w.ExpectedRevision, Delete: w.Delete}}
 			if cur != nil {
 				cp := clonePoint(*cur)
 				c.Current = &cp
@@ -842,10 +851,22 @@ func (s *Store) plan(ctx context.Context, tid, scID string, writes []store.DataW
 			continue
 		}
 		p := clonePoint(w.Point)
+		p.Deleted = false
+		if w.Delete {
+			if cur == nil {
+				// Deleting a missing point is a no-op: nothing is written.
+				p.Deleted, p.Revision = true, 0
+				steps = append(steps, step{write: w, key: k, saved: p, noop: true})
+				continue
+			}
+			p.Deleted, p.Source, p.Value = true, domain.SourceRecords, nil
+		}
+		// Revisions keep counting past a tombstone, so history is never
+		// overwritten.
 		p.Revision = 1
 		prev := 0
-		if cur != nil {
-			prev = cur.Revision
+		if last != nil {
+			prev = last.Revision
 			p.Revision = prev + 1
 		}
 		state[k] = &p
@@ -863,6 +884,9 @@ func (s *Store) txItems(tid, scID string, steps []step) ([]types.TransactWriteIt
 	last := map[pointKey]step{}
 	var order []pointKey
 	for _, st := range steps {
+		if st.noop {
+			continue
+		}
 		p := st.saved
 		hk := keys{PK: histPK(tid, scID), SK: histSK(p.Period, p.MeasureKey, p.SubjectID, p.Revision)}
 		h, err := putTx(s.table, newPointItem(hk, p), "", nil, nil)
@@ -928,7 +952,9 @@ func (s *Store) PutDataPoints(ctx context.Context, tenantID, scorecardID string,
 		if err != nil {
 			return nil, err
 		}
-		err = s.transact(ctx, items)
+		if len(items) > 0 { // a chunk of only no-op deletes writes nothing
+			err = s.transact(ctx, items)
+		}
 		if err == nil {
 			start = end
 			continue
@@ -982,6 +1008,9 @@ func (s *Store) ListData(ctx context.Context, tenantID, scorecardID string, fisc
 				p, err := it.domain()
 				if err != nil {
 					return nil, nil, err
+				}
+				if p.Deleted {
+					continue // tombstone: the point was deleted
 				}
 				pts = append(pts, p)
 			case strings.HasPrefix(sk, prefixOverride):
@@ -1120,9 +1149,42 @@ func (s *Store) GetImport(ctx context.Context, tenantID, id string) (store.Impor
 	return it.domain(), nil
 }
 
-// PutTemplate implements store.ImportStore.
+// PutTemplate implements store.ImportStore. The stored Revision is the
+// previous one plus one. The write is conditional on the revision that was
+// read (or on the template not existing), and is re-read and retried when a
+// concurrent save wins, so no revision number is ever issued twice.
 func (s *Store) PutTemplate(ctx context.Context, tenantID string, t store.Template) error {
-	return s.putPlain(ctx, newTemplateItem(tenantID, t))
+	for attempt := 1; ; attempt++ {
+		prev, found := 0, false
+		cur, err := get[templateItem](ctx, s, tenantPK(tenantID), templateSK(t.ID))
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+		case err != nil:
+			return err
+		default:
+			prev, found = cur.Revision, true
+		}
+		cond, names, values := notExists, map[string]string(nil), avMap(nil)
+		switch {
+		case prev > 0:
+			cond = "#r = :r"
+			names = map[string]string{"#r": "Revision"}
+			values = avMap{":r": num(prev)}
+		case found:
+			// Saved before templates had revisions: it counts as revision 0.
+			cond = "attribute_exists(PK)"
+		}
+		err = s.put(ctx, newTemplateItem(tenantID, t, prev+1), cond, names, values)
+		if !errors.Is(err, errConditionFailed) {
+			return err
+		}
+		if attempt >= s.maxAttempts {
+			return fmt.Errorf("dynamostore: put template: %w: gave up after %d contended attempts", store.ErrConflict, attempt)
+		}
+		if err := s.sleep(ctx, attempt); err != nil {
+			return err
+		}
+	}
 }
 
 // DeleteTemplate implements store.ImportStore.

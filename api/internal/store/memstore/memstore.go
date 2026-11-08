@@ -10,6 +10,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -76,7 +77,14 @@ type tenantData struct {
 	audit      []domain.AuditEntry
 	imports    map[string]store.Import
 	templates  map[string]store.Template
+	recTypes   map[string]domain.RecordType
+	snapshots  map[snapshotKey]domain.Snapshot
+	records    map[string]map[recordKey]*domain.Record // by record type
 }
+
+type snapshotKey struct{ recordType, id string }
+
+type recordKey struct{ source, externalID string }
 
 // tenant returns the tenant's data for writing, creating it if needed.
 // Callers must hold the write lock.
@@ -94,6 +102,9 @@ func (s *Store) tenant(id string) *tenantData {
 			scData:     map[string]*scorecardData{},
 			imports:    map[string]store.Import{},
 			templates:  map[string]store.Template{},
+			recTypes:   map[string]domain.RecordType{},
+			snapshots:  map[snapshotKey]domain.Snapshot{},
+			records:    map[string]map[recordKey]*domain.Record{},
 		}
 		s.data[id] = td
 	}
@@ -200,6 +211,49 @@ func cloneVersion(v domain.MethodologyVersion) domain.MethodologyVersion {
 	return v
 }
 
+func cloneRecordType(rt domain.RecordType) domain.RecordType {
+	rt.Priorities = cloneStrings(rt.Priorities)
+	rt.Attributes = cloneSlice(rt.Attributes, same[domain.AttributeDef])
+	if rt.TrackedFrom != nil {
+		rt.TrackedFrom = maps.Clone(rt.TrackedFrom)
+	}
+	return rt
+}
+
+func cloneFields(f domain.RecordFields) domain.RecordFields {
+	f.CommittedAt = clonePtr(f.CommittedAt)
+	f.DueAt = clonePtr(f.DueAt)
+	f.CompletedAt = clonePtr(f.CompletedAt)
+	f.MeasuredAt = clonePtr(f.MeasuredAt)
+	f.Planned = clonePtr(f.Planned)
+	f.Actual = clonePtr(f.Actual)
+	f.ExpectedValue = clonePtr(f.ExpectedValue)
+	f.DeliveredValue = clonePtr(f.DeliveredValue)
+	f.PriorDueDates = cloneSlice(f.PriorDueDates, same[domain.Date])
+	if f.Attributes != nil {
+		// Attribute values are scalars (string, number, bool, date text).
+		f.Attributes = maps.Clone(f.Attributes)
+	}
+	return f
+}
+
+func cloneRevision(r domain.RecordRevision) domain.RecordRevision {
+	r.Fields = cloneFields(r.Fields)
+	return r
+}
+
+func cloneRecord(r domain.Record) domain.Record {
+	r.Revisions = cloneSlice(r.Revisions, cloneRevision)
+	return r
+}
+
+func cloneSnapshot(sn domain.Snapshot) domain.Snapshot {
+	if sn.Counts != nil {
+		sn.Counts = maps.Clone(sn.Counts)
+	}
+	return sn
+}
+
 func clonePoint(p domain.DataPoint) domain.DataPoint {
 	p.Value = clonePtr(p.Value)
 	return p
@@ -231,6 +285,7 @@ func cloneImport(im store.Import) store.Import {
 
 func cloneTemplate(t store.Template) store.Template {
 	t.Body = cloneRaw(t.Body)
+	t.LastUsed = clonePtr(t.LastUsed)
 	return t
 }
 
@@ -518,11 +573,21 @@ func (s *Store) ListVersions(_ context.Context, tenantID, scorecardID string) ([
 
 // --- DataStore -------------------------------------------------------------
 
+// currentOf returns the newest revision in h, which may be a tombstone, or
+// nil when h is empty. Use live to ask whether the point exists.
 func currentOf(h []domain.DataPoint) *domain.DataPoint {
 	if len(h) == 0 {
 		return nil
 	}
 	return &h[len(h)-1]
+}
+
+// live returns the newest revision when it is not a tombstone, else nil.
+func live(h []domain.DataPoint) *domain.DataPoint {
+	if cur := currentOf(h); cur != nil && !cur.Deleted {
+		return cur
+	}
+	return nil
 }
 
 // PutDataPoints implements store.DataStore. The batch is applied to scratch
@@ -544,7 +609,7 @@ func (s *Store) PutDataPoints(_ context.Context, tenantID, scorecardID string, p
 		if !touched {
 			hist = sd.history[key]
 		}
-		cur := currentOf(hist)
+		cur := live(hist) // nil when the point is missing or deleted
 
 		ok := true
 		switch {
@@ -558,16 +623,28 @@ func (s *Store) PutDataPoints(_ context.Context, tenantID, scorecardID string, p
 		}
 		if !ok {
 			conflicts = append(conflicts, store.DataConflict{
-				Write:   store.DataWrite{Point: clonePoint(w.Point), ExpectedRevision: w.ExpectedRevision},
+				Write:   store.DataWrite{Point: clonePoint(w.Point), ExpectedRevision: w.ExpectedRevision, Delete: w.Delete},
 				Current: clonePointPtr(cur),
 			})
 			continue
 		}
 
 		p := clonePoint(w.Point)
+		p.Deleted = false
+		if w.Delete {
+			if cur == nil {
+				// Deleting a missing point is a no-op.
+				p.Deleted, p.Revision = true, 0
+				saved = append(saved, p)
+				continue
+			}
+			p.Deleted, p.Source, p.Value = true, domain.SourceRecords, nil
+		}
+		// Revisions keep counting past a tombstone, so history is never
+		// overwritten.
 		p.Revision = 1
-		if cur != nil {
-			p.Revision = cur.Revision + 1
+		if last := currentOf(hist); last != nil {
+			p.Revision = last.Revision + 1
 		}
 		// Copy before appending so the stored history is never aliased.
 		next := append(slices.Clone(hist), p)
@@ -595,8 +672,8 @@ func (s *Store) ListData(_ context.Context, tenantID, scorecardID string, fiscal
 		return pts, ovs, nil
 	}
 	for key, hist := range sd.history {
-		if slices.Contains(fiscalYears, key.period.FY) {
-			pts = append(pts, clonePoint(hist[len(hist)-1]))
+		if cur := live(hist); cur != nil && slices.Contains(fiscalYears, key.period.FY) {
+			pts = append(pts, clonePoint(*cur))
 		}
 	}
 	for key, o := range sd.overrides {
@@ -714,7 +791,10 @@ func (s *Store) GetImport(_ context.Context, tenantID, id string) (store.Import,
 func (s *Store) PutTemplate(_ context.Context, tenantID string, t store.Template) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.tenant(tenantID).templates[t.ID] = cloneTemplate(t)
+	td := s.tenant(tenantID)
+	c := cloneTemplate(t)
+	c.Revision = td.templates[t.ID].Revision + 1 // 1 when new
+	td.templates[t.ID] = c
 	return nil
 }
 
@@ -737,4 +817,99 @@ func (s *Store) ListTemplates(_ context.Context, tenantID string) ([]store.Templ
 	return sortedValues(s.read(tenantID).templates, cloneTemplate, func(a, b store.Template) int {
 		return strings.Compare(a.ID, b.ID)
 	}), nil
+}
+
+// --- RecordStore -----------------------------------------------------------
+
+// PutRecordType implements store.RecordStore.
+func (s *Store) PutRecordType(_ context.Context, tenantID string, rt domain.RecordType, expectedRevision int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	td := s.tenant(tenantID)
+	cur, exists := td.recTypes[rt.ID]
+	switch {
+	case expectedRevision == 0:
+		if exists {
+			return store.ErrConflict
+		}
+	case expectedRevision < 0 || !exists || cur.Revision != expectedRevision:
+		return store.ErrConflict
+	}
+	c := cloneRecordType(rt)
+	c.Revision = expectedRevision + 1
+	td.recTypes[rt.ID] = c
+	return nil
+}
+
+// ListRecordTypes implements store.RecordStore.
+func (s *Store) ListRecordTypes(_ context.Context, tenantID string) ([]domain.RecordType, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return sortedValues(s.read(tenantID).recTypes, cloneRecordType, func(a, b domain.RecordType) int {
+		return strings.Compare(a.ID, b.ID)
+	}), nil
+}
+
+// ApplySnapshot implements store.RecordStore. It is atomic.
+func (s *Store) ApplySnapshot(_ context.Context, tenantID string, sn domain.Snapshot, revs []store.RecordRevisionWrite) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	td := s.tenant(tenantID)
+	key := snapshotKey{sn.RecordType, sn.ID}
+	if _, ok := td.snapshots[key]; ok {
+		return store.ErrConflict
+	}
+	for _, w := range revs {
+		byKey := td.records[w.Type]
+		if byKey == nil {
+			byKey = map[recordKey]*domain.Record{}
+			td.records[w.Type] = byKey
+		}
+		rk := recordKey{w.Source, w.ExternalID}
+		rec := byKey[rk]
+		if rec == nil {
+			rec = &domain.Record{Source: w.Source, ExternalID: w.ExternalID, Type: w.Type}
+			byKey[rk] = rec
+		}
+		r := cloneRevision(w.Rev)
+		if i := slices.IndexFunc(rec.Revisions, func(x domain.RecordRevision) bool { return x.AsOf.Equal(r.AsOf.Time) }); i >= 0 {
+			rec.Revisions[i] = r
+		} else {
+			rec.Revisions = append(rec.Revisions, r)
+		}
+	}
+	td.snapshots[key] = cloneSnapshot(sn)
+	return nil
+}
+
+// ListRecords implements store.RecordStore.
+func (s *Store) ListRecords(_ context.Context, tenantID, recordType string) ([]domain.Record, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := []domain.Record{}
+	for _, rec := range s.read(tenantID).records[recordType] {
+		c := cloneRecord(*rec)
+		slices.SortFunc(c.Revisions, func(a, b domain.RecordRevision) int { return a.AsOf.Compare(b.AsOf.Time) })
+		out = append(out, c)
+	}
+	slices.SortFunc(out, func(a, b domain.Record) int {
+		return cmp.Or(strings.Compare(a.Source, b.Source), strings.Compare(a.ExternalID, b.ExternalID))
+	})
+	return out, nil
+}
+
+// ListSnapshots implements store.RecordStore.
+func (s *Store) ListSnapshots(_ context.Context, tenantID, recordType string) ([]domain.Snapshot, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := []domain.Snapshot{}
+	for k, sn := range s.read(tenantID).snapshots {
+		if k.recordType == recordType {
+			out = append(out, cloneSnapshot(sn))
+		}
+	}
+	slices.SortFunc(out, func(a, b domain.Snapshot) int {
+		return cmp.Or(b.AsOf.Compare(a.AsOf.Time), b.CreatedAt.Compare(a.CreatedAt), strings.Compare(a.ID, b.ID))
+	})
+	return out, nil
 }

@@ -38,6 +38,10 @@ func (f *fakeAPI) DeleteItem(context.Context, *dynamodb.DeleteItemInput, ...func
 	return nil, errUnexpected
 }
 
+func (f *fakeAPI) BatchWriteItem(context.Context, *dynamodb.BatchWriteItemInput, ...func(*dynamodb.Options)) (*dynamodb.BatchWriteItemOutput, error) {
+	return nil, errUnexpected
+}
+
 func (f *fakeAPI) Query(context.Context, *dynamodb.QueryInput, ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
 	return nil, errUnexpected
 }

@@ -345,6 +345,10 @@ type pointItem struct {
 	EnteredBy  string    `dynamodbav:"EnteredBy,omitempty"`
 	EnteredAt  time.Time `dynamodbav:"EnteredAt"`
 	Revision   int       `dynamodbav:"Revision"`
+	// Deleted marks a tombstone. A tombstone current item keeps the point's
+	// revision so later writes continue numbering past it; readers of
+	// current items must skip it.
+	Deleted bool `dynamodbav:"Deleted,omitempty"`
 }
 
 func newPointItem(k keys, p domain.DataPoint) pointItem {
@@ -352,7 +356,7 @@ func newPointItem(k keys, p domain.DataPoint) pointItem {
 		keys:       k,
 		MeasureKey: p.MeasureKey, SubjectID: p.SubjectID, Period: encPeriod(p.Period),
 		Value: clonePtr(p.Value), NAReason: p.NAReason, Source: p.Source, EnteredBy: p.EnteredBy,
-		EnteredAt: p.EnteredAt, Revision: p.Revision,
+		EnteredAt: p.EnteredAt, Revision: p.Revision, Deleted: p.Deleted,
 	}
 }
 
@@ -364,6 +368,7 @@ func (i pointItem) domain() (domain.DataPoint, error) {
 	return domain.DataPoint{
 		MeasureKey: i.MeasureKey, SubjectID: i.SubjectID, Period: p, Value: i.Value, NAReason: i.NAReason,
 		Source: i.Source, EnteredBy: i.EnteredBy, EnteredAt: i.EnteredAt, Revision: i.Revision,
+		Deleted: i.Deleted,
 	}, nil
 }
 
@@ -465,15 +470,22 @@ type templateItem struct {
 	Name    string `dynamodbav:"Name,omitempty"`
 	Profile string `dynamodbav:"Profile,omitempty"`
 	Body    string `dynamodbav:"Body,omitempty"`
+
+	Revision int        `dynamodbav:"Revision"`
+	LastUsed *time.Time `dynamodbav:"LastUsed,omitempty"`
 }
 
-func newTemplateItem(tid string, t store.Template) templateItem {
+func newTemplateItem(tid string, t store.Template, revision int) templateItem {
 	return templateItem{
 		keys: keys{PK: tenantPK(tid), SK: templateSK(t.ID)},
 		ID:   t.ID, Name: t.Name, Profile: t.Profile, Body: rawToString(t.Body),
+		Revision: revision, LastUsed: clonePtr(t.LastUsed),
 	}
 }
 
 func (i templateItem) domain() store.Template {
-	return store.Template{ID: i.ID, Name: i.Name, Profile: i.Profile, Body: stringToRaw(i.Body)}
+	return store.Template{
+		ID: i.ID, Name: i.Name, Profile: i.Profile, Body: stringToRaw(i.Body),
+		Revision: i.Revision, LastUsed: i.LastUsed,
+	}
 }

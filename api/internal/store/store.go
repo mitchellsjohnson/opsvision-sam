@@ -112,6 +112,16 @@ type DataWrite struct {
 	// -1 (Unconditional) = write regardless; n>0 = must equal the current
 	// Revision.
 	ExpectedRevision int
+	// Delete removes the current point instead of writing Point's value. Only
+	// Point's identity (MeasureKey, SubjectID, Period) and its EnteredBy and
+	// EnteredAt are used. The revision check is the same as for a write: a
+	// stale ExpectedRevision conflicts and Unconditional deletes regardless.
+	// The history gains a tombstone revision (Deleted true, Source records,
+	// no value), and the point disappears from ListData. Deleting a point
+	// that does not exist is a no-op, unless its ExpectedRevision is a
+	// positive revision, which conflicts like any write against a missing
+	// point.
+	Delete bool
 }
 
 // DataConflict describes one rejected write. Current is the stored point, or
@@ -141,12 +151,16 @@ type DataStore interface {
 	// Revision is current+1 (1 if new); EnteredAt etc. are stored as given.
 	// If any write conflicts, nothing is saved (in memstore) and a
 	// *ConflictError is returned. Returns the saved points in input order.
+	// A deleted point is returned as its tombstone (Deleted true); a no-op
+	// delete is returned with Deleted true and Revision 0. A point written
+	// after a delete continues the revision numbering past the tombstone and
+	// behaves as new (it satisfies MustNotExist).
 	PutDataPoints(ctx context.Context, tenantID, scorecardID string, pts []DataWrite) ([]domain.DataPoint, error)
 	// ListData returns current points and overrides whose Period.FY is in
-	// fiscalYears. Both slices are non-nil.
+	// fiscalYears. Deleted points are not listed. Both slices are non-nil.
 	ListData(ctx context.Context, tenantID, scorecardID string, fiscalYears []int) ([]domain.DataPoint, []domain.Override, error)
 	// History returns every revision (including the current one) of a point,
-	// newest first.
+	// newest first. A deleted point's history ends with its tombstone.
 	History(ctx context.Context, tenantID, scorecardID, measureKey, subjectID string, p period.Period) ([]domain.DataPoint, error)
 	// PutOverride upserts by (MetricKey, SubjectID, Period).
 	PutOverride(ctx context.Context, tenantID, scorecardID string, o domain.Override) error
@@ -173,23 +187,69 @@ type Import struct {
 	ChangeSet  json.RawMessage `json:"changeSet,omitempty"`
 }
 
-// Template is a saved import mapping.
+// Template is a saved import mapping. Revision counts the saves of the
+// template (1 after the first); the store assigns it. LastUsed is the last
+// time the template was applied, set by the caller.
 type Template struct {
-	ID      string          `json:"id"`
-	Name    string          `json:"name"`
-	Profile string          `json:"profile"`
-	Body    json.RawMessage `json:"body,omitempty"`
+	ID       string          `json:"id"`
+	Name     string          `json:"name"`
+	Profile  string          `json:"profile"`
+	Body     json.RawMessage `json:"body,omitempty"`
+	Revision int             `json:"revision,omitempty"`
+	LastUsed *time.Time      `json:"lastUsed,omitempty"`
 }
 
 // ImportStore holds imports and import templates. Puts upsert by ID.
 type ImportStore interface {
 	PutImport(ctx context.Context, tenantID string, im Import) error
 	GetImport(ctx context.Context, tenantID, id string) (Import, error)
+	// PutTemplate upserts a template. The stored Revision is the previous
+	// stored Revision plus one (1 for a new template); the Revision field of
+	// t is ignored. LastUsed is stored as given, so a caller that edits a
+	// template must carry the stored value forward.
 	PutTemplate(ctx context.Context, tenantID string, t Template) error
 	// ListTemplates returns templates sorted by ID.
 	ListTemplates(ctx context.Context, tenantID string) ([]Template, error)
 	// DeleteTemplate removes a template; ErrNotFound if it does not exist.
 	DeleteTemplate(ctx context.Context, tenantID, id string) error
+}
+
+// RecordRevisionWrite is one record revision to store with a snapshot. The
+// record is identified by (Source, ExternalID) within record type Type; Rev
+// carries the revision's AsOf, SnapshotID and fields.
+type RecordRevisionWrite struct {
+	Source, ExternalID, Type string
+	Rev                      domain.RecordRevision
+}
+
+// RecordStore holds record types, records (one stored item per revision),
+// and upload snapshots.
+type RecordStore interface {
+	// PutRecordType saves a record type with optimistic concurrency and the
+	// same semantics as PutVersion: expectedRevision 0 creates it with
+	// Revision 1; otherwise expectedRevision must equal the stored Revision,
+	// which becomes expectedRevision+1. A mismatch, an existing type on
+	// create, or a non-create write to a missing type returns ErrConflict.
+	// The Revision field of rt is ignored.
+	PutRecordType(ctx context.Context, tenantID string, rt domain.RecordType, expectedRevision int) error
+	// ListRecordTypes returns record types sorted by ID.
+	ListRecordTypes(ctx context.Context, tenantID string) ([]domain.RecordType, error)
+
+	// ApplySnapshot stores the snapshot and the record revisions revs. A
+	// snapshot whose ID already exists for its record type returns
+	// ErrConflict and stores nothing. A revision is keyed by (Type, Source,
+	// ExternalID, AsOf), so writing one again replaces it; when several of
+	// revs share a key the last wins. The write is not atomic in DynamoDB:
+	// revisions are written before the snapshot, so after a partial failure
+	// the snapshot is absent and applying again (with the same or a new ID)
+	// is safe.
+	ApplySnapshot(ctx context.Context, tenantID string, s domain.Snapshot, revs []RecordRevisionWrite) error
+	// ListRecords returns the records of one type sorted by Source then
+	// ExternalID, each with its revisions sorted by AsOf (oldest first).
+	ListRecords(ctx context.Context, tenantID, recordType string) ([]domain.Record, error)
+	// ListSnapshots returns the snapshots of one record type, newest AsOf
+	// first (ties: newest CreatedAt first, then ID).
+	ListSnapshots(ctx context.Context, tenantID, recordType string) ([]domain.Snapshot, error)
 }
 
 // Store is the full persistence surface.
@@ -200,6 +260,7 @@ type Store interface {
 	DataStore
 	AuditStore
 	ImportStore
+	RecordStore
 }
 
 // ComparePeriod orders periods by fiscal year, then grain, then index. It

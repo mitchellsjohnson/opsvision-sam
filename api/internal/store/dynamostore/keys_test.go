@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"opsvision/internal/domain"
 	"opsvision/internal/period"
 )
 
@@ -12,6 +13,10 @@ import (
 func TestKeys(t *testing.T) {
 	m := period.Period{Grain: period.Month, FY: 2026, Index: 3}
 	fy := period.Period{Grain: period.Year, FY: 2027}
+	asOf, err := domain.ParseDate("2026-10-05")
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	cases := []struct {
 		name string
@@ -55,6 +60,15 @@ func TestKeys(t *testing.T) {
 
 		{"import SK", importSK("imp-1"), "IMPORT#imp-1"},
 		{"template SK", templateSK("t-1"), "TEMPLATE#t-1"},
+
+		{"record type SK", recordTypeSK("defect"), "RTYPE#defect"},
+		{"snapshot SK", snapshotSK("defect", "snap-1"), "SNAP#defect#snap-1"},
+		{"snapshot SK prefix", snapshotPrefix("defect"), "SNAP#defect#"},
+		{"record PK", recordPK("acme", "defect"), "T#acme#REC#defect"},
+		{"record SK", recordSK("tracker-a", "CHK-12", asOf), "R#tracker-a#CHK-12#2026-10-05"},
+		{"record SK escapes hash", recordSK("tracker-a", "CHK#12", asOf), "R#tracker-a#CHK%2312#2026-10-05"},
+		{"record SK escapes source", recordSK("a#b", "1", asOf), "R#a%23b#1#2026-10-05"},
+		{"record SK escapes slash and space", recordSK("my src", "a/b", asOf), "R#my%20src#a%2Fb#2026-10-05"},
 	}
 	for _, c := range cases {
 		if c.got != c.want {
@@ -75,6 +89,9 @@ func TestSKPrefixes(t *testing.T) {
 		prefixTemplate:  "TEMPLATE#",
 		prefixPoint:     "DP#",
 		prefixOverride:  "OV#",
+		prefixRecType:   "RTYPE#",
+		prefixSnapshot:  "SNAP#",
+		prefixRecordRev: "R#",
 	}
 	for got, want := range cases {
 		if got != want {

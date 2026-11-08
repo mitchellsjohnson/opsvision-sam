@@ -18,7 +18,7 @@ import (
 // memDynamo is a small in-memory DynamoDB that implements API. It supports
 // exactly the expression forms this package emits, and it enforces the real
 // service's limits that matter here (no duplicate items or unused expression
-// attributes in a transaction, at most 100 transaction items, 100 BatchGet
+// attributes in a transaction, at least one and at most 100 transaction items, 100 BatchGet
 // keys, non-empty keys). It deliberately paginates Query and returns
 // UnprocessedKeys from BatchGetItem to exercise those paths.
 //
@@ -32,6 +32,7 @@ type memDynamo struct {
 const (
 	memPageSize     = 7  // Query returns at most this many items per page
 	memBatchPerCall = 60 // BatchGetItem processes at most this many keys per call
+	memWritePerCall = 10 // BatchWriteItem processes at most this many requests per call
 )
 
 func newMemDynamo() *memDynamo { return &memDynamo{items: map[string]avMap{}} }
@@ -143,6 +144,42 @@ func (d *memDynamo) BatchGetItem(_ context.Context, in *dynamodb.BatchGetItemInp
 	return out, nil
 }
 
+func (d *memDynamo) BatchWriteItem(_ context.Context, in *dynamodb.BatchWriteItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.BatchWriteItemOutput, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	out := &dynamodb.BatchWriteItemOutput{UnprocessedItems: map[string][]types.WriteRequest{}}
+	total := 0
+	for _, reqs := range in.RequestItems {
+		total += len(reqs)
+	}
+	if total > batchWriteLimit {
+		return nil, fmt.Errorf("memDynamo: ValidationException: %d requests in BatchWriteItem, limit is %d", total, batchWriteLimit)
+	}
+	for table, reqs := range in.RequestItems {
+		seen := map[string]bool{}
+		for i, r := range reqs {
+			if r.PutRequest == nil {
+				return nil, fmt.Errorf("memDynamo: unsupported batch write request")
+			}
+			if err := validKey(r.PutRequest.Item); err != nil {
+				return nil, err
+			}
+			if seen[idOf(r.PutRequest.Item)] {
+				return nil, fmt.Errorf("memDynamo: ValidationException: duplicate key in BatchWriteItem")
+			}
+			seen[idOf(r.PutRequest.Item)] = true
+			if i >= memWritePerCall {
+				out.UnprocessedItems[table] = reqs[memWritePerCall:]
+				break
+			}
+		}
+		for _, r := range reqs[:min(len(reqs), memWritePerCall)] {
+			d.items[idOf(r.PutRequest.Item)] = r.PutRequest.Item
+		}
+	}
+	return out, nil
+}
+
 func (d *memDynamo) Query(_ context.Context, in *dynamodb.QueryInput, _ ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -204,6 +241,9 @@ func (d *memDynamo) Query(_ context.Context, in *dynamodb.QueryInput, _ ...func(
 func (d *memDynamo) TransactWriteItems(_ context.Context, in *dynamodb.TransactWriteItemsInput, _ ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if len(in.TransactItems) == 0 {
+		return nil, fmt.Errorf("memDynamo: ValidationException: empty transaction")
+	}
 	if len(in.TransactItems) > 100 {
 		return nil, fmt.Errorf("memDynamo: ValidationException: %d transaction items", len(in.TransactItems))
 	}
