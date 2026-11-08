@@ -1242,6 +1242,7 @@ func (s *Server) ListRecordContributions(ctx context.Context, req ListRecordCont
 			}
 			values = append(values, d.Value)
 			cm.Pending += d.Pending
+			cm.Total += len(d.Contributions)
 			cutoff := Date{Time: d.Cutoff.Time}
 			cm.Cutoff = &cutoff
 			for _, c := range d.Contributions {

@@ -603,6 +603,7 @@ type contributionsJSON struct {
 		RecordsValue *float64         `json:"recordsValue"`
 		Cutoff       string           `json:"cutoff"`
 		Pending      int              `json:"pending"`
+		Total        int              `json:"total"`
 		Records      []map[string]any `json:"records"`
 	} `json:"measures"`
 	NextCursor *string `json:"nextCursor"`
@@ -645,7 +646,7 @@ func TestContributionsRespectScope(t *testing.T) {
 	}
 	m := c.Measures[1]
 	if m.MeasureKey != "defect_points_sum" || m.Value == nil || *m.Value != 832 || m.Source != "records" ||
-		m.RecordsValue == nil || *m.RecordsValue != 832 || m.Cutoff != "2026-09-15" {
+		m.RecordsValue == nil || *m.RecordsValue != 832 || m.Cutoff != "2026-09-15" || m.Total != 1 {
 		t.Errorf("checkout defect_points_sum = %+v", m)
 	}
 	if ids := contributionIDs(c, "defect_points_sum"); len(ids) != 1 || ids[0] != "CHK-101" {
@@ -660,6 +661,9 @@ func TestContributionsRespectScope(t *testing.T) {
 	e.expect(t, 200, e.tokens["t1-admin"], "GET", contributionsPath("acme", ""), nil, &c)
 	if ids := contributionIDs(c, "defect_points_sum"); strings.Join(ids, ",") != "ANL-301,ANL-302,BIL-203,CHK-101" {
 		t.Errorf("acme records = %v", ids)
+	}
+	if c.Measures[1].Total != 4 {
+		t.Errorf("acme defect_points_sum total = %d, want 4", c.Measures[1].Total)
 	}
 
 	// A viewer scoped to Commerce sees Commerce's leaves only.
@@ -715,9 +719,14 @@ func TestContributionsPaginate(t *testing.T) {
 		}
 		seen[id] = true
 	}
-	// Every page carries the measure totals.
+	// Every page carries the measure totals, including the count of all its records.
 	if len(page2.Measures) != 2 || page2.Measures[1].RecordsValue == nil || *page2.Measures[1].RecordsValue != 150*15*2 {
 		t.Errorf("page 2 measures = %+v", page2.Measures)
+	}
+	for i, page := range []contributionsJSON{page1, page2} {
+		if page.Measures[1].Total != 150 || page.Measures[0].Total != 0 {
+			t.Errorf("page %d totals = %d, %d; want 0, 150", i+1, page.Measures[0].Total, page.Measures[1].Total)
+		}
 	}
 }
 

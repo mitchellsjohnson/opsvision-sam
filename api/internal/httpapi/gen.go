@@ -666,6 +666,13 @@ type Cell struct {
 	// Coverage [slots with data, slots expected]
 	Coverage []int `json:"coverage"`
 
+	// Cutoff Set only on a month cell (not year to date) whose metric, under
+	// the version in force for the month, references a derived measure
+	// and whose records stop before the month ends: the as-of date of
+	// the earliest of the latest snapshots of those measures' record
+	// types. The cell is then month to date through this day.
+	Cutoff *Date `json:"cutoff,omitempty"`
+
 	// Display Example: 94.5%
 	Display string `json:"display"`
 
@@ -750,6 +757,7 @@ type Comparison string
 // up over the leaf subjects listed (null when records give none, or
 // the measure's org aggregation cannot be rolled up here). `cutoff` is
 // the last day records cover; `pending` counts commitments still due.
+// `total` counts all of the measure's contributions across pages;
 // `records` holds this page's contributions.
 type ContributionMeasure struct {
 	// Cutoff A calendar date; time zones are ignored.
@@ -767,6 +775,7 @@ type ContributionMeasure struct {
 	// RecordsValue The value, or null when not applicable.
 	RecordsValue *MeasureValue `json:"recordsValue"`
 	Source       string        `json:"source"`
+	Total        int           `json:"total"`
 
 	// Value The value, or null when not applicable.
 	Value *MeasureValue `json:"value"`

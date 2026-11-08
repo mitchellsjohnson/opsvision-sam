@@ -1291,6 +1291,14 @@ export interface components {
             versionId: string;
             override?: components["schemas"]["Override"];
             computed?: components["schemas"]["CellComputed"];
+            /**
+             * @description Set only on a month cell (not year to date) whose metric, under
+             *     the version in force for the month, references a derived measure
+             *     and whose records stop before the month ends: the as-of date of
+             *     the earliest of the latest snapshots of those measures' record
+             *     types. The cell is then month to date through this day.
+             */
+            cutoff?: components["schemas"]["Date"];
         };
         /** @description One metric for one subject. `cells` has one entry per `periods` column, then one per `ytd` column. */
         ViewRow: {
@@ -1748,6 +1756,7 @@ export interface components {
          *     up over the leaf subjects listed (null when records give none, or
          *     the measure's org aggregation cannot be rolled up here). `cutoff` is
          *     the last day records cover; `pending` counts commitments still due.
+         *     `total` counts all of the measure's contributions across pages;
          *     `records` holds this page's contributions.
          */
         ContributionMeasure: {
@@ -1757,6 +1766,7 @@ export interface components {
             recordsValue: components["schemas"]["MeasureValue"];
             cutoff?: components["schemas"]["Date"];
             pending: number;
+            total: number;
             records: components["schemas"]["RecordContribution"][];
         };
         RecordContributions: {

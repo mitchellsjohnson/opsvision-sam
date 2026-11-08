@@ -137,6 +137,10 @@ function cell(metricKey: string, subjectId: string, period: string, ytd: boolean
     if (subjectId === 'unit-a' && period === '2026-M10' && !ytd) {
       return { ...identity, ...blank, value: 70, display: '70.0%', status: 'R', components: { closed: 7, total: 10 }, coverage: [1, 1] }
     }
+    if (subjectId === 'unit-b' && period === '2026-M10' && !ytd) {
+      // Records so far this month run through Oct 14.
+      return { ...identity, ...blank, value: 95, display: '95.0%', status: 'G', components: { closed: 95, total: 100 }, coverage: [1, 1], cutoff: '2026-10-14' }
+    }
     return { ...identity, ...blank, value: 95, display: '95.0%', status: 'G', components: { closed: 95, total: 100 }, coverage: [1, 1] }
   }
   // defect_rate: lower is better, judged by change.
@@ -267,8 +271,9 @@ export function contribution(over: Partial<RecordContribution> = {}): RecordCont
   }
 }
 
-/** One derived measure of a cell, computed from records alone unless overridden. */
+/** One derived measure of a cell, computed from records alone unless overridden; `total` defaults to the records given. */
 export function contributionMeasure(over: Partial<ContributionMeasure> = {}): ContributionMeasure {
+  const records = over.records ?? [contribution()]
   return {
     measureKey: 'closed',
     value: null,
@@ -276,8 +281,9 @@ export function contributionMeasure(over: Partial<ContributionMeasure> = {}): Co
     recordsValue: 1,
     cutoff: '2026-10-31',
     pending: 0,
-    records: [contribution()],
+    total: records.length,
     ...over,
+    records,
   }
 }
 

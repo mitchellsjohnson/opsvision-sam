@@ -126,6 +126,17 @@ describe('TableTab', () => {
   })
 
   describe('cells', () => {
+    it('says a month-to-date cell runs through its cutoff in its accessible name', async () => {
+      renderTable()
+      await screen.findByRole('table')
+      const partial = within(cellAt('On-time delivery', 'Unit B', 'Oct')).getByRole('button', {
+        name: /^95\.0%.*, month to date through Oct 14$/,
+      })
+      expect(within(partial).getByText(', month to date through Oct 14').className).toContain('sr-only')
+      const full = within(cellAt('On-time delivery', 'Unit A', 'Oct')).getByRole('button')
+      expect(full.textContent).not.toContain('month to date')
+    })
+
     it('shows an NA reason in muted text with no status badge', async () => {
       renderTable()
       await screen.findByRole('table')

@@ -10,7 +10,7 @@ import { Footnote } from '../../ui/Footnote'
 import { StatusBadge } from '../../ui/StatusBadge'
 import { CellDrawer, type DrawerTarget } from './CellDrawer'
 import { buildColumns, columnRequest, type Column } from './columns'
-import { overrideSentence } from './format'
+import { overrideSentence, shortDate } from './format'
 import { cellKey, groupRows } from './viewHelpers'
 
 type Schemas = components['schemas']
@@ -143,6 +143,7 @@ function DataCell({ row, cell, column, statusLabel, footnoteId, onOpen }: DataCe
               {hasStatus && <StatusBadge status={cell.status} label={statusLabel(cell.status)} />}
             </>
           )}
+          {cell.cutoff && <span className="sr-only">{`, month to date through ${shortDate(cell.cutoff)}`}</span>}
         </button>
         {cell.override && (
           <sup>

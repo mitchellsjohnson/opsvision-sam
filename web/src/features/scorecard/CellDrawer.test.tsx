@@ -359,19 +359,46 @@ describe('CellDrawer records', () => {
             ],
           }
         : {
-            measures: [contributionMeasure({ measureKey: 'defects', records: [contribution()] })],
+            measures: [contributionMeasure({ measureKey: 'defects', records: [contribution()], total: 2 })],
             nextCursor: '100',
           },
     )
     const region = await recordsRegion()
-    expect(await within(region).findByText('Derived from at least 1 record')).toBeTruthy()
+    expect(await within(region).findByText('Derived from 2 records')).toBeTruthy()
+    expect(within(region).getByText('Showing 1 of 2')).toBeTruthy()
     await userEvent.setup().click(within(region).getByRole('button', { name: 'Load more records' }))
     expect(await within(region).findByText('Second page defect')).toBeTruthy()
     // The button goes away with the last page, so focus moves to the first new record.
     await waitFor(() => expect(document.activeElement?.textContent).toContain('Second page defect'))
     expect(urls.map((u) => u.searchParams.get('cursor'))).toEqual([null, '100'])
     expect(within(region).getByText('Derived from 2 records')).toBeTruthy()
+    expect(within(region).queryByText(/^Showing/)).toBeNull()
     expect(within(region).queryByRole('button', { name: 'Load more records' })).toBeNull()
+  })
+
+  it('counts every record of a measure the first page has not reached', async () => {
+    openDerived(targetFor('on_time_pct', 'root', '2026-M10'), () => ({
+      measures: [
+        contributionMeasure({ measureKey: 'closed', records: [contribution()], total: 1 }),
+        contributionMeasure({ measureKey: 'total', records: [], total: 120 }),
+      ],
+      nextCursor: '100',
+    }))
+    const region = await recordsRegion()
+    expect(await within(region).findByText('Derived from 120 records')).toBeTruthy()
+    expect(within(region).getByText('Choose Load more records to see them.')).toBeTruthy()
+    expect(within(region).queryByText('No records counted in this period')).toBeNull()
+  })
+
+  it('shows the cutoff the view gives before the records load', async () => {
+    const view = buildView(new URLSearchParams({ periods: '2026-M10' }))
+    const row = view.rows.find((r) => r.metricKey === 'on_time_pct' && r.subjectId === 'unit-b') as Row
+    openDerived(
+      { row, cell: row.cells[0] as components['schemas']['Cell'], columnLabel: 'Oct 2026', fiscalYearStartMonth: 1 },
+      () => new Promise(() => {}),
+    )
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText('Through Oct 14')).toBeTruthy()
   })
 
   it('keeps Load more records as the way to retry when a later page fails', async () => {

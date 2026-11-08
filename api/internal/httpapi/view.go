@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"time"
 
 	"opsvision/internal/domain"
 	"opsvision/internal/engine"
@@ -62,9 +63,69 @@ func apiCell(c engine.Cell) Cell {
 	return out
 }
 
+// cutoffKey names a metric's month column.
+type cutoffKey struct {
+	metric string
+	month  period.Period
+}
+
+// viewCutoffs returns, for the month columns of a view, the last day records
+// cover for each metric that references a derived measure under the version
+// in force for the month: the earliest of the latest snapshot as-of dates of
+// those measures' record types. A month is listed only when that day falls
+// inside it, before its last day. Snapshots are listed once per record type.
+func (s *Server) viewCutoffs(ctx context.Context, tenantID string, in *engine.Input, months []period.Period) (map[cutoffKey]time.Time, error) {
+	latest := map[string]*time.Time{}
+	latestOf := func(recordType string) (*time.Time, error) {
+		if day, ok := latest[recordType]; ok {
+			return day, nil
+		}
+		snaps, err := s.store.ListSnapshots(ctx, tenantID, recordType)
+		if err != nil {
+			return nil, err
+		}
+		var day *time.Time
+		if len(snaps) > 0 && !snaps[0].AsOf.IsZero() {
+			t := snaps[0].AsOf.Time
+			day = &t
+		}
+		latest[recordType] = day
+		return day, nil
+	}
+
+	out := map[cutoffKey]time.Time{}
+	for _, mo := range months {
+		if mo.Grain != period.Month {
+			continue
+		}
+		v, ok := engine.VersionFor(in.Versions, mo, in.Cal)
+		if !ok {
+			continue
+		}
+		start, last := in.Cal.Start(mo), in.Cal.End(mo).AddDate(0, 0, -1)
+		for _, m := range v.Content.Metrics {
+			var cut *time.Time
+			for _, ms := range derivedMeasuresOf(v, m) {
+				day, err := latestOf(ms.Derive.RecordType)
+				if err != nil {
+					return nil, err
+				}
+				if day != nil && (cut == nil || day.Before(*cut)) {
+					cut = day
+				}
+			}
+			if cut != nil && !cut.Before(start) && cut.Before(last) {
+				out[cutoffKey{m.Key, mo}] = *cut
+			}
+		}
+	}
+	return out, nil
+}
+
 // apiView converts an engine view, keeping only the rows keep accepts (all
-// rows when keep is nil).
-func apiView(v engine.View, keep func(engine.Row) bool) ScorecardView {
+// rows when keep is nil). Month cells get the cutoff listed for their metric
+// and month.
+func apiView(v engine.View, keep func(engine.Row) bool, cutoffs map[cutoffKey]time.Time) ScorecardView {
 	out := ScorecardView{
 		Periods:         make([]Period, 0, len(v.Periods)),
 		Ytd:             make([]MonthPeriod, 0, len(v.YTD)),
@@ -100,7 +161,11 @@ func apiView(v engine.View, keep func(engine.Row) bool) ScorecardView {
 			Cells:       make([]Cell, 0, len(r.Cells)),
 		}
 		for _, c := range r.Cells {
-			row.Cells = append(row.Cells, apiCell(c))
+			cell := apiCell(c)
+			if cut, ok := cutoffs[cutoffKey{c.MetricKey, c.Period}]; ok && !c.YTD {
+				cell.Cutoff = &Date{Time: cut}
+			}
+			row.Cells = append(row.Cells, cell)
 		}
 		out.Rows = append(out.Rows, row)
 	}
@@ -210,8 +275,12 @@ func (s *Server) GetScorecardView(ctx context.Context, req GetScorecardViewReque
 			asOf = m
 		}
 	}
+	cutoffs, err := s.viewCutoffs(ctx, p.Tenant.ID, in, vr.Periods)
+	if err != nil {
+		return nil, err
+	}
 	acc := newAccess(p, in)
 	return GetScorecardView200JSONResponse(apiView(view, func(r engine.Row) bool {
 		return acc.canRead(r.SubjectID, []string{r.MetricKey}, asOf)
-	})), nil
+	}, cutoffs)), nil
 }

@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -36,6 +37,7 @@ type cellJSON struct {
 		Value  *float64 `json:"value"`
 		Status string   `json:"status"`
 	} `json:"computed"`
+	Cutoff *string `json:"cutoff"`
 }
 
 type viewRowJSON struct {
@@ -352,6 +354,52 @@ func TestGzipAppliedToLargeResponses(t *testing.T) {
 	resp, raw = fetch("/me", "gzip")
 	if resp.Header.Get("Content-Encoding") != "" || !json.Valid(raw) {
 		t.Errorf("small response got Content-Encoding %q (%d bytes)", resp.Header.Get("Content-Encoding"), len(raw))
+	}
+}
+
+func TestViewCellCutoff(t *testing.T) {
+	e := newTestEnv(t)
+	seedRecords(t, e)
+	ctx := context.Background()
+	v, err := e.store.GetVersion(ctx, "t1", "sc", "v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// An entered metric beside the derived defect score.
+	v.Content.Measures = append(v.Content.Measures, domain.Measure{
+		Key: "escapes", Name: "Escapes", Unit: "count", OrgAgg: domain.AggSum, TimeAgg: domain.AggSum,
+	})
+	entered := v.Content.Metrics[0]
+	entered.Key, entered.Name, entered.Formula = "escape_count", "Escapes", "escapes"
+	v.Content.Metrics = append(v.Content.Metrics, entered)
+	if err := e.store.PutVersion(ctx, "t1", v, v.Revision); err != nil {
+		t.Fatal(err)
+	}
+	applyDefects(t, e) // the defects export as of 2026-09-15
+
+	var view viewJSON
+	e.expect(t, 200, e.tokens["t1-viewer"], "GET",
+		"/scorecards/sc/view?periods=2026-M08&periods=2026-M09&periods=2026-M10&periods=2026-Q3&ytd=2026-M09", nil, &view)
+	cutoff := func(metric, subject string, col int) string {
+		if c := view.cell(t, metric, subject, col).Cutoff; c != nil {
+			return *c
+		}
+		return ""
+	}
+	for _, subject := range []string{"checkout", "acme"} {
+		if got := cutoff("defect_score", subject, 1); got != "2026-09-15" {
+			t.Errorf("defect_score %s 2026-M09 cutoff = %q, want 2026-09-15", subject, got)
+		}
+		// August is complete, October starts after the snapshot, and quarters
+		// and year-to-date columns are not month cells.
+		for _, col := range []int{0, 2, 3, 4} {
+			if got := cutoff("defect_score", subject, col); got != "" {
+				t.Errorf("defect_score %s column %d cutoff = %q, want none", subject, col, got)
+			}
+		}
+	}
+	if got := cutoff("escape_count", "checkout", 1); got != "" {
+		t.Errorf("entered metric got cutoff %q", got)
 	}
 }
 

@@ -124,7 +124,7 @@ function DrawerBody({
   const recordMeasures = mergeMeasures(contributions.data?.pages).filter((m) => derived.includes(m.measureKey))
   const end = periodEndDate(cell.period, fiscalYearStartMonth)
   const endYear = end === null ? undefined : Number(end.slice(0, 4))
-  const facts = recordFacts(recordMeasures, cell.period, end)
+  const facts = recordFacts(recordMeasures, cell.cutoff, cell.period, end)
   const typed = typedNotes(recordMeasures, ratio, componentKeys.length, measureName)
 
   return (
@@ -242,13 +242,8 @@ function DrawerBody({
   )
 }
 
-/** A derived measure with every page loaded so far; `complete` once no later page can add to it. */
-interface LoadedMeasure extends ContributionMeasure {
-  complete: boolean
-}
-
-/** Joins the pages of contributions by measure. Pages run through the measures in order. */
-function mergeMeasures(pages: readonly RecordContributions[] | undefined): LoadedMeasure[] {
+/** Joins the pages of contributions by measure, with every record loaded so far. */
+function mergeMeasures(pages: readonly RecordContributions[] | undefined): ContributionMeasure[] {
   const byKey = new Map<string, ContributionMeasure>()
   for (const page of pages ?? []) {
     for (const m of page.measures) {
@@ -256,21 +251,25 @@ function mergeMeasures(pages: readonly RecordContributions[] | undefined): Loade
       byKey.set(m.measureKey, seen ? { ...seen, records: [...seen.records, ...m.records] } : m)
     }
   }
-  const more = pages !== undefined && pages.length > 0 && pages[pages.length - 1]?.nextCursor !== undefined
-  const list = [...byKey.values()]
-  return list.map((m, i) => ({ ...m, complete: !more || list.slice(i + 1).some((n) => n.records.length > 0) }))
+  return [...byKey.values()]
 }
 
-/** "Through Nov 14" when records stop before the period ends; "2 still due this month" for open commitments. */
+/**
+ * "Through Nov 14" when records stop before the period ends (from the view's
+ * cutoff, else the records'); "2 still due this month" for open commitments.
+ */
 function recordFacts(
-  measures: readonly LoadedMeasure[],
+  measures: readonly ContributionMeasure[],
+  cellCutoff: string | undefined,
   period: string,
   end: string | null,
 ): { through: string | null; due: string | null } {
-  const cutoff = measures
-    .map((m) => m.cutoff)
-    .filter((d): d is string => d !== undefined)
-    .sort()[0]
+  const cutoff =
+    cellCutoff ??
+    measures
+      .map((m) => m.cutoff)
+      .filter((d): d is string => d !== undefined)
+      .sort()[0]
   const year = end === null ? undefined : Number(end.slice(0, 4))
   const through = cutoff !== undefined && end !== null && cutoff < end ? `Through ${shortDate(cutoff, year)}` : null
   // Each commitments measure counts the same due items, so they are not added up.
@@ -281,7 +280,7 @@ function recordFacts(
 
 /** "Entered · records give 47 / 66" for each typed value that wins over the value records give. */
 function typedNotes(
-  measures: readonly LoadedMeasure[],
+  measures: readonly ContributionMeasure[],
   ratio: [string, string] | null,
   componentCount: number,
   measureName: (key: string) => string,
@@ -358,7 +357,7 @@ function Records({
   year,
 }: {
   query: ReturnType<typeof useContributions>
-  measures: LoadedMeasure[]
+  measures: ContributionMeasure[]
   measureName: (key: string) => string
   /** The calendar year the period ends in; record dates in other years show their year. */
   year: number | undefined
@@ -387,12 +386,15 @@ function Records({
             <div key={m.measureKey} className="mt-3">
               <h4 className="text-sm font-medium">{name}</h4>
               <p className="text-sm text-ink/80">
-                {m.records.length > 0
-                  ? `Derived from ${m.complete ? '' : 'at least '}${recordCount(m.records.length)}`
-                  : m.complete
-                    ? 'No records counted in this period'
-                    : 'These records come after the ones shown. Choose Load more records to see them.'}
+                {m.total === 0 ? 'No records counted in this period' : `Derived from ${recordCount(m.total)}`}
               </p>
+              {m.total > 0 && m.records.length < m.total && (
+                <p className="text-xs text-ink/80">
+                  {m.records.length === 0
+                    ? 'Choose Load more records to see them.'
+                    : `Showing ${formatCount(m.records.length)} of ${formatCount(m.total)}`}
+                </p>
+              )}
               {m.records.length > 0 && (
                 <RecordTable
                   name={name}
