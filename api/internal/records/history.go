@@ -22,16 +22,20 @@ func Latest(r domain.Record) domain.RecordFields {
 // revision with AsOf on or before day, or the earliest revision when day is
 // before the first one. It returns zero fields when r has no revisions.
 func FieldsOn(r domain.Record, day domain.Date) domain.RecordFields {
-	revs := r.Revisions
-	if len(revs) == 0 {
+	if len(r.Revisions) == 0 {
 		return domain.RecordFields{}
 	}
-	d := dayOf(day)
+	return r.Revisions[revisionOn(r.Revisions, dayOf(day))].Fields
+}
+
+// revisionOn returns the index of the revision in force on day d (see
+// FieldsOn). revs must be non-empty.
+func revisionOn(revs []domain.RecordRevision, d time.Time) int {
 	i := sort.Search(len(revs), func(i int) bool { return dayOf(revs[i].AsOf).After(d) })
 	if i == 0 {
-		return revs[0].Fields
+		return 0
 	}
-	return revs[i-1].Fields
+	return i - 1
 }
 
 // dayOf returns d's calendar date at UTC midnight, so dates compare by day
