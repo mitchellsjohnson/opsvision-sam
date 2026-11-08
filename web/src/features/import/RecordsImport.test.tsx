@@ -23,7 +23,7 @@ import { viewHandlers } from '../../test/viewFixtures'
 import { ImportPage } from '../admin/ImportPage'
 import { ScorecardPage } from '../scorecard/ScorecardPage'
 import { RecordsImport } from './RecordsImport'
-import { todayISO } from './recordsModel'
+import { longDate, todayISO } from './recordsModel'
 
 type PreviewBody = components['schemas']['RecordsPreviewRequest']
 type ApplyBody = components['schemas']['ApplyImportRequest']
@@ -194,6 +194,37 @@ describe('RecordsImport: drop and preview', () => {
   })
 })
 
+describe('Import page: tabs and drops', () => {
+  it('keeps unapplied previews when switching to the legacy tab and back', async () => {
+    const { user } = await renderImportPage()
+    dropOn(dropZone(), [xlsx('epics.xlsx')])
+    await previewed('epics.xlsx')
+    await user.click(screen.getByRole('tab', { name: 'Legacy workbook' }))
+    expect(screen.queryByRole('region', { name: 'epics.xlsx' })).toBeNull()
+    await user.click(screen.getByRole('tab', { name: 'Records' }))
+    expect(screen.getByRole('region', { name: 'epics.xlsx' })).toBeTruthy()
+    expect(requestsTo(fake, 'POST', '/imports/uploads')).toHaveLength(1)
+  })
+
+  it('takes a file dropped anywhere on the page, never letting the browser open it', async () => {
+    await renderImportPage()
+    const heading = screen.getByRole('heading', { level: 1, name: 'Import' })
+    const dataTransfer = { files: [xlsx('epics.xlsx')], types: ['Files'] }
+    fireEvent.dragOver(heading, { dataTransfer })
+    const dropped = fireEvent.drop(heading, { dataTransfer })
+    expect(dropped).toBe(false)
+    expect(await previewed('epics.xlsx')).toBeTruthy()
+  })
+
+  it('switches to the records tab for a file dropped on the legacy tab', async () => {
+    const { user } = await renderImportPage()
+    await user.click(screen.getByRole('tab', { name: 'Legacy workbook' }))
+    dropOn(screen.getByRole('heading', { level: 1, name: 'Import' }), [xlsx('epics.xlsx')])
+    expect(await previewed('epics.xlsx')).toBeTruthy()
+    expect(screen.getByRole('tab', { name: 'Records' }).getAttribute('aria-selected')).toBe('true')
+  })
+})
+
 describe('RecordsImport: the story', () => {
   it('expands a story line to the slipped epics, linked to the tracker', async () => {
     const { user } = await renderImportPage()
@@ -250,6 +281,45 @@ describe('RecordsImport: the story', () => {
     await previewed('defects.csv')
     expect((await screen.findAllByText('Nothing changed since your last upload')).length).toBeGreaterThan(0)
     expect(screen.queryByRole('button', { name: 'Apply' })).toBeNull()
+  })
+
+  it('offers Apply when only the date moves, saying so first', async () => {
+    fake.previews['defects.csv'] = emptyPreview({
+      counts: { new: 0, changed: 0, unchanged: 1204, skipped: 0, missing: 0, unmatched: 0, errors: 0 },
+      story: { nothingChanged: false, sameRecords: true, previousAsOf: '2026-10-31', warnings: [], lines: [], more: 0, typed: [], lockedWaiting: [] },
+    })
+    await renderImportPage()
+    dropOn(dropZone(), [csv('defects.csv')])
+    const region = await previewed('defects.csv')
+    expect(
+      within(region).getByText(
+        `Same records as your ${longDate('2026-10-31')} upload. Only the date moves: this data now runs through ${longDate(todayISO())}.`,
+      ),
+    ).toBeTruthy()
+    expect(screen.queryByText('Nothing changed since your last upload')).toBeNull()
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Apply' }) as HTMLButtonElement).disabled).toBe(false))
+  })
+
+  it('shows what derivation worked around, in plain words', async () => {
+    const warning = 'P0 has no weight in Defect points, so it counts as 0. Add a weight in the methodology.'
+    const base = fake.previews['defects.csv'] as components['schemas']['RecordsPreview']
+    fake.previews['defects.csv'] = { ...base, story: { ...base.story, warnings: [warning] } }
+    await renderImportPage()
+    dropOn(dropZone(), [csv('defects.csv')])
+    const region = await previewed('defects.csv')
+    const box = within(region).getByRole('heading', { name: 'Check the methodology' }).parentElement!
+    expect(within(box).getByText(warning)).toBeTruthy()
+  })
+
+  it('starts the as-of date at the file’s last-modified date when it is recent', async () => {
+    const d = new Date()
+    d.setDate(d.getDate() - 5)
+    const modified = new File(['Issue key,Product\nCHK-1,Checkout\n'], 'defects.csv', { type: CSV_TYPE, lastModified: d.getTime() })
+    await renderImportPage()
+    dropOn(dropZone(), [modified])
+    const region = await previewed('defects.csv')
+    expect((within(region).getByLabelText('As of') as HTMLInputElement).value).toBe(todayISO(d))
+    expect(previews('imp-1')[0]?.asOf).toBe(todayISO(d))
   })
 
   it('re-runs the preview when the as-of date changes', async () => {
@@ -394,7 +464,7 @@ describe('RecordsImport: apply', () => {
   })
 
   it('refreshes an out-of-date preview instead of applying it', async () => {
-    fake.failNext.set('POST /imports/imp-1/apply', { status: 409, code: 'conflict', message: 'preview is out of date' })
+    fake.failNext.set('POST /imports/imp-1/apply', { status: 409, code: 'preview_out_of_date', message: 'preview is out of date' })
     const { user } = await renderImportPage()
     dropOn(dropZone(), [xlsx('epics.xlsx')])
     await previewed('epics.xlsx')
@@ -415,6 +485,58 @@ describe('RecordsImport: apply', () => {
     expect(within(card('epics.xlsx')).queryByRole('alert')).toBeNull()
     expect(within(card('epics.xlsx')).queryByRole('button', { name: 'Try again' })).toBeNull()
     expect(within(card('epics.xlsx')).getByRole('status').textContent).toBe('')
+  })
+
+  it('treats a file applied elsewhere as applied', async () => {
+    fake.failNext.set('POST /imports/imp-1/apply', { status: 409, code: 'already_applied', message: 'this preview was already applied' })
+    const { user } = await renderImportPage()
+    dropOn(dropZone(), [xlsx('epics.xlsx')])
+    await previewed('epics.xlsx')
+    const apply = screen.getByRole('button', { name: 'Apply' })
+    await waitFor(() => expect((apply as HTMLButtonElement).disabled).toBe(false))
+    const before = previews('imp-1').length
+    await user.click(apply)
+    expect(await within(card('epics.xlsx')).findByText(/^Already applied/)).toBeTruthy()
+    expect(within(card('epics.xlsx')).queryByRole('alert')).toBeNull()
+    expect(within(card('epics.xlsx')).queryByRole('heading', { name: 'What changes on the scorecard' })).toBeNull()
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Apply' })).toBeNull())
+    await sleep(DEBOUNCE_WAIT)
+    expect(previews('imp-1')).toHaveLength(before)
+  })
+
+  it('asks to try again after a conflicting change, without refreshing the preview', async () => {
+    fake.failNext.set('POST /imports/imp-1/apply', { status: 409, code: 'conflict', message: 'record type changed' })
+    const { user } = await renderImportPage()
+    dropOn(dropZone(), [xlsx('epics.xlsx')])
+    await previewed('epics.xlsx')
+    const apply = screen.getByRole('button', { name: 'Apply' })
+    await waitFor(() => expect((apply as HTMLButtonElement).disabled).toBe(false))
+    const before = previews('imp-1').length
+    await user.click(apply)
+    expect(await within(card('epics.xlsx')).findByText('Something changed while this file was being applied. Try applying again.')).toBeTruthy()
+    await sleep(DEBOUNCE_WAIT)
+    expect(previews('imp-1')).toHaveLength(before)
+    await user.click(screen.getByRole('button', { name: 'Apply' }))
+    expect(await within(card('epics.xlsx')).findByText('Applied: 7 new and 30 changed records.')).toBeTruthy()
+  })
+
+  it('keeps focus on Apply while applying, and says so in a live region', async () => {
+    server.use(
+      http.post(`${API}/v1/imports/:id/apply`, async () => {
+        await delay(150)
+      }),
+    )
+    const { user } = await renderImportPage()
+    dropOn(dropZone(), [xlsx('epics.xlsx')])
+    await previewed('epics.xlsx')
+    const apply = screen.getByRole('button', { name: 'Apply' })
+    await waitFor(() => expect((apply as HTMLButtonElement).disabled).toBe(false))
+    await user.click(apply)
+    const applying = await screen.findByRole('button', { name: 'Applying…' })
+    expect(applying.getAttribute('aria-disabled')).toBe('true')
+    expect(document.activeElement).toBe(applying)
+    expect(screen.getAllByRole('status').some((s) => s.textContent?.startsWith('Applying…'))).toBe(true)
+    expect(await within(card('epics.xlsx')).findByText('Applied: 7 new and 30 changed records.')).toBeTruthy()
   })
 
   it('applies only the plan of the preview on screen', async () => {

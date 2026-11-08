@@ -47,6 +47,22 @@ export function todayISO(now: Date = new Date()): string {
   return `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())}`
 }
 
+/** How far back a file's last-modified date can be and still be its as-of date. */
+const AS_OF_WINDOW_DAYS = 60
+
+/**
+ * The as-of date a dropped file starts with: its last-modified date, as a
+ * calendar date, when that is within the last 60 days and not in the future;
+ * otherwise today. A re-exported file a few days old keeps its own date.
+ */
+export function defaultAsOf(file: File | undefined, now: Date = new Date()): string {
+  const today = todayISO(now)
+  if (!file || !file.lastModified) return today
+  const modified = todayISO(new Date(file.lastModified))
+  const earliest = new Date(now.getFullYear(), now.getMonth(), now.getDate() - AS_OF_WINDOW_DAYS)
+  return modified <= today && modified >= todayISO(earliest) ? modified : today
+}
+
 const MONTHS = [
   'January', 'February', 'March', 'April', 'May', 'June',
   'July', 'August', 'September', 'October', 'November', 'December',
@@ -107,25 +123,54 @@ export function reasonLabel(reason: string, priority?: string): string {
   return reason === 'newly_open' && priority && priority !== 'none' ? `${label} ${priority}` : label
 }
 
-/** "3 epics" from the record type name "Epic". */
+/** "defect" from "Defects" or "Defect"; "story" from "Stories". */
+function singular(word: string): string {
+  if (/[^aeiou]ies$/.test(word)) return `${word.slice(0, -3)}y`
+  if (/[^s]s$/.test(word)) return word.slice(0, -1)
+  return word
+}
+
+/** "defects" from "Defect" or "Defects"; "stories" from "Story". */
+function pluralOf(word: string): string {
+  if (/[^aeiou]y$/.test(word)) return `${word.slice(0, -1)}ies`
+  return word.endsWith('s') ? word : `${word}s`
+}
+
+/** "3 epics" or "1 epic" from the record type name "Epic" or "Epics". */
 export function recordNoun(typeName: string, n: number): string {
-  const one = typeName.trim().toLowerCase() || 'record'
-  if (n === 1) return `1 ${one}`
-  return `${n} ${one.endsWith('s') ? one : `${one}s`}`
+  const one = singular(typeName.trim().toLowerCase() || 'record')
+  return n === 1 ? `1 ${one}` : `${formatCount(n)} ${pluralOf(one)}`
 }
 
 const IDS_SHOWN = 3
 
-/** "3 epics slipped: BIL-12, BIL-40, BIL-77; 1 epic delivered on time: BIL-5". */
+/** Contributions newly open, by priority in first-seen order; others as one group. */
+function reasonGroups(reason: string, list: readonly RecordContribution[]): [string, RecordContribution[]][] {
+  if (reason !== 'newly_open') return [[reasonLabel(reason), [...list]]]
+  const groups = new Map<string, RecordContribution[]>()
+  for (const c of list) {
+    const label = reasonLabel(reason, c.priority)
+    groups.set(label, [...(groups.get(label) ?? []), c])
+  }
+  return [...groups]
+}
+
+/** "3 epics slipped: BIL-12, BIL-40, BIL-77; 1 defect newly open P1: CHK-5". */
 export function reasonSummary(reasons: Record<string, readonly RecordContribution[]>, typeName: string): string {
   return Object.entries(reasons)
     .filter(([, list]) => list.length > 0)
-    .map(([reason, list]) => {
+    .flatMap(([reason, list]) => reasonGroups(reason, list))
+    .map(([label, list]) => {
       const ids = list.slice(0, IDS_SHOWN).map((c) => c.externalId).join(', ')
       const more = list.length > IDS_SHOWN ? ` and ${list.length - IDS_SHOWN} more` : ''
-      return `${recordNoun(typeName, list.length)} ${reasonLabel(reason)}: ${ids}${more}`
+      return `${recordNoun(typeName, list.length)} ${label}: ${ids}${more}`
     })
     .join('; ')
+}
+
+/** "Same records as your October 31 upload. Only the date moves: this data now runs through November 4." */
+export function sameRecordsText(previousAsOf: string, asOf: string, today: string = todayISO()): string {
+  return `Same records as your ${longDate(previousAsOf, today)} upload. Only the date moves: this data now runs through ${longDate(asOf, today)}.`
 }
 
 const FIELD_LABEL: Record<string, string> = {
@@ -158,11 +203,32 @@ export function visibleProblems(problems: readonly RecordRowProblem[]): RecordRo
   return problems.filter((p) => p.kind !== 'unmapped_value')
 }
 
+/** What a missing column leaves unknown, by field. */
+const MISSING_COLUMN: Record<string, string> = {
+  externalId: 'which item each row is',
+  title: 'what each item is called',
+  subjectKey: 'which product or team each item belongs to',
+  category: 'what type each item is',
+  priority: 'each item’s priority',
+  status: 'each item’s status',
+  state: 'whether items are open or closed',
+  createdAt: 'when items were created',
+  committedAt: 'when items were committed',
+  dueAt: 'when items are due',
+  priorDueDates: 'when items were due before',
+  completedAt: 'when items were completed',
+  measuredAt: 'when items were measured',
+  url: 'where each item links to',
+}
+
 /** One row problem in plain words, built from its fields (the server message uses internal names). */
 export function problemText(p: RecordRowProblem, attributes: readonly AttributeDef[] = []): string {
   const label = fieldLabel(p.field, attributes)
   if (p.kind === 'duplicate_id') return `ID “${p.value}” is on more than one row`
-  if (p.row === 0) return `The file has no “${p.column}” column, which ${label} comes from`
+  if (p.row === 0) {
+    const unknown = MISSING_COLUMN[p.field] ?? `each item’s ${label.toLowerCase()}`
+    return `The file has no “${p.column}” column, so we can’t tell ${unknown}`
+  }
   if (p.value === '') return `${label} is empty`
   return `Couldn’t read “${p.value}” as ${label}`
 }
@@ -185,23 +251,38 @@ export function missingText(n: number): string {
   return n === 1 ? '1 open record wasn’t in this file' : `${formatCount(n)} open records weren’t in this file`
 }
 
-const FAILURE: Record<'read' | 'preview' | 'apply', string> = {
+const FAILURE: Record<'upload' | 'read' | 'preview' | 'apply', string> = {
+  upload: 'We couldn’t upload this file. Check your connection and try again.',
   read: 'We couldn’t read this file. Check that it is the export you meant, then try again.',
   preview: 'We couldn’t work out what this file changes. Try again in a moment.',
   apply: 'This file couldn’t be applied. Try again in a moment.',
 }
 
 /**
- * A failure in plain words. Server messages can name internals, so only our
- * own upload messages (plain errors) are shown as they are.
+ * A failure in plain words. Server, browser and HTTP messages can name
+ * internals, so none is shown as it is: `upload` covers getting the upload
+ * address and sending the file, `read` looking at it afterwards.
  */
-export function failureText(err: unknown, step: 'read' | 'preview' | 'apply'): string {
+export function failureText(err: unknown, step: 'upload' | 'read' | 'preview' | 'apply'): string {
   if (err instanceof ApiError) {
     if (err.status === 403) return 'Only admins can import records.'
     if (err.status === 413) return 'This file is too big to read: keep it under 200,000 rows and 500 columns.'
-    return FAILURE[step]
   }
-  return err instanceof Error && err.message ? err.message : FAILURE[step]
+  return FAILURE[step]
+}
+
+/** What a records apply 409 means for the file: applied already, a stale preview, or a race to retry. */
+export function applyConflict(err: unknown): 'already_applied' | 'preview_out_of_date' | 'conflict' | null {
+  if (!(err instanceof ApiError) || err.status !== 409) return null
+  if (err.code === 'already_applied' || err.code === 'preview_out_of_date') return err.code
+  return 'conflict'
+}
+
+/** The message for an apply that conflicted, by kind. */
+export const APPLY_CONFLICT_TEXT: Record<'already_applied' | 'preview_out_of_date' | 'conflict', string> = {
+  already_applied: 'Already applied',
+  preview_out_of_date: 'This preview was out of date, so we refreshed it. Check it, then apply again.',
+  conflict: 'Something changed while this file was being applied. Try applying again.',
 }
 
 /** Is the "date order" question worth asking, and how: the first day-and-month-both-fit value of an ambiguous column. */

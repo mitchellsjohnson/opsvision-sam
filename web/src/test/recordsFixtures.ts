@@ -350,10 +350,12 @@ export function recordsHandlers(fake: RecordsFake, { withVersions = true } = {})
       const id = String(params.id)
       const w = await record(request, `/imports/${id}/apply`)
       if (w.failure) return w.failure
-      if (appliedIds.has(id)) return appliedConflict()
+      if (appliedIds.has(id)) {
+        return HttpResponse.json({ error: { code: 'already_applied', message: 'this upload was already applied' } }, { status: 409 })
+      }
       if ((w.body as { planId?: string } | undefined)?.planId !== fake.plans[id]) {
         return HttpResponse.json(
-          { error: { code: 'conflict', message: 'preview is out of date: this is not the latest preview of the import; preview the import again' } },
+          { error: { code: 'preview_out_of_date', message: 'preview is out of date: this is not the latest preview of the import; preview the import again' } },
           { status: 409 },
         )
       }

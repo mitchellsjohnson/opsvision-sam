@@ -1,5 +1,5 @@
 import clsx from 'clsx'
-import { ChevronRight, ExternalLink, Info } from 'lucide-react'
+import { AlertTriangle, ChevronRight, ExternalLink, Info } from 'lucide-react'
 import { useId, useState, type ReactNode } from 'react'
 import type { RecordType, RecordsPreview } from '../../api/queries'
 import { parsePeriod, periodLabel } from '../../lib/period'
@@ -13,6 +13,7 @@ import {
   reasonLabel,
   reasonSummary,
   sameCell,
+  sameRecordsText,
   visibleProblems,
   type AnswerState,
   type Questions,
@@ -254,6 +255,7 @@ export function StoryPreview({
       </div>
 
       <Section title="What changes on the scorecard">
+        {story.sameRecords && story.previousAsOf && <p className="text-sm">{sameRecordsText(story.previousAsOf, asOf)}</p>}
         {story.nothingChanged ? (
           <p className="text-sm">Nothing changed since your last upload</p>
         ) : story.lines.length === 0 ? (
@@ -282,6 +284,19 @@ export function StoryPreview({
           </div>
         )}
       </Section>
+
+      {story.warnings.length > 0 && (
+        <Section title="Check the methodology">
+          <ul className="space-y-1">
+            {story.warnings.map((w) => (
+              <li key={w} className="flex items-start gap-2 rounded-md bg-cream p-2 text-sm">
+                <AlertTriangle aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-status-y" />
+                <span>{w}</span>
+              </li>
+            ))}
+          </ul>
+        </Section>
+      )}
 
       {questions.typed.length > 0 && (
         <Section title="Your typed numbers vs records">

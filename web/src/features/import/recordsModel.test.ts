@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest'
+import { ApiError } from '../../api/errors'
 import { defectsPreview, epicsPreview } from '../../test/recordsFixtures'
 import {
   MAX_UPLOAD_BYTES,
   answersFor,
   buildAnswers,
   columnNotice,
+  defaultAsOf,
   duplicateNotes,
   emptyAnswers,
+  failureText,
   fieldLabel,
   longDate,
   mergeQuestions,
@@ -17,6 +20,8 @@ import {
   reasonLabel,
   reasonSummary,
   recognitionParts,
+  recordNoun,
+  sameRecordsText,
   todayISO,
   visibleProblems,
 } from './recordsModel'
@@ -83,6 +88,27 @@ describe('copy', () => {
     expect(reasonSummary(many, 'Epic')).toBe('5 epics delivered on time: A-1, A-2, A-3 and 2 more')
   })
 
+  it('names newly open records with their priority, and never says "1 defects"', () => {
+    const base = epicsPreview().story.lines[0]!.reasons.slipped![0]!
+    const open = (id: string, priority: string) => ({ ...base, externalId: id, priority })
+    expect(reasonSummary({ newly_open: [open('CHK-1', 'P1')] }, 'Defects')).toBe('1 defect newly open P1: CHK-1')
+    expect(reasonSummary({ newly_open: [open('CHK-1', 'P1'), open('CHK-2', 'P2'), open('CHK-3', 'P1')] }, 'Defect')).toBe(
+      '2 defects newly open P1: CHK-1, CHK-3; 1 defect newly open P2: CHK-2',
+    )
+    expect(reasonSummary({ newly_open: [open('CHK-4', 'none')] }, 'Defect')).toBe('1 defect newly open: CHK-4')
+    expect(recordNoun('Defects', 1)).toBe('1 defect')
+    expect(recordNoun('Stories', 1)).toBe('1 story')
+    expect(recordNoun('Story', 2)).toBe('2 stories')
+    expect(recordNoun('Epic', 3)).toBe('3 epics')
+    expect(recordNoun('Process', 1)).toBe('1 process')
+  })
+
+  it('says when only the date moves', () => {
+    expect(sameRecordsText('2026-10-31', '2026-11-04', '2026-11-08')).toBe(
+      'Same records as your October 31 upload. Only the date moves: this data now runs through November 4.',
+    )
+  })
+
   it('maps field keys to friendly labels', () => {
     expect(fieldLabel('subjectKey')).toBe('Product or team')
     expect(fieldLabel('externalId')).toBe('ID')
@@ -101,7 +127,10 @@ describe('copy', () => {
     )
     expect(
       problemText({ row: 0, kind: 'error', column: 'Resolved', field: 'completedAt', value: '', message: 'column "Resolved" (for completedAt) is not in the file' }),
-    ).toBe('The file has no “Resolved” column, which Completed comes from')
+    ).toBe('The file has no “Resolved” column, so we can’t tell when items were completed')
+    expect(
+      problemText({ row: 0, kind: 'error', column: 'Team', field: 'subjectKey', value: '', message: '' }),
+    ).toBe('The file has no “Team” column, so we can’t tell which product or team each item belongs to')
     expect(
       problemText({ row: 9, kind: 'duplicate_id', column: 'Issue key', field: 'externalId', value: 'CHK-9', message: '"CHK-9" is also on row 10' }),
     ).toBe('ID “CHK-9” is on more than one row')
@@ -117,6 +146,31 @@ describe('copy', () => {
     expect(columnNotice([], [])).toBeNull()
     expect(missingText(3)).toBe('3 open records weren’t in this file')
     expect(missingText(1)).toBe('1 open record wasn’t in this file')
+  })
+})
+
+describe('defaultAsOf', () => {
+  const now = new Date(2026, 10, 8, 9, 0)
+  const modified = (d: Date) => new File(['x'], 'defects.csv', { lastModified: d.getTime() })
+  it('uses the file’s last-modified date within the last 60 days', () => {
+    expect(defaultAsOf(modified(new Date(2026, 9, 31, 23, 50)), now)).toBe('2026-10-31')
+    expect(defaultAsOf(modified(new Date(2026, 8, 9, 12, 0)), now)).toBe('2026-09-09')
+  })
+  it('uses today for an older, future, or missing date', () => {
+    expect(defaultAsOf(modified(new Date(2026, 8, 1)), now)).toBe('2026-11-08')
+    expect(defaultAsOf(modified(new Date(2026, 10, 9)), now)).toBe('2026-11-08')
+    expect(defaultAsOf(undefined, now)).toBe('2026-11-08')
+  })
+})
+
+describe('failureText', () => {
+  it('never shows browser or HTTP text for an upload', () => {
+    const upload = 'We couldn’t upload this file. Check your connection and try again.'
+    expect(failureText(new TypeError('Failed to fetch'), 'upload')).toBe(upload)
+    expect(failureText(new Error('The upload was refused (status 403). Upload the file again.'), 'upload')).toBe(upload)
+    expect(failureText(new ApiError({ status: 500, code: 'internal', message: 'internal error' }), 'upload')).toBe(upload)
+    expect(failureText(new TypeError('Failed to fetch'), 'preview')).toBe('We couldn’t work out what this file changes. Try again in a moment.')
+    expect(failureText(new ApiError({ status: 403, code: 'forbidden', message: 'x' }), 'upload')).toBe('Only admins can import records.')
   })
 })
 

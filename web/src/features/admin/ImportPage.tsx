@@ -643,6 +643,12 @@ export function ImportPage() {
   const heading = useRef<HTMLHeadingElement>(null)
   const [params, setParams] = useSearchParams()
   const kind: Kind = KINDS.find((k) => k.value === params.get('kind'))?.value ?? 'records'
+  const showKind = (value: string) =>
+    setParams((prev) => {
+      const next = new URLSearchParams(prev)
+      next.set('kind', value)
+      return next
+    })
   return (
     <section className="space-y-6">
       <div>
@@ -653,16 +659,7 @@ export function ImportPage() {
           Drop your monthly tracker exports, read what changes on the scorecard and why, then apply.
         </p>
       </div>
-      <Tabs.Root
-        value={kind}
-        onValueChange={(value) =>
-          setParams((prev) => {
-            const next = new URLSearchParams(prev)
-            next.set('kind', value)
-            return next
-          })
-        }
-      >
+      <Tabs.Root value={kind} onValueChange={showKind}>
         <Tabs.List aria-label="Kind of import" className="flex gap-1 border-b border-ink/20">
           {KINDS.map((k) => (
             <Tabs.Trigger
@@ -674,9 +671,10 @@ export function ImportPage() {
             </Tabs.Trigger>
           ))}
         </Tabs.List>
-        <Tabs.Content value="records" className="space-y-4 py-4">
+        {/* Kept mounted on the other tab, so previews not applied yet are not lost. */}
+        <Tabs.Content value="records" forceMount hidden={kind !== 'records'} className="space-y-4 py-4">
           <h2 className="text-lg font-semibold">Upload records</h2>
-          <RecordsImport />
+          <RecordsImport catchPageDrops onPageDrop={() => kind !== 'records' && showKind('records')} />
         </Tabs.Content>
         <Tabs.Content value="legacy" className="py-4">
           <LegacyImport />

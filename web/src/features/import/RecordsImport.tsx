@@ -2,7 +2,6 @@ import * as Dialog from '@radix-ui/react-dialog'
 import { CheckCircle2, FileSpreadsheet, Loader2, X, XCircle } from 'lucide-react'
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type RefObject } from 'react'
 import { useNavigate } from 'react-router'
-import { ApiError } from '../../api/errors'
 import {
   useApplyRecords,
   useCreateImportUpload,
@@ -27,11 +26,14 @@ import { fileSize, putFile } from '../admin/importModel'
 import { DropZone } from './DropZone'
 import type { SubjectOption } from './NeedsInput'
 import {
+  APPLY_CONFLICT_TEXT,
   answersFor,
   answersUpdateTemplate,
+  applyConflict,
   buildAnswers,
   contentTypeFor,
   dateQuestion,
+  defaultAsOf,
   emptyAnswers,
   failureText,
   formatCount,
@@ -39,7 +41,6 @@ import {
   noQuestions,
   partitionFiles,
   recognitionParts,
-  todayISO,
   type AnswerState,
   type Questions,
 } from './recordsModel'
@@ -66,6 +67,8 @@ type FileStatus =
 
 type Outcome =
   | { kind: 'applied'; records: NonNullable<ChangeSetPreview['records']> }
+  /** Applied before, from another tab or a double submit. */
+  | { kind: 'already' }
   | { kind: 'failed'; message: string }
 
 type Phase =
@@ -148,7 +151,7 @@ function FileImport({
     entry.prepared ? { step: 'ready', importId: entry.prepared.importId } : { step: 'uploading' },
   )
   const [attempt, setAttempt] = useState(0)
-  const [asOf, setAsOf] = useState(todayISO)
+  const [asOf, setAsOf] = useState(() => defaultAsOf(entry.file))
   const [q, setQ] = useState<{ questions: Questions; answers: AnswerState }>({ questions: noQuestions(), answers: emptyAnswers() })
   const [result, setResult] = useState<{ key: string; preview: RecordsPreview } | null>(null)
   const [previewError, setPreviewError] = useState<{ key: string; message: string } | null>(null)
@@ -163,11 +166,13 @@ function FileImport({
     if (!file || started.current === attempt) return
     started.current = attempt
     void (async () => {
+      let stage: 'upload' | 'read' = 'upload'
       try {
         const contentType = contentTypeFor(file)
         const created = await createUpload({ filename: file.name, contentType })
         // The URL is pre-signed: it is called as is, without the API token.
         await putFile(new URL(created.uploadUrl, getConfig().apiUrl).toString(), file, contentType)
+        stage = 'read'
         setPhase({ step: 'reading' })
         const res = await inspect(created.importId)
         setPhase(
@@ -176,7 +181,7 @@ function FileImport({
             : { step: 'setup', importId: created.importId, result: res },
         )
       } catch (err) {
-        setPhase({ step: 'failed', message: failureText(err, 'read') })
+        setPhase({ step: 'failed', message: failureText(err, stage) })
       }
     })()
   }, [entry.file, attempt, createUpload, inspect])
@@ -192,7 +197,7 @@ function FileImport({
   const answersJson = JSON.stringify(buildAnswers(answers))
   const inline = entry.prepared ? JSON.stringify(entry.prepared.template) : ''
   const applied = outcome?.kind === 'applied' ? outcome.records : undefined
-  const isApplied = applied !== undefined
+  const isApplied = applied !== undefined || outcome?.kind === 'already'
   const requestKey = JSON.stringify([scorecardId, matchedId, inline, asOf, answersJson, refresh, retry])
 
   // Preview now, then again 300 ms after the last answer or date change.
@@ -224,10 +229,10 @@ function FileImport({
 
   const preview = result?.preview
   const current = result !== null && result.key === requestKey
-  const failedNow = !applied && previewError !== null && previewError.key === requestKey
+  const failedNow = !isApplied && previewError !== null && previewError.key === requestKey
 
   const status: FileStatus = (() => {
-    if (outcome?.kind === 'applied') return { state: 'applied' }
+    if (isApplied) return { state: 'applied' }
     if (phase.step === 'setup' || phase.step === 'failed') return { state: 'blocked' }
     if (phase.step !== 'ready') return { state: 'busy' }
     if (failedNow) return { state: 'blocked' }
@@ -250,7 +255,7 @@ function FileImport({
       ? 'Uploading…'
       : phase.step === 'reading'
         ? 'Reading the file…'
-        : phase.step === 'ready' && !applied && !failedNow && !current
+        : phase.step === 'ready' && !isApplied && !failedNow && !current
           ? preview
             ? 'Updating the preview…'
             : 'Working out what changes…'
@@ -290,7 +295,7 @@ function FileImport({
           </h3>
           {entry.file && <span className="text-sm text-ink/80">{fileSize(entry.file.size)}</span>}
         </div>
-        {!applied && (
+        {!isApplied && (
           <button type="button" className={linkButton} aria-label={`Remove ${filename}`} onClick={() => onRemove(entry.key)}>
             Remove
           </button>
@@ -310,6 +315,12 @@ function FileImport({
         <p className="flex items-center gap-2 font-medium text-status-g">
           <CheckCircle2 aria-hidden="true" className="size-5" />
           <span>{appliedText(applied)}</span>
+        </p>
+      )}
+      {outcome?.kind === 'already' && (
+        <p className="flex items-center gap-2 font-medium">
+          <CheckCircle2 aria-hidden="true" className="size-5 text-status-g" />
+          <span>{APPLY_CONFLICT_TEXT.already_applied}. This upload is already on the scorecard.</span>
         </p>
       )}
 
@@ -350,7 +361,10 @@ function FileImport({
             className={primaryButton}
             onClick={() => {
               if (onNeedsSetup && entry.file) onNeedsSetup(entry.file, phase.result, phase.importId)
-              else void navigate(`/admin/import/setup?upload=${encodeURIComponent(phase.importId)}`)
+              else
+                void navigate(`/admin/import/setup?upload=${encodeURIComponent(phase.importId)}`, {
+                  state: { asOf: defaultAsOf(entry.file) } satisfies SetupState,
+                })
             }}
           >
             Set up this file
@@ -370,7 +384,7 @@ function FileImport({
         </div>
       )}
 
-      {preview && !applied && (
+      {preview && !isApplied && (
         <StoryPreview
           preview={preview}
           recognition={recognition}
@@ -392,6 +406,16 @@ function FileImport({
   )
 }
 
+/** What the Import page hands the setup with an upload it could not place. */
+export interface SetupState {
+  /** The as-of date the file starts with. */
+  asOf: string
+}
+
+function hasFiles(e: DragEvent) {
+  return Array.from(e.dataTransfer?.types ?? []).includes('Files')
+}
+
 export interface RecordsImportProps {
   /** The scorecard previews evaluate; when absent, the tenant's scorecard (or a choice of them). */
   scorecardId?: string
@@ -403,6 +427,12 @@ export interface RecordsImportProps {
   onNeedsSetup?: (file: File, result: RecordsInspectResult, importId: string) => void
   /** Told whether any file has a preview that is not applied yet (or is still on its way). */
   onPendingChange?: (pending: boolean) => void
+  /**
+   * Take files dropped anywhere on the page, so the browser never opens one
+   * in place of the app; `onPageDrop` is told when files arrive that way.
+   */
+  catchPageDrops?: boolean
+  onPageDrop?: () => void
 }
 
 /**
@@ -415,10 +445,12 @@ export function RecordsImport({
   prepared = [],
   onNeedsSetup,
   onPendingChange,
+  catchPageDrops = false,
+  onPageDrop,
 }: RecordsImportProps) {
   const scorecards = useScorecards()
   const apply = useApplyRecords()
-  const [initialRejected] = useState(() => partitionFiles(initialFiles).rejected)
+  const [rejectedFiles, setRejectedFiles] = useState(() => partitionFiles(initialFiles).rejected)
   const [entries, setEntries] = useState<Entry[]>(() => [
     ...prepared.map((p) => ({ key: `p-${p.importId}`, prepared: p })),
     ...partitionFiles(initialFiles).accepted.map((file, i) => ({ key: `i-${i}`, file })),
@@ -439,6 +471,39 @@ export function RecordsImport({
   const onStatus = useCallback((key: string, status: FileStatus) => {
     setStatuses((prev) => ({ ...prev, [key]: status }))
   }, [])
+
+  const addFiles = useCallback((files: File[]) => {
+    setSummary({ text: '', ok: true })
+    const keyed = files.map((file) => ({ key: `d-${++added.current}`, file }))
+    setEntries((prev) => [...prev, ...keyed])
+  }, [])
+
+  // A file dropped outside the drop zone is taken too (the drop zone stops its own drops).
+  const pageDrop = useRef(onPageDrop)
+  useEffect(() => {
+    pageDrop.current = onPageDrop
+  })
+  useEffect(() => {
+    if (!catchPageDrops) return
+    const nativeInput = (e: Event) => e.target instanceof HTMLInputElement && e.target.type === 'file'
+    const over = (e: DragEvent) => {
+      if (hasFiles(e) && !nativeInput(e)) e.preventDefault()
+    }
+    const drop = (e: DragEvent) => {
+      if (!hasFiles(e) || nativeInput(e) || e.defaultPrevented) return
+      e.preventDefault()
+      const { accepted, rejected } = partitionFiles(Array.from(e.dataTransfer?.files ?? []))
+      setRejectedFiles(rejected)
+      if (accepted.length > 0) addFiles(accepted)
+      if (accepted.length + rejected.length > 0) pageDrop.current?.()
+    }
+    window.addEventListener('dragover', over)
+    window.addEventListener('drop', drop)
+    return () => {
+      window.removeEventListener('dragover', over)
+      window.removeEventListener('drop', drop)
+    }
+  }, [catchPageDrops, addFiles])
 
   function remove(key: string) {
     setEntries((prev) => prev.filter((e) => e.key !== key))
@@ -471,17 +536,17 @@ export function RecordsImport({
         if (res.records) setOutcomes((prev) => ({ ...prev, [entry.key]: { kind: 'applied', records: res.records! } }))
         done++
       } catch (err) {
+        const conflict = applyConflict(err)
+        if (conflict === 'already_applied') {
+          setOutcomes((prev) => ({ ...prev, [entry.key]: { kind: 'already' } }))
+          done++
+          continue
+        }
         failed++
-        const stale = err instanceof ApiError && err.status === 409
-        if (stale) setStaleCounts((prev) => ({ ...prev, [entry.key]: (prev[entry.key] ?? 0) + 1 }))
+        if (conflict === 'preview_out_of_date') setStaleCounts((prev) => ({ ...prev, [entry.key]: (prev[entry.key] ?? 0) + 1 }))
         setOutcomes((prev) => ({
           ...prev,
-          [entry.key]: {
-            kind: 'failed',
-            message: stale
-              ? 'This preview was out of date, so we refreshed it. Check it, then apply again.'
-              : failureText(err, 'apply'),
-          },
+          [entry.key]: { kind: 'failed', message: conflict ? APPLY_CONFLICT_TEXT[conflict] : failureText(err, 'apply') },
         }))
       }
     }
@@ -506,19 +571,11 @@ export function RecordsImport({
           onChange={(e) => setChosenScorecard(e.target.value)}
         />
       )}
-      <DropZone
-        chooseRef={chooseRef}
-        hasFilesAlready={entries.length > 0}
-        onFiles={(files) => {
-          setSummary({ text: '', ok: true })
-          const keyed = files.map((file) => ({ key: `d-${++added.current}`, file }))
-          setEntries((prev) => [...prev, ...keyed])
-        }}
-      />
-      {initialRejected.length > 0 && (
+      <DropZone chooseRef={chooseRef} hasFilesAlready={entries.length > 0} onFiles={addFiles} />
+      {rejectedFiles.length > 0 && (
         <div role="alert" className="rounded-md border border-status-r bg-status-r-bg p-3 text-sm font-medium text-status-r">
           <ul>
-            {initialRejected.map((m) => (
+            {rejectedFiles.map((m) => (
               <li key={m}>{m}</li>
             ))}
           </ul>
@@ -547,25 +604,29 @@ export function RecordsImport({
         <div className="sticky bottom-0 flex flex-wrap items-center gap-3 rounded-lg border border-ink/20 bg-white/95 p-3 shadow-sm">
           {allNothing ? (
             <p className="text-sm font-medium">Nothing changed since your last upload</p>
-          ) : ready.length > 0 || busy ? (
+          ) : ready.length > 0 || busy || applying ? (
             <>
+              {/* Kept focusable while applying, so focus stays put; the live region says what is happening. */}
               <button
                 type="button"
-                className={primaryButton}
-                disabled={busy || applying || ready.length === 0}
-                onClick={() => void applyAll()}
+                className={`${primaryButton} aria-disabled:opacity-60`}
+                disabled={!applying && (busy || ready.length === 0)}
+                aria-disabled={applying ? true : undefined}
+                onClick={() => {
+                  if (!applying) void applyAll()
+                }}
               >
                 {applying ? 'Applying…' : 'Apply'}
               </button>
-              <p className="flex items-center gap-2 text-sm text-ink/80">
+              <p role="status" className="flex items-center gap-2 text-sm text-ink/80">
                 {(busy || applying) && <Spinner />}
                 {applying
-                  ? 'Applying your files in order…'
+                  ? 'Applying… your files go in one at a time.'
                   : busy
                     ? 'Getting every preview ready…'
                     : ready.length > 1
-                      ? `Applies ${ready.length} files in order. Nothing is saved until then.`
-                      : 'Nothing is saved until you apply.'}
+                      ? `Applies ${ready.length} files in order. They aren’t brought in until then.`
+                      : 'Your file isn’t brought in until you apply.'}
               </p>
             </>
           ) : null}
@@ -629,7 +690,7 @@ export function UploadRecordsDialog({
           className="fixed left-1/2 top-1/2 z-50 max-h-[92vh] w-[min(96vw,60rem)] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-lg bg-cream p-6 shadow-xl">
           <Dialog.Title className="pr-8 text-lg font-semibold text-accent-deep">Upload records</Dialog.Title>
           <Dialog.Description className="mt-1 text-sm text-ink/80">
-            Drop your tracker exports to see what changes on this scorecard. Nothing is saved until you apply.
+            Drop your tracker exports to see what changes on this scorecard. Nothing is brought in until you apply.
           </Dialog.Description>
           <div className="mt-4">
             <RecordsImport scorecardId={scorecardId} initialFiles={initialFiles} onPendingChange={setPending} />
