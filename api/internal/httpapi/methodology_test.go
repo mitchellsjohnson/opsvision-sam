@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"context"
 	"encoding/json"
 	"reflect"
 	"strings"
@@ -609,25 +608,9 @@ func derivedSample() domain.Methodology {
 	return m
 }
 
-// seedDerivedRecordTypes stores the record types derivedSample's rules read.
-func seedDerivedRecordTypes(t *testing.T, e *testEnv) {
-	t.Helper()
-	for _, rt := range []domain.RecordType{
-		{ID: "defect", Name: "Defect", Priorities: []string{"P1", "P2", "P3", "P4"}},
-		{ID: "epic", Name: "Epic"},
-		{ID: "idea", Name: "Idea"},
-		{ID: "release", Name: "Release"},
-	} {
-		if err := e.store.PutRecordType(context.Background(), "t1", rt, 0); err != nil {
-			t.Fatal(err)
-		}
-	}
-}
-
 func TestDerivedMeasureRoundTrip(t *testing.T) {
 	e := newTestEnv(t)
 	seedScorecard(t, e, "delivery")
-	seedDerivedRecordTypes(t, e)
 	want := derivedSample()
 
 	saved := saveDraft(t, e, newDraft(t, e, "delivery", "Derived", ""), want)

@@ -314,7 +314,9 @@ export interface paths {
          * Validate a version's content (admin only)
          * @description Always 200 for an existing version. `valid` is false when the content
          *     has problems, and `errors` lists every one as `{path, message}`; it is
-         *     empty when `valid` is true. Validation uses the tenant's status scale.
+         *     empty when `valid` is true. Validation uses the tenant's status scale,
+         *     and checks derive rules against the tenant's record types: each
+         *     `where` must compile (problems at `measures[i].derive.where`).
          */
         post: operations["validateVersion"];
         delete?: never;
@@ -340,10 +342,14 @@ export interface paths {
         /**
          * Publish a draft, effective from a period (admin only)
          * @description Validates first; invalid content fails with 400 `invalid` and
-         *     `error.details` lists every problem as `{path, message}`. After
-         *     publishing, derived values of open periods are recalculated from the
-         *     stored records under the versions now in force; `recalculated`
-         *     counts the data points written or removed.
+         *     `error.details` lists every problem as `{path, message}`, including
+         *     derive rules that do not fit the tenant's record types (at
+         *     `measures[i].derive...`). After publishing, derived values of open
+         *     periods are recalculated from the stored records under the versions
+         *     now in force; `recalculated` counts the data points written or
+         *     removed. If recalculation fails the publish still stands:
+         *     `recalculationError` says so, and the next records upload or publish
+         *     recalculates again.
          */
         post: operations["publishVersion"];
         delete?: never;
@@ -1173,6 +1179,8 @@ export interface components {
         /** @description The published version, and how many derived data points publishing recalculated. */
         PublishVersionResult: components["schemas"]["MethodologyVersion"] & {
             recalculated: number;
+            /** @description Set only when the publish succeeded but recalculating derived values failed. */
+            recalculationError?: string;
         };
         VersionDiff: {
             from: components["schemas"]["ServerId"];

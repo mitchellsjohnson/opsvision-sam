@@ -15,6 +15,7 @@ import (
 	"opsvision/internal/auth"
 	"opsvision/internal/domain"
 	"opsvision/internal/objects"
+	"opsvision/internal/store"
 	"opsvision/internal/store/memstore"
 )
 
@@ -44,6 +45,14 @@ func newTestAPI(t *testing.T) (*httptest.Server, map[string]string) {
 }
 
 func newTestEnv(t *testing.T) *testEnv {
+	t.Helper()
+	return newTestEnvWith(t, nil)
+}
+
+// newTestEnvWith is newTestEnv with the server's store wrapped by wrap (when
+// non-nil), for tests that inject store failures. Fixtures written through
+// testEnv.store bypass the wrapper.
+func newTestEnvWith(t *testing.T, wrap func(store.Store) store.Store) *testEnv {
 	t.Helper()
 	st := memstore.New()
 	ctx := context.Background()
@@ -95,8 +104,12 @@ func newTestEnv(t *testing.T) *testEnv {
 	}
 	var n atomic.Int64
 	objs := objects.NewMem("http://objects.test", objects.Signer(testSecret))
+	var served store.Store = st
+	if wrap != nil {
+		served = wrap(st)
+	}
 	s := NewServer(Deps{
-		Store:   st,
+		Store:   served,
 		Objects: objs,
 		Now:     func() time.Time { return testNow },
 		NewID:   func() string { return fmt.Sprintf("id-%04d", n.Add(1)) },

@@ -762,48 +762,95 @@ func TestValidateDerivedMeasure(t *testing.T) {
 	}, nil)
 	m := sampleMethodology(90)
 	m.Measures[0].Source = domain.MeasureDerived
-	m.Measures[0].Derive = &domain.DeriveRule{RecordType: "defect", Op: domain.OpCount, BucketBy: "createdAt", Where: "customerTicket == true"}
-	v := saveDraft(t, e, newDraft(t, e, "delivery", "Derived", ""), m)
+	m.Measures[0].Derive = &domain.DeriveRule{RecordType: "defect", Op: domain.OpCount, BucketBy: "createdAt", Where: "nosuchfield == 'x'"}
+	m.Measures[1].Source = domain.MeasureDerived
+	m.Measures[1].Derive = &domain.DeriveRule{RecordType: "epic", Op: domain.OpCount, BucketBy: "createdAt"}
 
-	// A where that does not compile is refused on save.
-	bad := m
-	bad.Measures = append([]domain.Measure{}, m.Measures...)
-	rule := *m.Measures[0].Derive
-	rule.Where = "nosuchfield == 'x'"
-	bad.Measures[0].Derive = &rule
-	got := e.expectError(t, 400, "invalid", admin, "PUT", "/scorecards/delivery/versions/"+v.ID,
-		map[string]any{"revision": v.Revision, "content": bad})
-	if !hasDetail(got, "content.measures[0].derive.where") {
-		t.Errorf("PUT details = %+v", got.Error.Details)
+	// A draft is work in progress: bad derive rules are saved as sent.
+	v := saveDraft(t, e, newDraft(t, e, "delivery", "Derived", ""), m)
+	if got := getVersion(t, e, "delivery", v.ID); got.Content.Measures[0].Derive == nil || got.Content.Measures[0].Derive.Where != "nosuchfield == 'x'" {
+		t.Fatalf("saved draft measures = %+v", got.Content.Measures)
 	}
 
-	// The record type loses the attribute the condition reads: validate and
-	// publish report it.
-	e.expect(t, 200, admin, "PUT", "/record-types/defect", map[string]any{
-		"id": "defect", "name": "Defect", "priorities": []string{"P1"}, "trackedFrom": map[string]string{}, "revision": 1, "attributes": []any{},
-	}, nil)
+	// Validate reports the where that does not compile and the unknown record type.
 	var res struct {
 		Valid  bool `json:"valid"`
 		Errors []struct{ Path, Message string }
 	}
 	e.expect(t, 200, admin, "POST", "/scorecards/delivery/versions/"+v.ID+"/validate", nil, &res)
-	found := false
+	paths := map[string]bool{}
 	for _, d := range res.Errors {
-		found = found || d.Path == "measures[0].derive.where"
+		paths[d.Path] = true
 	}
-	if res.Valid || !found {
-		t.Errorf("validate = %+v, want an error at measures[0].derive.where", res)
+	if res.Valid || !paths["measures[0].derive.where"] || !paths["measures[1].derive.recordType"] {
+		t.Errorf("validate = %+v, want errors at measures[0].derive.where and measures[1].derive.recordType", res)
 	}
-	got = e.expectError(t, 400, "invalid", admin, "POST", "/scorecards/delivery/versions/"+v.ID+"/publish", map[string]any{"effectiveFrom": "2026-M01"})
-	if !hasDetail(got, "measures[0].derive.where") {
+	// Publish refuses it at the same paths.
+	got := e.expectError(t, 400, "invalid", admin, "POST", "/scorecards/delivery/versions/"+v.ID+"/publish", map[string]any{"effectiveFrom": "2026-M01"})
+	if !hasDetail(got, "measures[0].derive.where") || !hasDetail(got, "measures[1].derive.recordType") {
 		t.Errorf("publish details = %+v", got.Error.Details)
 	}
-	// An unknown record type is reported by ValidateDerive.
-	rule.RecordType, rule.Where = "epic", ""
-	got = e.expectError(t, 400, "invalid", admin, "PUT", "/scorecards/delivery/versions/"+v.ID,
-		map[string]any{"revision": v.Revision, "content": bad})
-	if !hasDetail(got, "content.measures[0].derive.recordType") {
-		t.Errorf("PUT details = %+v", got.Error.Details)
+
+	// A where that compiles against the record type publishes.
+	m.Measures[0].Derive.Where = "customerTicket == true"
+	m.Measures[1].Derive.RecordType = "defect"
+	v = saveDraft(t, e, getVersion(t, e, "delivery", v.ID), m)
+	e.expect(t, 200, admin, "POST", "/scorecards/delivery/versions/"+v.ID+"/validate", nil, &res)
+	if !res.Valid {
+		t.Errorf("validate after the fix = %+v", res)
+	}
+	publish(t, e, v, "2026-M01")
+}
+
+// failingDataStore fails PutDataPoints while fail is set.
+type failingDataStore struct {
+	store.Store
+	fail *bool
+}
+
+func (f failingDataStore) PutDataPoints(ctx context.Context, tenantID, scorecardID string, pts []store.DataWrite) ([]domain.DataPoint, error) {
+	if *f.fail {
+		return nil, fmt.Errorf("injected data point write failure")
+	}
+	return f.Store.PutDataPoints(ctx, tenantID, scorecardID, pts)
+}
+
+func TestPublishSurvivesRecalculationFailure(t *testing.T) {
+	fail := false
+	e := newTestEnvWith(t, func(st store.Store) store.Store { return failingDataStore{Store: st, fail: &fail} })
+	seedRecords(t, e)
+	applyDefects(t, e)
+
+	flat := map[string]float64{"P1": 1, "P2": 1, "P3": 1, "P4": 1, "none": 1}
+	v := saveDraft(t, e, newDraft(t, e, "sc", "Flat", ""), defectMethodology(flat))
+	fail = true
+	var out struct {
+		Status             string  `json:"status"`
+		Recalculated       *int    `json:"recalculated"`
+		RecalculationError *string `json:"recalculationError"`
+	}
+	e.expect(t, 200, e.tokens["t1-admin"], "POST", "/scorecards/sc/versions/"+v.ID+"/publish", map[string]any{"effectiveFrom": "2026-M09"}, &out)
+	if out.Status != "published" || out.Recalculated == nil || *out.Recalculated != 0 || out.RecalculationError == nil || *out.RecalculationError == "" {
+		t.Fatalf("publish = %+v, want published with a recalculation error", out)
+	}
+	if strings.Contains(*out.RecalculationError, "injected") {
+		t.Errorf("recalculationError leaks the internal error: %q", *out.RecalculationError)
+	}
+	if got := getVersion(t, e, "sc", v.ID); got.Status != "published" || got.EffectiveFrom != "2026-M09" {
+		t.Errorf("version after publish = %+v", got)
+	}
+	// The stored derived points are the ones from before the publish.
+	if dp, ok := storedPoint(t, e, "defect_points_sum", "checkout", sep2026); !ok || dp.Value == nil || *dp.Value != 832 {
+		t.Errorf("checkout point = %+v, want 832", dp)
+	}
+
+	// A successful publish carries no error.
+	fail = false
+	v2 := saveDraft(t, e, newDraft(t, e, "sc", "Default", ""), defectMethodology(defectWeights))
+	out.RecalculationError = nil
+	e.expect(t, 200, e.tokens["t1-admin"], "POST", "/scorecards/sc/versions/"+v2.ID+"/publish", map[string]any{"effectiveFrom": "2026-M10"}, &out)
+	if out.RecalculationError != nil {
+		t.Errorf("recalculationError on success = %q", *out.RecalculationError)
 	}
 }
 

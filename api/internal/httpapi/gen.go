@@ -1408,7 +1408,10 @@ type PublishVersionResult struct {
 	Name         string     `json:"name"`
 	PublishedAt  *time.Time `json:"publishedAt,omitempty"`
 	Recalculated int        `json:"recalculated"`
-	Revision     int        `json:"revision"`
+
+	// RecalculationError Set only when the publish succeeded but recalculating derived values failed.
+	RecalculationError *string `json:"recalculationError,omitempty"`
+	Revision           int     `json:"revision"`
 
 	// ScorecardId Client-supplied identifier.
 	//

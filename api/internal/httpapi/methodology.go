@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 	"time"
@@ -302,9 +303,7 @@ func (s *Server) GetVersion(ctx context.Context, req GetVersionRequestObject) (G
 
 // PutVersion saves a draft's name and content. The content is stored as
 // sent, however incomplete: a draft is work in progress, and the validate
-// operation checks it. Derive rules are the exception: one that does not fit
-// the tenant's record types, or whose where condition does not compile, is
-// refused. Admins only.
+// operation checks it. Admins only.
 func (s *Server) PutVersion(ctx context.Context, req PutVersionRequestObject) (PutVersionResponseObject, error) {
 	p, err := methodologyAdmin(ctx)
 	if err != nil {
@@ -329,16 +328,6 @@ func (s *Server) PutVersion(ctx context.Context, req PutVersionRequestObject) (P
 	}
 
 	tenantID := p.Tenant.ID
-	derive, err := s.deriveProblems(ctx, tenantID, content)
-	if err != nil {
-		return nil, err
-	}
-	for _, e := range derive {
-		pr.add("content."+e.Path, "%s", e.Message)
-	}
-	if err := pr.err(); err != nil {
-		return nil, err
-	}
 	cur, err := s.versionOf(ctx, tenantID, req.Sc, req.V)
 	if err != nil {
 		return nil, err
@@ -412,7 +401,9 @@ func inForce(v domain.MethodologyVersion) bool {
 // PublishVersion makes a draft effective from a month. Published versions
 // are immutable. The version in force immediately before the new month, if
 // still marked published, becomes superseded. Derived values of open periods
-// are then recalculated under the versions now in force. Admins only.
+// are then recalculated under the versions now in force. The publish stands
+// if recalculation fails: the response reports the failure, which is logged,
+// and the next records apply or publish recalculates again. Admins only.
 func (s *Server) PublishVersion(ctx context.Context, req PublishVersionRequestObject) (PublishVersionResponseObject, error) {
 	p, err := methodologyAdmin(ctx)
 	if err != nil {
@@ -490,15 +481,19 @@ func (s *Server) PublishVersion(ctx context.Context, req PublishVersionRequestOb
 		}
 	}
 
+	v := apiVersion(stored)
+	out := PublishVersion200JSONResponse{
+		Id: v.Id, ScorecardId: v.ScorecardId, Name: v.Name, Status: v.Status, EffectiveFrom: v.EffectiveFrom,
+		PublishedAt: v.PublishedAt, Revision: v.Revision, Content: v.Content,
+	}
 	n, err := s.recalculate(ctx, p, req.Sc, stored.ID)
 	if err != nil {
-		return nil, err
+		slog.Error("httpapi: recalculation after publish failed", "tenant", tenantID, "scorecard", req.Sc, "version", stored.ID, "err", err)
+		msg := "derived values could not be recalculated; they update with the next records upload or publish"
+		out.RecalculationError = &msg
 	}
-	v := apiVersion(stored)
-	return PublishVersion200JSONResponse{
-		Id: v.Id, ScorecardId: v.ScorecardId, Name: v.Name, Status: v.Status, EffectiveFrom: v.EffectiveFrom,
-		PublishedAt: v.PublishedAt, Revision: v.Revision, Content: v.Content, Recalculated: n,
-	}, nil
+	out.Recalculated = n
+	return out, nil
 }
 
 // recalculate brings a scorecard's derived points up to date with the stored
@@ -522,7 +517,7 @@ func (s *Server) recalculate(ctx context.Context, p auth.Principal, scorecardID,
 		return 0, fmt.Errorf("httpapi: save recalculated derived values: %w", err)
 	}
 	if err := s.audit(ctx, p, tenantID, "records.recalculate", "version", versionID, nil, map[string]int{"dataPoints": len(writes)}); err != nil {
-		return 0, err
+		return len(writes), err
 	}
 	return len(writes), nil
 }
