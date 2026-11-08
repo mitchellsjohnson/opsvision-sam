@@ -1,5 +1,7 @@
+import * as Tabs from '@radix-ui/react-tabs'
 import { AlertTriangle, Info, XCircle } from 'lucide-react'
 import { useId, useRef, useState, type FormEvent } from 'react'
+import { useSearchParams } from 'react-router'
 import {
   useApplyImport,
   useCreateImportUpload,
@@ -11,6 +13,7 @@ import {
   type ImportTemplate,
 } from '../../api/queries'
 import { getConfig } from '../../config'
+import { RecordsImport } from '../import/RecordsImport'
 import { ID_PATTERN, NO_ERRORS, errorsFrom, forField, slugify, unclaimed, type FormErrors } from './adminModel'
 import {
   FormActions,
@@ -127,8 +130,15 @@ function TemplateForm({
   )
 }
 
-function TemplatesSection({ onNotice }: { onNotice: (message: string) => void }) {
+/** Records templates belong to the records import and are not edited as workbook mappings. */
+function useLegacyTemplates() {
   const templates = useImportTemplates()
+  const data = templates.data?.filter((t) => t.profile !== 'records')
+  return { ...templates, data }
+}
+
+function TemplatesSection({ onNotice }: { onNotice: (message: string) => void }) {
+  const templates = useLegacyTemplates()
   const rows = templates.data ?? []
   return (
     <section aria-labelledby="templates-h" className="space-y-3">
@@ -378,7 +388,7 @@ type Upload =
 
 function ImportFlow() {
   const me = useMe()
-  const templates = useImportTemplates()
+  const templates = useLegacyTemplates()
   const createUpload = useCreateImportUpload()
   const parse = useParseImport()
   const fileId = useId()
@@ -604,25 +614,74 @@ function ImportFlow() {
   )
 }
 
-export function ImportPage() {
-  const heading = useRef<HTMLHeadingElement>(null)
+const KINDS = [
+  { value: 'records', label: 'Records' },
+  { value: 'legacy', label: 'Legacy workbook' },
+] as const
+
+type Kind = (typeof KINDS)[number]['value']
+
+function LegacyImport() {
   const [notice, setNotice] = useState('')
   return (
-    <section className="space-y-8">
-      <div>
-        <h1 ref={heading} tabIndex={-1} className="text-2xl font-semibold text-accent-deep">
-          Import
-        </h1>
-        <p className="mt-1 text-sm text-ink/80">
-          Bring in data and methodology text from a legacy workbook: upload it, parse it with a template, review the
-          preview, then apply.
-        </p>
-      </div>
+    <div className="space-y-8">
+      <p className="text-sm text-ink/80">
+        Bring in data and methodology text from a legacy workbook: upload it, parse it with a template, review the
+        preview, then apply.
+      </p>
       <p role="status" className="min-h-5 text-sm font-medium text-status-g">
         {notice}
       </p>
       <TemplatesSection onNotice={setNotice} />
       <ImportFlow />
+    </div>
+  )
+}
+
+/** The import page: records exports first, the legacy workbook import second. The kind is in the URL (`?kind=`). */
+export function ImportPage() {
+  const heading = useRef<HTMLHeadingElement>(null)
+  const [params, setParams] = useSearchParams()
+  const kind: Kind = KINDS.find((k) => k.value === params.get('kind'))?.value ?? 'records'
+  return (
+    <section className="space-y-6">
+      <div>
+        <h1 ref={heading} tabIndex={-1} className="text-2xl font-semibold text-accent-deep">
+          Import
+        </h1>
+        <p className="mt-1 text-sm text-ink/80">
+          Drop your monthly tracker exports, read what changes on the scorecard and why, then apply.
+        </p>
+      </div>
+      <Tabs.Root
+        value={kind}
+        onValueChange={(value) =>
+          setParams((prev) => {
+            const next = new URLSearchParams(prev)
+            next.set('kind', value)
+            return next
+          })
+        }
+      >
+        <Tabs.List aria-label="Kind of import" className="flex gap-1 border-b border-ink/20">
+          {KINDS.map((k) => (
+            <Tabs.Trigger
+              key={k.value}
+              value={k.value}
+              className="-mb-px border-b-2 border-transparent px-4 py-2 text-sm font-medium data-[state=active]:border-accent data-[state=active]:text-accent-deep"
+            >
+              {k.label}
+            </Tabs.Trigger>
+          ))}
+        </Tabs.List>
+        <Tabs.Content value="records" className="space-y-4 py-4">
+          <h2 className="text-lg font-semibold">Upload records</h2>
+          <RecordsImport />
+        </Tabs.Content>
+        <Tabs.Content value="legacy" className="py-4">
+          <LegacyImport />
+        </Tabs.Content>
+      </Tabs.Root>
     </section>
   )
 }

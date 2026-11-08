@@ -80,10 +80,15 @@ export function sampleRow(c: ImportChange): SampleRow {
 }
 
 /** Sends the workbook to the pre-signed URL. No Authorization header: the URL carries its own permission. */
-export async function putWorkbook(url: string, file: File): Promise<void> {
+export function putWorkbook(url: string, file: File): Promise<void> {
+  return putFile(url, file, XLSX_TYPE)
+}
+
+/** Sends a file to a pre-signed URL as `contentType`, the type the URL was signed for. */
+export async function putFile(url: string, file: File, contentType: string): Promise<void> {
   let res: Response
   try {
-    res = await fetch(url, { method: 'PUT', headers: { 'Content-Type': XLSX_TYPE }, body: file })
+    res = await fetch(url, { method: 'PUT', headers: { 'Content-Type': contentType }, body: file })
   } catch {
     throw new Error('The file could not be sent. Check your connection and try again.')
   }

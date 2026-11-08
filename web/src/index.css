@@ -14,3 +14,17 @@
     outline-offset: 2px;
   }
 }
+
+/* A new card rises into place; people who ask for less motion get none. */
+@media (prefers-reduced-motion: no-preference) {
+  .ov-enter {
+    animation: ov-enter 180ms ease-out both;
+  }
+}
+
+@keyframes ov-enter {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}

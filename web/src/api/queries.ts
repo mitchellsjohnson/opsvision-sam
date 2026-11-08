@@ -28,6 +28,12 @@ export type VersionChange = Schemas['VersionChange']
 export type ImportTemplate = Schemas['ImportTemplate']
 export type ChangeSetPreview = Schemas['ChangeSetPreview']
 export type ImportUpload = Schemas['ImportUpload']
+export type RecordType = Schemas['RecordType']
+export type RecordTemplate = Schemas['RecordTemplate']
+export type RecordsInspectResult = Schemas['RecordsInspectResult']
+export type RecordsPreviewRequest = Schemas['RecordsPreviewRequest']
+export type RecordsPreview = Schemas['RecordsPreview']
+export type ApplyImportRequest = Schemas['ApplyImportRequest']
 export interface OverrideCell {
   metricKey: string
   subjectId: string
@@ -49,6 +55,7 @@ export const keys = {
   versions: (sc: string) => ['versions', sc] as const,
   diff: (sc: string, v: string, against: string) => ['diff', sc, v, against] as const,
   importTemplates: ['importTemplates'] as const,
+  recordTypes: ['recordTypes'] as const,
   history: (sc: string, measure: string, subject: string, period: string) =>
     ['history', sc, measure, subject, period] as const,
 }
@@ -469,6 +476,54 @@ export function useApplyImport() {
         queryClient.invalidateQueries({ queryKey: ['entry'] }),
         queryClient.invalidateQueries({ queryKey: ['versions'] }),
         queryClient.invalidateQueries({ queryKey: ['diff'] }),
+      ])
+    },
+  })
+}
+
+// ---- Admin: records import --------------------------------------------------
+
+export function useRecordTypes() {
+  const api = useApi()
+  return useQuery({
+    queryKey: keys.recordTypes,
+    queryFn: async () => (await unwrap(api.GET('/record-types'))).recordTypes,
+  })
+}
+
+/** Looks at an uploaded records export: its columns, values and the saved template it matches. */
+export function useInspect() {
+  const api = useApi()
+  return useMutation({
+    mutationFn: (id: string) => unwrap(api.POST('/imports/{id}/inspect', { params: { path: { id } } })),
+  })
+}
+
+/** Previews a records import; nothing is applied. */
+export function useRecordsPreview() {
+  const api = useApi()
+  return useMutation({
+    mutationFn: ({ id, body }: { id: string; body: RecordsPreviewRequest }) =>
+      unwrap(api.POST('/imports/{id}/records-preview', { params: { path: { id } }, body })),
+  })
+}
+
+/** Applies a previewed records import, then refreshes everything it may have changed. */
+export function useApplyRecords() {
+  const api = useApi()
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, body }: { id: string; body: ApplyImportRequest }) =>
+      unwrap(api.POST('/imports/{id}/apply', { params: { path: { id } }, body })),
+    onSuccess: async () => {
+      // Apply saves answered source keys, shared units and templates, and recalculates derived values.
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['view'] }),
+        queryClient.invalidateQueries({ queryKey: ['entry'] }),
+        queryClient.invalidateQueries({ queryKey: keys.importTemplates }),
+        queryClient.invalidateQueries({ queryKey: keys.orgUnits }),
+        queryClient.invalidateQueries({ queryKey: ['orgTree'] }),
+        queryClient.invalidateQueries({ queryKey: keys.items }),
       ])
     },
   })

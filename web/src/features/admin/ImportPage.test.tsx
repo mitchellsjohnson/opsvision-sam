@@ -26,7 +26,7 @@ function workbook(name = 'legacy.xlsx') {
 
 async function setup(options: { applyAccept?: boolean } = {}) {
   const user = userEvent.setup(options)
-  const view = renderApp(<ImportPage />, { route: '/admin/import' })
+  const view = renderApp(<ImportPage />, { route: '/admin/import?kind=legacy' })
   await screen.findByRole('table', { name: 'Import templates' })
   await screen.findByRole('option', { name: 'Legacy workbook' })
   return { user, ...view }
@@ -54,6 +54,26 @@ async function parse(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByRole('button', { name: 'Parse' }))
   await screen.findByRole('heading', { level: 3, name: 'Preview' })
 }
+
+describe('ImportPage kinds', () => {
+  it('offers Records first, then Legacy workbook, and keeps the choice in the URL', async () => {
+    const user = userEvent.setup()
+    renderApp(<ImportPage />, { route: '/admin/import' })
+    const tabs = await screen.findAllByRole('tab')
+    expect(tabs.map((t) => t.textContent)).toEqual(['Records', 'Legacy workbook'])
+    expect(tabs[0]?.getAttribute('aria-selected')).toBe('true')
+    expect(screen.getByRole('group', { name: 'Drop files to upload' })).toBeTruthy()
+    await user.click(screen.getByRole('tab', { name: 'Legacy workbook' }))
+    expect(await screen.findByRole('table', { name: 'Import templates' })).toBeTruthy()
+  })
+
+  it('lists only legacy templates on the Legacy workbook tab', async () => {
+    fake.templates.push({ id: 'defects-export', name: 'Defects export', profile: 'records', body: {} })
+    await setup()
+    expect(screen.queryByRole('row', { name: /Defects export/ })).toBeNull()
+    expect(screen.queryByRole('option', { name: 'Defects export' })).toBeNull()
+  })
+})
 
 describe('ImportPage templates', () => {
   it('lists the templates', async () => {
