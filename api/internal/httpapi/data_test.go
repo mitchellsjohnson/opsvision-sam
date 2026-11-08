@@ -49,6 +49,10 @@ type entryRowJSON struct {
 	NAReason    string   `json:"naReason"`
 	Revision    int      `json:"revision"`
 	CanEdit     bool     `json:"canEdit"`
+	// Derived rows only.
+	Derived      *bool    `json:"derived"`
+	Source       *string  `json:"source"`
+	RecordsValue *float64 `json:"recordsValue"`
 }
 
 type entryJSON struct {
@@ -681,4 +685,69 @@ func q(kv ...string) string {
 		v.Add(kv[i], kv[i+1])
 	}
 	return "?" + v.Encode()
+}
+
+// ---- derived rows ------------------------------------------------------------------
+
+func entryRow(t *testing.T, e *testEnv, token, measure, subject string) entryRowJSON {
+	t.Helper()
+	var g struct {
+		Rows []entryRowJSON `json:"rows"`
+	}
+	e.expect(t, 200, token, "GET", "/scorecards/sc/entry?period=2026-M09", nil, &g)
+	for _, r := range g.Rows {
+		if r.MeasureKey == measure && r.SubjectID == subject {
+			return r
+		}
+	}
+	t.Fatalf("no entry row %s/%s in %+v", measure, subject, g.Rows)
+	return entryRowJSON{}
+}
+
+func TestEntryDerivedRows(t *testing.T) {
+	e := newTestEnv(t)
+	seedRecords(t, e)
+	applyDefects(t, e)
+	admin, contributor := e.tokens["t1-admin"], e.tokens["t1-contributor"]
+	write := func(rev int, extra map[string]any) map[string]any {
+		w := map[string]any{"measureKey": "defect_points_sum", "subjectId": "checkout", "period": "2026-M09", "expectedRevision": rev}
+		for k, v := range extra {
+			w[k] = v
+		}
+		return map[string]any{"writes": []any{w}}
+	}
+
+	// Contributors see the derived value from records and cannot edit it.
+	r := entryRow(t, e, contributor, "defect_points_sum", "checkout")
+	if r.Derived == nil || !*r.Derived || r.CanEdit || r.Source == nil || *r.Source != "records" || r.Value == nil || *r.Value != 832 {
+		t.Fatalf("contributor row = %+v, want derived 832 from records, not editable", r)
+	}
+	e.expectError(t, 403, "forbidden", contributor, "POST", "/scorecards/sc/data:batch", write(r.Revision, map[string]any{"value": 5}))
+	e.expectError(t, 403, "forbidden", contributor, "POST", "/scorecards/sc/data:batch", write(r.Revision, map[string]any{"clear": true}))
+
+	// Admins may type over it; the row then shows the typed value beside the records one.
+	r = entryRow(t, e, admin, "defect_points_sum", "checkout")
+	if !r.CanEdit {
+		t.Fatalf("admin row = %+v, want editable", r)
+	}
+	e.expect(t, 200, admin, "POST", "/scorecards/sc/data:batch", write(r.Revision, map[string]any{"value": 900}), nil)
+	r = entryRow(t, e, admin, "defect_points_sum", "checkout")
+	if r.Value == nil || *r.Value != 900 || *r.Source != "grid" || r.RecordsValue == nil || *r.RecordsValue != 832 {
+		t.Fatalf("typed row = %+v, want 900 typed, records give 832", r)
+	}
+	// A clear sends no value.
+	e.expectError(t, 400, "invalid", admin, "POST", "/scorecards/sc/data:batch", write(r.Revision, map[string]any{"clear": true, "value": 1}))
+
+	// Use records: clearing the typed value brings the derived one back at once.
+	var saved struct {
+		Saved []map[string]any `json:"saved"`
+	}
+	e.expect(t, 200, admin, "POST", "/scorecards/sc/data:batch", write(r.Revision, map[string]any{"clear": true}), &saved)
+	if len(saved.Saved) != 1 || saved.Saved[0]["value"] != 832.0 || saved.Saved[0]["source"] != "records" {
+		t.Errorf("saved = %+v, want the records value back", saved.Saved)
+	}
+	r = entryRow(t, e, admin, "defect_points_sum", "checkout")
+	if r.Value == nil || *r.Value != 832 || *r.Source != "records" || r.RecordsValue != nil {
+		t.Errorf("row after use records = %+v, want 832 from records", r)
+	}
 }

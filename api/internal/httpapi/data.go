@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -16,6 +18,8 @@ import (
 	"opsvision/internal/formula"
 	"opsvision/internal/orgtree"
 	"opsvision/internal/period"
+	"opsvision/internal/recordimport"
+	"opsvision/internal/records"
 	"opsvision/internal/store"
 )
 
@@ -85,6 +89,16 @@ func newVersionIndex(v domain.MethodologyVersion) *versionIndex {
 		}
 	}
 	return vi
+}
+
+// derived reports whether measure key is derived from records in the version.
+func (vi *versionIndex) derived(key string) bool {
+	i, ok := vi.measureIdx[key]
+	if !ok {
+		return false
+	}
+	m := vi.v.Content.Measures[i]
+	return m.Source == domain.MeasureDerived && m.Derive != nil
 }
 
 func (vi *versionIndex) hasMetric(key string) bool {
@@ -251,7 +265,11 @@ func (s *Server) prepareWrites(ctx context.Context, p auth.Principal, scorecardI
 		if utf8.RuneCountInString(reason) > maxNAReasonRunes {
 			pr.add(path+".naReason", "must be at most %d characters", maxNAReasonRunes)
 		}
+		clear := w.Clear != nil && *w.Clear
 		switch {
+		case clear && (w.Value != nil || reason != ""):
+			pr.add(path, "a clear sends no value or naReason")
+		case clear:
 		case w.Value != nil && (math.IsNaN(*w.Value) || math.IsInf(*w.Value, 0)):
 			pr.add(path+".value", "must be a finite number")
 		case w.Value != nil && reason != "":
@@ -280,6 +298,7 @@ func (s *Server) prepareWrites(ctx context.Context, p auth.Principal, scorecardI
 				EnteredAt:  s.now(),
 			},
 			ExpectedRevision: w.ExpectedRevision,
+			Delete:           clear,
 		}
 	}
 	if err := pr.err(); err != nil {
@@ -313,8 +332,14 @@ func (s *Server) prepareWrites(ctx context.Context, p auth.Principal, scorecardI
 		if len(pr.list) > 0 {
 			continue
 		}
-		if !ws.acc.canWrite(w.Point.SubjectID, vi.uses[w.Point.MeasureKey], month) {
+		admin := p.Membership.Role == domain.RoleAdmin
+		switch {
+		case !ws.acc.canWrite(w.Point.SubjectID, vi.uses[w.Point.MeasureKey], month):
 			forbiddenRows = append(forbiddenRows, detail{Path: path, Message: fmt.Sprintf("not permitted to write %s for %s", w.Point.MeasureKey, w.Point.SubjectID)})
+		case w.Delete && !admin:
+			forbiddenRows = append(forbiddenRows, detail{Path: path, Message: "only admins may clear a stored value"})
+		case vi.derived(w.Point.MeasureKey) && !admin:
+			forbiddenRows = append(forbiddenRows, detail{Path: path, Message: fmt.Sprintf("%s comes from records; only admins may type over it", w.Point.MeasureKey)})
 		}
 	}
 	if err := pr.err(); err != nil {
@@ -425,7 +450,54 @@ func (s *Server) BatchSaveData(ctx context.Context, req BatchSaveDataRequestObje
 	if err := s.audit(ctx, p, p.Tenant.ID, "data.batch", "scorecard", sc.ID, nil, after); err != nil {
 		return nil, err
 	}
+
+	// A cleared derived value comes back from records at once. The clear
+	// stands if that fails; the next upload or publish recalculates.
+	if restored, err := s.restoreCleared(ctx, p, sc.ID, ws); err != nil {
+		slog.Error("httpapi: recalculation after a clear failed", "tenant", p.Tenant.ID, "scorecard", sc.ID, "err", err)
+	} else {
+		for i, dp := range resp.Saved {
+			if r, ok := restored[writeKey(saved[i])]; ok && dp.Deleted != nil {
+				resp.Saved[i] = apiPoint(r)
+			}
+		}
+	}
 	return resp, nil
+}
+
+// restoreCleared recalculates a scorecard's derived values when the batch
+// cleared a derived measure's point, and returns the points written, by
+// writeKey.
+func (s *Server) restoreCleared(ctx context.Context, p auth.Principal, scorecardID string, ws *writeSet) (map[string]domain.DataPoint, error) {
+	cleared := false
+	for i, w := range ws.writes {
+		if vi, ok := ws.vers.at(ws.periods[i]); ok && w.Delete && vi.derived(w.Point.MeasureKey) {
+			cleared = true
+		}
+	}
+	if !cleared {
+		return nil, nil
+	}
+	writes, err := recordimport.Recalculate(ctx, s.store, *p.Tenant, scorecardID, func(period.Period) bool { return false }, nil)
+	if err != nil || len(writes) == 0 {
+		return nil, err
+	}
+	now := s.now()
+	for i := range writes {
+		writes[i].Point.EnteredBy, writes[i].Point.EnteredAt = p.UserID, now
+	}
+	pts, err := s.store.PutDataPoints(ctx, p.Tenant.ID, scorecardID, writes)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.audit(ctx, p, p.Tenant.ID, "records.recalculate", "scorecard", scorecardID, nil, map[string]int{"dataPoints": len(writes)}); err != nil {
+		return nil, err
+	}
+	out := make(map[string]domain.DataPoint, len(pts))
+	for _, dp := range pts {
+		out[writeKey(dp)] = dp
+	}
+	return out, nil
 }
 
 // PreviewData computes the cells a batch would change, saving nothing.
@@ -460,6 +532,9 @@ func (s *Server) PreviewData(ctx context.Context, req PreviewDataRequestObject) 
 		}
 	}
 	for _, w := range ws.writes {
+		if w.Delete {
+			continue
+		}
 		dp := w.Point
 		dp.Revision = 1
 		merged = append(merged, dp)
@@ -646,10 +721,27 @@ func entrySubjects(in *engine.Input, month period.Period) []entrySubject {
 	return out
 }
 
+// rowKey identifies an entry row: a measure for a subject in a period.
+type rowKey struct {
+	measure, subject string
+	p                period.Period
+}
+
+// rowAcc is an entry row being built.
+type rowAcc struct {
+	key       rowKey
+	metricIdx int
+	measure   int
+	subject   entrySubject
+	metrics   []string
+}
+
 // GetDataEntry lists the data-entry rows of one month: every measure of the
 // metrics reported then, at each subject the metric is reported at. Quarterly,
 // biannual, and annual metrics are reported in the last month of their period
-// and carry that period.
+// and carry that period. A row whose measure is derived from records is
+// marked derived; only admins may edit it, and when its stored value was
+// typed the row carries the value records give.
 func (s *Server) GetDataEntry(ctx context.Context, req GetDataEntryRequestObject) (GetDataEntryResponseObject, error) {
 	p, err := member(ctx)
 	if err != nil {
@@ -678,23 +770,11 @@ func (s *Server) GetDataEntry(ctx context.Context, req GetDataEntryRequestObject
 		return GetDataEntry200JSONResponse(grid), nil
 	}
 
-	type pointKey struct {
-		measure, subject string
-		p                period.Period
-	}
-	stored := make(map[pointKey]domain.DataPoint, len(in.Data))
+	stored := make(map[rowKey]domain.DataPoint, len(in.Data))
 	for _, dp := range in.Data {
-		stored[pointKey{dp.MeasureKey, dp.SubjectID, dp.Period}] = dp
+		stored[rowKey{dp.MeasureKey, dp.SubjectID, dp.Period}] = dp
 	}
 
-	type rowKey = pointKey
-	type rowAcc struct {
-		key       rowKey
-		metricIdx int
-		measure   int
-		subject   entrySubject
-		metrics   []string
-	}
 	subjects := entrySubjects(in, month)
 	byKey := map[rowKey]*rowAcc{}
 	var rows []*rowAcc
@@ -744,10 +824,13 @@ func (s *Server) GetDataEntry(ctx context.Context, req GetDataEntryRequestObject
 	})
 
 	acc := newAccess(p, in)
+	admin := p.Membership.Role == domain.RoleAdmin
+	var typedDerived []*rowAcc
 	for _, r := range rows {
 		if !acc.canRead(r.subject.id, r.metrics, month) {
 			continue
 		}
+		derived := vi.derived(r.key.measure)
 		row := EntryRow{
 			MeasureKey:  r.key.measure,
 			MeasureName: vi.v.Content.Measures[r.measure].Name,
@@ -755,14 +838,74 @@ func (s *Server) GetDataEntry(ctx context.Context, req GetDataEntryRequestObject
 			SubjectId:   r.subject.id,
 			SubjectName: r.subject.name,
 			Period:      periodString(r.key.p),
-			CanEdit:     acc.canWrite(r.subject.id, vi.uses[r.key.measure], month),
+			CanEdit:     acc.canWrite(r.subject.id, vi.uses[r.key.measure], month) && (!derived || admin),
+		}
+		if derived {
+			row.Derived = &derived
 		}
 		if dp, ok := stored[r.key]; ok {
 			row.Value, row.NaReason, row.Revision = copyValue(dp.Value), dp.NAReason, dp.Revision
+			src := EntryRowSource(dp.Source)
+			row.Source = &src
+			if derived && dp.Source != domain.SourceRecords {
+				typedDerived = append(typedDerived, r)
+			}
 		}
 		grid.Rows = append(grid.Rows, row)
 	}
+	if len(typedDerived) > 0 {
+		vals, err := s.recordsValues(ctx, *p.Tenant, sc.ID, vi, typedDerived)
+		if err != nil {
+			return nil, err
+		}
+		for i := range grid.Rows {
+			row := &grid.Rows[i]
+			if row.Derived == nil {
+				continue
+			}
+			per, _ := period.Parse(row.Period)
+			if v, ok := vals[rowKey{row.MeasureKey, row.SubjectId, per}]; ok {
+				row.RecordsValue = &v
+			}
+		}
+	}
 	return GetDataEntry200JSONResponse(grid), nil
+}
+
+// recordsValues derives, for entry rows whose derived measure has a typed
+// value, the value records give, by row key. A slot records do not cover is
+// absent; a measure that cannot be derived gets none.
+func (s *Server) recordsValues(ctx context.Context, tenant domain.Tenant, scorecardID string, vi *versionIndex, rows []*rowAcc) (map[rowKey]float64, error) {
+	din, err := recordimport.LoadDeriveInput(ctx, s.store, tenant, scorecardID)
+	if err != nil {
+		return nil, err
+	}
+	periods := map[string][]period.Period{}
+	var order []string
+	want := map[rowKey]bool{}
+	for _, r := range rows {
+		want[r.key] = true
+		if _, ok := periods[r.key.measure]; !ok {
+			order = append(order, r.key.measure)
+		}
+		if !slices.Contains(periods[r.key.measure], r.key.p) {
+			periods[r.key.measure] = append(periods[r.key.measure], r.key.p)
+		}
+	}
+	out := map[rowKey]float64{}
+	for _, key := range order {
+		vals, err := records.Derive(din, vi.v.Content.Measures[vi.measureIdx[key]], periods[key])
+		if err != nil {
+			slog.Warn("httpapi: entry: a derived measure could not be derived", "tenant", tenant.ID, "measure", key, "err", err)
+			continue
+		}
+		for _, d := range vals {
+			if k := (rowKey{d.MeasureKey, d.SubjectID, d.Period}); want[k] {
+				out[k] = d.Value
+			}
+		}
+	}
+	return out, nil
 }
 
 // ---- overrides ---------------------------------------------------------------------
