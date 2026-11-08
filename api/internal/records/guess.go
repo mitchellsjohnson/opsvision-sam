@@ -342,21 +342,28 @@ func (ins *inspector) guess() map[string]ColumnGuess {
 
 	norm := make([]string, len(ins.tbl.Headers))
 	for _, i := range addressable {
-		norm[i] = strings.Join(words(header(i)), " ")
+		norm[i] = normHeader(header(i))
 	}
 
-	// Exact synonyms.
-	for _, fs := range synonymTable {
-		for _, syn := range fs.syns {
-			if _, done := got[fs.field]; done {
+	// Exact synonyms, then "<synonym> name" for products and teams
+	// ("Product name", "Team name").
+	exact := func(field string, syns []string, suffix string) {
+		for _, syn := range syns {
+			if _, done := got[field]; done {
 				break
 			}
 			for _, i := range addressable {
-				if !claimed[i] && norm[i] == syn {
-					assign(fs.field, i, confSynonym)
+				if !claimed[i] && norm[i] == syn+suffix {
+					assign(field, i, confSynonym)
 					break
 				}
 			}
+		}
+	}
+	for _, fs := range synonymTable {
+		exact(fs.field, fs.syns, "")
+		if fs.field == "subjectKey" {
+			exact(fs.field, fs.syns, " name")
 		}
 	}
 
@@ -444,6 +451,14 @@ func (ins *inspector) guess() map[string]ColumnGuess {
 		got["state"] = g
 	}
 	return got
+}
+
+// pluralMark is a "/s" plural marker, as in "Component/s".
+var pluralMark = regexp.MustCompile(`(?i)([a-z])/s\b`)
+
+// normHeader is a header as lowercase words, with "x/s" read as "x".
+func normHeader(h string) string {
+	return strings.Join(words(pluralMark.ReplaceAllString(h, "$1")), " ")
 }
 
 // containsOtherSynonym reports whether the normalized header contains, as whole

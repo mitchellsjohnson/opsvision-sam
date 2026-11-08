@@ -221,14 +221,15 @@ func (n *normalizer) raw(fm FieldMap, cells []string) string {
 	return ""
 }
 
-// mapLookup finds raw in m: exact, then ignoring case, then the "*" fallback.
+// mapLookup finds raw in m: exact, then ignoring case (keys in sorted order,
+// so the answer never depends on map order), then the "*" fallback.
 func mapLookup(m map[string]string, raw string) (string, bool) {
 	if v, ok := m[raw]; ok {
 		return v, true
 	}
-	for k, v := range m {
+	for _, k := range sortedKeys(m) {
 		if k != "*" && strings.EqualFold(strings.TrimSpace(k), raw) {
-			return v, true
+			return m[k], true
 		}
 	}
 	v, ok := m["*"]

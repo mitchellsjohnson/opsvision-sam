@@ -761,8 +761,27 @@ func TestSuffixMatchSkipsHeadersNamingAnotherField(t *testing.T) {
 	if g, _ := guessFor(in, "title"); g.Column != "Epic name" {
 		t.Errorf("title = %q, want Epic name", g.Column)
 	}
-	if g, ok := guessFor(in, "subjectKey"); ok {
-		t.Errorf("subjectKey = %+v; a Product name header is not matched by synonym rules", g)
+	if g, _ := guessFor(in, "subjectKey"); g.Column != "Product name" {
+		t.Errorf("subjectKey = %+v, want Product name", g)
+	}
+}
+
+func TestGuessCommonProductAndTeamHeaders(t *testing.T) {
+	for _, h := range []string{"Component/s", "Components", "Product name", "Team name", "Project name", "Component name", "Team/s"} {
+		tbl := csvTable([]string{"Key", "Summary", h, "Created"},
+			[]string{"CHK-1", "One", "Checkout", "2026-01-02"}, []string{"CHK-2", "Two", "Billing", "2026-01-03"})
+		in := Inspect(tbl, nil, nil)
+		if g, _ := guessFor(in, "subjectKey"); g.Column != h || g.Confidence < confSuffix {
+			t.Errorf("%s: subjectKey = %+v, want that column", h, g)
+		}
+		if g, _ := guessFor(in, "title"); g.Column != "Summary" {
+			t.Errorf("%s: title = %q, want Summary", h, g.Column)
+		}
+	}
+	// An exact synonym still wins over a "<synonym> name" header.
+	tbl := csvTable([]string{"Key", "Product name", "Product"}, []string{"CHK-1", "Checkout app", "Checkout"})
+	if g, _ := guessFor(Inspect(tbl, nil, nil), "subjectKey"); g.Column != "Product" {
+		t.Errorf("subjectKey = %q, want Product", g.Column)
 	}
 }
 

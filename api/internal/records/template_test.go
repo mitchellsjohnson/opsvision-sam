@@ -214,3 +214,22 @@ func TestTemplateValidate(t *testing.T) {
 		}), "fields.createdAt.dateFormats[1]")
 	})
 }
+
+func TestTemplateValidateMapCaseCollisions(t *testing.T) {
+	tpl := specTemplate(t)
+	defect := defectType
+	// Two keys that differ only in case and mean different things.
+	tpl.Fields["state"].Map["done"] = "open"
+	errs := tpl.Validate(defect)
+	if got := problemPaths(errs); len(got) != 1 || got[0] != "fields.state.map.done" {
+		t.Fatalf("problems = %v, want fields.state.map.done", errs)
+	}
+	if !strings.Contains(errs[0].Message, "Done") {
+		t.Errorf("message = %q, want it to name the other key", errs[0].Message)
+	}
+	// The same meaning in two cases is fine.
+	tpl.Fields["state"].Map["done"] = "done"
+	if errs := tpl.Validate(defect); errs != nil {
+		t.Errorf("same-target keys: problems = %v", errs)
+	}
+}

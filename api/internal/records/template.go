@@ -195,6 +195,7 @@ func (t Template) Validate(rt domain.RecordType) []domain.ValidationError {
 		}
 		checkSource(path, fm, add)
 		checkDateFormats(path, fm, add)
+		checkMapCase(path, fm, add)
 		if fm.Transform != "" {
 			add(path+".transform", "transform applies to attributes only")
 		}
@@ -235,6 +236,7 @@ func (t Template) Validate(rt domain.RecordType) []domain.ValidationError {
 		}
 		checkSource(path, fm, add)
 		checkDateFormats(path, fm, add)
+		checkMapCase(path, fm, add)
 		if fm.Transform == "" {
 			continue
 		}
@@ -276,6 +278,27 @@ func checkSource(path string, fm FieldMap, add func(string, string, ...any)) {
 		add(path, "give a column, a constant, or a template")
 	case n > 1:
 		add(path, "use only one of column, constant, and template")
+	}
+}
+
+// checkMapCase refuses map keys that differ only in case (and surrounding
+// spaces) but map to different values: a value matched ignoring case would
+// be ambiguous.
+func checkMapCase(path string, fm FieldMap, add func(string, string, ...any)) {
+	first := map[string]string{}
+	for _, k := range sortedKeys(fm.Map) {
+		if k == "*" {
+			continue
+		}
+		folded := strings.ToLower(strings.TrimSpace(k))
+		prev, ok := first[folded]
+		if !ok {
+			first[folded] = k
+			continue
+		}
+		if fm.Map[prev] != fm.Map[k] {
+			add(path+".map."+k, "%q and %q differ only in case but map to %q and %q", prev, k, fm.Map[prev], fm.Map[k])
+		}
 	}
 }
 

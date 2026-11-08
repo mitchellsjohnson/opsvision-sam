@@ -630,3 +630,15 @@ func TestRowNumbersFallBack(t *testing.T) {
 		t.Fatalf("rows = %+v", rows)
 	}
 }
+
+func TestMapLookupIgnoringCaseIsDeterministic(t *testing.T) {
+	m := map[string]string{"HIGH": "P1", "High ": "P2", "high!": "P3", "*": "P4"}
+	for range 50 {
+		if v, ok := mapLookup(m, "high"); !ok || v != "P1" {
+			t.Fatalf("mapLookup(high) = %q, %v; want P1 from the first key in sorted order", v, ok)
+		}
+	}
+	if v, _ := mapLookup(m, "low"); v != "P4" {
+		t.Errorf("fallback = %q, want P4", v)
+	}
+}
