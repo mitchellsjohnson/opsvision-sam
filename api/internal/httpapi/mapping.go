@@ -143,12 +143,88 @@ func apiMethodology(m domain.Methodology) Methodology {
 		out.Categories = append(out.Categories, Category{Id: c.ID, Name: c.Name, Order: c.Order})
 	}
 	for _, ms := range m.Measures {
-		out.Measures = append(out.Measures, Measure{
-			Key: ms.Key, Name: ms.Name, Unit: ms.Unit, OrgAgg: Agg(ms.OrgAgg), TimeAgg: Agg(ms.TimeAgg),
-		})
+		out.Measures = append(out.Measures, apiMeasure(ms))
 	}
 	for _, mt := range m.Metrics {
 		out.Metrics = append(out.Metrics, apiMetric(mt))
+	}
+	return out
+}
+
+func apiMeasure(ms domain.Measure) Measure {
+	out := Measure{
+		Key: ms.Key, Name: ms.Name, Unit: ms.Unit, OrgAgg: Agg(ms.OrgAgg), TimeAgg: Agg(ms.TimeAgg),
+	}
+	if ms.Source != "" {
+		src := MeasureSource(ms.Source)
+		out.Source = &src
+	}
+	if d := ms.Derive; d != nil {
+		rule := DeriveRule{RecordType: Id(d.RecordType), Op: DeriveRuleOp(d.Op)}
+		rule.BucketBy = optString(d.BucketBy)
+		rule.Field = optString(d.Field)
+		rule.Where = optString(d.Where)
+		rule.AgeFrom = optString(d.AgeFrom)
+		rule.AgeTo = optString(d.AgeTo)
+		if d.Outcome != "" {
+			oc := DeriveRuleOutcome(d.Outcome)
+			rule.Outcome = &oc
+		}
+		if d.Weights != nil {
+			w := make(map[string]float64, len(d.Weights))
+			for k, v := range d.Weights {
+				w[k] = v
+			}
+			rule.Weights = &w
+		}
+		out.Derive = &rule
+	}
+	return out
+}
+
+// optString returns nil for the empty string so optional fields are omitted.
+func optString(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
+// strOrEmpty dereferences an optional string, treating nil as empty.
+func strOrEmpty(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+func domainMeasure(ms Measure) domain.Measure {
+	out := domain.Measure{
+		Key: ms.Key, Name: ms.Name, Unit: ms.Unit, OrgAgg: domain.Agg(ms.OrgAgg), TimeAgg: domain.Agg(ms.TimeAgg),
+	}
+	if ms.Source != nil {
+		out.Source = string(*ms.Source)
+	}
+	if d := ms.Derive; d != nil {
+		rule := domain.DeriveRule{
+			RecordType: string(d.RecordType),
+			Op:         domain.DeriveOp(d.Op),
+			BucketBy:   strOrEmpty(d.BucketBy),
+			Field:      strOrEmpty(d.Field),
+			Where:      strOrEmpty(d.Where),
+			AgeFrom:    strOrEmpty(d.AgeFrom),
+			AgeTo:      strOrEmpty(d.AgeTo),
+		}
+		if d.Outcome != nil {
+			rule.Outcome = string(*d.Outcome)
+		}
+		if d.Weights != nil {
+			rule.Weights = make(map[string]float64, len(*d.Weights))
+			for k, v := range *d.Weights {
+				rule.Weights[k] = v
+			}
+		}
+		out.Derive = &rule
 	}
 	return out
 }
@@ -231,9 +307,7 @@ func domainMethodology(m Methodology, pr *problems) domain.Methodology {
 		out.Categories = append(out.Categories, domain.Category{ID: c.Id, Name: c.Name, Order: c.Order})
 	}
 	for _, ms := range m.Measures {
-		out.Measures = append(out.Measures, domain.Measure{
-			Key: ms.Key, Name: ms.Name, Unit: ms.Unit, OrgAgg: domain.Agg(ms.OrgAgg), TimeAgg: domain.Agg(ms.TimeAgg),
-		})
+		out.Measures = append(out.Measures, domainMeasure(ms))
 	}
 	for i, mt := range m.Metrics {
 		out.Metrics = append(out.Metrics, domainMetric(mt, fmt.Sprintf("content.metrics[%d]", i), pr))

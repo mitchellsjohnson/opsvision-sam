@@ -1111,7 +1111,7 @@ export interface components {
             value: components["schemas"]["MeasureValue"];
             naReason: string;
             /** @enum {string} */
-            source: "grid" | "import" | "api" | "sam" | "legacy";
+            source: "grid" | "import" | "api" | "sam" | "legacy" | "records";
             enteredBy: components["schemas"]["UserId"];
             /** Format: date-time */
             enteredAt: string;

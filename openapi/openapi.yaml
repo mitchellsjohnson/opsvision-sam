@@ -1804,7 +1804,7 @@ components:
         naReason: { type: string }
         source:
           type: string
-          enum: [grid, import, api, sam, legacy]
+          enum: [grid, import, api, sam, legacy, records]
         enteredBy: { $ref: '#/components/schemas/UserId' }
         enteredAt: { type: string, format: date-time }
         revision: { type: integer, minimum: 0 }

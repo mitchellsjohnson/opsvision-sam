@@ -89,11 +89,12 @@ func (e Comparison) Valid() bool {
 
 // Defines values for DataPointSource.
 const (
-	Api    DataPointSource = "api"
-	Grid   DataPointSource = "grid"
-	Import DataPointSource = "import"
-	Legacy DataPointSource = "legacy"
-	Sam    DataPointSource = "sam"
+	Api     DataPointSource = "api"
+	Grid    DataPointSource = "grid"
+	Import  DataPointSource = "import"
+	Legacy  DataPointSource = "legacy"
+	Records DataPointSource = "records"
+	Sam     DataPointSource = "sam"
 )
 
 // Valid indicates whether the value is a known member of the DataPointSource enum.
@@ -106,6 +107,8 @@ func (e DataPointSource) Valid() bool {
 	case Import:
 		return true
 	case Legacy:
+		return true
+	case Records:
 		return true
 	case Sam:
 		return true

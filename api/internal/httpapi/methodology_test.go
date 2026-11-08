@@ -1,6 +1,8 @@
 package httpapi
 
 import (
+	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -555,5 +557,110 @@ func TestListVersionsNewestFirst(t *testing.T) {
 	want := []string{draft.ID, cur.ID, old.ID}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("order = %v, want %v", got, want)
+	}
+}
+
+// derivedSample is sampleMethodology plus derived measures that exercise every
+// DeriveRule field.
+func derivedSample() domain.Methodology {
+	m := sampleMethodology(90)
+	m.Measures = append(m.Measures,
+		domain.Measure{
+			Key: "defect_points_sum", Name: "Defect points", Unit: "points", OrgAgg: domain.AggSum, TimeAgg: domain.AggSum,
+			Source: domain.MeasureDerived,
+			Derive: &domain.DeriveRule{
+				RecordType: "defect", Op: domain.OpDailyOpenWeighted,
+				Where:   "category in ['bug', 'defect']",
+				Weights: map[string]float64{"P1": 64, "P2": 16, "P3": 4, "P4": 2, "none": 1},
+			},
+		},
+		domain.Measure{
+			Key: "epics_on_time", Name: "Epics on time", Unit: "count", OrgAgg: domain.AggSum, TimeAgg: domain.AggSum,
+			Source: domain.MeasureDerived,
+			Derive: &domain.DeriveRule{
+				RecordType: "epic", Op: domain.OpCommitments, Outcome: domain.OutcomeMet,
+				BucketBy: "dueAt", Where: "state == 'done'",
+			},
+		},
+		domain.Measure{
+			Key: "idea_age_days_sum", Name: "Idea age", Unit: "days", OrgAgg: domain.AggSum, TimeAgg: domain.AggSum,
+			Source: domain.MeasureDerived,
+			Derive: &domain.DeriveRule{
+				RecordType: "idea", Op: domain.OpAgeSum,
+				BucketBy: "completedAt", AgeFrom: "createdAt", AgeTo: "completedAt",
+			},
+		},
+		domain.Measure{
+			Key: "planned_spend_k", Name: "Planned spend", Unit: "$k", OrgAgg: domain.AggSum, TimeAgg: domain.AggSum,
+			Source: domain.MeasureDerived,
+			Derive: &domain.DeriveRule{RecordType: "release", Op: domain.OpSum, BucketBy: "completedAt", Field: "planned"},
+		},
+		domain.Measure{
+			Key: "defect_days", Name: "Defect days", Unit: "days", OrgAgg: domain.AggSum, TimeAgg: domain.AggSum,
+			Source: domain.MeasureDerived,
+			Derive: &domain.DeriveRule{RecordType: "defect", Op: domain.OpDaysInPeriod},
+		},
+		domain.Measure{
+			Key: "typed_total", Name: "Typed total", Unit: "count", OrgAgg: domain.AggSum, TimeAgg: domain.AggSum,
+			Source: domain.MeasureEntered,
+		},
+	)
+	return m
+}
+
+func TestDerivedMeasureRoundTrip(t *testing.T) {
+	e := newTestEnv(t)
+	seedScorecard(t, e, "delivery")
+	want := derivedSample()
+
+	saved := saveDraft(t, e, newDraft(t, e, "delivery", "Derived", ""), want)
+	if !reflect.DeepEqual(saved.Content.Measures, want.Measures) {
+		t.Fatalf("PUT response measures:\n got %+v\nwant %+v", saved.Content.Measures, want.Measures)
+	}
+	got := getVersion(t, e, "delivery", saved.ID)
+	if !reflect.DeepEqual(got.Content.Measures, want.Measures) {
+		t.Fatalf("GET measures:\n got %+v\nwant %+v", got.Content.Measures, want.Measures)
+	}
+
+	// An entered measure with no source stays free of derived fields on the wire.
+	status, raw := e.call(t, e.tokens["t1-viewer"], "GET", "/scorecards/delivery/versions/"+saved.ID, nil)
+	var wire struct {
+		Content struct {
+			Measures []map[string]any `json:"measures"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(raw, &wire); status != 200 || err != nil || len(wire.Content.Measures) == 0 {
+		t.Fatalf("GET = %d %v %s", status, err, raw)
+	}
+	for _, k := range []string{"source", "derive"} {
+		if _, ok := wire.Content.Measures[0][k]; ok {
+			t.Errorf("entered measure carries %q on the wire: %v", k, wire.Content.Measures[0])
+		}
+	}
+
+	// A clone carries the rules too.
+	clone := newDraft(t, e, "delivery", "Clone", saved.ID)
+	if !reflect.DeepEqual(clone.Content.Measures, want.Measures) {
+		t.Errorf("clone measures = %+v", clone.Content.Measures)
+	}
+}
+
+func TestDerivedMeasureWithoutRuleFailsPublish(t *testing.T) {
+	e := newTestEnv(t)
+	seedScorecard(t, e, "delivery")
+	m := sampleMethodology(90)
+	m.Measures[1].Source = domain.MeasureDerived // no derive rule
+	v := saveDraft(t, e, newDraft(t, e, "delivery", "NoRule", ""), m)
+
+	got := e.expectError(t, 400, "invalid", e.tokens["t1-admin"], "POST", "/scorecards/delivery/versions/"+v.ID+"/publish",
+		map[string]any{"effectiveFrom": "2026-M01"})
+	found := false
+	for _, d := range got.Error.Details {
+		if d.Path == "measures[1].derive" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("details = %+v, want measures[1].derive", got.Error.Details)
 	}
 }
