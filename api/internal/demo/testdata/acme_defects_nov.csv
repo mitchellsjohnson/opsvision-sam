@@ -1,0 +1,7 @@
+Issue key,Summary,Issue Type,Priority,Status,Product,Created,Resolved,Due date,Linked tickets
+PAY-880,Refund email is sent twice,Bug,High,Open,Checkout,2026-10-14,,,
+BIL-871,Proration rounds up a day,Defect,Medium,Done,Billing,2026-10-06,2026-11-05,,SUP-4387
+IOS-340,Wallet button hidden on small screens,Bug,Low,Open,iOS App,2026-09-21,,,
+PAY-912,Card authorization fails for saved wallets,Bug,Highest,Open,Checkout,2026-11-10,,,SUP-5120
+ANL-355,Report export times out,Bug,Medium,Done,Analytics,2026-11-03,2026-11-07,,
+MSG-361,Push notification badge never clears,Bug,Low,Open,Messaging,2026-11-11,,,

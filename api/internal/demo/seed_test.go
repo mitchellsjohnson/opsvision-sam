@@ -3,7 +3,10 @@ package demo_test
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -13,6 +16,8 @@ import (
 	"opsvision/internal/engine"
 	"opsvision/internal/orgtree"
 	"opsvision/internal/period"
+	"opsvision/internal/recordimport"
+	"opsvision/internal/records"
 	"opsvision/internal/store"
 	"opsvision/internal/store/memstore"
 )
@@ -164,14 +169,15 @@ func TestSeedReturnsTenantAndModel(t *testing.T) {
 		t.Errorf("items = %v, want %v", names, want)
 	}
 
-	// Scorecard and two published versions.
+	// Scorecard and three published versions: 2025, 2026, and 2026 v2, which
+	// derives four measures from records.
 	scs, _ := st.ListScorecards(ctx, id)
 	if len(scs) != 1 || scs[0].ID != "service-fulfillment" || scs[0].Name != "Service Fulfillment" {
 		t.Errorf("scorecards = %+v", scs)
 	}
 	vers, _ := st.ListVersions(ctx, id, demo.ScorecardID)
-	if len(vers) != 2 {
-		t.Fatalf("versions = %d, want 2", len(vers))
+	if len(vers) != 3 {
+		t.Fatalf("versions = %d, want 3", len(vers))
 	}
 	eff := map[string]string{}
 	for _, v := range vers {
@@ -180,7 +186,7 @@ func TestSeedReturnsTenantAndModel(t *testing.T) {
 		}
 		eff[v.ID] = v.EffectiveFrom.String()
 	}
-	if eff["v2025"] != "2025-M01" || eff["v2026"] != "2026-M01" {
+	if eff["v2025"] != "2025-M01" || eff["v2026"] != "2026-M01" || eff["v2026-2"] != "2026-M07" {
 		t.Errorf("effective-from = %v", eff)
 	}
 }
@@ -195,9 +201,16 @@ func TestSeedMethodologyIsValidAndComplete(t *testing.T) {
 		"Security training completion", "Customer feedback SLO", "Accessibility compliance",
 		"Open-source risk SLO",
 	}
+	types, err := st.ListRecordTypes(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, v := range vers {
 		if errs := v.Content.Validate(tn.StatusScale); len(errs) != 0 {
 			t.Errorf("version %s invalid: %v", v.ID, errs)
+		}
+		if errs := domain.ValidateDerive(v.Content, types); len(errs) != 0 {
+			t.Errorf("version %s derive rules invalid: %v", v.ID, errs)
 		}
 		var got []string
 		for _, m := range v.Content.Metrics {
@@ -468,5 +481,324 @@ func TestSeedUsesFictionalNamesOnly(t *testing.T) {
 		if !strings.HasSuffix(u.Email, "@demo.test") {
 			t.Errorf("email %q must use the reserved demo.test domain", u.Email)
 		}
+	}
+}
+
+// --- records ---------------------------------------------------------------
+
+var derivedMeasures = []string{"epics_committed", "epics_on_time", "defect_points_sum", "defect_days"}
+
+func TestSeedRecordTypesAndSnapshots(t *testing.T) {
+	st, id := seeded(t)
+	ctx := context.Background()
+
+	types, err := st.ListRecordTypes(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]domain.RecordType{}
+	for _, rt := range types {
+		byID[rt.ID] = rt
+		if errs := rt.Validate(); len(errs) != 0 {
+			t.Errorf("record type %s invalid: %v", rt.ID, errs)
+		}
+		if got := rt.TrackedFrom["tracker"]; got != mustPeriod(t, "2026-M07") {
+			t.Errorf("%s tracked from %v, want 2026-M07", rt.ID, got)
+		}
+	}
+	defect, ok := byID["defect"]
+	if !ok || byID["epic"].ID == "" || len(byID) != 2 {
+		t.Fatalf("record types = %+v, want defect and epic", byID)
+	}
+	if !reflect.DeepEqual(defect.Priorities, []string{"P1", "P2", "P3", "P4"}) {
+		t.Errorf("defect priorities = %v", defect.Priorities)
+	}
+	if len(defect.Attributes) != 1 || defect.Attributes[0] != (domain.AttributeDef{Key: "customerTicket", Name: "Customer ticket", Type: domain.AttrBool}) {
+		t.Errorf("defect attributes = %+v", defect.Attributes)
+	}
+
+	// One snapshot per month end, July through October, for each type, and
+	// every product has records.
+	wantDates := []string{"2026-10-31", "2026-09-30", "2026-08-31", "2026-07-31"}
+	units, _ := st.ListOrgUnits(ctx, id)
+	nameOf := map[string]string{}
+	for _, u := range units {
+		nameOf[u.ID] = u.Name
+	}
+	for _, typ := range []string{"epic", "defect"} {
+		snaps, err := st.ListSnapshots(ctx, id, typ)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		for _, s := range snaps {
+			got = append(got, s.AsOf.String())
+			if s.Source != "tracker" || s.RecordType != typ {
+				t.Errorf("snapshot %+v", s)
+			}
+		}
+		if !reflect.DeepEqual(got, wantDates) {
+			t.Errorf("%s snapshot dates = %v, want %v", typ, got, wantDates)
+		}
+		recs, err := st.ListRecords(ctx, id, typ)
+		if err != nil {
+			t.Fatal(err)
+		}
+		products := map[string]bool{}
+		for _, r := range recs {
+			products[r.Revisions[0].Fields.SubjectKey] = true
+			if r.Source != "tracker" || len(r.Revisions) == 0 {
+				t.Errorf("record %+v", r)
+			}
+		}
+		for _, p := range []string{"Identity", "Messaging", "Checkout", "Billing", "Analytics", "Pipelines", "iOS App", "Android App"} {
+			if !products[p] {
+				t.Errorf("no %s records for %s", typ, p)
+			}
+		}
+	}
+}
+
+func TestSeedDerivedMonths(t *testing.T) {
+	st, id := seeded(t)
+	in := input(t, st, id)
+
+	type slot struct {
+		measure, subject string
+		p                period.Period
+	}
+	pts := map[slot]domain.DataPoint{}
+	for _, dp := range in.Data {
+		pts[slot{dp.MeasureKey, dp.SubjectID, dp.Period}] = dp
+	}
+	products := []string{"identity", "messaging", "checkout", "billing", "analytics", "pipelines", "ios-app", "android-app"}
+	for _, measure := range derivedMeasures {
+		for idx := 1; idx <= 10; idx++ {
+			p := month2026(idx)
+			for _, sub := range products {
+				dp, ok := pts[slot{measure, sub, p}]
+				if !ok || dp.Value == nil {
+					t.Errorf("%s / %s / %s: no value", measure, sub, p)
+					continue
+				}
+				if idx >= 7 && dp.Source != domain.SourceRecords {
+					t.Errorf("%s / %s / %s: source %q, want records", measure, sub, p, dp.Source)
+				}
+				if idx < 7 && dp.Source == domain.SourceRecords {
+					t.Errorf("%s / %s / %s: earlier months stay entered, got records", measure, sub, p)
+				}
+			}
+		}
+	}
+	// Nothing derived is written on parent units, and every point of these
+	// measures from July on comes from records.
+	isProduct := map[string]bool{}
+	for _, s := range products {
+		isProduct[s] = true
+	}
+	for _, dp := range in.Data {
+		if !slices.Contains(derivedMeasures, dp.MeasureKey) || dp.Source != domain.SourceRecords {
+			continue
+		}
+		if dp.Period.Index < 7 || dp.Period.FY != 2026 {
+			t.Errorf("records point %s/%s outside 2026-M07..M10: %s", dp.MeasureKey, dp.SubjectID, dp.Period)
+		}
+		if !isProduct[dp.SubjectID] {
+			switch dp.SubjectID {
+			case "public-api", "web-app", "status-page": // tracked items with source keys
+			default:
+				t.Errorf("derived point on parent unit %s: %s/%s", dp.SubjectID, dp.MeasureKey, dp.Period)
+			}
+		}
+	}
+	for _, dp := range in.Data {
+		if slices.Contains(derivedMeasures, dp.MeasureKey) && dp.Period.FY == 2026 && dp.Period.Grain == period.Month &&
+			dp.Period.Index >= 7 && dp.Source != domain.SourceRecords {
+			t.Errorf("entered value %s/%s/%s from 2026-M07", dp.MeasureKey, dp.SubjectID, dp.Period)
+		}
+	}
+
+	// Days in the period are calendar days through the month end.
+	for idx, days := range map[int]float64{7: 31, 8: 31, 9: 30, 10: 31} {
+		if v := *pts[slot{"defect_days", "checkout", month2026(idx)}].Value; v != days {
+			t.Errorf("defect_days 2026-M%02d = %v, want %v", idx, v, days)
+		}
+	}
+	for _, sub := range products {
+		for idx := 7; idx <= 10; idx++ {
+			c, o := *pts[slot{"epics_committed", sub, month2026(idx)}].Value, *pts[slot{"epics_on_time", sub, month2026(idx)}].Value
+			if c < 1 || o < 0 || o > c {
+				t.Errorf("%s 2026-M%02d: %v on time of %v committed", sub, idx, o, c)
+			}
+		}
+	}
+
+	// The view under 2026 v2 shows derived metrics for each product in
+	// M07..M10, and the version in force is v2.
+	v := viewOf(t, in, "", "2026-M07", "2026-M10")
+	seen := map[string]bool{}
+	for _, r := range v.Rows {
+		if r.MetricKey != "epics_on_time" && r.MetricKey != "weighted_defect_score" {
+			continue
+		}
+		for _, c := range r.Cells {
+			if c.VersionID != "v2026-2" {
+				t.Errorf("%s / %s %s published under %q, want v2026-2", r.MetricName, r.SubjectName, c.Period, c.VersionID)
+			}
+		}
+		if c := r.Cells[1]; c.Status == "" && c.NAReason == "" {
+			t.Errorf("%s / %s: blank 2026-M10 cell", r.MetricName, r.SubjectName)
+		}
+		seen[r.MetricKey] = true
+	}
+	if len(seen) != 2 {
+		t.Errorf("metrics in the view = %v", seen)
+	}
+}
+
+func month2026(idx int) period.Period {
+	return period.Period{Grain: period.Month, FY: 2026, Index: idx}
+}
+
+// --- November fixtures -----------------------------------------------------
+
+// trackerTemplate maps a Jira-style export (Issue key, Summary, Issue Type,
+// Priority, Status, Product, Created, Resolved, Due date, Linked tickets) to
+// the demo's epic or defect record type.
+func trackerTemplate(recordType string) records.Template {
+	dates := []string{"2006-01-02"}
+	t := records.Template{
+		Name: "Tracker " + recordType + " export", RecordType: recordType, Source: "tracker",
+		File: records.FileSpec{Format: "csv", HeaderRow: 1},
+		Fields: map[string]records.FieldMap{
+			"externalId":  {Column: "Issue key"},
+			"title":       {Column: "Summary"},
+			"subjectKey":  {Column: "Product"},
+			"status":      {Column: "Status"},
+			"state":       {Column: "Status", Map: map[string]string{"Done": "done", "Closed": "done", "Won't Do": "cancelled", "*": "open"}},
+			"url":         {Template: "https://tracker.example.test/browse/{Issue key}"},
+			"createdAt":   {Column: "Created", DateFormats: dates},
+			"dueAt":       {Column: "Due date", DateFormats: dates},
+			"completedAt": {Column: "Resolved", DateFormats: dates},
+		},
+	}
+	if recordType == "defect" {
+		delete(t.Fields, "dueAt")
+		t.Fields["category"] = records.FieldMap{Column: "Issue Type", Map: map[string]string{"Bug": "bug", "Defect": "defect"}}
+		t.Fields["priority"] = records.FieldMap{Column: "Priority", Map: map[string]string{"Highest": "P1", "High": "P2", "Medium": "P3", "Low": "P4"}}
+		t.Attributes = map[string]records.FieldMap{"customerTicket": {Column: "Linked tickets", Transform: records.TransformNonEmpty}}
+	}
+	return t
+}
+
+func readFixture(t testing.TB, name string) records.Table {
+	t.Helper()
+	f, err := os.Open(filepath.Join("testdata", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	tbl, err := records.ReadCSV(f)
+	if err != nil {
+		t.Fatalf("%s: %v", name, err)
+	}
+	return tbl
+}
+
+func previewNovember(t testing.TB, st store.Store, tenantID, recordType, file string) recordimport.Plan {
+	t.Helper()
+	tn, err := st.GetTenant(context.Background(), tenantID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	asOf, err := domain.ParseDate("2026-11-14")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := recordimport.Build(context.Background(), st, tn, demo.ScorecardID, trackerTemplate(recordType), readFixture(t, file), asOf, recordimport.Answers{}, nil)
+	if err != nil {
+		t.Fatalf("Build %s: %v", file, err)
+	}
+	if len(p.Problems) != 0 || p.Counts.Errors != 0 || p.Counts.Unmatched != 0 || len(p.Unmatched) != 0 || len(p.Parents) != 0 || len(p.NewValues) != 0 {
+		t.Fatalf("%s: problems %+v unmatched %+v counts %+v new values %+v", file, p.Problems, p.Unmatched, p.Counts, p.NewValues)
+	}
+	if p.Snapshot.AsOf.String() != "2026-11-14" {
+		t.Errorf("%s: as-of %s", file, p.Snapshot.AsOf)
+	}
+	return p
+}
+
+func storyLine(p recordimport.Plan, metric, subject, per string) (recordimport.StoryLine, bool) {
+	for _, l := range p.Story.Lines {
+		if l.MetricKey == metric && l.SubjectID == subject && l.Period.String() == per {
+			return l, true
+		}
+	}
+	return recordimport.StoryLine{}, false
+}
+
+func ids(cs []records.Contribution) []string {
+	var out []string
+	for _, c := range cs {
+		out = append(out, c.ExternalID)
+	}
+	slices.Sort(out)
+	return out
+}
+
+func TestNovemberFixturePreview(t *testing.T) {
+	st, id := seeded(t)
+
+	// Epics: three Checkout epics move their due date later, so they slip.
+	ep := previewNovember(t, st, id, "epic", "acme_epics_nov.csv")
+	if c := ep.Counts; c.New != 1 || c.Changed != 4 || c.Unchanged != 1 {
+		t.Errorf("epic counts = %+v, want 1 new, 4 changed, 1 unchanged", c)
+	}
+	line, ok := storyLine(ep, "epics_on_time", "checkout", "2026-M11")
+	if !ok {
+		t.Fatalf("no 2026-M11 on-time story line for Checkout; lines %+v", ep.Story.Lines)
+	}
+	if got, want := ids(line.Reasons["slipped"]), []string{"CHK-241", "CHK-243", "CHK-247"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("slipped = %v, want %v", got, want)
+	}
+	if line.AfterStatus != "R" {
+		t.Errorf("Checkout November on time = %q (%s), want red with every commitment slipped", line.AfterDisplay, line.AfterStatus)
+	}
+	if bl, ok := storyLine(ep, "epics_on_time", "billing", "2026-M11"); !ok || !slices.Contains(ids(bl.Reasons["met"]), "BIL-231") {
+		t.Errorf("Billing line = %+v (%v), want BIL-231 met", bl, ok)
+	}
+
+	// Defects: derived through the as-of date, with one new P1.
+	df := previewNovember(t, st, id, "defect", "acme_defects_nov.csv")
+	if c := df.Counts; c.New != 3 || c.Changed != 2 || c.Unchanged != 1 {
+		t.Errorf("defect counts = %+v, want 3 new, 2 changed, 1 unchanged", c)
+	}
+	nov := month2026(11)
+	var days *float64
+	for _, w := range df.Writes {
+		if w.Point.MeasureKey == "defect_days" && w.Point.SubjectID == "checkout" && w.Point.Period == nov {
+			days = w.Point.Value
+		}
+	}
+	if days == nil || *days != 14 {
+		t.Errorf("November defect days = %v, want 14 (through 2026-11-14)", days)
+	}
+	var p1 bool
+	for _, r := range df.Revisions {
+		if r.ExternalID == "PAY-912" {
+			p1 = r.Rev.Fields.Priority == "P1" && r.Rev.Fields.State == domain.StateOpen
+		}
+	}
+	if !p1 {
+		t.Error("the new open P1 defect PAY-912 is not in the plan")
+	}
+	dl, ok := storyLine(df, "weighted_defect_score", "checkout", "2026-M11")
+	if !ok || !slices.Equal(ids(dl.Reasons["newly_open"]), []string{"PAY-912"}) {
+		t.Errorf("Checkout defect line = %+v (%v), want PAY-912 newly open", dl, ok)
+	}
+
+	// Previews store nothing.
+	if recs, _ := st.ListRecords(context.Background(), id, "defect"); slices.ContainsFunc(recs, func(r domain.Record) bool { return r.ExternalID == "PAY-912" }) {
+		t.Error("preview stored a record")
 	}
 }

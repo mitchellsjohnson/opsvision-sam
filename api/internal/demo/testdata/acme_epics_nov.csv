@@ -1,0 +1,7 @@
+Issue key,Summary,Issue Type,Priority,Status,Product,Created,Resolved,Due date,Linked tickets
+CHK-241,Saved wallet checkout,Epic,Medium,In Progress,Checkout,2026-08-10,,2026-12-04,
+CHK-243,Partial refunds,Epic,Medium,In Progress,Checkout,2026-08-24,,2026-12-18,
+CHK-247,Multi-currency totals,Epic,High,In Progress,Checkout,2026-09-08,,2027-01-15,
+BIL-231,Usage-based invoicing,Epic,Medium,Done,Billing,2026-08-17,2026-11-09,2026-11-12,
+ANL-228,Saved report schedules,Epic,Medium,In Progress,Analytics,2026-09-01,,2026-11-20,
+IDN-310,Passkey sign-in,Epic,High,In Progress,Identity,2026-11-02,,2026-12-18,

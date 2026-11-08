@@ -1,22 +1,27 @@
 // Package demo seeds the fictional "Acme Demo" tenant: an org tree with a
-// reorg, tracked services, a scorecard with two published methodology
-// versions, and 22 months of deterministic synthetic data. The proof of
-// concept, the web app's development, and the end-to-end tests all run
-// against it.
+// reorg, tracked services, a scorecard with three published methodology
+// versions, 22 months of deterministic synthetic data, and, from 2026-M07,
+// synthetic tracker records (epics and defects, with monthly snapshots) that
+// the third version derives four measures from. The proof of concept, the
+// web app's development, and the end-to-end tests all run against it.
 //
 // Everything here is invented. No real company, product, or person appears.
 package demo
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"math/rand/v2"
 	"time"
 
 	"opsvision/internal/domain"
 	"opsvision/internal/period"
+	"opsvision/internal/recordimport"
 	"opsvision/internal/store"
 )
 
@@ -78,6 +83,11 @@ var (
 	tenantCreated = time.Date(2025, time.January, 1, 0, 0, 0, 0, time.UTC)
 	published2025 = time.Date(2024, time.December, 15, 0, 0, 0, 0, time.UTC)
 	published2026 = time.Date(2025, time.December, 15, 0, 0, 0, 0, time.UTC)
+	// published2026v2 is when the records-derived methodology was published.
+	published2026v2 = time.Date(2026, time.June, 15, 0, 0, 0, 0, time.UTC)
+	// derivedAt is when the derived values were last calculated: the day
+	// after the latest snapshot.
+	derivedAt = time.Date(2026, time.November, 1, 9, 0, 0, 0, time.UTC)
 )
 
 // rngSeed fixes the synthetic data.
@@ -128,7 +138,13 @@ func Seed(ctx context.Context, st store.Store, cal period.Calendar) (string, err
 	if err := seedMethodology(ctx, st); err != nil {
 		return "", err
 	}
+	if err := seedRecords(ctx, st); err != nil {
+		return "", err
+	}
 	if err := seedData(ctx, st, cal); err != nil {
+		return "", err
+	}
+	if err := seedDerived(ctx, st, tenant); err != nil {
 		return "", err
 	}
 	return TenantID, nil
@@ -211,6 +227,7 @@ func seedMethodology(ctx context.Context, st store.Store) error {
 	for _, v := range []domain.MethodologyVersion{
 		version("v2025", "2025 v1.0", 2025, published2025, 85),
 		version("v2026", "2026 v1.0", 2026, published2026, 90),
+		derivedVersion(),
 	} {
 		if err := st.PutVersion(ctx, TenantID, v, store.MustNotExist); err != nil {
 			return fmt.Errorf("demo: version %s: %w", v.ID, err)
@@ -230,6 +247,40 @@ func version(id, name string, fy int, at time.Time, onTimeGreen float64) domain.
 		PublishedAt:   &at,
 		Content:       methodology(fy, onTimeGreen),
 	}
+}
+
+// derivedVersion is "2026 v2": the 2026 methodology with epics committed,
+// epics on time, defect points, and days in the period derived from tracker
+// records instead of entered, from 2026-M07 (when records start).
+func derivedVersion() domain.MethodologyVersion {
+	v := version("v2026-2", "2026 v2", 2026, published2026v2, 90)
+	v.EffectiveFrom = recordsFrom
+	rules := map[string]domain.DeriveRule{
+		"epics_committed": {RecordType: "epic", Op: domain.OpCommitments, Outcome: domain.OutcomeResolved},
+		"epics_on_time":   {RecordType: "epic", Op: domain.OpCommitments, Outcome: domain.OutcomeMet},
+		"defect_points_sum": {
+			RecordType: "defect", Op: domain.OpDailyOpenWeighted,
+			Where: "category in ['bug','defect']", Weights: maps.Clone(defectWeights),
+		},
+		"defect_days": {RecordType: "defect", Op: domain.OpDaysInPeriod},
+	}
+	for i := range v.Content.Measures {
+		if r, ok := rules[v.Content.Measures[i].Key]; ok {
+			v.Content.Measures[i].Source = domain.MeasureDerived
+			v.Content.Measures[i].Derive = &r
+		}
+	}
+	return v
+}
+
+// isDerived reports whether a measure's value for p comes from records, not
+// from the seed's entered data: the four derived measures from 2026-M07 on.
+func isDerived(measure string, p period.Period) bool {
+	switch measure {
+	case "epics_committed", "epics_on_time", "defect_points_sum", "defect_days":
+		return p.Grain == period.Month && p.FY == recordsFrom.FY && p.Index >= recordsFrom.Index
+	}
+	return false
 }
 
 func bands(g, y float64) []domain.Band {
@@ -449,7 +500,12 @@ func (g *generator) at(p period.Period) time.Time {
 	return g.cal.Start(ms[len(ms)-1]).AddDate(0, 0, 27)
 }
 
+// put records an entered value. Values the records methodology derives are
+// drawn (so the rest of the data does not move) but not written.
 func (g *generator) put(measure, subject string, p period.Period, v float64) {
+	if isDerived(measure, p) {
+		return
+	}
 	g.out = append(g.out, g.write(measure, subject, p, &v, ""))
 }
 
@@ -684,4 +740,380 @@ func (g *generator) pin() {
 	}
 	set("epics_committed", "checkout", month(2025, 6), 20)
 	set("epics_on_time", "checkout", month(2025, 6), 17)
+}
+
+// --- records ---------------------------------------------------------------
+
+// The tracker the demo records come from, and the first month they count.
+const (
+	trackerSource = "tracker"
+	trackerURL    = "https://tracker.example.test/browse/"
+)
+
+var recordsFrom = month(2026, 7)
+
+// defectWeights are the points a defect adds per open day, by priority.
+var defectWeights = map[string]float64{"P1": 64, "P2": 16, "P3": 4, "P4": 2, domain.PriorityNone: 1}
+
+func date(y int, m time.Month, d int) domain.Date {
+	return domain.Date{Time: time.Date(y, m, d, 0, 0, 0, 0, time.UTC)}
+}
+
+// snapshotDates are the month ends the tracker was exported at, July through
+// October 2026. The November exports in testdata are as of 2026-11-14.
+var snapshotDates = []domain.Date{date(2026, 7, 31), date(2026, 8, 31), date(2026, 9, 30), date(2026, 10, 31)}
+
+func recordTypes() []domain.RecordType {
+	from := map[string]period.Period{trackerSource: recordsFrom}
+	return []domain.RecordType{
+		{
+			ID: "defect", Name: "Defect", Priorities: []string{"P1", "P2", "P3", "P4"},
+			Attributes:  []domain.AttributeDef{{Key: "customerTicket", Name: "Customer ticket", Type: domain.AttrBool}},
+			TrackedFrom: from,
+		},
+		{ID: "epic", Name: "Epic", TrackedFrom: maps.Clone(from)},
+	}
+}
+
+// keyPrefix is the tracker project key of each product's records.
+var keyPrefix = map[string]string{
+	"identity": "IDN", "messaging": "MSG", "checkout": "CHK", "billing": "BIL",
+	"analytics": "ANL", "pipelines": "PIP", "ios-app": "IOS", "android-app": "AND",
+}
+
+var epicTitles = []string{
+	"Saved payment methods", "Self-serve plan changes", "Audit log export", "Guided onboarding",
+	"Bulk import tool", "Role-based dashboards", "Offline mode", "Usage alerts",
+	"Search relevance tuning", "Scheduled reports", "Single sign-on options", "Retry controls",
+}
+
+var defectTitles = []string{
+	"Total rounds incorrectly on large orders", "Form freezes after autocomplete", "Export file has duplicate rows",
+	"Date picker ignores locale", "Notification sent twice", "Filter resets after sorting",
+	"Image upload fails over 5 MB", "Timeout when saving settings", "Wrong currency symbol on receipts",
+	"Back button loses draft", "Tooltip covers the submit button", "Pagination skips a page",
+}
+
+func productName(id string) string {
+	for _, p := range products {
+		if p.id == id {
+			return p.name
+		}
+	}
+	panic("demo: unknown product " + id)
+}
+
+// epicSpec is one synthetic epic. Its due date moves to newDue on slippedOn
+// (zero when it never moves); completed is zero while it is open.
+type epicSpec struct {
+	key, product, title string
+	created, due        domain.Date
+	slippedOn, newDue   domain.Date
+	completed           domain.Date
+}
+
+func (e epicSpec) fields(s domain.Date) (domain.RecordFields, bool) {
+	if s.Time.Before(e.created.Time) {
+		return domain.RecordFields{}, false
+	}
+	due := e.due
+	if !e.slippedOn.IsZero() && !s.Time.Before(e.slippedOn.Time) {
+		due = e.newDue
+	}
+	f := domain.RecordFields{
+		SubjectKey: productName(e.product), Title: e.title, Status: "In Progress", URL: trackerURL + e.key,
+		State: domain.StateOpen, CreatedAt: e.created, DueAt: &due,
+	}
+	if !e.completed.IsZero() && !e.completed.Time.After(s.Time) {
+		done := e.completed
+		f.State, f.Status, f.CompletedAt = domain.StateDone, "Done", &done
+	}
+	return f, true
+}
+
+// defectSpec is one synthetic defect. Priority "" is none. It moves to
+// escalatedTo on escalatedOn when that is set.
+type defectSpec struct {
+	key, product, title, category, priority string
+	customer                                bool
+	created, completed                      domain.Date
+	escalatedOn                             domain.Date
+	escalatedTo                             string
+}
+
+func (d defectSpec) fields(s domain.Date) (domain.RecordFields, bool) {
+	if s.Time.Before(d.created.Time) {
+		return domain.RecordFields{}, false
+	}
+	pri := d.priority
+	if !d.escalatedOn.IsZero() && !s.Time.Before(d.escalatedOn.Time) {
+		pri = d.escalatedTo
+	}
+	f := domain.RecordFields{
+		SubjectKey: productName(d.product), Title: d.title, Category: d.category, Priority: pri,
+		Status: "Open", URL: trackerURL + d.key, State: domain.StateOpen, CreatedAt: d.created,
+		Attributes: map[string]any{"customerTicket": d.customer},
+	}
+	if !d.completed.IsZero() && !d.completed.Time.After(s.Time) {
+		done := d.completed
+		f.State, f.Status, f.CompletedAt = domain.StateDone, "Done", &done
+	}
+	return f, true
+}
+
+// batch is what one snapshot stores: its revisions and the counts the upload
+// would have reported.
+type batch struct {
+	revs   []store.RecordRevisionWrite
+	counts map[string]int
+}
+
+// recordsBuilder generates the synthetic records with its own random stream,
+// so the entered data does not depend on it.
+type recordsBuilder struct {
+	r       *rand.Rand
+	used    map[string]bool
+	next    map[string]int
+	batches map[string][]batch // by record type, one per snapshot date
+}
+
+func newRecordsBuilder() *recordsBuilder {
+	b := &recordsBuilder{
+		r: rand.New(rand.NewPCG(rngSeed1, rngSeed2^0x7265)), used: map[string]bool{}, next: map[string]int{},
+		batches: map[string][]batch{},
+	}
+	for _, typ := range []string{"epic", "defect"} {
+		bs := make([]batch, len(snapshotDates))
+		for i := range bs {
+			bs[i].counts = map[string]int{"new": 0, "changed": 0, "unchanged": 0, "skipped": 0, "missing": 0, "unmatched": 0, "errors": 0}
+		}
+		b.batches[typ] = bs
+	}
+	return b
+}
+
+func snapshotID(typ string, s domain.Date) string { return "snap-" + typ + "-" + s.String() }
+
+func (b *recordsBuilder) count(lo, hi int) int { return lo + b.r.IntN(hi-lo+1) }
+
+func pick(b *recordsBuilder, from []string) string { return from[b.r.IntN(len(from))] }
+
+// key returns the next tracker key for a product's project.
+func (b *recordsBuilder) key(product string) string {
+	for {
+		b.next[product]++
+		k := fmt.Sprintf("%s-%d", keyPrefix[product], 100+b.next[product])
+		if !b.used[k] {
+			b.used[k] = true
+			return k
+		}
+	}
+}
+
+// reserve claims a hand-written key and panics if it is taken.
+func (b *recordsBuilder) reserve(key string) {
+	if b.used[key] {
+		panic("demo: duplicate record key " + key)
+	}
+	b.used[key] = true
+}
+
+// add stores a record's revisions: one at each snapshot where it first
+// appears or where its fields differ from the previous snapshot.
+func (b *recordsBuilder) add(typ, key string, fieldsAt func(domain.Date) (domain.RecordFields, bool)) {
+	var prev []byte
+	for i, s := range snapshotDates {
+		f, ok := fieldsAt(s)
+		if !ok {
+			continue
+		}
+		cur, err := json.Marshal(f)
+		if err != nil {
+			panic(err)
+		}
+		bt := &b.batches[typ][i]
+		switch {
+		case prev == nil:
+			bt.counts["new"]++
+		case bytes.Equal(prev, cur):
+			bt.counts["unchanged"]++
+			continue
+		default:
+			bt.counts["changed"]++
+		}
+		prev = cur
+		bt.revs = append(bt.revs, store.RecordRevisionWrite{
+			Source: trackerSource, ExternalID: key, Type: typ,
+			Rev: domain.RecordRevision{AsOf: s, SnapshotID: snapshotID(typ, s), Fields: f},
+		})
+	}
+}
+
+func (b *recordsBuilder) addEpic(e epicSpec)     { b.add("epic", e.key, e.fields) }
+func (b *recordsBuilder) addDefect(d defectSpec) { b.add("defect", d.key, d.fields) }
+
+// generate draws each product's epics and defects for July through October
+// and adds the hand-written ones the November exports refer to.
+func (b *recordsBuilder) generate() {
+	for _, p := range profiles {
+		for mo := time.July; mo <= time.October; mo++ {
+			for range b.count(3, 6) {
+				b.addEpic(b.epic(p, mo))
+			}
+		}
+		b.addDefect(b.backlogDefect(p))
+		for mo := time.July; mo <= time.October; mo++ {
+			for range max(1, int(math.Round(p.defects*0.4))) + b.count(0, 1) {
+				b.addDefect(b.defect(p, mo))
+			}
+		}
+	}
+	for _, e := range pinnedEpics() {
+		b.reserve(e.key)
+		b.addEpic(e)
+	}
+	for _, d := range pinnedDefects() {
+		b.reserve(d.key)
+		b.addDefect(d)
+	}
+}
+
+// epic draws an epic due in month mo of 2026. Most land on time at the
+// product's rate; the rest slip to a later date (from August, when a
+// snapshot has seen the original date), finish late, or are still open.
+func (b *recordsBuilder) epic(p profile, mo time.Month) epicSpec {
+	first := date(2026, mo, 1)
+	e := epicSpec{key: b.key(p.id), product: p.id, title: pick(b, epicTitles), created: first.AddDays(-b.count(45, 120))}
+	roll, miss := b.r.Float64(), b.r.Float64()
+	switch {
+	case roll < p.onTime:
+		e.due = first.AddDays(b.count(0, 27))
+		e.completed = e.due.AddDays(-b.count(0, 10))
+	case mo > time.July && miss < 0.45:
+		// The date moves after the previous month-end snapshot has seen it.
+		e.due = first.AddDays(b.count(7, 27))
+		e.slippedOn = e.due.AddDays(-b.count(2, 7))
+		e.newDue = e.due.AddDays(b.count(14, 45))
+		if b.r.Float64() < 0.6 {
+			e.completed = e.newDue.AddDays(-b.count(0, 6))
+		}
+	case miss < 0.75:
+		e.due = first.AddDays(b.count(0, 27))
+		e.completed = e.due.AddDays(b.count(3, 20))
+	default:
+		e.due = first.AddDays(b.count(0, 27))
+	}
+	return e
+}
+
+// priority draws a defect priority: mostly P3 and P4, rarely P2, and some with
+// none. P1 is left to the hand-written ones.
+func (b *recordsBuilder) priority() string {
+	switch roll := b.r.Float64(); {
+	case roll < 0.06:
+		return "P2"
+	case roll < 0.40:
+		return "P3"
+	case roll < 0.75:
+		return "P4"
+	}
+	return ""
+}
+
+func (b *recordsBuilder) category() string {
+	if b.r.IntN(3) == 0 {
+		return "defect"
+	}
+	return "bug"
+}
+
+// backlogDefect is a defect already open on 2026-07-01 that closes in July.
+func (b *recordsBuilder) backlogDefect(p profile) defectSpec {
+	created := date(2026, time.June, 1).AddDays(b.count(9, 27))
+	return defectSpec{
+		key: b.key(p.id), product: p.id, title: pick(b, defectTitles), category: b.category(), priority: b.priority(),
+		customer: b.r.IntN(3) == 0, created: created, completed: date(2026, time.July, 1).AddDays(b.count(4, 24)),
+	}
+}
+
+// defect draws a defect created in month mo. Most close within about two
+// weeks; a few linger. Those still open at the last snapshot stay open.
+func (b *recordsBuilder) defect(p profile, mo time.Month) defectSpec {
+	created := date(2026, mo, 1).AddDays(b.count(0, 27))
+	open := b.count(3, 16)
+	if b.r.Float64() < 0.08 {
+		open = b.count(35, 70)
+	}
+	return defectSpec{
+		key: b.key(p.id), product: p.id, title: pick(b, defectTitles), category: b.category(), priority: b.priority(),
+		customer: b.r.IntN(3) == 0, created: created, completed: created.AddDays(open),
+	}
+}
+
+// pinnedEpics are the epics the November export updates: three Checkout epics
+// due in early November (which the export moves later), one Billing epic that
+// then finishes, and one Analytics epic that stays as it is.
+func pinnedEpics() []epicSpec {
+	return []epicSpec{
+		{key: "CHK-241", product: "checkout", title: "Saved wallet checkout", created: date(2026, time.August, 10), due: date(2026, time.November, 6)},
+		{key: "CHK-243", product: "checkout", title: "Partial refunds", created: date(2026, time.August, 24), due: date(2026, time.November, 10)},
+		{key: "CHK-247", product: "checkout", title: "Multi-currency totals", created: date(2026, time.September, 8), due: date(2026, time.November, 13)},
+		{key: "BIL-231", product: "billing", title: "Usage-based invoicing", created: date(2026, time.August, 17), due: date(2026, time.November, 12)},
+		{key: "ANL-228", product: "analytics", title: "Saved report schedules", created: date(2026, time.September, 1), due: date(2026, time.November, 20)},
+	}
+}
+
+// pinnedDefects are the open defects the November export updates: one
+// escalates, one closes, one is unchanged.
+func pinnedDefects() []defectSpec {
+	return []defectSpec{
+		{key: "PAY-880", product: "checkout", title: "Refund email is sent twice", category: "bug", priority: "P3", created: date(2026, time.October, 14)},
+		{key: "BIL-871", product: "billing", title: "Proration rounds up a day", category: "defect", priority: "P3", customer: true, created: date(2026, time.October, 6)},
+		{key: "IOS-340", product: "ios-app", title: "Wallet button hidden on small screens", category: "bug", priority: "P4", created: date(2026, time.September, 21)},
+	}
+}
+
+// seedRecords stores the record types and one snapshot per type per month
+// end, with the revisions each snapshot first saw or changed.
+func seedRecords(ctx context.Context, st store.Store) error {
+	for _, rt := range recordTypes() {
+		if err := st.PutRecordType(ctx, TenantID, rt, 0); err != nil {
+			return fmt.Errorf("demo: record type %s: %w", rt.ID, err)
+		}
+	}
+	b := newRecordsBuilder()
+	b.generate()
+	for _, typ := range []string{"epic", "defect"} {
+		for i, s := range snapshotDates {
+			bt := b.batches[typ][i]
+			sn := domain.Snapshot{
+				ID: snapshotID(typ, s), RecordType: typ, Source: trackerSource, AsOf: s,
+				FileName:  fmt.Sprintf("acme_%ss_%s.csv", typ, s),
+				CreatedBy: Users[0].UserID, CreatedAt: s.Time.Add(17 * time.Hour), Counts: bt.counts,
+			}
+			if err := st.ApplySnapshot(ctx, TenantID, sn, bt.revs); err != nil {
+				return fmt.Errorf("demo: %s snapshot %s: %w", typ, s, err)
+			}
+		}
+	}
+	return nil
+}
+
+// seedDerived writes the values the records give the derived measures, as an
+// import would have left them.
+func seedDerived(ctx context.Context, st store.Store, tenant domain.Tenant) error {
+	writes, err := recordimport.Recalculate(ctx, st, tenant, ScorecardID, func(period.Period) bool { return false }, nil)
+	if err != nil {
+		return fmt.Errorf("demo: derive from records: %w", err)
+	}
+	for i := range writes {
+		writes[i].Point.EnteredBy, writes[i].Point.EnteredAt = Users[0].UserID, derivedAt
+	}
+	if len(writes) == 0 {
+		return nil
+	}
+	if _, err := st.PutDataPoints(ctx, TenantID, ScorecardID, writes); err != nil {
+		return fmt.Errorf("demo: derived data points: %w", err)
+	}
+	return nil
 }
