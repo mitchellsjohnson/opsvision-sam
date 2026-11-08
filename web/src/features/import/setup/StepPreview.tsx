@@ -1,4 +1,4 @@
-import { CheckCircle2, Loader2, PartyPopper, XCircle } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, Loader2, PartyPopper, XCircle } from 'lucide-react'
 import { useEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { Link } from 'react-router'
 import { ApiError } from '../../../api/errors'
@@ -22,7 +22,7 @@ import { labelOfMonth, sameList } from '../../admin/adminModel'
 import { TextField, linkButton, primaryButton, secondaryButton } from '../../admin/formUi'
 import { PublishDialog } from '../../admin/PublishDialog'
 import { useMeasureNames, useSubjects } from '../RecordsImport'
-import { failureText, formatCount, mergeQuestions, type AnswerState, type Questions } from '../recordsModel'
+import { APPLY_CONFLICT_TEXT, applyConflict, failureText, formatCount, mergeQuestions, type AnswerState, type Questions } from '../recordsModel'
 import { StoryPreview } from '../StoryPreview'
 import { usePresetPlan } from './StepCalculate'
 import {
@@ -147,6 +147,7 @@ export function StepPreview({
   const statusKeys = (me.data?.tenant?.statusScale ?? []).map((s) => s.key)
   const needsContext = picks.length > 0
   const contextReady = !needsContext || (levels.data !== undefined && me.data !== undefined)
+  const contextFailed = needsContext && !contextReady && (levels.isError || me.isError)
   const prepKey = JSON.stringify({
     type: state.recordType === NEW_TYPE ? [typeId, rt?.name, rt?.priorities] : typeId,
     sc,
@@ -225,7 +226,9 @@ export function StepPreview({
   const [preview, setPreview] = useState<{ key: string; preview: RecordsPreview } | null>(null)
   const [previewError, setPreviewError] = useState<{ key: string; message: string } | null>(null)
   const [applyError, setApplyError] = useState('')
+  const [alreadyApplied, setAlreadyApplied] = useState(false)
   const [nameError, setNameError] = useState('')
+  const nameRef = useRef<HTMLDivElement>(null)
   const [retry, setRetry] = useState(0)
   const seq = useRef(0)
   const previewed = useRef(false)
@@ -290,6 +293,7 @@ export function StepPreview({
     const saveName = state.templateName.trim()
     if (saveName === '') {
       setNameError('Enter a name for this setup.')
+      nameRef.current?.querySelector('input')?.focus()
       return
     }
     if (!current || !shown) return
@@ -316,17 +320,35 @@ export function StepPreview({
       })
       setTimeout(() => doneRef.current?.focus(), 0)
     } catch (err) {
-      const stale = err instanceof ApiError && err.status === 409
-      if (stale) setRetry((r) => r + 1)
-      setApplyError(
-        stale ? 'This preview was out of date, so we refreshed it. Check it, then apply again.' : failureText(err, 'apply'),
-      )
+      const conflict = applyConflict(err)
+      if (conflict === 'already_applied') {
+        setApplyError('')
+        setAlreadyApplied(true)
+        return
+      }
+      if (conflict === 'preview_out_of_date') setRetry((r) => r + 1)
+      setApplyError(conflict ? APPLY_CONFLICT_TEXT[conflict] : failureText(err, 'apply'))
     }
   }
 
   if (applied) return <Success applied={applied} recordTypes={recordTypes} fiscal={fiscal} doneRef={doneRef} />
+  if (alreadyApplied) {
+    return (
+      <div className="space-y-4">
+        <p role="status" className="flex items-center gap-2 font-medium">
+          <CheckCircle2 aria-hidden="true" className="size-5 text-status-g" />
+          {APPLY_CONFLICT_TEXT.already_applied}. This upload is already on the scorecard.
+        </p>
+        <Link to="/admin/import" className={secondaryButton}>
+          Back to Import
+        </Link>
+      </div>
+    )
+  }
 
-  const working = !ready && !prepFailed
+  const working = contextFailed
+    ? ''
+    : !ready && !prepFailed
     ? 'Getting your preview ready…'
     : ready && !current && !failedNow
       ? shown
@@ -336,18 +358,20 @@ export function StepPreview({
 
   return (
     <div className="space-y-5">
-      <TextField
-        label="Save this setup as"
-        hint="You’ll see this name when next month’s upload is recognized."
-        className="max-w-md"
-        value={state.templateName}
-        errors={nameError ? [nameError] : []}
-        onChange={(e) => {
-          const templateName = e.target.value
-          setNameError('')
-          update((s) => ({ ...s, templateName, nameEdited: true }))
-        }}
-      />
+      <div ref={nameRef}>
+        <TextField
+          label="Save this setup as"
+          hint="You’ll see this name when next month’s upload is recognized."
+          className="max-w-md"
+          value={state.templateName}
+          errors={nameError ? [nameError] : []}
+          onChange={(e) => {
+            const templateName = e.target.value
+            setNameError('')
+            update((s) => ({ ...s, templateName, nameEdited: true }))
+          }}
+        />
+      </div>
 
       <p role="status" className="flex min-h-5 items-center gap-2 text-sm font-medium">
         {working && (
@@ -357,6 +381,25 @@ export function StepPreview({
           </>
         )}
       </p>
+
+      {contextFailed && (
+        <div className="space-y-2">
+          <p role="alert" className="flex items-start gap-2 text-sm font-medium text-status-r">
+            <XCircle aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
+            <span>We couldn’t load your organization’s settings. Try again in a moment.</span>
+          </p>
+          <button
+            type="button"
+            className={secondaryButton}
+            onClick={() => {
+              if (levels.isError) void levels.refetch()
+              if (me.isError) void me.refetch()
+            }}
+          >
+            Try again
+          </button>
+        </div>
+      )}
 
       {(prepFailed || failedNow) && (
         <div className="space-y-2">
@@ -413,13 +456,18 @@ export function StepPreview({
       {footer(
         <button
           type="button"
-          className={`${primaryButton} px-5 py-2`}
-          disabled={!current || !shown || apply.isPending}
-          onClick={() => void doApply()}
+          className={`${primaryButton} px-5 py-2 aria-disabled:opacity-60`}
+          disabled={!apply.isPending && (!current || !shown)}
+          aria-disabled={apply.isPending ? true : undefined}
+          onClick={() => {
+            if (!apply.isPending) void doApply()
+          }}
         >
           {apply.isPending ? 'Applying…' : 'Apply'}
         </button>,
-        <span className="text-sm text-ink/80">Nothing is saved until you apply.</span>,
+        <span role="status" className="text-sm text-ink/80">
+          {apply.isPending ? 'Applying…' : 'Your file isn’t brought in until you apply.'}
+        </span>,
       )}
     </div>
   )
@@ -436,7 +484,7 @@ function Success({
   fiscal: number
   doneRef: RefObject<HTMLDivElement | null>
 }) {
-  const [published, setPublished] = useState('')
+  const [published, setPublished] = useState({ text: '', ok: true })
   const rt = recordTypes.find((t) => t.id === applied.typeId)
   const month = trackedFromMonth(rt, applied.source, applied.asOf, fiscal)
   const draft = applied.draft
@@ -462,7 +510,7 @@ function Success({
         </div>
       </div>
 
-      {draft && !published && (
+      {draft && !published.text && (
         <div className="space-y-2 rounded-lg border border-accent/40 bg-cream p-4">
           <p className="font-medium">Your new calculations start once you publish them.</p>
           {applied.draftChanges.length > 0 && (
@@ -479,13 +527,23 @@ function Success({
             disabled={false}
             triggerLabel="Publish now"
             defaultMonth={month}
-            onPublished={(message) => setPublished(`${message} The scorecard now shows numbers from your records.`)}
+            onPublished={(message, ok) =>
+              setPublished({ text: ok ? `${message} The scorecard now shows numbers from your records.` : message, ok })
+            }
           />
         </div>
       )}
-      <p role="status" className={published ? 'flex items-center gap-2 font-medium text-status-g' : 'sr-only'}>
-        {published && <CheckCircle2 aria-hidden="true" className="size-5" />}
-        {published}
+      <p
+        role="status"
+        className={published.text ? `flex items-start gap-2 font-medium ${published.ok ? 'text-status-g' : 'text-ink'}` : 'sr-only'}
+      >
+        {published.text &&
+          (published.ok ? (
+            <CheckCircle2 aria-hidden="true" className="size-5 shrink-0" />
+          ) : (
+            <AlertTriangle aria-hidden="true" className="mt-0.5 size-5 shrink-0 text-status-y" />
+          ))}
+        {published.text}
       </p>
 
       <div className="flex flex-wrap gap-3">

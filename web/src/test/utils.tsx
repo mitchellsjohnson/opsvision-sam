@@ -24,7 +24,10 @@ export function newQueryClient(): QueryClient {
 /** Renders with a signed-in test user, a fresh query cache and a memory data router. */
 export function renderApp(
   ui: ReactElement,
-  { route = '/', auth = testAuth() }: { route?: string; auth?: AuthState } = {},
+  {
+    route = '/',
+    auth = testAuth(),
+  }: { route?: string | { pathname: string; search?: string; state?: unknown }; auth?: AuthState } = {},
 ) {
   // A data router (as in the app) so useBlocker works; one splat route renders the UI.
   const router = createMemoryRouter([{ path: '*', element: ui }], { initialEntries: [route] })

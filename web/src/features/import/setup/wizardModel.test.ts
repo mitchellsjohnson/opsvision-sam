@@ -345,9 +345,9 @@ describe('copy', () => {
   })
 
   it('celebrates in plain words', () => {
-    expect(successText('Defect', 12)).toBe('Your defects are in. 12 metrics updated.')
-    expect(successText('Epic', 1)).toBe('Your epics are in. 1 metric updated.')
+    expect(successText('Defect', 12)).toBe('Your defects are in. 12 scorecard numbers updated.')
+    expect(successText('Epic', 1)).toBe('Your epics are in. 1 scorecard number updated.')
     expect(successText('Defect', 0)).toBe('Your defects are in. No scorecard numbers changed.')
-    expect(successText('Epic', 12, { waitsForPublish: true })).toBe('Your epics are in. 12 metrics update when you publish.')
+    expect(successText('Epic', 12, { waitsForPublish: true })).toBe('Your epics are in. 12 scorecard numbers update when you publish.')
   })
 })

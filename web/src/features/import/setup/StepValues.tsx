@@ -119,14 +119,20 @@ export function StepValues({ state, update, result, recordTypes, errors }: StepP
 
       {date && (
         <fieldset className="space-y-2 rounded-md border border-accent/40 bg-cream p-4" aria-describedby={`${id}-date-hint`}>
-          <legend className="flex items-center gap-2 px-1 font-medium">
+          <legend id={`${id}-date-q`} className="flex items-center gap-2 px-1 font-medium">
             <CalendarDays aria-hidden="true" className="size-5 text-accent-deep" />
             Is {date.example} {date.monthFirst} or {date.dayFirst}?
           </legend>
           <p id={`${id}-date-hint`} className="text-sm text-ink/80">
             In {quoted(ambiguous)}, dates like this could be read either way. We ask once and remember.
           </p>
-          <div className="flex flex-wrap gap-4">
+          <div
+            role="radiogroup"
+            aria-labelledby={`${id}-date-q`}
+            aria-invalid={errors.dateOrder ? true : undefined}
+            aria-describedby={errors.dateOrder ? `${id}-date-hint ${id}-date-err` : undefined}
+            className="flex flex-wrap gap-4"
+          >
             {(
               [
                 ['mdy', `${date.monthFirst} (month first)`],
@@ -139,8 +145,7 @@ export function StepValues({ state, update, result, recordTypes, errors }: StepP
                   name={`${id}-date`}
                   value={value}
                   checked={state.answers.dateOrder === value}
-                  aria-invalid={i === 0 && errors.dateOrder ? true : undefined}
-                  aria-describedby={errors.dateOrder ? `${id}-date-err` : undefined}
+                  data-invalid={i === 0 && errors.dateOrder ? true : undefined}
                   onChange={() => update((s) => ({ ...s, answers: { ...s.answers, dateOrder: value } }))}
                 />
                 {label}

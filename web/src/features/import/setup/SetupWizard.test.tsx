@@ -1,11 +1,12 @@
 import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { Link, Route, Routes, useLocation, useNavigate } from 'react-router'
+import { http, HttpResponse } from 'msw'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { axe } from 'vitest-axe'
 import type { components } from '../../../api/schema'
 import { CSV_TYPE } from '../../../test/recordsFixtures'
-import { server } from '../../../test/server'
+import { API, server } from '../../../test/server'
 import { renderApp } from '../../../test/utils'
 import { derivedEpicsVersions, newWizardFake, wizardHandlers, wizardRequests, type WizardFake } from '../../../test/wizardFixtures'
 import { SetupWizard } from './SetupWizard'
@@ -272,6 +273,13 @@ describe('SetupWizard: values', () => {
     await user.click(screen.getByRole('button', { name: 'Next' }))
     expect(screen.getByRole('heading', { level: 2, name: HEADINGS.values })).toBeTruthy()
     expect(screen.getByText('Choose how to read these dates.')).toBeTruthy()
+    const radios = screen.getByRole('radiogroup', { name: /March 4 or April 3/ })
+    expect(radios.getAttribute('aria-invalid')).toBe('true')
+    expect(document.getElementById(radios.getAttribute('aria-describedby')?.split(' ').at(-1) ?? '')?.textContent).toContain(
+      'Choose how to read these dates.',
+    )
+    for (const r of within(radios).getAllByRole('radio')) expect(r.getAttribute('aria-invalid')).toBeNull()
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('radio', { name: 'March 4 (month first)' })))
 
     await user.click(screen.getByRole('radio', { name: 'April 3 (day first)' }))
     await walkToPreviewFrom(user, 'products')
@@ -354,7 +362,7 @@ describe('SetupWizard: calculate', () => {
     expect(previews('imp-2').at(-1)?.draftVersionId).toBeUndefined()
     expect(wizardRequests(fake, 'POST', '/scorecards/sc-main/versions')).toHaveLength(0)
     await user.click(screen.getByRole('button', { name: 'Apply' }))
-    expect(await screen.findByText('Your epics are in. 12 metrics updated.')).toBeTruthy()
+    expect(await screen.findByText('Your epics are in. 12 scorecard numbers updated.')).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Publish now' })).toBeNull()
   })
 
@@ -400,7 +408,7 @@ describe('SetupWizard: preview and apply', () => {
     expect(body.draftVersionId).toBeUndefined()
 
     await user.click(screen.getByRole('button', { name: 'Apply' }))
-    const done = await screen.findByText('Your defects are in. 12 metrics updated.')
+    const done = await screen.findByText('Your defects are in. 12 scorecard numbers updated.')
     const apply = wizardRequests(fake, 'POST', '/imports/imp-1/apply')
     expect(apply).toHaveLength(1)
     expect(apply[0]?.body).toEqual({
@@ -420,7 +428,7 @@ describe('SetupWizard: preview and apply', () => {
     await walkTo(user, 'preview')
     await screen.findByRole('heading', { name: 'What changes on the scorecard' })
     await user.click(screen.getByRole('button', { name: 'Apply' }))
-    await screen.findByText('Your epics are in. 12 metrics update when you publish.')
+    await screen.findByText('Your epics are in. 12 scorecard numbers update when you publish.')
     expect(screen.getByText(/start once you publish/)).toBeTruthy()
     expect(screen.getByText(/Epics committed and Epics delivered on time/)).toBeTruthy()
 
@@ -434,6 +442,91 @@ describe('SetupWizard: preview and apply', () => {
       effectiveFrom: '2026-M11',
     })
     expect(await screen.findByText(/Published Epics from records/)).toBeTruthy()
+  })
+
+  it('says so plainly when publishing worked but the numbers from records could not be updated', async () => {
+    fake.recalculationError = 'derived values could not be recalculated; they update with the next records upload or publish'
+    const { user } = await renderWizard('/admin/import/setup?upload=imp-2')
+    await walkTo(user, 'preview')
+    await screen.findByRole('heading', { name: 'What changes on the scorecard' })
+    await user.click(screen.getByRole('button', { name: 'Apply' }))
+    await screen.findByText(/update when you publish/)
+    await user.click(screen.getByRole('button', { name: 'Publish now' }))
+    const dialog = await screen.findByRole('dialog', { name: /Publish Epics from records/ })
+    await user.click(within(dialog).getByRole('button', { name: 'Publish' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(
+      await screen.findByText(
+        /Published Epics from records, effective .*, but the numbers that come from records couldn’t be updated yet\. They update with your next records upload or publish\./,
+      ),
+    ).toBeTruthy()
+    expect(screen.queryByText(/now shows numbers from your records/)).toBeNull()
+  })
+
+  it('treats an import applied elsewhere as done, and asks to try again after a conflicting change', async () => {
+    fake.applyFailure = { status: 409, code: 'conflict', message: 'record type changed' }
+    const { user } = await renderWizard()
+    await walkTo(user, 'preview')
+    await screen.findByRole('heading', { name: 'What changes on the scorecard' })
+    const before = previews().length
+    await user.click(screen.getByRole('button', { name: 'Apply' }))
+    expect(await screen.findByText('Something changed while this file was being applied. Try applying again.')).toBeTruthy()
+    expect(previews()).toHaveLength(before)
+
+    fake.applyFailure = { status: 409, code: 'already_applied', message: 'this preview was already applied' }
+    await user.click(screen.getByRole('button', { name: 'Apply' }))
+    expect(await screen.findByText(/Already applied/)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Apply' })).toBeNull()
+  })
+
+  it('moves focus to the name when it is empty on Apply', async () => {
+    const { user } = await renderWizard()
+    await walkTo(user, 'preview')
+    await screen.findByRole('heading', { name: 'What changes on the scorecard' })
+    const name = screen.getByRole('textbox', { name: 'Save this setup as' })
+    await user.clear(name)
+    await user.click(screen.getByRole('button', { name: 'Apply' }))
+    expect(screen.getByText('Enter a name for this setup.')).toBeTruthy()
+    expect(document.activeElement).toBe(name)
+    expect(screen.getByText('Your file isn’t brought in until you apply.')).toBeTruthy()
+  })
+
+  it('offers Retry when the organization settings do not load', async () => {
+    let fail = true
+    server.use(
+      http.get(`${API}/v1/org/levels`, () =>
+        fail
+          ? HttpResponse.json({ error: { code: 'internal', message: 'internal error' } }, { status: 500 })
+          : HttpResponse.json({ levels: [{ id: 'product', name: 'Product', depth: 2 }] }),
+      ),
+    )
+    const { user } = await renderWizard('/admin/import/setup?upload=imp-2')
+    await walkTo(user, 'preview')
+    expect(await screen.findByText('We couldn’t load your organization’s settings. Try again in a moment.')).toBeTruthy()
+    fail = false
+    await user.click(screen.getByRole('button', { name: 'Try again' }))
+    expect(await screen.findByRole('heading', { name: 'What changes on the scorecard' })).toBeTruthy()
+  })
+
+  it('names the saved draft when leaving after the preview', async () => {
+    const { user } = await renderWizard('/admin/import/setup?upload=imp-2')
+    await walkTo(user, 'preview')
+    await screen.findByRole('heading', { name: 'What changes on the scorecard' })
+    await user.click(screen.getByRole('link', { name: 'Somewhere else' }))
+    const confirm = await screen.findByRole('alertdialog', { name: 'Leave the setup?' })
+    expect(within(confirm).getByText(/Your draft “Epics from records” is kept in Methodology/)).toBeTruthy()
+  })
+
+  it('starts the as-of date from the date the Import page hands over', async () => {
+    const user = userEvent.setup()
+    renderApp(
+      <Routes>
+        <Route path="/admin/import/setup" element={<SetupWizard />} />
+      </Routes>,
+      { route: { pathname: '/admin/import/setup', search: '?upload=imp-1', state: { asOf: '2026-10-30' } } },
+    )
+    await walkTo(user, 'preview')
+    await waitFor(() => expect(previews().at(-1)?.asOf).toBe('2026-10-30'))
   })
 
   it('creates a new record type in place before previewing', async () => {

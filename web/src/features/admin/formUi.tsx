@@ -189,8 +189,10 @@ export function useFocusOnError<T extends HTMLElement = HTMLFormElement>() {
   useEffect(() => {
     if (tick === 0) return
     const root = formRef.current
+    // A group (a radiogroup) can carry aria-invalid; focus goes to the first control that can take it.
+    const invalid = Array.from(root?.querySelectorAll<HTMLElement>('[aria-invalid="true"], [data-invalid="true"]') ?? [])
     const first =
-      root?.querySelector<HTMLElement>('[aria-invalid="true"], [data-invalid="true"]') ??
+      invalid.find((el) => el.matches('input, select, textarea, button, [tabindex]')) ??
       root?.querySelector<HTMLElement>('[data-form-error]')
     first?.focus()
   }, [tick])

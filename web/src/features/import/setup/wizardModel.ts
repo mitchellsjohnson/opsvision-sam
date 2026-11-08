@@ -679,13 +679,15 @@ export function metricsChanged(preview: RecordsPreview): number {
 }
 
 /**
- * "Your defects are in. 12 metrics updated." When the numbers come from
- * calculations still in a draft, they change once it is published.
+ * "Your defects are in. 12 scorecard numbers updated." `changed` counts
+ * scorecard cells (a metric for a product in a month), not distinct metrics.
+ * When the numbers come from calculations still in a draft, they change once
+ * it is published.
  */
 export function successText(name: string, changed: number, { waitsForPublish = false } = {}): string {
   const head = `Your ${pluralName(name).toLowerCase()} are in.`
   if (changed === 0) return `${head} No scorecard numbers changed.`
-  const n = `${changed.toLocaleString('en-US')} ${changed === 1 ? 'metric' : 'metrics'}`
+  const n = `${changed.toLocaleString('en-US')} ${changed === 1 ? 'scorecard number' : 'scorecard numbers'}`
   if (waitsForPublish) return `${head} ${n} ${changed === 1 ? 'updates' : 'update'} when you publish.`
   return `${head} ${n} updated.`
 }

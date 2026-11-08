@@ -19,7 +19,7 @@ function PublishForm({
   now: string
   defaultMonth?: string
   close: () => void
-  onPublished: (message: string) => void
+  onPublished: (message: string, ok: boolean) => void
 }) {
   const publish = usePublishVersion(sc)
   const { formRef, focusErrors } = useFocusOnError()
@@ -30,8 +30,17 @@ function PublishForm({
     e.preventDefault()
     setMessages([])
     try {
-      await publish.mutateAsync({ v: version.id, effectiveFrom: month })
-      onPublished(`Published ${version.name}, effective ${labelOfMonth(month, fiscal)}.`)
+      const res = await publish.mutateAsync({ v: version.id, effectiveFrom: month })
+      const done = `Published ${version.name}, effective ${labelOfMonth(month, fiscal)}`
+      // The publish stands even when recalculating failed; say so rather than claim success.
+      if (res.recalculationError) {
+        onPublished(
+          `${done}, but the numbers that come from records couldn’t be updated yet. They update with your next records upload or publish.`,
+          false,
+        )
+      } else {
+        onPublished(`${done}.`, true)
+      }
       close()
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) {
@@ -76,7 +85,8 @@ export function PublishDialog({
   fiscal: number
   now: string
   disabled: boolean
-  onPublished: (message: string) => void
+  /** `ok` is false when the version published but the numbers from records were not recalculated. */
+  onPublished: (message: string, ok: boolean) => void
   triggerLabel?: string
   /** The effective month the form starts at (default: next month). */
   defaultMonth?: string

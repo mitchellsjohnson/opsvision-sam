@@ -1,4 +1,4 @@
-import { Archive, CheckCircle2, ClipboardCheck, Pencil } from 'lucide-react'
+import { AlertTriangle, Archive, CheckCircle2, ClipboardCheck, Pencil } from 'lucide-react'
 import { useRef, useState, type FormEvent } from 'react'
 import { useSearchParams } from 'react-router'
 import {
@@ -231,7 +231,7 @@ export function MethodologyPage() {
   const scorecards = useScorecards()
   const [params, setParams] = useSearchParams()
   const heading = useRef<HTMLHeadingElement>(null)
-  const [notice, setNotice] = useState('')
+  const [notice, setNotice] = useState({ text: '', ok: true })
   const [reloads, setReloads] = useState(0)
 
   const list = scorecards.data?.scorecards ?? []
@@ -276,7 +276,7 @@ export function MethodologyPage() {
                 fiscal={fiscal}
                 close={close}
                 onCreated={(v) => {
-                  setNotice(`Created the draft ${v.name}.`)
+                  setNotice({ text: `Created the draft ${v.name}.`, ok: true })
                   choose({ v: v.id })
                 }}
               />
@@ -284,8 +284,9 @@ export function MethodologyPage() {
           </FormDialog>
         )}
       </div>
-      <p role="status" className="min-h-5 text-sm font-medium text-status-g">
-        {notice}
+      <p role="status" className={`flex min-h-5 items-start gap-2 text-sm font-medium ${notice.ok ? 'text-status-g' : 'text-ink'}`}>
+        {!notice.ok && <AlertTriangle aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-status-y" />}
+        {notice.text}
       </p>
       <QueryState isPending={scorecards.isPending} error={scorecards.error} what="scorecards" />
       {scorecards.data && list.length === 0 && <p>There are no scorecards yet.</p>}
@@ -377,8 +378,8 @@ export function MethodologyPage() {
                   version={selected}
                   versions={rows}
                   onReload={() => void reload()}
-                  onNotice={(message) => {
-                    setNotice(message)
+                  onNotice={(message, ok = true) => {
+                    setNotice({ text: message, ok })
                     // The dialog and editor are gone once a version publishes; keep focus on the page.
                     setTimeout(() => heading.current?.focus(), 0)
                   }}

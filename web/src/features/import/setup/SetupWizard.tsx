@@ -2,7 +2,7 @@ import * as Dialog from '@radix-ui/react-dialog'
 import clsx from 'clsx'
 import { ArrowLeft, ArrowRight, Check, CheckCircle2, Loader2, XCircle } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import { Link, useBlocker, useSearchParams } from 'react-router'
+import { Link, useBlocker, useLocation, useSearchParams } from 'react-router'
 import {
   useCreateImportUpload,
   useImportTemplates,
@@ -18,7 +18,8 @@ import { errorsFrom } from '../../admin/adminModel'
 import { FormError, linkButton, primaryButton, secondaryButton, useFocusOnError } from '../../admin/formUi'
 import { putFile } from '../../admin/importModel'
 import { DropZone } from '../DropZone'
-import { contentTypeFor, failureText, noQuestions, todayISO } from '../recordsModel'
+import type { SetupState } from '../RecordsImport'
+import { contentTypeFor, defaultAsOf, failureText, noQuestions, todayISO } from '../recordsModel'
 import { StepCalculate } from './StepCalculate'
 import { StepColumns, validateColumns } from './StepColumns'
 import { Artifacts, StepPreview, type Applied } from './StepPreview'
@@ -114,6 +115,7 @@ const dangerButton = 'rounded-md bg-status-r px-3 py-1.5 text-sm font-medium tex
  */
 export function SetupWizard() {
   const [params, setParams] = useSearchParams()
+  const handedOver = (useLocation().state as Partial<SetupState> | null)?.asOf
   const uploadId = params.get('upload') ?? ''
   const templateId = params.get('template') ?? ''
   const mode: 'setup' | 'template' = templateId !== '' ? 'template' : 'setup'
@@ -137,7 +139,7 @@ export function SetupWizard() {
   const [touched, setTouched] = useState(false)
   const [errors, setErrors] = useState<StepErrors>({})
   const [questions, setQuestions] = useState(noQuestions)
-  const [asOf, setAsOf] = useState(todayISO)
+  const [asOf, setAsOf] = useState(() => handedOver ?? todayISO())
   const [applied, setApplied] = useState<Applied | null>(null)
   const [ownTypeId, setOwnTypeId] = useState('')
   const [savedMapping, setSavedMapping] = useState(false)
@@ -270,6 +272,7 @@ export function SetupWizard() {
   async function upload(file: File) {
     setUploading(true)
     setUploadError('')
+    setAsOf(defaultAsOf(file))
     try {
       const contentType = contentTypeFor(file)
       const created = await createUpload({ filename: file.name, contentType })
@@ -284,7 +287,7 @@ export function SetupWizard() {
         { replace: true },
       )
     } catch (err) {
-      setUploadError(failureText(err, 'read'))
+      setUploadError(failureText(err, 'upload'))
     } finally {
       setUploading(false)
     }
@@ -485,6 +488,7 @@ export function SetupWizard() {
             <Dialog.Title className="text-lg font-semibold text-accent-deep">Leave the setup?</Dialog.Title>
             <Dialog.Description className="mt-2 text-sm">
               Your answers so far will be lost. Nothing from this file has been applied yet.
+              {artifacts.draft && ` Your draft “${artifacts.draft.version.name}” is kept in Methodology, where you can finish or delete it.`}
             </Dialog.Description>
             <div className="mt-4 flex justify-end gap-2">
               <button type="button" className={secondaryButton} onClick={() => blocker.reset?.()}>

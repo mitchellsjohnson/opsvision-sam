@@ -242,6 +242,10 @@ export interface WizardFake {
   /** The planId of each import's latest preview. */
   plans: Record<string, string>
   requests: RecordedRequest[]
+  /** Set to make the next publish report that recalculation failed. */
+  recalculationError?: string
+  /** Set to make the next apply fail with this error. */
+  applyFailure?: { status: number; code: string; message: string }
 }
 
 export function newWizardFake(): WizardFake {
@@ -324,10 +328,15 @@ export function wizardHandlers(fake: WizardFake) {
     http.post(`${API}/v1/imports/:id/apply`, async ({ request, params }) => {
       const id = String(params.id)
       const body = (await record(request, `/imports/${id}/apply`)) as { planId?: string } | undefined
+      const failure = fake.applyFailure
+      if (failure) {
+        fake.applyFailure = undefined
+        return HttpResponse.json({ error: { code: failure.code, message: failure.message } }, { status: failure.status })
+      }
       // As in the API: only the latest preview's plan can be applied.
       if (body?.planId !== fake.plans[id]) {
         return HttpResponse.json(
-          { error: { code: 'conflict', message: 'preview is out of date: this is not the latest preview of the import; preview the import again' } },
+          { error: { code: 'preview_out_of_date', message: 'preview is out of date: this is not the latest preview of the import; preview the import again' } },
           { status: 409 },
         )
       }
@@ -379,6 +388,7 @@ export function wizardHandlers(fake: WizardFake) {
       if (!v) return HttpResponse.json({ error: { code: 'not_found', message: 'version not found' } }, { status: 404 })
       v.status = 'published'
       v.effectiveFrom = b.effectiveFrom
+      if (fake.recalculationError) return HttpResponse.json({ ...v, recalculated: 0, recalculationError: fake.recalculationError })
       return HttpResponse.json({ ...v, recalculated: 24 })
     }),
     http.get(`${V}/:v/diff`, ({ params }) => HttpResponse.json({ from: 'ver-1', to: String(params.v), changes: [] })),

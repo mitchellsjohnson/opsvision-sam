@@ -61,7 +61,8 @@ export interface DraftEditorProps {
   versions: readonly MethodologyVersion[]
   /** Discards local edits and loads the draft again from the server. */
   onReload: () => void
-  onNotice: (message: string) => void
+  /** `ok` is false for a notice that is not a success. */
+  onNotice: (message: string, ok?: boolean) => void
 }
 
 function Section({
