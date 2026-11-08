@@ -463,6 +463,38 @@ describe('CellDrawer records', () => {
     expect(within(region).queryByRole('table')).toBeNull()
   })
 
+  it("says when records don't cover the period and the number was entered", async () => {
+    openDerived(targetFor('defect_rate', 'root', '2026-M07'), () => ({
+      measures: [
+        contributionMeasure({
+          measureKey: 'defects',
+          value: 2,
+          source: 'import',
+          recordsValue: null,
+          cutoff: undefined,
+          covered: false,
+          records: [],
+        }),
+      ],
+    }))
+    const region = await recordsRegion()
+    expect(await within(region).findByText("Records don't cover this period.")).toBeTruthy()
+    expect(within(region).getByText('This number was entered.')).toBeTruthy()
+    expect(within(region).queryByText('No records counted in this period')).toBeNull()
+    expect(within(region).queryByText(/^Derived from/)).toBeNull()
+  })
+
+  it("does not call a value entered when records don't cover a rolled-up period", async () => {
+    openDerived(targetFor('defect_rate', 'root', '2026-M07'), () => ({
+      measures: [
+        contributionMeasure({ measureKey: 'defects', recordsValue: null, cutoff: undefined, covered: false, records: [] }),
+      ],
+    }))
+    const region = await recordsRegion()
+    expect(await within(region).findByText("Records don't cover this period.")).toBeTruthy()
+    expect(within(region).queryByText('This number was entered.')).toBeNull()
+  })
+
   it('shows a skeleton while the records load', async () => {
     let release: () => void = () => {}
     const gate = new Promise<void>((r) => {

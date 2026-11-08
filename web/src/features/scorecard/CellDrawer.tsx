@@ -385,10 +385,19 @@ function Records({
           return (
             <div key={m.measureKey} className="mt-3">
               <h4 className="text-sm font-medium">{name}</h4>
-              <p className="text-sm text-ink/80">
-                {m.total === 0 ? 'No records counted in this period' : `Derived from ${recordCount(m.total)}`}
-              </p>
-              {m.total > 0 && m.records.length < m.total && (
+              {!m.covered ? (
+                <>
+                  <p className="text-sm text-ink/80">Records don&apos;t cover this period.</p>
+                  {m.value !== null && m.source !== '' && m.source !== 'records' && (
+                    <p className="text-sm text-ink/80">This number was entered.</p>
+                  )}
+                </>
+              ) : (
+                <p className="text-sm text-ink/80">
+                  {m.total === 0 ? 'No records counted in this period' : `Derived from ${recordCount(m.total)}`}
+                </p>
+              )}
+              {m.covered && m.total > 0 && m.records.length < m.total && (
                 <p className="text-xs text-ink/80">
                   {m.records.length === 0
                     ? 'Choose Load more records to see them.'

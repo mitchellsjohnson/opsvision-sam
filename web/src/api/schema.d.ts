@@ -1757,9 +1757,13 @@ export interface components {
          *     the measure's org aggregation cannot be rolled up here). `cutoff` is
          *     the last day records cover; `pending` counts commitments still due.
          *     `total` counts all of the measure's contributions across pages;
-         *     `records` holds this page's contributions.
+         *     `records` holds this page's contributions. `covered` is false when
+         *     records give no value for any leaf subject listed (a month before
+         *     the record type is tracked, after its latest snapshot, or subjects
+         *     no records map to): the cell is then missing, not zero.
          */
         ContributionMeasure: {
+            covered: boolean;
             measureKey: components["schemas"]["Key"];
             value: components["schemas"]["MeasureValue"];
             source: string;

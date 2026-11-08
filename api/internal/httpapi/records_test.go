@@ -604,6 +604,7 @@ type contributionsJSON struct {
 		Cutoff       string           `json:"cutoff"`
 		Pending      int              `json:"pending"`
 		Total        int              `json:"total"`
+		Covered      bool             `json:"covered"`
 		Records      []map[string]any `json:"records"`
 	} `json:"measures"`
 	NextCursor *string `json:"nextCursor"`
@@ -687,6 +688,35 @@ func TestContributionsRespectScope(t *testing.T) {
 	e.expectError(t, 404, "not_found", admin, "GET", contributionsPath("nobody", ""), nil)
 	e.expectError(t, 404, "not_found", admin, "GET", "/scorecards/sc/records/contributions?metric=no_metric&period=2026-M09&subject=checkout", nil)
 	e.expectError(t, 400, "invalid", admin, "GET", contributionsPath("checkout", "-3"), nil)
+}
+
+func TestContributionsCoverage(t *testing.T) {
+	e := newTestEnv(t)
+	seedRecords(t, e)
+	// A product records map to that has no defects.
+	if err := e.store.PutOrgUnit(context.Background(), "t1", domain.OrgUnit{
+		ID: "messaging", Name: "Messaging", LevelID: "product", ParentID: "insights", SourceKeys: []string{"Messaging"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	applyDefects(t, e) // tracked from 2026-M09, as of 2026-09-15
+	admin := e.tokens["t1-admin"]
+
+	var c contributionsJSON
+	// August is before the record type is tracked: a backfilled month.
+	e.expect(t, 200, admin, "GET", "/scorecards/sc/records/contributions?metric=defect_score&period=2026-M08&subject=checkout", nil, &c)
+	if m := c.Measures[1]; m.MeasureKey != "defect_points_sum" || m.Covered || m.Total != 0 || m.RecordsValue != nil {
+		t.Errorf("checkout 2026-M08 defect_points_sum = %+v, want not covered", m)
+	}
+	// A tracked month with no matching records is a true zero.
+	e.expect(t, 200, admin, "GET", contributionsPath("messaging", ""), nil, &c)
+	if m := c.Measures[1]; !m.Covered || m.Total != 0 || m.RecordsValue == nil || *m.RecordsValue != 0 {
+		t.Errorf("messaging 2026-M09 defect_points_sum = %+v, want covered with no records", m)
+	}
+	e.expect(t, 200, admin, "GET", contributionsPath("checkout", ""), nil, &c)
+	if m := c.Measures[1]; !m.Covered || m.Total != 1 {
+		t.Errorf("checkout 2026-M09 defect_points_sum = %+v, want covered", m)
+	}
 }
 
 func TestContributionsPaginate(t *testing.T) {

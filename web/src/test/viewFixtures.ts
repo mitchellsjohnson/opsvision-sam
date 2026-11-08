@@ -282,6 +282,7 @@ export function contributionMeasure(over: Partial<ContributionMeasure> = {}): Co
     cutoff: '2026-10-31',
     pending: 0,
     total: records.length,
+    covered: true,
     ...over,
     records,
   }

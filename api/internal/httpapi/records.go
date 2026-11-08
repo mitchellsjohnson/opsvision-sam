@@ -1252,6 +1252,7 @@ func (s *Server) ListRecordContributions(ctx context.Context, req ListRecordCont
 				pos++
 			}
 		}
+		cm.Covered = len(values) > 0
 		cm.RecordsValue = rollUp(m.OrgAgg, values)
 		out.Measures = append(out.Measures, cm)
 	}
