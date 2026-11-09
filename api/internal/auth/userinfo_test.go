@@ -27,8 +27,13 @@ func TestUserInfoCachedUntilExp(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	// Only provisioning looks up the email, so each call starts as a first
+	// sign-in, as when a provisioning write fails and the caller retries.
 	call := func(label, tok string, wantHits int32) {
 		t.Helper()
+		for _, sub := range []string{employeeSub, trustedPrefix + "u-200"} {
+			_ = ts.DeleteMembership(context.Background(), "t1", sub)
+		}
 		req := httptest.NewRequest(http.MethodGet, "/v1/x", nil)
 		req.Header.Set("Authorization", "Bearer "+tok)
 		rec := httptest.NewRecorder()
@@ -83,6 +88,26 @@ func TestUserInfoFailureIsNotCached(t *testing.T) {
 	u.status.Store(0)
 	if c := do(); c != http.StatusOK {
 		t.Fatalf("status %d after recovery, want 200", c)
+	}
+}
+
+// /userinfo refusing the caller's own token is a configuration problem (the
+// token lacks the openid scope, say), not an outage.
+func TestUserInfo401IsMisconfigured(t *testing.T) {
+	f := newRSAFixture(t, "kid-1")
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+		u := newUserInfoFixture(t, nil)
+		u.status.Store(int32(status))
+		ts := newStore(t)
+		rec, p := run(t, singleOrgConfig(f, u), ts, employeeToken(t, f, nil))
+		wantError(t, rec, http.StatusServiceUnavailable, "identity_misconfigured",
+			"Sign-in is misconfigured: the identity provider would not return your profile.")
+		if p != nil {
+			t.Errorf("/userinfo %d: handler reached", status)
+		}
+		if ms, _ := ts.ListMemberships(context.Background(), "t1"); len(ms) != 0 {
+			t.Errorf("/userinfo %d: memberships = %+v, want none", status, ms)
+		}
 	}
 }
 

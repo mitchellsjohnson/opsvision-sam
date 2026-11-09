@@ -21,6 +21,11 @@ const (
 	userInfoCacheSize = 1000
 )
 
+// errUserInfoRefused is /userinfo answering 401 or 403 for the caller's own,
+// already verified token: the token cannot read the profile (it lacks the
+// openid scope, say), which retrying will not fix.
+var errUserInfoRefused = errors.New("the identity provider refused the token")
+
 // UserInfo looks up the caller's email at the identity provider's OIDC
 // /userinfo endpoint, using the caller's own access token.
 type UserInfo struct {
@@ -76,7 +81,11 @@ func (u *UserInfo) lookup(ctx context.Context, token string) (identity, error) {
 		return identity{}, fmt.Errorf("userinfo: %w", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
+	switch resp.StatusCode {
+	case http.StatusOK:
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return identity{}, fmt.Errorf("userinfo: HTTP %d: %w", resp.StatusCode, errUserInfoRefused)
+	default:
 		return identity{}, fmt.Errorf("userinfo: HTTP %d", resp.StatusCode)
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, userInfoMaxBytes+1))

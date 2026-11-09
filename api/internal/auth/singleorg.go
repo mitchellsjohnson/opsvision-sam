@@ -16,8 +16,8 @@ import (
 // singleOrg is single-organization sign-in (Config.SingleTenantID): one
 // organization runs its own instance and signs employees in through its
 // existing identity provider connection. Trust comes from the token's sub
-// prefix, the tenant from configuration, and the email from the token or the
-// identity provider's /userinfo endpoint.
+// prefix, the tenant from configuration, and the email of a first sign-in from
+// the token or the identity provider's /userinfo endpoint.
 type singleOrg struct {
 	tenantID string
 	prefixes []string
@@ -26,7 +26,11 @@ type singleOrg struct {
 	cache    *identityCache
 }
 
-var errIdentityUnavailable = &httpError{http.StatusServiceUnavailable, "identity_unavailable", "the identity provider is temporarily unavailable"}
+var (
+	errIdentityUnavailable   = &httpError{http.StatusServiceUnavailable, "identity_unavailable", "the identity provider is temporarily unavailable"}
+	errIdentityMisconfigured = &httpError{http.StatusServiceUnavailable, "identity_misconfigured",
+		"Sign-in is misconfigured: the identity provider would not return your profile."}
+)
 
 // newSingleOrg validates cfg's single-organization settings. It returns nil
 // when the mode is off.
@@ -145,13 +149,38 @@ func (a *authenticator) authenticateSingle(ctx context.Context, token string, v 
 	}
 	p.Tenant = &tenant
 
+	// The email matters only for provisioning, so an existing member (or an
+	// operator, who is never provisioned) costs no /userinfo call.
+	m, herr := a.membership(ctx, p)
+	if herr != nil {
+		return Principal{}, herr
+	}
+	if m != nil {
+		p.Membership = m
+		if p.Email == "" {
+			p.Email = m.Email
+		}
+		if p.Name == "" {
+			p.Name = m.Name
+		}
+		return p, nil
+	}
+	if p.IsOperator {
+		return p, nil
+	}
+
 	id, err := s.identity(ctx, token, v)
-	if err != nil {
+	switch {
+	case errors.Is(err, errUserInfoRefused):
+		slog.Error("auth: the identity provider refused the caller's token at /userinfo; "+
+			"check that tokens carry the openid scope", "err", err)
+		return Principal{}, errIdentityMisconfigured
+	case err != nil:
 		slog.Error("auth: cannot look up the caller's email", "err", err)
 		return Principal{}, errIdentityUnavailable
 	}
 	p.Email, p.Name = id.email, id.name
 	// The trusted connection is the organization's own directory, so its
 	// emails count as verified whatever email_verified says.
-	return a.withMembership(ctx, p, true, s.admins[normalizeEmail(id.email)])
+	return a.provisioned(ctx, p, true, s.admins[normalizeEmail(id.email)])
 }

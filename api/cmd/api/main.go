@@ -31,8 +31,9 @@
 //	                     their first sign-in (optional). A later demotion is
 //	                     kept, but a deleted membership comes back as admin;
 //	                     to revoke a bootstrap admin, remove the email here
-//	OPSVISION_USERINFO_URL  https /userinfo endpoint for callers whose token
-//	                     has no email claim (default https://<AUTH0_DOMAIN>/userinfo)
+//	OPSVISION_USERINFO_URL  https /userinfo endpoint, called on a first sign-in
+//	                     whose token has no email claim (default
+//	                     https://<AUTH0_DOMAIN>/userinfo)
 //
 // A trusted caller's email (token claim or /userinfo) counts as verified for
 // invitations and bootstrap admins, whatever email_verified says: the trusted

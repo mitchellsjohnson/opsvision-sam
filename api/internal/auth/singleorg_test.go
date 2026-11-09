@@ -122,10 +122,62 @@ func TestSingleOrgTrustedMember(t *testing.T) {
 		t.Errorf("Membership = %+v, want the existing contributor", p.Membership)
 	}
 	if p.Email != "pat@example.test" {
-		t.Errorf("Email = %q, want the /userinfo email", p.Email)
+		t.Errorf("Email = %q, want the membership's email", p.Email)
+	}
+}
+
+// An existing member needs no email lookup: /userinfo is for provisioning
+// only, and the principal shows the membership's email and name.
+func TestSingleOrgExistingMemberNoUserInfo(t *testing.T) {
+	f := newRSAFixture(t, "kid-1")
+	u := newUserInfoFixture(t, verifiedEmail("other@example.test"))
+	ts := newStore(t)
+	if err := ts.PutMembership(context.Background(), "t1", domain.Membership{
+		UserID: employeeSub, Email: "pat@example.test", Name: "Pat Member", Role: domain.RoleViewer,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := singleOrgConfig(f, u)
+	for i := 0; i < 3; i++ {
+		rec, p := run(t, cfg, ts, employeeToken(t, f, nil))
+		if rec.Code != http.StatusNoContent || p == nil || p.Membership == nil || p.Membership.Role != domain.RoleViewer {
+			t.Fatalf("status = %d, principal = %+v: %s", rec.Code, p, rec.Body.String())
+		}
+		if p.Email != "pat@example.test" || p.Name != "Pat Member" {
+			t.Errorf("Email, Name = %q, %q; want the membership's", p.Email, p.Name)
+		}
+	}
+	if n := u.hits.Load(); n != 0 {
+		t.Errorf("/userinfo called %d times for an existing member, want 0", n)
+	}
+
+	// Claims in the token still win over the stored values.
+	_, p := run(t, cfg, ts, employeeToken(t, f, map[string]any{testNS + "email": "pat.new@example.test", testNS + "name": "Pat Token"}))
+	if p == nil || p.Email != "pat.new@example.test" || p.Name != "Pat Token" {
+		t.Errorf("principal = %+v, want the token's email and name", p)
+	}
+}
+
+func TestSingleOrgProvisionCallsUserInfoOnce(t *testing.T) {
+	f := newRSAFixture(t, "kid-1")
+	u := newUserInfoFixture(t, verifiedEmail("pat@example.test"))
+	ts := newStore(t)
+	cfg := singleOrgConfig(f, u)
+	tok := employeeToken(t, f, nil)
+	_, p := run(t, cfg, ts, tok)
+	if p == nil || p.Membership == nil || p.Email != "pat@example.test" || p.Name != "Pat Example" {
+		t.Fatalf("principal = %+v, want a provisioned member with the /userinfo identity", p)
 	}
 	if got, _ := u.lastAuth.Load().(string); got != "Bearer "+tok {
 		t.Errorf("/userinfo Authorization = %q, want the caller's bearer token", got)
+	}
+	for i := 0; i < 3; i++ {
+		if _, p := run(t, cfg, ts, tok); p == nil || p.Email != "pat@example.test" {
+			t.Fatalf("sign-in %d: principal = %+v", i+2, p)
+		}
+	}
+	if n := u.hits.Load(); n != 1 {
+		t.Errorf("/userinfo called %d times, want 1 (first sign-in only)", n)
 	}
 }
 
@@ -360,7 +412,7 @@ func TestSingleOrgTokenEmailSkipsUserInfo(t *testing.T) {
 
 func TestSingleOrgUserInfoFailureIs503(t *testing.T) {
 	f := newRSAFixture(t, "kid-1")
-	for _, status := range []int{http.StatusInternalServerError, http.StatusUnauthorized, http.StatusTooManyRequests} {
+	for _, status := range []int{http.StatusInternalServerError, http.StatusBadGateway, http.StatusTooManyRequests} {
 		u := newUserInfoFixture(t, nil)
 		u.status.Store(int32(status))
 		ts := newStore(t)

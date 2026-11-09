@@ -78,8 +78,8 @@ type Config struct {
 	// removing the email from this list.
 	BootstrapAdmins []string
 	// UserInfoURL is the identity provider's OIDC /userinfo endpoint, used in
-	// single-organization mode when the token has no email claim. Defaults to
-	// https://<Domain>/userinfo.
+	// single-organization mode to provision a first sign-in whose token has no
+	// email claim. Defaults to https://<Domain>/userinfo.
 	UserInfoURL string
 
 	// now overrides the clock of the JWKS and /userinfo caches; tests only.

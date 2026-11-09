@@ -33,10 +33,15 @@ import (
 // With Config.SingleTenantID set, org_id is ignored instead:
 //   - sub without a trusted prefix: 403 "forbidden"
 //   - the configured tenant missing: 403 "forbidden" (tenant not provisioned)
-//   - no email claim and /userinfo failing: 503 "identity_unavailable"
+//   - first sign-in, no email claim, and /userinfo refusing the token (401
+//     or 403): 503 "identity_misconfigured"
+//   - first sign-in, no email claim, and /userinfo failing otherwise: 503
+//     "identity_unavailable"
 //
-// and first sign-in binds the invitation for the email, else makes a bootstrap
-// admin email an admin, else uses the tenant's DefaultRole. A trusted caller's
+// An existing member's email and name come from the token, else from the
+// membership; /userinfo is called only to provision a first sign-in. That
+// binds the invitation for the email, else makes a bootstrap admin email an
+// admin, else uses the tenant's DefaultRole. A trusted caller's
 // email counts as verified whatever email_verified says: the trusted
 // connection is the organization's own directory.
 //
@@ -155,25 +160,44 @@ func (a *authenticator) authenticate(r *http.Request) (Principal, *httpError) {
 // withMembership attaches the caller's membership in p.Tenant, provisioning
 // one on first sign-in (see provision).
 func (a *authenticator) withMembership(ctx context.Context, p Principal, emailVerified, bootstrapAdmin bool) (Principal, *httpError) {
-	tenant := *p.Tenant
-	m, err := a.ts.GetMembership(ctx, tenant.ID, p.UserID)
+	m, herr := a.membership(ctx, p)
 	switch {
-	case err == nil:
-		p.Membership = &m
-	case !errors.Is(err, store.ErrNotFound):
-		slog.Error("auth: membership lookup failed", "tenant", tenant.ID, "err", err)
-		return Principal{}, errInternal
+	case herr != nil:
+		return Principal{}, herr
+	case m != nil:
+		p.Membership = m
 	case p.IsOperator:
 		// Operators run the platform; they get tenant rights only through an
 		// explicit membership, never by signing in.
 	default:
-		m, err := a.provision(ctx, tenant, p, emailVerified, bootstrapAdmin)
-		if err != nil {
-			slog.Error("auth: first sign-in provisioning failed", "tenant", tenant.ID, "err", err)
-			return Principal{}, errInternal
-		}
-		p.Membership = &m
+		return a.provisioned(ctx, p, emailVerified, bootstrapAdmin)
 	}
+	return p, nil
+}
+
+// membership returns the caller's membership in p.Tenant, or nil if there is
+// none yet.
+func (a *authenticator) membership(ctx context.Context, p Principal) (*domain.Membership, *httpError) {
+	m, err := a.ts.GetMembership(ctx, p.Tenant.ID, p.UserID)
+	switch {
+	case err == nil:
+		return &m, nil
+	case errors.Is(err, store.ErrNotFound):
+		return nil, nil
+	default:
+		slog.Error("auth: membership lookup failed", "tenant", p.Tenant.ID, "err", err)
+		return nil, errInternal
+	}
+}
+
+// provisioned returns p with the membership provision creates for it.
+func (a *authenticator) provisioned(ctx context.Context, p Principal, emailVerified, bootstrapAdmin bool) (Principal, *httpError) {
+	m, err := a.provision(ctx, *p.Tenant, p, emailVerified, bootstrapAdmin)
+	if err != nil {
+		slog.Error("auth: first sign-in provisioning failed", "tenant", p.Tenant.ID, "err", err)
+		return Principal{}, errInternal
+	}
+	p.Membership = &m
 	return p, nil
 }
 
