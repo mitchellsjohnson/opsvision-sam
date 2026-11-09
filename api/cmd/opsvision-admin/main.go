@@ -161,11 +161,11 @@ func runBootstrap(args []string, stdout, stderr io.Writer, d deps) int {
 		return exitUsage
 	}
 	counts, err := bootstrap.Sync(ctx, st, f, d.now(), *dry)
-	printCounts(stdout, f.Tenant.ID, counts, *dry)
 	if err != nil {
 		fmt.Fprintln(stderr, "opsvision-admin:", err)
 		return exitUsage
 	}
+	printCounts(stdout, f.Tenant.ID, counts, *dry)
 	return exitOK
 }
 
