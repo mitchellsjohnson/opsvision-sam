@@ -1,7 +1,7 @@
 // Package webui serves the built web app (web/dist) and its runtime
 // configuration, /config.json, from the API binary.
 //
-// The files are embedded from dist/. The committed dist/index.html is a
+// The files are embedded from dist/, dotfiles included. The committed dist/index.html is a
 // placeholder; `make package` copies the web build over it before compiling
 // the Lambda binary.
 package webui
@@ -20,7 +20,7 @@ import (
 	"sync"
 )
 
-//go:embed dist
+//go:embed all:dist
 var dist embed.FS
 
 // Files returns the embedded web app, rooted at its index.html.

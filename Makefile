@@ -62,16 +62,22 @@ LAMBDA_ZIP := build/opsvision-api-lambda.zip
 # package builds the Lambda deployment zip (build/opsvision-api-lambda.zip):
 # the API for linux/arm64 as `bootstrap`, with the web app (web/dist) embedded.
 # The web build is copied over the placeholder in $(WEBUI_DIST) only while the
-# binary compiles; the placeholder is put back afterwards, even on failure.
-# Needs Node, Go and zip. The build holds no deployment values: they come from
-# the function's environment at runtime (see api/cmd/api).
+# binary compiles. Afterwards, even on failure, the committed placeholder is
+# restored with git and every other copied file is removed. Before the binary
+# is built, a test checks that every embedded file fits through the load
+# balancer. The build is reproducible: -trimpath and -buildvcs=false keep the
+# machine and the checkout out of the binary, and file times are fixed before
+# zipping, so the same sources give a byte-identical zip. Needs Node, Go, git
+# and zip. The build holds no deployment values: they come from the function's
+# environment at runtime (see api/cmd/api).
 package:
 	npm --prefix web ci
 	npm --prefix web run build
 	@rm -rf build && mkdir -p build
-	cp $(WEBUI_DIST)/index.html build/placeholder.html
-	@trap 'rm -rf $(WEBUI_DIST) && mkdir -p $(WEBUI_DIST) && mv build/placeholder.html $(WEBUI_DIST)/index.html' EXIT && \
+	@trap 'git checkout -- $(WEBUI_DIST)/index.html && git clean -fdXq -- $(WEBUI_DIST)' EXIT && \
 	cp -R web/dist/. $(WEBUI_DIST)/ && \
-	(cd api && GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -tags lambda.norpc -o ../build/bootstrap ./cmd/api) && \
+	(cd api && go test -count=1 ./cmd/api -run TestEmbeddedWebFitsLoadBalancer) && \
+	(cd api && GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -buildvcs=false -tags lambda.norpc -o ../build/bootstrap ./cmd/api) && \
+	touch -t 198001010000 build/bootstrap && \
 	(cd build && zip -q -X $(notdir $(LAMBDA_ZIP)) bootstrap) && \
 	echo 'package: built $(LAMBDA_ZIP)'
