@@ -75,6 +75,26 @@ describe('AppShell', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: /Subjects/ })).toBeTruthy())
   })
 
+  it("remembers the active tenant's organization", async () => {
+    const rememberTenant = vi.fn()
+    shell(undefined, testAuth({ rememberTenant }))
+    await screen.findByRole('button', { name: /Test admin/ })
+    expect(rememberTenant).toHaveBeenCalledWith(tenant.id, tenant.auth0OrgId)
+  })
+
+  it('does not remember a tenant without an organization', async () => {
+    // A single-organization deployment's tenant has no auth0OrgId.
+    server.use(
+      http.get(`${API}/v1/me`, () =>
+        HttpResponse.json({ ...meFor('admin'), tenant: { ...tenant, auth0OrgId: '' } }),
+      ),
+    )
+    const rememberTenant = vi.fn()
+    shell(undefined, testAuth({ rememberTenant }))
+    await screen.findByRole('button', { name: /Test admin/ })
+    expect(rememberTenant).not.toHaveBeenCalled()
+  })
+
   it('has no accessibility violations', async () => {
     const { container } = shell()
     await screen.findByRole('link', { name: 'Org' })

@@ -48,7 +48,8 @@ export function AppShell() {
   const tenant = me.data?.tenant
   const { rememberTenant } = auth
   useEffect(() => {
-    if (tenant && rememberTenant) rememberTenant(tenant.id, tenant.auth0OrgId)
+    // A single-organization tenant has no organization to switch back to.
+    if (tenant?.auth0OrgId && rememberTenant) rememberTenant(tenant.id, tenant.auth0OrgId)
   }, [tenant, rememberTenant])
 
   return (
