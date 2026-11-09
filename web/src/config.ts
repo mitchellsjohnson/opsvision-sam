@@ -6,6 +6,8 @@ export interface AppConfig {
   auth0Domain: string
   auth0ClientId: string
   auth0Audience: string
+  /** The Auth0 organization to sign in to, when the deployment fixes one. */
+  organization?: string
 }
 
 /** The Vite env variables the app reads. */
@@ -21,12 +23,12 @@ export interface EnvVars {
 export class ConfigError extends Error {
   readonly missing: string[]
 
-  constructor(missing: string[]) {
-    super(
-      `Missing required configuration: ${missing.join(', ')}. ` +
-        'Set these environment variables when building the app, ' +
-        'or set VITE_AUTH_MODE=dev to use the development sign-in (never in production).',
-    )
+  constructor(
+    missing: string[],
+    hint = 'Set these environment variables when building the app, ' +
+      'or set VITE_AUTH_MODE=dev to use the development sign-in (never in production).',
+  ) {
+    super(`Missing required configuration: ${missing.join(', ')}. ${hint}`)
     this.name = 'ConfigError'
     this.missing = missing
   }
@@ -70,8 +72,16 @@ export function resolveConfig(env: EnvVars, isProduction: boolean): AppConfig {
 
 let cached: AppConfig | undefined
 
-/** The resolved configuration of this build; throws ConfigError if it is incomplete. */
+/**
+ * The app configuration: the one set at startup (see runtimeConfig.ts), else
+ * the build's. Throws ConfigError if the build's is incomplete.
+ */
 export function getConfig(): AppConfig {
   cached ??= resolveConfig(import.meta.env, import.meta.env.PROD)
   return cached
+}
+
+/** Sets the configuration getConfig returns. Call once, before rendering. */
+export function setConfig(config: AppConfig): void {
+  cached = config
 }

@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { LAST_ORG_KEY, rememberOrganization, resolveOrganization } from './organization'
+import {
+  auth0AuthorizationParams,
+  LAST_ORG_KEY,
+  rememberOrganization,
+  resolveOrganization,
+} from './organization'
 
 function storage(initial: Record<string, string> = {}) {
   const data = { ...initial }
@@ -31,5 +36,38 @@ describe('resolveOrganization', () => {
 
   it('returns undefined when there is none', () => {
     expect(resolveOrganization('?x=1', storage())).toBeUndefined()
+  })
+
+  it('prefers the configured organization over the URL and the last used one', () => {
+    const s = storage({ [LAST_ORG_KEY]: 'org_old' })
+    expect(resolveOrganization('?organization=org_new', s, 'org_configured')).toBe('org_configured')
+    expect(resolveOrganization('?organization=org_new', s, '')).toBe('org_new')
+  })
+})
+
+describe('auth0AuthorizationParams', () => {
+  it('passes the organization when there is one', () => {
+    expect(
+      auth0AuthorizationParams({
+        audience: 'https://ops.example.test/api',
+        organization: 'org_example',
+        redirectUri: 'https://ops.example.test',
+      }),
+    ).toEqual({
+      audience: 'https://ops.example.test/api',
+      organization: 'org_example',
+      redirect_uri: 'https://ops.example.test',
+    })
+  })
+
+  it('leaves the organization out entirely when there is none', () => {
+    for (const organization of [undefined, '']) {
+      const params = auth0AuthorizationParams({
+        audience: 'https://ops.example.test/api',
+        organization,
+        redirectUri: 'https://ops.example.test',
+      })
+      expect(Object.keys(params)).toEqual(['audience', 'redirect_uri'])
+    }
   })
 })

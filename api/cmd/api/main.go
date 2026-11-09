@@ -12,7 +12,14 @@
 //	AUTH0_DOMAIN         Auth0 tenant domain, e.g. example.us.auth0.com
 //	AUTH0_AUDIENCE       API audience the access tokens are issued for
 //	CLAIM_NAMESPACE      prefix of the email/name claims (default https://opsvision/)
-//	ALLOWED_ORIGIN       the one browser origin allowed by CORS
+//	ALLOWED_ORIGIN       the one browser origin allowed by CORS (optional when
+//	                     the web app is served from the same origin)
+//	OPSVISION_SERVE_WEB  "1" also serves the embedded web app (every path but
+//	                     /v1/ and /healthz); "" or "0" serves the API only
+//	OPSVISION_WEB_AUTH0_CLIENT_ID  the web app's Auth0 client ID (required
+//	                     when serving the web app)
+//	OPSVISION_UPLOADS_ORIGIN  origin browsers upload to, for the web app's CSP
+//	                     (default https://<UPLOADS_BUCKET>.s3.<AWS_REGION>.amazonaws.com)
 package main
 
 import (
@@ -22,6 +29,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -33,6 +41,7 @@ import (
 	"opsvision/internal/objects"
 	"opsvision/internal/store"
 	"opsvision/internal/store/dynamostore"
+	"opsvision/internal/webui"
 )
 
 // errNotAuth0 is why the function will not start in any other auth mode. The
@@ -54,6 +63,10 @@ type appConfig struct {
 	Auth0Audience  string
 	ClaimNamespace string
 	AllowedOrigin  string
+
+	ServeWeb         bool
+	WebAuth0ClientID string
+	UploadsOrigin    string
 }
 
 // loadConfig reads the configuration from getenv. The auth mode is checked
@@ -92,12 +105,34 @@ func loadConfig(getenv func(string) string) (appConfig, error) {
 	if c.ClaimNamespace == "" {
 		c.ClaimNamespace = auth.DefaultClaimNamespace
 	}
+
+	switch getenv("OPSVISION_SERVE_WEB") {
+	case "", "0":
+		return c, nil
+	case "1":
+		c.ServeWeb = true
+	default:
+		return appConfig{}, errors.New(`refusing to start: OPSVISION_SERVE_WEB must be "1", "0" or unset`)
+	}
+	c.WebAuth0ClientID = getenv("OPSVISION_WEB_AUTH0_CLIENT_ID")
+	if c.WebAuth0ClientID == "" {
+		return appConfig{}, errors.New("OPSVISION_WEB_AUTH0_CLIENT_ID is required when OPSVISION_SERVE_WEB=1")
+	}
+	c.UploadsOrigin = getenv("OPSVISION_UPLOADS_ORIGIN")
+	if c.UploadsOrigin == "" {
+		region := getenv("AWS_REGION")
+		if region == "" {
+			return appConfig{}, errors.New("OPSVISION_UPLOADS_ORIGIN is required when AWS_REGION is not set")
+		}
+		c.UploadsOrigin = "https://" + c.UploadsBucket + ".s3." + region + ".amazonaws.com"
+	}
 	return c, nil
 }
 
 // newHandler assembles the API: CORS outermost (so preflights are answered
 // before authentication), then compression and Auth0 token validation around
-// the /v1 routes.
+// the /v1 routes. With cfg.ServeWeb, the embedded web app answers every path
+// other than /v1/ and /healthz, and is never behind CORS or authentication.
 func newHandler(cfg appConfig, st store.Store, objs objects.Store) (http.Handler, error) {
 	authMW, err := auth.Middleware(auth.Config{
 		Mode:           auth.ModeAuth0,
@@ -109,7 +144,29 @@ func newHandler(cfg appConfig, st store.Store, objs objects.Store) (http.Handler
 		return nil, fmt.Errorf("auth: %w", err)
 	}
 	srv := httpapi.NewServer(httpapi.Deps{Store: st, Objects: objs})
-	return httpapi.CORS(cfg.AllowedOrigin)(httpapi.NewHandler(srv, authMW)), nil
+	api := httpapi.CORS(cfg.AllowedOrigin)(httpapi.NewHandler(srv, authMW))
+	if !cfg.ServeWeb {
+		return api, nil
+	}
+	web := webui.Handler(webui.Files(), webui.Config{
+		AuthMode:      auth.ModeAuth0,
+		Auth0Domain:   cfg.Auth0Domain,
+		Auth0ClientID: cfg.WebAuth0ClientID,
+		Auth0Audience: cfg.Auth0Audience,
+		UploadsOrigin: cfg.UploadsOrigin,
+	})
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isAPIPath(r.URL.Path) {
+			api.ServeHTTP(w, r)
+			return
+		}
+		web.ServeHTTP(w, r)
+	}), nil
+}
+
+// isAPIPath reports whether p belongs to the API rather than the web app.
+func isAPIPath(p string) bool {
+	return p == "/healthz" || p == "/v1" || strings.HasPrefix(p, "/v1/")
 }
 
 func run(ctx context.Context) error {
@@ -117,7 +174,7 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if cfg.AllowedOrigin == "" {
+	if cfg.AllowedOrigin == "" && !cfg.ServeWeb {
 		slog.Warn("ALLOWED_ORIGIN is not set; browsers on other origins cannot call this API")
 	}
 	awsCfg, err := config.LoadDefaultConfig(ctx)

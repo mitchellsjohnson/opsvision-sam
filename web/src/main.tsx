@@ -5,7 +5,8 @@ import { App } from './App'
 import { AppProviders } from './AppProviders'
 import { AuthProvider } from './auth/AuthProvider'
 import { ConfigErrorScreen } from './ConfigErrorScreen'
-import { getConfig } from './config'
+import { setConfig, type AppConfig } from './config'
+import { loadRuntimeConfig } from './runtimeConfig'
 import './index.css'
 
 const root = document.getElementById('root')
@@ -24,16 +25,8 @@ function Root() {
   )
 }
 
-function render(): void {
-  try {
-    getConfig()
-  } catch (err) {
-    // Misconfiguration (for example a production build without Auth0
-    // settings) must be visible, not a blank page.
-    const message = err instanceof Error ? err.message : 'The app is misconfigured.'
-    createRoot(root!).render(<ConfigErrorScreen message={message} />)
-    return
-  }
+function render(config: AppConfig): void {
+  setConfig(config)
   createRoot(root!).render(
     <StrictMode>
       <RouterProvider router={createBrowserRouter([{ path: '*', element: <Root /> }])} />
@@ -41,4 +34,15 @@ function render(): void {
   )
 }
 
-render()
+// Misconfiguration (for example a production build without Auth0 settings
+// and no /config.json) must be visible, not a blank page.
+function renderError(err: unknown): void {
+  const message = err instanceof Error ? err.message : 'The app is misconfigured.'
+  createRoot(root!).render(<ConfigErrorScreen message={message} />)
+}
+
+loadRuntimeConfig({
+  env: import.meta.env,
+  isProduction: import.meta.env.PROD,
+  origin: window.location.origin,
+}).then(render, renderError)

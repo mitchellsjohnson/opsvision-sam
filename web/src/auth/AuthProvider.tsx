@@ -5,6 +5,7 @@ import { AuthContext, type AuthState } from './context'
 import { clearDevToken, readDevToken, storeDevToken } from './devAuth'
 import { Auth0LoginPage, DevLoginPage } from './LoginPage'
 import {
+  auth0AuthorizationParams,
   LAST_ORG_KEY,
   organizationForTenant,
   rememberOrganization,
@@ -68,7 +69,10 @@ function DevAuth({ apiUrl, children }: { apiUrl: string; children: ReactNode }) 
 
 function Auth0Auth({ children }: { children: ReactNode }) {
   const config = getConfig()
-  const organization = useMemo(() => resolveOrganization(window.location.search, localStorage), [])
+  const organization = useMemo(
+    () => resolveOrganization(window.location.search, localStorage, config.organization),
+    [config.organization],
+  )
   // Remember an organization named in the URL for next time (not during render).
   useEffect(() => {
     if (organization) rememberOrganization(organization, localStorage)
@@ -79,11 +83,11 @@ function Auth0Auth({ children }: { children: ReactNode }) {
       clientId={config.auth0ClientId}
       // Tokens stay in memory only, never in localStorage.
       cacheLocation="memory"
-      authorizationParams={{
+      authorizationParams={auth0AuthorizationParams({
         audience: config.auth0Audience,
         organization,
-        redirect_uri: window.location.origin,
-      }}
+        redirectUri: window.location.origin,
+      })}
       onRedirectCallback={(appState) => {
         window.history.replaceState({}, document.title, appState?.returnTo ?? '/')
       }}

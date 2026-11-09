@@ -1,4 +1,4 @@
-.PHONY: gen gen-check test lint dev denylist
+.PHONY: gen gen-check test lint dev denylist package
 
 OAPI_SPEC   := ../openapi/openapi.yaml
 OAPI_CONFIG := internal/httpapi/oapi-config.yaml
@@ -55,3 +55,23 @@ dev:
 
 denylist:
 	bash scripts/check-denylist.sh
+
+WEBUI_DIST := api/internal/webui/dist
+LAMBDA_ZIP := build/opsvision-api-lambda.zip
+
+# package builds the Lambda deployment zip (build/opsvision-api-lambda.zip):
+# the API for linux/arm64 as `bootstrap`, with the web app (web/dist) embedded.
+# The web build is copied over the placeholder in $(WEBUI_DIST) only while the
+# binary compiles; the placeholder is put back afterwards, even on failure.
+# Needs Node, Go and zip. The build holds no deployment values: they come from
+# the function's environment at runtime (see api/cmd/api).
+package:
+	npm --prefix web ci
+	npm --prefix web run build
+	@rm -rf build && mkdir -p build
+	cp $(WEBUI_DIST)/index.html build/placeholder.html
+	@trap 'rm -rf $(WEBUI_DIST) && mkdir -p $(WEBUI_DIST) && mv build/placeholder.html $(WEBUI_DIST)/index.html' EXIT && \
+	cp -R web/dist/. $(WEBUI_DIST)/ && \
+	(cd api && GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -tags lambda.norpc -o ../build/bootstrap ./cmd/api) && \
+	(cd build && zip -q -X $(notdir $(LAMBDA_ZIP)) bootstrap) && \
+	echo 'package: built $(LAMBDA_ZIP)'

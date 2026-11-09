@@ -3,6 +3,11 @@
 node_modules/
 .aws-sam/
 dist/
+# The web build copied in by `make package`; only the placeholder is committed.
+!api/internal/webui/dist/
+api/internal/webui/dist/*
+!api/internal/webui/dist/index.html
+/build/
 *.local.*
 /private/
 *.xlsx

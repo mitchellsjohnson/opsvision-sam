@@ -6,10 +6,34 @@ export const TENANT_ORGS_KEY = 'opsvision.tenantOrganizations'
 type ReadableStorage = Pick<Storage, 'getItem'>
 type WritableStorage = ReadableStorage & Pick<Storage, 'setItem'>
 
-/** The organization to sign in to. Pure: it reads storage but never writes it. */
-export function resolveOrganization(search: string, storage: ReadableStorage): string | undefined {
+/**
+ * The organization to sign in to: the deployment's configured one, else
+ * `?organization=`, else the last one used. Pure: it reads storage but never
+ * writes it.
+ */
+export function resolveOrganization(
+  search: string,
+  storage: ReadableStorage,
+  configured?: string,
+): string | undefined {
+  if (configured) return configured
   const fromUrl = new URLSearchParams(search).get('organization')
   return fromUrl || (storage.getItem(LAST_ORG_KEY) ?? undefined)
+}
+
+/** Auth0 authorization params; `organization` is present only when there is one. */
+export function auth0AuthorizationParams({
+  audience,
+  organization,
+  redirectUri,
+}: {
+  audience: string
+  organization?: string
+  redirectUri: string
+}): { audience: string; organization?: string; redirect_uri: string } {
+  return organization
+    ? { audience, organization, redirect_uri: redirectUri }
+    : { audience, redirect_uri: redirectUri }
 }
 
 /** Records the organization as the last one used. Call from an effect or callback. */
