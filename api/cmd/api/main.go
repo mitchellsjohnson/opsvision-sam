@@ -18,8 +18,12 @@
 //	                     /v1/ and /healthz); "" or "0" serves the API only
 //	OPSVISION_WEB_AUTH0_CLIENT_ID  the web app's Auth0 client ID (required
 //	                     when serving the web app)
-//	OPSVISION_UPLOADS_ORIGIN  origin browsers upload to, for the web app's CSP
-//	                     (default https://<UPLOADS_BUCKET>.s3.<AWS_REGION>.amazonaws.com)
+//	OPSVISION_UPLOADS_ORIGIN  https origin browsers upload to, for the web
+//	                     app's CSP (default
+//	                     https://<UPLOADS_BUCKET>.s3.<AWS_REGION>.amazonaws.com)
+//
+// OPSVISION_WEB_AUTH0_CLIENT_ID or OPSVISION_UPLOADS_ORIGIN without
+// OPSVISION_SERVE_WEB=1 refuses to start. See docs/deploy/environment.md.
 //
 // Single-organization sign-in (one tenant; org_id is ignored):
 //
@@ -133,19 +137,28 @@ func loadConfig(getenv func(string) string) (appConfig, error) {
 		return appConfig{}, err
 	}
 
+	c.WebAuth0ClientID = getenv("OPSVISION_WEB_AUTH0_CLIENT_ID")
+	c.UploadsOrigin = getenv("OPSVISION_UPLOADS_ORIGIN")
 	switch getenv("OPSVISION_SERVE_WEB") {
 	case "", "0":
+		// The web app's settings without the web app are configuration drift.
+		if c.WebAuth0ClientID != "" || c.UploadsOrigin != "" {
+			return appConfig{}, errors.New("refusing to start: OPSVISION_WEB_AUTH0_CLIENT_ID and " +
+				"OPSVISION_UPLOADS_ORIGIN apply only with OPSVISION_SERVE_WEB=1")
+		}
 		return c, nil
 	case "1":
 		c.ServeWeb = true
 	default:
 		return appConfig{}, errors.New(`refusing to start: OPSVISION_SERVE_WEB must be "1", "0" or unset`)
 	}
-	c.WebAuth0ClientID = getenv("OPSVISION_WEB_AUTH0_CLIENT_ID")
 	if c.WebAuth0ClientID == "" {
 		return appConfig{}, errors.New("OPSVISION_WEB_AUTH0_CLIENT_ID is required when OPSVISION_SERVE_WEB=1")
 	}
-	c.UploadsOrigin = getenv("OPSVISION_UPLOADS_ORIGIN")
+	if c.UploadsOrigin != "" && !isHTTPSOrigin(c.UploadsOrigin) {
+		return appConfig{}, errors.New("refusing to start: OPSVISION_UPLOADS_ORIGIN must be an https origin " +
+			"(scheme and host only, such as https://uploads.example.test)")
+	}
 	if c.UploadsOrigin == "" {
 		region := getenv("AWS_REGION")
 		if region == "" {
@@ -213,6 +226,22 @@ func loadSingleOrg(getenv func(string) string, c *appConfig) error {
 		c.UserInfoURL = userInfoURL
 	}
 	return nil
+}
+
+// isHTTPSOrigin reports whether s is exactly https://host[:port]: no path,
+// query, fragment or user info, and a host of letters, digits, dots and
+// hyphens. It goes into the web app's Content-Security-Policy as is.
+func isHTTPSOrigin(s string) bool {
+	u, err := url.Parse(s)
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" || s != "https://"+u.Host {
+		return false
+	}
+	for _, r := range u.Hostname() {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '-') {
+			return false
+		}
+	}
+	return true
 }
 
 // commaList splits a comma-separated variable, trimming spaces around each

@@ -24,7 +24,7 @@ func validEnv() map[string]string {
 		"OPSVISION_AUTH_MODE": "auth0",
 		"TABLE_NAME":          "opsvision-test",
 		"UPLOADS_BUCKET":      "opsvision-uploads-test",
-		"AUTH0_DOMAIN":        "opsvision-demo.us.auth0.com",
+		"AUTH0_DOMAIN":        "example.us.auth0.com",
 		"AUTH0_AUDIENCE":      "https://api.opsvision.test",
 		"ALLOWED_ORIGIN":      "https://app.opsvision.test",
 	}
@@ -53,7 +53,7 @@ func TestLoadConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Table != "opsvision-test" || cfg.UploadsBucket != "opsvision-uploads-test" || cfg.Auth0Domain != "opsvision-demo.us.auth0.com" ||
+	if cfg.Table != "opsvision-test" || cfg.UploadsBucket != "opsvision-uploads-test" || cfg.Auth0Domain != "example.us.auth0.com" ||
 		cfg.Auth0Audience != "https://api.opsvision.test" || cfg.AllowedOrigin != "https://app.opsvision.test" {
 		t.Errorf("cfg = %+v", cfg)
 	}
@@ -203,10 +203,55 @@ func TestServeWebConfig(t *testing.T) {
 			t.Errorf("OPSVISION_SERVE_WEB=%q: err = %v, want a refusal naming it", bad, err)
 		}
 	}
-	e = serveWebEnv()
-	e["OPSVISION_SERVE_WEB"] = "0"
-	if cfg, err := loadConfig(env(e)); err != nil || cfg.ServeWeb {
-		t.Errorf("OPSVISION_SERVE_WEB=0: ServeWeb = %v, %v", cfg.ServeWeb, err)
+	// The web app's settings without the web app are configuration drift.
+	for _, key := range []string{"OPSVISION_WEB_AUTH0_CLIENT_ID", "OPSVISION_UPLOADS_ORIGIN"} {
+		for _, serveWeb := range []string{"", "0"} {
+			e := validEnv()
+			e[key] = "https://uploads.ops.example.test"
+			if key == "OPSVISION_WEB_AUTH0_CLIENT_ID" {
+				e[key] = "example-client-id"
+			}
+			if serveWeb != "" {
+				e["OPSVISION_SERVE_WEB"] = serveWeb
+			}
+			if _, err := loadConfig(env(e)); err == nil || !strings.Contains(err.Error(), key) ||
+				!strings.Contains(err.Error(), "OPSVISION_SERVE_WEB") {
+				t.Errorf("%s with OPSVISION_SERVE_WEB=%q: err = %v, want a refusal naming both", key, serveWeb, err)
+			}
+		}
+	}
+}
+
+func TestUploadsOriginMustBeHTTPSOrigin(t *testing.T) {
+	for _, good := range []string{
+		"https://uploads.ops.example.test",
+		"https://opsvision.uploads.example.test.s3.us-east-1.amazonaws.com",
+		"https://uploads.ops.example.test:8443",
+	} {
+		e := serveWebEnv()
+		e["OPSVISION_UPLOADS_ORIGIN"] = good
+		if cfg, err := loadConfig(env(e)); err != nil || cfg.UploadsOrigin != good {
+			t.Errorf("OPSVISION_UPLOADS_ORIGIN=%q: %q, %v", good, cfg.UploadsOrigin, err)
+		}
+	}
+	for _, bad := range []string{
+		"http://uploads.ops.example.test",
+		"uploads.ops.example.test",
+		"https://",
+		"https://uploads.ops.example.test/",
+		"https://uploads.ops.example.test/bucket",
+		"https://uploads.ops.example.test?x=1",
+		"https://uploads.ops.example.test#x",
+		"https://user@uploads.ops.example.test",
+		" https://uploads.ops.example.test",
+		"https://uploads.ops.example.test; script-src *",
+		"HTTPS://uploads.ops.example.test",
+	} {
+		e := serveWebEnv()
+		e["OPSVISION_UPLOADS_ORIGIN"] = bad
+		if _, err := loadConfig(env(e)); err == nil || !strings.Contains(err.Error(), "OPSVISION_UPLOADS_ORIGIN") {
+			t.Errorf("OPSVISION_UPLOADS_ORIGIN=%q: err = %v, want a refusal naming it", bad, err)
+		}
 	}
 }
 
@@ -249,12 +294,12 @@ func TestServeWebRouting(t *testing.T) {
 		}
 	}
 	if csp := do(http.MethodGet, "/").Header().Get("Content-Security-Policy"); !strings.Contains(csp,
-		"connect-src 'self' https://opsvision-demo.us.auth0.com https://opsvision-uploads-test.s3.us-east-1.amazonaws.com;") {
+		"connect-src 'self' https://example.us.auth0.com https://opsvision-uploads-test.s3.us-east-1.amazonaws.com;") {
 		t.Errorf("CSP = %q", csp)
 	}
 
 	w = do(http.MethodGet, "/config.json")
-	const wantConfig = `{"authMode":"auth0","auth0Domain":"opsvision-demo.us.auth0.com","auth0ClientId":"example-client-id",` +
+	const wantConfig = `{"authMode":"auth0","auth0Domain":"example.us.auth0.com","auth0ClientId":"example-client-id",` +
 		`"auth0Audience":"https://api.opsvision.test","apiUrl":""}`
 	if got := strings.TrimSpace(w.Body.String()); w.Code != http.StatusOK || got != wantConfig {
 		t.Errorf("GET /config.json = %d %s", w.Code, got)
