@@ -1,9 +1,12 @@
 // Command api is the OpsVision API as an AWS Lambda function behind API
-// Gateway (REST, proxy integration).
+// Gateway (REST, proxy integration) or an Application Load Balancer (Lambda
+// target group with multi-value headers enabled).
 //
 // Configuration comes from the environment:
 //
-//	OPSVISION_AUTH_MODE  must be "auth0"; anything else refuses to start
+//	OPSVISION_AUTH_MODE    must be "auth0"; anything else refuses to start
+//	OPSVISION_EVENT_SOURCE "apigateway" (default) or "alb"; anything else
+//	                       refuses to start
 //	TABLE_NAME           DynamoDB table
 //	UPLOADS_BUCKET       S3 bucket for uploaded workbooks and parsed change sets
 //	AUTH0_DOMAIN         Auth0 tenant domain, e.g. example.us.auth0.com
@@ -37,7 +40,14 @@ import (
 // forge, so it must be impossible to enable by configuration drift.
 var errNotAuth0 = errors.New("refusing to start: OPSVISION_AUTH_MODE must be auth0")
 
+// Event sources the function can be invoked by.
+const (
+	eventSourceAPIGateway = "apigateway"
+	eventSourceALB        = "alb"
+)
+
 type appConfig struct {
+	EventSource    string
 	Table          string
 	UploadsBucket  string
 	Auth0Domain    string
@@ -52,7 +62,16 @@ func loadConfig(getenv func(string) string) (appConfig, error) {
 	if getenv("OPSVISION_AUTH_MODE") != auth.ModeAuth0 {
 		return appConfig{}, errNotAuth0
 	}
+	eventSource := getenv("OPSVISION_EVENT_SOURCE")
+	switch eventSource {
+	case "":
+		eventSource = eventSourceAPIGateway
+	case eventSourceAPIGateway, eventSourceALB:
+	default:
+		return appConfig{}, fmt.Errorf("refusing to start: OPSVISION_EVENT_SOURCE must be %s or %s", eventSourceAPIGateway, eventSourceALB)
+	}
 	c := appConfig{
+		EventSource:    eventSource,
 		Table:          getenv("TABLE_NAME"),
 		UploadsBucket:  getenv("UPLOADS_BUCKET"),
 		Auth0Domain:    getenv("AUTH0_DOMAIN"),
@@ -111,8 +130,17 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	lambda.StartWithOptions(lambdahttp.Handler(h), lambda.WithContext(ctx))
+	lambda.StartWithOptions(lambdaHandler(cfg.EventSource, h), lambda.WithContext(ctx))
 	return nil
+}
+
+// lambdaHandler adapts h to the Lambda event shape of eventSource, which
+// loadConfig has validated.
+func lambdaHandler(eventSource string, h http.Handler) any {
+	if eventSource == eventSourceALB {
+		return lambdahttp.ALBHandler(h)
+	}
+	return lambdahttp.Handler(h)
 }
 
 func main() {

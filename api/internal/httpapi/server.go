@@ -85,7 +85,8 @@ func NewServer(d Deps) *Server {
 }
 
 // NewHandler mounts the generated strict handler under /v1 behind authMW, with
-// gzip compression of large JSON responses outermost. It
+// gzip compression of large JSON responses outermost, and serves GET /healthz
+// outside both. It
 // panics if authMW is nil: an API without authentication must be a deliberate
 // act, not a missing argument.
 //
@@ -103,10 +104,34 @@ func NewHandler(s *Server, authMW func(http.Handler) http.Handler) http.Handler 
 		BaseURL:          "/v1",
 		ErrorHandlerFunc: requestErrorHandler,
 	})
-	return gzipMiddleware(authMW(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	secured := gzipMiddleware(authMW(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
 		api.ServeHTTP(w, r)
 	})))
+	// An exact-path check rather than a ServeMux: a mux would redirect
+	// unclean paths, changing how every /v1 request is routed.
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" {
+			healthz(w, r)
+			return
+		}
+		secured.ServeHTTP(w, r)
+	})
+}
+
+// healthz answers the load balancer's health check. It sits outside /v1 and
+// outside authentication (the check carries no token) and reports only that
+// the function is serving: it touches no data and returns no tenant
+// information.
+func healthz(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		writeError(w, &apiError{status: http.StatusMethodNotAllowed, code: codeInvalid, message: "method not allowed"})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = w.Write([]byte(`{"status":"ok"}` + "\n"))
 }
 
 // principal returns the authenticated caller.

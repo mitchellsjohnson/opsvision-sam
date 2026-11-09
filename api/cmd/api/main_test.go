@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/aws/aws-lambda-go/events"
 
 	"opsvision/internal/objects"
 	"opsvision/internal/store/memstore"
@@ -69,6 +72,71 @@ func TestLoadConfig(t *testing.T) {
 		if _, err := loadConfig(env(e)); err == nil || !strings.Contains(err.Error(), missing) {
 			t.Errorf("without %s: err = %v, want it to name the variable", missing, err)
 		}
+	}
+}
+
+func TestEventSourceConfig(t *testing.T) {
+	for _, tc := range []struct {
+		value string
+		set   bool
+		want  string
+	}{
+		{set: false, want: "apigateway"},
+		{value: "", set: true, want: "apigateway"},
+		{value: "apigateway", set: true, want: "apigateway"},
+		{value: "alb", set: true, want: "alb"},
+	} {
+		e := validEnv()
+		if tc.set {
+			e["OPSVISION_EVENT_SOURCE"] = tc.value
+		}
+		cfg, err := loadConfig(env(e))
+		if err != nil || cfg.EventSource != tc.want {
+			t.Errorf("event source %q (set=%v): got %q, %v; want %q", tc.value, tc.set, cfg.EventSource, err, tc.want)
+		}
+	}
+
+	for _, bad := range []string{"foo", "ALB", "alb ", "apigw", "function-url"} {
+		e := validEnv()
+		e["OPSVISION_EVENT_SOURCE"] = bad
+		_, err := loadConfig(env(e))
+		if err == nil || !strings.Contains(err.Error(), "OPSVISION_EVENT_SOURCE") {
+			t.Errorf("event source %q: err = %v, want a refusal naming OPSVISION_EVENT_SOURCE", bad, err)
+		}
+	}
+
+	// The auth-mode refusal still comes first.
+	e := validEnv()
+	e["OPSVISION_EVENT_SOURCE"] = "foo"
+	e["OPSVISION_AUTH_MODE"] = "dev"
+	if _, err := loadConfig(env(e)); err != errNotAuth0 {
+		t.Errorf("err = %v, want errNotAuth0", err)
+	}
+}
+
+func TestLambdaHandlerFollowsEventSource(t *testing.T) {
+	h := http.NotFoundHandler()
+	if _, ok := lambdaHandler("alb", h).(func(context.Context, events.ALBTargetGroupRequest) (events.ALBTargetGroupResponse, error)); !ok {
+		t.Error("alb must serve load balancer events")
+	}
+	if _, ok := lambdaHandler("apigateway", h).(func(context.Context, events.APIGatewayProxyRequest) (events.APIGatewayProxyResponse, error)); !ok {
+		t.Error("apigateway must serve API Gateway proxy events")
+	}
+}
+
+func TestHealthzIsUnauthenticated(t *testing.T) {
+	cfg, err := loadConfig(env(validEnv()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := newHandler(cfg, memstore.New(), objects.NewMem("", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if w.Code != http.StatusOK || strings.TrimSpace(w.Body.String()) != `{"status":"ok"}` {
+		t.Errorf("GET /healthz = %d %q", w.Code, w.Body.String())
 	}
 }
 
