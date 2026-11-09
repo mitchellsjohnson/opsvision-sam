@@ -21,6 +21,7 @@ import {
   type RecordsPreview,
 } from '../../api/queries'
 import { getConfig } from '../../config'
+import { Sam } from '../../ui/Sam'
 import { SelectField, linkButton, primaryButton, secondaryButton } from '../admin/formUi'
 import { fileSize, putFile } from '../admin/importModel'
 import { DropZone } from './DropZone'
@@ -636,6 +637,7 @@ export function RecordsImport({
             role="status"
             aria-label="Import result"
             className={summary.text ? `basis-full text-sm font-medium ${summary.ok ? 'text-status-g' : 'text-ink'}` : 'sr-only'}>
+            {summary.text && summary.ok && <Sam pose="happy" className="ov-pop mr-2 inline size-7 align-middle" />}
             {summary.text}
           </p>
         </div>

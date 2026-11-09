@@ -136,10 +136,15 @@ function pluralOf(word: string): string {
   return word.endsWith('s') ? word : `${word}s`
 }
 
+/** "epic" or "epics" for n records of the type "Epic" or "Epics". */
+export function recordWord(typeName: string, n: number): string {
+  const one = singular(typeName.trim().toLowerCase() || 'record')
+  return n === 1 ? one : pluralOf(one)
+}
+
 /** "3 epics" or "1 epic" from the record type name "Epic" or "Epics". */
 export function recordNoun(typeName: string, n: number): string {
-  const one = singular(typeName.trim().toLowerCase() || 'record')
-  return n === 1 ? `1 ${one}` : `${formatCount(n)} ${pluralOf(one)}`
+  return `${n === 1 ? '1' : formatCount(n)} ${recordWord(typeName, n)}`
 }
 
 const IDS_SHOWN = 3

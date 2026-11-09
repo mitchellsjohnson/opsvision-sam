@@ -21,6 +21,7 @@ import {
   reasonSummary,
   recognitionParts,
   recordNoun,
+  recordWord,
   sameRecordsText,
   todayISO,
   visibleProblems,
@@ -101,6 +102,8 @@ describe('copy', () => {
     expect(recordNoun('Story', 2)).toBe('2 stories')
     expect(recordNoun('Epic', 3)).toBe('3 epics')
     expect(recordNoun('Process', 1)).toBe('1 process')
+    expect(recordWord('Defects', 1)).toBe('defect')
+    expect(recordWord('Defect', 12)).toBe('defects')
   })
 
   it('says when only the date moves', () => {

@@ -6,6 +6,7 @@ import { NavLink, Outlet, useLocation, useSearchParams } from 'react-router'
 import { useMe, useOrgUnits, useScorecards } from '../api/queries'
 import { useAuth } from '../auth/context'
 import { focusOnDark, menuItemHighlight } from '../ui/focus'
+import { Sam } from '../ui/Sam'
 import { PeriodPicker } from './PeriodPicker'
 import { SubjectFilter } from './SubjectFilter'
 import { TenantSwitcher } from './TenantSwitcher'
@@ -66,12 +67,9 @@ export function AppShell() {
             type="button"
             disabled
             aria-label="Ask SAM (coming soon)"
-            className={clsx(
-              'flex size-8 items-center justify-center rounded-full bg-amber font-semibold text-ink opacity-70',
-              focusOnDark,
-            )}
+            className={clsx('flex size-9 items-center justify-center rounded-full bg-white p-0.5 opacity-80', focusOnDark)}
           >
-            S
+            <Sam className="size-8" />
           </button>
           <TenantSwitcher
             tenants={me.data?.tenants ?? []}

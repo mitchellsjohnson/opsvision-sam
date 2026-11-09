@@ -55,7 +55,7 @@ describe('AppShell', () => {
     expect(main.id).toBe('main')
     const sam = screen.getByRole('button', { name: 'Ask SAM (coming soon)' })
     expect((sam as HTMLButtonElement).disabled).toBe(true)
-    expect(sam.textContent).toBe('S')
+    expect(sam.querySelector('img[data-sam="mark"]')).toBeTruthy()
     expect(screen.getByText('OpsVision')).toBeTruthy()
     await screen.findByRole('button', { name: /Test admin/ })
   })

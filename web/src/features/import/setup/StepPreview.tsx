@@ -1,4 +1,4 @@
-import { AlertTriangle, CheckCircle2, Loader2, PartyPopper, XCircle } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, XCircle } from 'lucide-react'
 import { useEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { Link } from 'react-router'
 import { ApiError } from '../../../api/errors'
@@ -22,7 +22,17 @@ import { labelOfMonth, sameList } from '../../admin/adminModel'
 import { TextField, linkButton, primaryButton, secondaryButton } from '../../admin/formUi'
 import { PublishDialog } from '../../admin/PublishDialog'
 import { useMeasureNames, useSubjects } from '../RecordsImport'
-import { APPLY_CONFLICT_TEXT, applyConflict, failureText, formatCount, mergeQuestions, type AnswerState, type Questions } from '../recordsModel'
+import {
+  APPLY_CONFLICT_TEXT,
+  applyConflict,
+  failureText,
+  formatCount,
+  mergeQuestions,
+  recordWord,
+  type AnswerState,
+  type Questions,
+} from '../recordsModel'
+import { Sam } from '../../../ui/Sam'
 import { StoryPreview } from '../StoryPreview'
 import { usePresetPlan } from './StepCalculate'
 import {
@@ -76,10 +86,6 @@ export interface Applied {
   draft?: MethodologyVersion
   /** Names of measures (and metrics) the draft makes come from records. */
   draftChanges: string[]
-}
-
-function Spinner() {
-  return <Loader2 aria-hidden="true" className="size-4 shrink-0 motion-safe:animate-spin" />
 }
 
 function andList(names: readonly string[]): string {
@@ -376,7 +382,7 @@ export function StepPreview({
       <p role="status" className="flex min-h-5 items-center gap-2 text-sm font-medium">
         {working && (
           <>
-            <Spinner />
+            <Sam pose="thinking" className="ov-sam-think size-7" />
             {working}
           </>
         )}
@@ -488,7 +494,7 @@ function Success({
   const rt = recordTypes.find((t) => t.id === applied.typeId)
   const month = trackedFromMonth(rt, applied.source, applied.asOf, fiscal)
   const draft = applied.draft
-  const noun = applied.newRecords === 1 ? applied.typeName.trim().toLowerCase() || 'record' : pluralName(applied.typeName).toLowerCase()
+  const noun = recordWord(applied.typeName, applied.newRecords)
   return (
     <div className="space-y-5">
       <div
@@ -497,7 +503,7 @@ function Success({
         role="status"
         className="ov-pop flex items-start gap-4 rounded-lg border-2 border-status-g bg-status-g-bg p-5"
       >
-        <PartyPopper aria-hidden="true" className="size-9 shrink-0 text-status-g" />
+        <Sam pose="celebrating" className="size-24 shrink-0" />
         <div className="space-y-1">
           <p className="text-lg font-semibold">
             {successText(applied.typeName, applied.changed, { waitsForPublish: draft !== undefined })}
