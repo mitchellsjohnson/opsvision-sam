@@ -15,11 +15,33 @@ import (
 // Count tallies what Sync did, or would do, to one kind of thing.
 type Count struct {
 	Created, Updated, Unchanged int
+	// Differs counts existing things that differ from the file and were kept
+	// as they are (Sync without Overwrite).
+	Differs int
+}
+
+// Difference names one existing thing that differs from the file.
+type Difference struct {
+	Kind, ID string
 }
 
 // Counts is the outcome of Sync, by kind.
 type Counts struct {
 	Tenant, Levels, Units, Moves, ItemKinds, Items, Scorecards, Versions, Templates, Users Count
+	// Differing lists, in load order, what differs from the file. Without
+	// Overwrite these were kept; with it they are counted as Updated and not
+	// listed.
+	Differing []Difference
+}
+
+// SyncOptions controls Sync.
+type SyncOptions struct {
+	// DryRun only reads: nothing is written, and the counts are what a real
+	// run would produce.
+	DryRun bool
+	// Overwrite updates existing things that differ from the file. Without
+	// it they are kept untouched and reported in Counts.Differing.
+	Overwrite bool
 }
 
 // Kind is one line of Counts.
@@ -37,25 +59,28 @@ func (c Counts) Kinds() []Kind {
 	}
 }
 
-// Sync makes st hold f, and is safe to run again. Unlike Apply it accepts a
+// Sync loads f into st, and is safe to run again. Unlike Apply it accepts a
 // tenant that already exists:
 //
-//   - A thing the store lacks is created; one that is identical is left alone;
-//     one that differs is overwritten with the file's content. Nothing the
-//     file does not name is deleted.
+//   - A thing the store lacks is created; one that is identical is left alone.
+//   - One that differs from the file is kept untouched and reported in
+//     Counts.Differing, so a re-run never wipes edits made in the app. With
+//     Overwrite it is replaced by the file's content instead (counted as
+//     Updated).
+//   - Nothing the file does not name is ever deleted.
 //   - Methodology versions are written with the store's optimistic revision: a
-//     new one is created at revision 1, a changed one is saved against the
-//     revision found, so a version changed by someone else meanwhile is a
+//     new one is created at revision 1, an overwritten one is saved against
+//     the revision found, so a version changed by someone else meanwhile is a
 //     conflict error rather than a lost update. A published version keeps its
 //     original publishedAt when the file has none.
 //   - The tenant record itself cannot be changed (the store has no update for
-//     it). A stored tenant that differs from the file's is an error, reported
-//     before anything is written.
+//     it), with or without Overwrite. A stored tenant that differs from the
+//     file's is an error, reported before anything is written.
 //
-// With dryRun, Sync only reads and returns the counts a real run would. now
-// stamps what the file leaves unstamped. It stops at the first store error;
-// running again completes the load.
-func Sync(ctx context.Context, st store.Store, f File, now time.Time, dryRun bool) (Counts, error) {
+// now stamps what the file leaves unstamped. It stops at the first store
+// error; running again completes the load.
+func Sync(ctx context.Context, st store.Store, f File, now time.Time, opts SyncOptions) (Counts, error) {
+	dryRun := opts.DryRun
 	var c Counts
 	tid := f.Tenant.ID
 	now = now.UTC()
@@ -82,25 +107,32 @@ func Sync(ctx context.Context, st store.Store, f File, now time.Time, dryRun boo
 		return c, fmt.Errorf("bootstrap: look up tenant: %w", err)
 	}
 
-	// Levels are replaced as a set; keep stored levels the file does not name.
+	// Levels are replaced as a set by the store, so the set to write holds the
+	// stored level wherever the file's is not to be applied, and the stored
+	// levels the file does not name.
 	curLevels, err := st.ListLevels(ctx, tid)
 	if err != nil {
 		return c, fmt.Errorf("bootstrap: levels: %w", err)
 	}
-	merged := append([]domain.Level(nil), f.Levels...)
+	var levelSet []domain.Level
+	levelChanged := false
+	for _, l := range f.Levels {
+		cur := find(curLevels, func(x domain.Level) bool { return x.ID == l.ID })
+		write := decide(&c, &c.Levels, "level", l.ID, l, cur, opts)
+		levelChanged = levelChanged || write
+		if cur != nil && !write {
+			levelSet = append(levelSet, *cur)
+		} else {
+			levelSet = append(levelSet, l)
+		}
+	}
 	for _, l := range curLevels {
 		if !hasLevel(f.Levels, l.ID) {
-			merged = append(merged, l)
+			levelSet = append(levelSet, l)
 		}
 	}
-	changed := 0
-	for _, l := range f.Levels {
-		if kind(&c.Levels, l, find(curLevels, func(x domain.Level) bool { return x.ID == l.ID }), same) {
-			changed++
-		}
-	}
-	if changed > 0 && !dryRun {
-		if err := st.PutLevels(ctx, tid, merged); err != nil {
+	if levelChanged && !dryRun {
+		if err := st.PutLevels(ctx, tid, levelSet); err != nil {
 			return c, fmt.Errorf("bootstrap: levels: %w", err)
 		}
 	}
@@ -110,7 +142,7 @@ func Sync(ctx context.Context, st store.Store, f File, now time.Time, dryRun boo
 		return c, fmt.Errorf("bootstrap: org units: %w", err)
 	}
 	for _, u := range f.Units {
-		if kind(&c.Units, u, find(curUnits, func(x domain.OrgUnit) bool { return x.ID == u.ID }), same) && !dryRun {
+		if decide(&c, &c.Units, "unit", u.ID, u, find(curUnits, func(x domain.OrgUnit) bool { return x.ID == u.ID }), opts) && !dryRun {
 			if err := st.PutOrgUnit(ctx, tid, u); err != nil {
 				return c, fmt.Errorf("bootstrap: org unit %s: %w", u.ID, err)
 			}
@@ -125,7 +157,7 @@ func Sync(ctx context.Context, st store.Store, f File, now time.Time, dryRun boo
 		match := func(x domain.OrgMove) bool {
 			return x.UnitID == m.UnitID && x.EffectiveMonth == m.EffectiveMonth
 		}
-		if kind(&c.Moves, m, find(curMoves, match), same) && !dryRun {
+		if decide(&c, &c.Moves, "move", m.UnitID+"@"+fmt.Sprint(m.EffectiveMonth), m, find(curMoves, match), opts) && !dryRun {
 			if err := st.PutOrgMove(ctx, tid, m); err != nil {
 				return c, fmt.Errorf("bootstrap: org move of %s: %w", m.UnitID, err)
 			}
@@ -137,7 +169,7 @@ func Sync(ctx context.Context, st store.Store, f File, now time.Time, dryRun boo
 		return c, fmt.Errorf("bootstrap: item kinds: %w", err)
 	}
 	for _, k := range f.ItemKinds {
-		if kind(&c.ItemKinds, k, find(curKinds, func(x domain.ItemKind) bool { return x.ID == k.ID }), same) && !dryRun {
+		if decide(&c, &c.ItemKinds, "item kind", k.ID, k, find(curKinds, func(x domain.ItemKind) bool { return x.ID == k.ID }), opts) && !dryRun {
 			if err := st.PutItemKind(ctx, tid, k); err != nil {
 				return c, fmt.Errorf("bootstrap: item kind %s: %w", k.ID, err)
 			}
@@ -149,7 +181,7 @@ func Sync(ctx context.Context, st store.Store, f File, now time.Time, dryRun boo
 		return c, fmt.Errorf("bootstrap: tracked items: %w", err)
 	}
 	for _, it := range f.Items {
-		if kind(&c.Items, it, find(curItems, func(x domain.TrackedItem) bool { return x.ID == it.ID }), same) && !dryRun {
+		if decide(&c, &c.Items, "item", it.ID, it, find(curItems, func(x domain.TrackedItem) bool { return x.ID == it.ID }), opts) && !dryRun {
 			if err := st.PutTrackedItem(ctx, tid, it); err != nil {
 				return c, fmt.Errorf("bootstrap: tracked item %s: %w", it.ID, err)
 			}
@@ -161,7 +193,7 @@ func Sync(ctx context.Context, st store.Store, f File, now time.Time, dryRun boo
 		return c, fmt.Errorf("bootstrap: scorecards: %w", err)
 	}
 	for _, sc := range f.Scorecards {
-		if kind(&c.Scorecards, sc, find(curScorecards, func(x domain.Scorecard) bool { return x.ID == sc.ID }), same) && !dryRun {
+		if decide(&c, &c.Scorecards, "scorecard", sc.ID, sc, find(curScorecards, func(x domain.Scorecard) bool { return x.ID == sc.ID }), opts) && !dryRun {
 			if err := st.PutScorecard(ctx, tid, sc); err != nil {
 				return c, fmt.Errorf("bootstrap: scorecard %s: %w", sc.ID, err)
 			}
@@ -192,7 +224,7 @@ func Sync(ctx context.Context, st store.Store, f File, now time.Time, dryRun boo
 			at := now
 			v.PublishedAt = &at
 		}
-		if kind(&c.Versions, v, cur, same) && !dryRun {
+		if decide(&c, &c.Versions, "version", v.ScorecardID+"/"+v.ID, v, cur, opts) && !dryRun {
 			if err := st.PutVersion(ctx, tid, v, expected); err != nil {
 				return c, fmt.Errorf("bootstrap: version %s: %w", v.ID, err)
 			}
@@ -211,7 +243,7 @@ func Sync(ctx context.Context, st store.Store, f File, now time.Time, dryRun boo
 		if cur != nil {
 			tpl.Revision, tpl.LastUsed = cur.Revision, cur.LastUsed
 		}
-		if kind(&c.Templates, tpl, cur, same) && !dryRun {
+		if decide(&c, &c.Templates, "template", tpl.ID, tpl, cur, opts) && !dryRun {
 			if err := st.PutTemplate(ctx, tid, tpl); err != nil {
 				return c, fmt.Errorf("bootstrap: template %s: %w", tpl.ID, err)
 			}
@@ -228,7 +260,7 @@ func Sync(ctx context.Context, st store.Store, f File, now time.Time, dryRun boo
 		if cur != nil {
 			m.CreatedAt = cur.CreatedAt
 		}
-		if kind(&c.Users, m, cur, same) && !dryRun {
+		if decide(&c, &c.Users, "member", u.UserID, m, cur, opts) && !dryRun {
 			if err := st.PutMembership(ctx, tid, m); err != nil {
 				return c, fmt.Errorf("bootstrap: member %s: %w", u.UserID, err)
 			}
@@ -237,17 +269,23 @@ func Sync(ctx context.Context, st store.Store, f File, now time.Time, dryRun boo
 	return c, nil
 }
 
-// kind tallies one thing against what the store holds (cur, nil when absent)
-// and reports whether it must be written.
-func kind[T any](c *Count, want T, cur *T, eq func(a, b T) bool) bool {
+// decide tallies one thing against what the store holds (cur, nil when
+// absent) into n and reports whether it must be written. A thing that
+// differs is written only with opts.Overwrite; otherwise it is recorded in
+// c.Differing and kept.
+func decide[T any](c *Counts, n *Count, kind, id string, want T, cur *T, opts SyncOptions) bool {
 	switch {
 	case cur == nil:
-		c.Created++
-	case eq(want, *cur):
-		c.Unchanged++
+		n.Created++
+	case same(want, *cur):
+		n.Unchanged++
 		return false
+	case opts.Overwrite:
+		n.Updated++
 	default:
-		c.Updated++
+		n.Differs++
+		c.Differing = append(c.Differing, Difference{Kind: kind, ID: id})
+		return false
 	}
 	return true
 }

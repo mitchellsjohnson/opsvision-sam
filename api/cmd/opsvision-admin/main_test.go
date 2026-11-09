@@ -164,27 +164,115 @@ func TestBootstrapTwice(t *testing.T) {
 	}
 }
 
-// A changed version in the file updates the stored one from its own revision.
-func TestBootstrapUpdatesChangedVersion(t *testing.T) {
-	st := loaded(t)
+// changedFile writes the synthetic bootstrap file with an edited draft
+// version (v2-draft) and an edited unit (north).
+func changedFile(t *testing.T) string {
+	t.Helper()
 	raw, _ := os.ReadFile(syntheticBootstrap)
-	if !strings.Contains(string(raw), `"name": "v1"`) {
-		t.Fatal("fixture no longer names version v1")
+	body := string(raw)
+	for _, r := range [][2]string{{`"name": "North Segment"`, `"name": "Northern Segment"`}, {`"name": "v2"`, `"name": "Version two"`}} {
+		if !strings.Contains(body, r[0]) {
+			t.Fatalf("fixture no longer contains %s", r[0])
+		}
+		body = strings.Replace(body, r[0], r[1], 1)
 	}
 	path := filepath.Join(t.TempDir(), "changed.json")
-	if err := os.WriteFile(path, []byte(strings.Replace(string(raw), `"name": "v1"`, `"name": "Version one"`, 1)), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	code, out, errOut := admin(t, st, "bootstrap", "-table", "t", "-file", path)
+	return path
+}
+
+// An existing item that differs from the file is kept and reported, so a
+// re-run after go-live cannot wipe edits made in the app.
+func TestBootstrapKeepsDifferingItems(t *testing.T) {
+	ctx := context.Background()
+	st := loaded(t)
+	// An in-app edit of the draft version and of a unit.
+	v, _ := st.GetVersion(ctx, tenantID, "sc", "v2-draft")
+	v.Name = "Edited in the app"
+	if err := st.PutVersion(ctx, tenantID, v, v.Revision); err != nil {
+		t.Fatal(err)
+	}
+	units, _ := st.ListOrgUnits(ctx, tenantID)
+	for _, u := range units {
+		if u.ID == "north" {
+			u.Name = "Edited unit"
+			if err := st.PutOrgUnit(ctx, tenantID, u); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	for _, extra := range [][]string{nil, {"-dry-run"}} {
+		args := append([]string{"bootstrap", "-table", "t", "-file", syntheticBootstrap}, extra...)
+		code, out, errOut := admin(t, st, args...)
+		if code != 0 {
+			t.Fatalf("%v: exit %d\n%s\n%s", extra, code, out, errOut)
+		}
+		for prefix, want := range map[string]string{
+			"versions:":                "versions: 0 created, 0 updated, 1 unchanged, 1 differs (kept)",
+			"units:":                   "units: 0 created, 0 updated, 2 unchanged, 1 differs (kept)",
+			"differs (kept): version ": "differs (kept): version sc/v2-draft",
+			"differs (kept): unit ":    "differs (kept): unit north",
+		} {
+			if got := line(t, out, prefix); got != want {
+				t.Errorf("%v: %q, want %q", extra, got, want)
+			}
+		}
+		if !strings.Contains(out, "-overwrite") {
+			t.Errorf("%v: output does not mention -overwrite:\n%s", extra, out)
+		}
+	}
+
+	if got, _ := st.GetVersion(ctx, tenantID, "sc", "v2-draft"); got.Name != "Edited in the app" || got.Revision != v.Revision+1 {
+		t.Errorf("v2-draft = %q revision %d, want the app's edit kept at revision %d", got.Name, got.Revision, v.Revision+1)
+	}
+	units, _ = st.ListOrgUnits(ctx, tenantID)
+	for _, u := range units {
+		if u.ID == "north" && u.Name != "Edited unit" {
+			t.Errorf("north = %q, want the app's edit kept", u.Name)
+		}
+	}
+}
+
+// With -overwrite a differing existing item is updated; a version is saved
+// against its stored revision.
+func TestBootstrapOverwrite(t *testing.T) {
+	ctx := context.Background()
+	st := loaded(t)
+	before, _ := st.GetVersion(ctx, tenantID, "sc", "v2-draft")
+
+	code, out, errOut := admin(t, st, "bootstrap", "-table", "t", "-file", changedFile(t), "-overwrite", "-dry-run")
+	if code != 0 || line(t, out, "versions:") != "versions: 0 created, 1 updated, 1 unchanged" {
+		t.Fatalf("dry run: exit %d\n%s\n%s", code, out, errOut)
+	}
+	if got, _ := st.GetVersion(ctx, tenantID, "sc", "v2-draft"); got.Name != before.Name {
+		t.Fatal("-dry-run -overwrite wrote")
+	}
+
+	code, out, errOut = admin(t, st, "bootstrap", "-table", "t", "-file", changedFile(t), "-overwrite")
 	if code != 0 {
 		t.Fatalf("exit %d\n%s\n%s", code, out, errOut)
 	}
 	if got := line(t, out, "versions:"); got != "versions: 0 created, 1 updated, 1 unchanged" {
 		t.Errorf("versions line = %q", got)
 	}
-	v, err := st.GetVersion(context.Background(), tenantID, "sc", "v1")
-	if err != nil || v.Name != "Version one" || v.Revision != 2 {
-		t.Errorf("v1 = %q revision %d, %v; want updated at revision 2", v.Name, v.Revision, err)
+	if got := line(t, out, "units:"); got != "units: 0 created, 1 updated, 2 unchanged" {
+		t.Errorf("units line = %q", got)
+	}
+	if strings.Contains(out, "differs (kept)") {
+		t.Errorf("-overwrite reported kept items:\n%s", out)
+	}
+	got, err := st.GetVersion(ctx, tenantID, "sc", "v2-draft")
+	if err != nil || got.Name != "Version two" || got.Revision != before.Revision+1 {
+		t.Errorf("v2-draft = %q revision %d, %v; want updated at revision %d", got.Name, got.Revision, err, before.Revision+1)
+	}
+	units, _ := st.ListOrgUnits(ctx, tenantID)
+	for _, u := range units {
+		if u.ID == "north" && u.Name != "Northern Segment" {
+			t.Errorf("north = %q, want updated", u.Name)
+		}
 	}
 }
 
@@ -221,7 +309,10 @@ func TestBootstrapRefusesChangedTenant(t *testing.T) {
 func TestImportDryRunWritesNothing(t *testing.T) {
 	ctx := context.Background()
 	st := loaded(t)
-	before, _ := st.GetVersion(ctx, tenantID, "sc", "v2")
+	before, err := st.GetVersion(ctx, tenantID, "sc", "v2-draft")
+	if err != nil {
+		t.Fatal(err)
+	}
 	code, out, errOut := admin(t, st, importArgs("-dry-run")...)
 	if code != 0 {
 		t.Fatalf("exit %d\n%s\n%s", code, out, errOut)
@@ -237,8 +328,8 @@ func TestImportDryRunWritesNothing(t *testing.T) {
 	if audit, _ := st.ListAudit(ctx, tenantID, time.Time{}, fixedNow.AddDate(10, 0, 0)); len(audit) != 0 {
 		t.Errorf("a dry run wrote %d audit entries", len(audit))
 	}
-	if after, _ := st.GetVersion(ctx, tenantID, "sc", "v2"); after.Revision != before.Revision {
-		t.Errorf("a dry run changed draft version v2: revision %d -> %d", before.Revision, after.Revision)
+	if after, _ := st.GetVersion(ctx, tenantID, "sc", "v2-draft"); after.Revision != before.Revision {
+		t.Errorf("a dry run changed draft version v2-draft: revision %d -> %d", before.Revision, after.Revision)
 	}
 }
 

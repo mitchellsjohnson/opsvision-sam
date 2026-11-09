@@ -349,7 +349,7 @@ func TestSyncKeepsWhatTheFileDoesNotName(t *testing.T) {
 		t.Fatal(err)
 	}
 	st := memstore.New()
-	if _, err := Sync(ctx, st, f, time.Now(), false); err != nil {
+	if _, err := Sync(ctx, st, f, time.Now(), SyncOptions{Overwrite: true}); err != nil {
 		t.Fatal(err)
 	}
 	// Someone adds a level and a membership in the app after the first load.
@@ -360,16 +360,45 @@ func TestSyncKeepsWhatTheFileDoesNotName(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.Levels[0].Name = "Whole company"
-	c, err := Sync(ctx, st, f, time.Now(), false)
+	c, err := Sync(ctx, st, f, time.Now(), SyncOptions{Overwrite: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Levels != (Count{Updated: 1, Unchanged: 1}) {
+	if c.Levels != (Count{Updated: 1, Unchanged: 1}) || len(c.Differing) != 0 {
 		t.Errorf("levels = %+v", c.Levels)
 	}
 	ls, _ := st.ListLevels(ctx, f.Tenant.ID)
 	ms, _ := st.ListMemberships(ctx, f.Tenant.ID)
 	if len(ls) != 3 || len(ms) != len(f.Users)+1 {
 		t.Errorf("levels=%d members=%d: Sync deleted something the file does not name", len(ls), len(ms))
+	}
+}
+
+func TestSyncKeepsDifferingLevelsWithoutOverwrite(t *testing.T) {
+	ctx := context.Background()
+	f, err := Load(syntheticFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := memstore.New()
+	if _, err := Sync(ctx, st, f, time.Now(), SyncOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	f.Levels[0].Name = "Renamed in the file"
+	f.Levels = append(f.Levels, domain.Level{ID: "team", Name: "Team", Depth: 2})
+	c, err := Sync(ctx, st, f, time.Now(), SyncOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Levels != (Count{Created: 1, Unchanged: 1, Differs: 1}) || len(c.Differing) != 1 || c.Differing[0] != (Difference{"level", "co"}) {
+		t.Errorf("levels = %+v, differing = %v", c.Levels, c.Differing)
+	}
+	ls, _ := st.ListLevels(ctx, f.Tenant.ID)
+	names := map[string]string{}
+	for _, l := range ls {
+		names[l.ID] = l.Name
+	}
+	if len(ls) != 3 || names["co"] != "Company" || names["team"] != "Team" {
+		t.Errorf("levels = %v; want the stored name kept and the new level added", names)
 	}
 }

@@ -3,16 +3,20 @@
 // credential chain: environment, shared config, SSO); the deployment itself
 // needs no extra permissions or endpoints for it.
 //
-//	opsvision-admin bootstrap -table T -file bootstrap.json [-dry-run]
+//	opsvision-admin bootstrap -table T -file bootstrap.json [-dry-run] [-overwrite]
 //	opsvision-admin import -table T -tenant ID -workbook x.xlsx -template ID [-dry-run]
 //
 // bootstrap writes the tenant, org model, scorecards, methodology versions and
 // import templates of a bootstrap file (the same file and validation as the
 // dev server's -bootstrap, see docs/deploy/local-bootstrap.md) and prints how
-// many of each it created, updated or left unchanged. It is safe to run
-// again: identical things are untouched, versions are saved against their
-// stored revision, and nothing is duplicated. A tenant without an auth0OrgId
-// is accepted, as a single-organization deployment has none.
+// many of each it created, updated or left unchanged. It only creates what is
+// missing. An existing item (level, unit, move, item kind, item, scorecard,
+// version, template, member) that differs from the file is reported as
+// "differs (kept)" and left untouched, so running it again after go-live never
+// wipes edits made in the app. -overwrite updates those items instead (versions
+// against their stored revision). It is safe to run again: nothing is
+// duplicated. A tenant without an auth0OrgId is accepted, as a
+// single-organization deployment has none.
 //
 // import parses a legacy workbook with a template saved in the table, as
 // cmd/importcheck does, and prints the counts and findings. Without -dry-run
@@ -86,7 +90,7 @@ func realDeps() deps {
 }
 
 const usage = `usage:
-  opsvision-admin bootstrap -table T -file bootstrap.json [-dry-run]
+  opsvision-admin bootstrap -table T -file bootstrap.json [-dry-run] [-overwrite]
   opsvision-admin import -table T -tenant ID -workbook x.xlsx -template ID [-dry-run]`
 
 // run is main with its streams and dependencies injected; it returns the exit status.
@@ -144,6 +148,7 @@ func runBootstrap(args []string, stdout, stderr io.Writer, d deps) int {
 	table := fs.String("table", "", "DynamoDB table name (required)")
 	file := fs.String("file", "", "bootstrap JSON file (required)")
 	dry := fs.Bool("dry-run", false, "report what would change; write nothing")
+	overwrite := fs.Bool("overwrite", false, "update existing items that differ from the file (default: keep them and report them)")
 	if ok, code := parseFlags(fs, args, stderr, func() [][2]string {
 		return [][2]string{{"table", *table}, {"file", *file}}
 	}); !ok {
@@ -160,22 +165,32 @@ func runBootstrap(args []string, stdout, stderr io.Writer, d deps) int {
 		fmt.Fprintln(stderr, "opsvision-admin:", err)
 		return exitUsage
 	}
-	counts, err := bootstrap.Sync(ctx, st, f, d.now(), *dry)
+	counts, err := bootstrap.Sync(ctx, st, f, d.now(), bootstrap.SyncOptions{DryRun: *dry, Overwrite: *overwrite})
 	if err != nil {
 		fmt.Fprintln(stderr, "opsvision-admin:", err)
 		return exitUsage
 	}
-	printCounts(stdout, f.Tenant.ID, counts, *dry)
+	printCounts(stdout, f.Tenant.ID, counts, *dry, *overwrite)
 	return exitOK
 }
 
-func printCounts(w io.Writer, tenantID string, c bootstrap.Counts, dry bool) {
+func printCounts(w io.Writer, tenantID string, c bootstrap.Counts, dry, overwrite bool) {
 	fmt.Fprintf(w, "tenant id: %s\n", tenantID)
 	if dry {
 		fmt.Fprintln(w, "dry run: nothing is written")
 	}
 	for _, k := range c.Kinds() {
-		fmt.Fprintf(w, "%s: %d created, %d updated, %d unchanged\n", k.Name, k.Count.Created, k.Count.Updated, k.Count.Unchanged)
+		fmt.Fprintf(w, "%s: %d created, %d updated, %d unchanged", k.Name, k.Count.Created, k.Count.Updated, k.Count.Unchanged)
+		if k.Count.Differs > 0 {
+			fmt.Fprintf(w, ", %d differs (kept)", k.Count.Differs)
+		}
+		fmt.Fprintln(w)
+	}
+	for _, d := range c.Differing {
+		fmt.Fprintf(w, "differs (kept): %s %s\n", d.Kind, d.ID)
+	}
+	if len(c.Differing) > 0 && !overwrite {
+		fmt.Fprintln(w, "existing items that differ from the file were left as they are; pass -overwrite to update them")
 	}
 }
 

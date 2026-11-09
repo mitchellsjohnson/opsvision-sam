@@ -65,27 +65,53 @@ templates: 1 created, 0 updated, 0 unchanged
 users: 0 created, 0 updated, 0 unchanged
 ```
 
-With `-dry-run` nothing is written; the counts are what a real run would do.
+With `-dry-run` nothing is written; the output is what a real run would do.
 
 ### Running it again
 
-It is safe to repeat. After an edit to the file:
+Bootstrap only **creates what is missing**. After go-live, people edit
+methodology and the org model in the app, so a re-run must never undo that.
+For each level, unit, move, item kind, item, scorecard, version, template and
+member in the file:
 
-- A thing that is identical to what the table holds is left alone and counted
-  as `unchanged`. A second run with the same file reports only `unchanged`.
-- A thing that differs is overwritten with the file's content and counted as
-  `updated`. A methodology version is saved against the revision found in the
-  table, so its revision goes up by one, and a version someone else changed
-  meanwhile is reported as a conflict instead of being overwritten.
+- Missing from the table: it is created.
+- Identical to what the table holds: it is left alone, counted as `unchanged`.
+- Present but different: it is **kept as it is** and reported with its kind
+  and ID, for example:
+
+  ```text
+  units: 0 created, 0 updated, 2 unchanged, 1 differs (kept)
+  versions: 0 created, 0 updated, 1 unchanged, 1 differs (kept)
+  differs (kept): unit north
+  differs (kept): version sc/v2-draft
+  ```
+
 - Nothing the file does not name is deleted.
-- The tenant record itself (name, organization, fiscal year start, default
-  role, status scale) is never changed. If the file differs from the stored
-  tenant, the run stops before writing anything and names the settings.
 
-**Re-running overwrites a version that differs from the file.** That includes
-text an import has written into a draft version. Keep the file as the source
-of truth for versions, or take the version out of the file once you edit it in
-the app.
+`-dry-run` reports the same differences, so run it before a re-run to see
+what the file would do.
+
+### Overwriting on purpose
+
+To make the table match the file for the items that differ, pass `-overwrite`:
+
+```sh
+../build/opsvision-admin bootstrap -table opsvision-example -file ../private/tenant.json -overwrite -dry-run
+../build/opsvision-admin bootstrap -table opsvision-example -file ../private/tenant.json -overwrite
+```
+
+Differing items are updated and counted as `updated`. A methodology version
+is saved against the revision found in the table, so its revision goes up by
+one, and a version someone else changed meanwhile is reported as a conflict
+instead of being overwritten. **This replaces in-app edits to those items,
+including import text written into a draft version.** Check the dry run first.
+
+### The tenant record
+
+The tenant record itself (name, organization, fiscal year start, default
+role, status scale) is never changed, with or without `-overwrite`. If the
+file differs from the stored tenant, the run stops before writing anything and
+names the settings.
 
 ## Step 2: import a legacy workbook
 
@@ -100,7 +126,8 @@ the bootstrap file). Parse first:
 It prints the template and scorecard it resolved, the counts (data points,
 overrides, version text, legacy notes) and the findings by severity. Finding
 text quotes your workbook, so do not paste it anywhere public. Fix the
-template and run `bootstrap` again until there are no error findings.
+template in the file and run `bootstrap -overwrite` (a changed template is
+otherwise kept as it is) until there are no error findings.
 
 Then apply it by running the same command without `-dry-run`:
 
@@ -136,3 +163,6 @@ Then apply it by running the same command without `-dry-run`:
 - `tenant ... already exists and differs from the file`: the tenant record
   cannot be changed by this tool. Restore the file's tenant settings to what
   the table holds.
+- `differs (kept)` lines: the table holds an edited version of that item and
+  bootstrap left it alone. Edit it in the app, remove it from the file, or
+  re-run with `-overwrite` if the file should win.
