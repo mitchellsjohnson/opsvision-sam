@@ -29,18 +29,18 @@ type UserInfo struct {
 	timeout time.Duration
 }
 
-// NewUserInfo returns a UserInfo for the endpoint at url. A nil client gets
-// one that does not follow redirects. Every request is limited to 5 seconds,
+// NewUserInfo returns a UserInfo for the endpoint at url, using a copy of
+// client (a nil client means a default one). Redirects are never followed,
+// whatever the client's policy, and every request is limited to 5 seconds,
 // whatever the client's own timeout.
 func NewUserInfo(url string, client *http.Client) *UserInfo {
-	if client == nil {
-		client = &http.Client{
-			Timeout: userInfoTimeout,
-			// The request carries the caller's token; never send it on.
-			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-		}
+	c := http.Client{Timeout: userInfoTimeout}
+	if client != nil {
+		c = *client
 	}
-	return &UserInfo{url: url, client: client, timeout: userInfoTimeout}
+	// The request carries the caller's token; never send it on.
+	c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return &UserInfo{url: url, client: &c, timeout: userInfoTimeout}
 }
 
 // identity is what /userinfo says about the caller.

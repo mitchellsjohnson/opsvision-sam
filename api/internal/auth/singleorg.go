@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -61,8 +62,11 @@ func newSingleOrg(cfg Config) (*singleOrg, error) {
 		}
 		endpoint = "https://" + domain + "/userinfo"
 	}
-	if u, err := url.Parse(endpoint); err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
-		return nil, fmt.Errorf("auth: invalid userinfo URL %q", endpoint)
+	// The request carries the caller's bearer token, so it must not travel in
+	// the clear; plain http is allowed only to this machine (test servers).
+	if u, err := url.Parse(endpoint); err != nil || u.Host == "" ||
+		!(u.Scheme == "https" || u.Scheme == "http" && isLoopback(u.Hostname())) {
+		return nil, fmt.Errorf("auth: userinfo URL %q must be https (http only for a loopback host)", endpoint)
 	}
 	ui := NewUserInfo(endpoint, nil)
 	if cfg.userInfoTimeout > 0 {
@@ -78,6 +82,14 @@ func newSingleOrg(cfg Config) (*singleOrg, error) {
 }
 
 func normalizeEmail(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
+
+func isLoopback(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
 
 func (s *singleOrg) trusted(sub string) bool {
 	for _, p := range s.prefixes {

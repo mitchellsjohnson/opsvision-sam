@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -183,6 +184,39 @@ func TestUserInfoRejectsBadResponses(t *testing.T) {
 		if err == nil || email != "" || verified {
 			t.Errorf("%s: Email = %q, %v, %v; want an error", name, email, verified, err)
 		}
+	}
+}
+
+func TestUserInfoNeverFollowsRedirects(t *testing.T) {
+	var targetHits atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetHits.Add(1)
+		_, _ = w.Write([]byte(`{"email":"pat@example.test"}`))
+	}))
+	t.Cleanup(target.Close)
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusTemporaryRedirect)
+	}))
+	t.Cleanup(redirector.Close)
+
+	follows := func(*http.Request, []*http.Request) error { return nil }
+	clients := map[string]*http.Client{
+		"nil client":                 nil,
+		"client without a policy":    {},
+		"client that would redirect": {CheckRedirect: follows},
+	}
+	for name, client := range clients {
+		email, _, err := auth.NewUserInfo(redirector.URL, client).Email(context.Background(), "tok")
+		if err == nil || email != "" {
+			t.Errorf("%s: Email = %q, %v; want an error for the redirect", name, email, err)
+		}
+	}
+	if n := targetHits.Load(); n != 0 {
+		t.Errorf("redirect target received %d requests carrying the token, want 0", n)
+	}
+	// The caller's client is not modified.
+	if clients["client without a policy"].CheckRedirect != nil {
+		t.Error("NewUserInfo changed the caller's client")
 	}
 }
 

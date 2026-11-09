@@ -421,6 +421,18 @@ func TestSingleOrgConfigRequiresPrefixes(t *testing.T) {
 			c.TrustedSubPrefixes = []string{trustedPrefix}
 			c.UserInfoURL = "not a url"
 		},
+		"http userinfo URL": func(c *auth.Config) {
+			c.SingleTenantID, c.TrustedSubPrefixes = "t1", []string{trustedPrefix}
+			c.UserInfoURL = "http://example.us.auth0.com/userinfo"
+		},
+		"http lookalike of loopback": func(c *auth.Config) {
+			c.SingleTenantID, c.TrustedSubPrefixes = "t1", []string{trustedPrefix}
+			c.UserInfoURL = "http://localhost.example.test/userinfo"
+		},
+		"ftp userinfo URL": func(c *auth.Config) {
+			c.SingleTenantID, c.TrustedSubPrefixes = "t1", []string{trustedPrefix}
+			c.UserInfoURL = "ftp://example.us.auth0.com/userinfo"
+		},
 		"prefixes, no tenant": func(c *auth.Config) { c.TrustedSubPrefixes = []string{trustedPrefix} },
 		"admins, no tenant":   func(c *auth.Config) { c.BootstrapAdmins = []string{"boss@example.test"} },
 		"userinfo, no tenant": func(c *auth.Config) { c.UserInfoURL = "https://example.us.auth0.com/userinfo" },
@@ -441,6 +453,18 @@ func TestSingleOrgConfigRequiresPrefixes(t *testing.T) {
 	cfg.SingleTenantID, cfg.TrustedSubPrefixes = "t1", []string{trustedPrefix}
 	if _, err := auth.Middleware(cfg, ts); err != nil {
 		t.Errorf("valid single-organization config (default /userinfo): %v", err)
+	}
+	// Plain http is allowed only to a loopback host (local test servers).
+	for _, u := range []string{
+		"https://login.example.test/userinfo",
+		"http://127.0.0.1:8443/userinfo",
+		"http://[::1]:8443/userinfo",
+		"http://localhost:8443/userinfo",
+	} {
+		cfg.UserInfoURL = u
+		if _, err := auth.Middleware(cfg, ts); err != nil {
+			t.Errorf("userinfo URL %s: %v", u, err)
+		}
 	}
 }
 
