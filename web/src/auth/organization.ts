@@ -1,4 +1,4 @@
-/** Which Auth0 organization to sign in to: `?organization=` or the last one used. */
+/** Which Auth0 organization to sign in to: the configured one, `?organization=` or the last one used. */
 
 export const LAST_ORG_KEY = 'opsvision.lastOrganization'
 export const TENANT_ORGS_KEY = 'opsvision.tenantOrganizations'
@@ -8,15 +8,18 @@ type WritableStorage = ReadableStorage & Pick<Storage, 'setItem'>
 
 /**
  * The organization to sign in to: the deployment's configured one, else
- * `?organization=`, else the last one used. Pure: it reads storage but never
- * writes it.
+ * `?organization=`, else the last one used. With `onlyConfigured` (the
+ * deployment's /config.json set up sign-in) it is the configured one or none.
+ * Pure: it reads storage but never writes it.
  */
 export function resolveOrganization(
   search: string,
   storage: ReadableStorage,
   configured?: string,
+  onlyConfigured = false,
 ): string | undefined {
   if (configured) return configured
+  if (onlyConfigured) return undefined
   const fromUrl = new URLSearchParams(search).get('organization')
   return fromUrl || (storage.getItem(LAST_ORG_KEY) ?? undefined)
 }

@@ -69,14 +69,17 @@ function DevAuth({ apiUrl, children }: { apiUrl: string; children: ReactNode }) 
 
 function Auth0Auth({ children }: { children: ReactNode }) {
   const config = getConfig()
+  // A deployment that publishes /config.json decides the organization alone.
+  const onlyConfigured = config.fromRuntimeConfig === true
   const organization = useMemo(
-    () => resolveOrganization(window.location.search, localStorage, config.organization),
-    [config.organization],
+    () =>
+      resolveOrganization(window.location.search, localStorage, config.organization, onlyConfigured),
+    [config.organization, onlyConfigured],
   )
   // Remember an organization named in the URL for next time (not during render).
   useEffect(() => {
-    if (organization) rememberOrganization(organization, localStorage)
-  }, [organization])
+    if (organization && !onlyConfigured) rememberOrganization(organization, localStorage)
+  }, [organization, onlyConfigured])
   return (
     <Auth0Provider
       domain={config.auth0Domain}
@@ -92,12 +95,23 @@ function Auth0Auth({ children }: { children: ReactNode }) {
         window.history.replaceState({}, document.title, appState?.returnTo ?? '/')
       }}
     >
-      <Auth0Gate organization={organization}>{children}</Auth0Gate>
+      <Auth0Gate organization={organization} canSwitch={!onlyConfigured}>
+        {children}
+      </Auth0Gate>
     </Auth0Provider>
   )
 }
 
-function Auth0Gate({ organization, children }: { organization?: string; children: ReactNode }) {
+function Auth0Gate({
+  organization,
+  canSwitch,
+  children,
+}: {
+  organization?: string
+  /** Whether the user may switch to an organization remembered from another session. */
+  canSwitch: boolean
+  children: ReactNode
+}) {
   const { isLoading, isAuthenticated, error, user, getAccessTokenSilently, loginWithRedirect, logout } =
     useAuth0()
 
@@ -134,11 +148,10 @@ function Auth0Gate({ organization, children }: { organization?: string; children
       status: isLoading ? 'loading' : isAuthenticated ? 'authenticated' : 'unauthenticated',
       getToken,
       signOut,
-      switchTenant,
-      canSwitchTenant,
+      ...(canSwitch ? { switchTenant, canSwitchTenant } : {}),
       rememberTenant,
     }),
-    [isLoading, isAuthenticated, getToken, signOut, switchTenant, canSwitchTenant, rememberTenant],
+    [isLoading, isAuthenticated, getToken, signOut, canSwitch, switchTenant, canSwitchTenant, rememberTenant],
   )
 
   if (isLoading) return <p className="p-6">Loading…</p>

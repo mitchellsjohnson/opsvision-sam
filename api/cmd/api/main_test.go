@@ -404,6 +404,37 @@ func TestSingleOrgHandler(t *testing.T) {
 	}
 }
 
+func TestServeWebSecurityHeadersOnAPI(t *testing.T) {
+	cfg, err := loadConfig(env(serveWebEnv()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := newHandler(cfg, memstore.New(), objects.NewMem("", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	web := httptest.NewRecorder()
+	h.ServeHTTP(web, httptest.NewRequest(http.MethodGet, "/", nil))
+	for _, target := range []string{"/healthz", "/v1/me", "/v1"} {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, target, nil))
+		hd := w.Header()
+		if got := hd.Get("Strict-Transport-Security"); !strings.HasPrefix(got, "max-age=31536000") ||
+			got != web.Header().Get("Strict-Transport-Security") {
+			t.Errorf("GET %s: Strict-Transport-Security = %q, want the web app's max-age=31536000 policy", target, got)
+		}
+		if got := hd.Get("X-Content-Type-Options"); got != "nosniff" {
+			t.Errorf("GET %s: X-Content-Type-Options = %q", target, got)
+		}
+		if got := hd.Get("Referrer-Policy"); got != "strict-origin-when-cross-origin" {
+			t.Errorf("GET %s: Referrer-Policy = %q", target, got)
+		}
+		if hd.Get("Content-Security-Policy") != "" {
+			t.Errorf("GET %s: API response carries the web app's CSP", target)
+		}
+	}
+}
+
 func TestHandlerCORSAndAuth(t *testing.T) {
 	cfg, err := loadConfig(env(validEnv()))
 	if err != nil {

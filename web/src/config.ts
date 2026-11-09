@@ -8,6 +8,11 @@ export interface AppConfig {
   auth0Audience: string
   /** The Auth0 organization to sign in to, when the deployment fixes one. */
   organization?: string
+  /**
+   * Set when the deployment's /config.json supplied the configuration. Sign-in
+   * then uses only `organization`, never one from the URL or a past session.
+   */
+  fromRuntimeConfig?: true
 }
 
 /** The Vite env variables the app reads. */

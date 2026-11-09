@@ -43,6 +43,13 @@ describe('resolveOrganization', () => {
     expect(resolveOrganization('?organization=org_new', s, 'org_configured')).toBe('org_configured')
     expect(resolveOrganization('?organization=org_new', s, '')).toBe('org_new')
   })
+
+  it('uses only the configured organization when the deployment configures sign-in', () => {
+    const s = storage({ [LAST_ORG_KEY]: 'org_old' })
+    expect(resolveOrganization('?organization=org_new', s, 'org_configured', true)).toBe('org_configured')
+    expect(resolveOrganization('?organization=org_new', s, undefined, true)).toBeUndefined()
+    expect(resolveOrganization('', s, '', true)).toBeUndefined()
+  })
 })
 
 describe('auth0AuthorizationParams', () => {

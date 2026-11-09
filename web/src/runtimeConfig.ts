@@ -72,6 +72,7 @@ function parseRuntimeConfig(body: unknown, origin: string): AppConfig {
     auth0Domain: text(raw.auth0Domain),
     auth0ClientId: text(raw.auth0ClientId),
     auth0Audience: text(raw.auth0Audience),
+    fromRuntimeConfig: true,
   }
   const missing = (['auth0Domain', 'auth0ClientId', 'auth0Audience'] as const).filter(
     (key) => config[key] === '',

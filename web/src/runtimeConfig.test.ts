@@ -46,6 +46,7 @@ describe('loadRuntimeConfig', () => {
       auth0Domain: 'example.us.auth0.com',
       auth0ClientId: 'example-client-id',
       auth0Audience: 'https://ops.example.test/api',
+      fromRuntimeConfig: true,
     })
     expect(config.organization).toBeUndefined()
   })
@@ -62,6 +63,7 @@ describe('loadRuntimeConfig', () => {
     expect(config.auth0Domain).toBe('build.example.test')
     expect(config.auth0ClientId).toBe('build-client')
     expect(config.apiUrl).toBe('http://127.0.0.1:8080')
+    expect(config.fromRuntimeConfig).toBeUndefined()
   })
 
   it('falls back to the build env on a network error', async () => {
@@ -74,6 +76,7 @@ describe('loadRuntimeConfig', () => {
     })
     expect(config.auth0Domain).toBe('build.example.test')
     expect(config.apiUrl).toBe('https://api.example.test')
+    expect(config.fromRuntimeConfig).toBeUndefined()
   })
 
   it('treats an HTML page answered for /config.json (a static host fallback) as absent', async () => {
@@ -82,6 +85,7 @@ describe('loadRuntimeConfig', () => {
     )
     const config = await loadRuntimeConfig({ env: ENV, isProduction: true, origin: ORIGIN, fetchFn })
     expect(config.auth0Domain).toBe('build.example.test')
+    expect(config.fromRuntimeConfig).toBeUndefined()
   })
 
   it('still reports a build env that is incomplete after falling back', async () => {

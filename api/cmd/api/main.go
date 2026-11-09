@@ -224,7 +224,8 @@ func commaList(name, value string) ([]string, error) {
 // newHandler assembles the API: CORS outermost (so preflights are answered
 // before authentication), then compression and Auth0 token validation around
 // the /v1 routes. With cfg.ServeWeb, the embedded web app answers every path
-// other than /v1/ and /healthz, and is never behind CORS or authentication.
+// other than /v1/ and /healthz, and is never behind CORS or authentication;
+// API responses then carry the web app's HSTS, nosniff and referrer policy.
 func newHandler(cfg appConfig, st store.Store, objs objects.Store) (http.Handler, error) {
 	authMW, err := auth.Middleware(auth.Config{
 		Mode:               auth.ModeAuth0,
@@ -253,6 +254,7 @@ func newHandler(cfg appConfig, st store.Store, objs objects.Store) (http.Handler
 	})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if isAPIPath(r.URL.Path) {
+			webui.SetSecurityHeaders(w.Header())
 			api.ServeHTTP(w, r)
 			return
 		}

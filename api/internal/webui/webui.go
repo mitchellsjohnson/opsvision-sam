@@ -159,11 +159,17 @@ func compressible(contentType string) bool {
 		strings.HasSuffix(mt, "+json") || strings.HasSuffix(mt, "+xml")
 }
 
-func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	hd := w.Header()
+// SetSecurityHeaders sets the HSTS, nosniff and referrer-policy headers every
+// response on the web app's origin carries, API responses included.
+func SetSecurityHeaders(hd http.Header) {
 	hd.Set("Strict-Transport-Security", hsts)
 	hd.Set("X-Content-Type-Options", "nosniff")
 	hd.Set("Referrer-Policy", "strict-origin-when-cross-origin")
+}
+
+func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	hd := w.Header()
+	SetSecurityHeaders(hd)
 	hd.Set("Content-Security-Policy", h.csp)
 
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
