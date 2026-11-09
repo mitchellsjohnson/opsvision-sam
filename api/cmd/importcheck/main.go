@@ -6,7 +6,8 @@
 //	    [-sheet <name>] [-limit N] [-severity error|warn|info] [-json]
 //
 // The bootstrap file (see docs/deploy/local-bootstrap.md) is loaded into a
-// throwaway in-memory store; the workbook is only read. Nothing is applied
+// throwaway in-memory store; the workbook is only read. tenant.auth0OrgId may
+// be omitted, as in a single-organization deployment's file. Nothing is applied
 // and the tool never writes a file: everything goes to stdout (messages about
 // bad input go to stderr).
 //
@@ -115,7 +116,8 @@ func severityShown(s, floor string) bool {
 
 func analyze(o options) (report, error) {
 	ctx := context.Background()
-	f, err := bootstrap.Load(o.bootstrap)
+	// A single-organization file has no auth0OrgId; the parse never needs one.
+	f, err := bootstrap.LoadWith(o.bootstrap, bootstrap.LoadOptions{AllowEmptyOrg: true})
 	if err != nil {
 		return report{}, err
 	}

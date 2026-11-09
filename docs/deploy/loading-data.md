@@ -54,8 +54,13 @@ Use your own.
    `go run ./cmd/importcheck`.
 
    In a single-organization deployment the tenant comes from configuration, so
-   leave `tenant.auth0OrgId` out. `opsvision-admin` accepts that. The tenant's
-   `id` must match the deployment's configured tenant ID.
+   leave `tenant.auth0OrgId` out. `opsvision-admin` and `importcheck` accept
+   that. The tenant's `id` must match the deployment's configured tenant ID
+   (`OPSVISION_TENANT_ID`; see [environment.md](environment.md)).
+
+   The dev server still requires `tenant.auth0OrgId`, because dev sign-in
+   picks the tenant by organization. To try a single-organization file with
+   the dev server, add any placeholder value such as `org_local`.
 
 ## Step 1: load the tenant
 

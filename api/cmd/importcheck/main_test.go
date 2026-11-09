@@ -57,6 +57,36 @@ func TestImportcheckPrintsCounts(t *testing.T) {
 	}
 }
 
+// A single-organization deployment's bootstrap file has no auth0OrgId: the
+// tenant comes from configuration, not from the sign-in organization.
+func TestImportcheckAcceptsSingleOrgBootstrap(t *testing.T) {
+	raw, err := os.ReadFile(syntheticBootstrap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	delete(doc["tenant"].(map[string]any), "auth0OrgId")
+	body, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "single-org.json")
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	code, out, errOut := check(t, "-bootstrap", path, "-workbook", sampleWorkbook, "-template", "legacy-1")
+	if code != 0 {
+		t.Fatalf("exit %d; stdout:\n%s\nstderr:\n%s", code, out, errOut)
+	}
+	if !strings.Contains(out, "data points: 22") {
+		t.Errorf("stdout is missing the counts:\n%s", out)
+	}
+}
+
 func TestImportcheckExitsOneOnErrorFindings(t *testing.T) {
 	args := []string{"-bootstrap", brokenBootstrap(t), "-workbook", sampleWorkbook, "-template", "legacy-1"}
 	code, out, _ := check(t, args...)
