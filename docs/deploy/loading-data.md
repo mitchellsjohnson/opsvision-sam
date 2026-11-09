@@ -4,7 +4,8 @@
 DynamoDB table. You run it once, from your own machine, with your own AWS
 credentials. The deployed API needs nothing extra for it. It uses the same
 bootstrap and import code as the dev server, so a file that loads locally
-loads the same way in the cloud.
+loads the same way in the cloud. For the deployed API's own settings, see
+[environment.md](environment.md).
 
 The names below (`opsvision-example`, `sample-co`, `legacy-1`) are examples.
 Use your own.
