@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -17,9 +18,25 @@ import (
 )
 
 // maxALBResponseBytes is the most a Lambda target may return to an
-// Application Load Balancer (1 MB). It is measured on the encoded body: a
-// base64 body counts its encoded length.
+// Application Load Balancer (1 MB). The limit applies to the serialized
+// response event: status, headers and the body after base64 encoding and JSON
+// string escaping, not the body alone.
 const maxALBResponseBytes = 1_000_000
+
+// serializeCheckBytes is the body size from which the serialized event is
+// measured. JSON escaping grows a byte at most sixfold (a control character
+// or <, > or & becomes \u00XX), so a smaller body cannot reach the limit.
+const serializeCheckBytes = maxALBResponseBytes / 6
+
+// tooLarge reports whether resp, once serialized for the Lambda runtime,
+// exceeds the load balancer's limit. Small responses skip the marshal.
+func tooLarge(resp events.ALBTargetGroupResponse) bool {
+	if len(resp.Body) < serializeCheckBytes {
+		return false
+	}
+	b, err := json.Marshal(resp)
+	return err != nil || len(b) > maxALBResponseBytes
+}
 
 // ALBHandler returns a Lambda handler function that serves Application Load
 // Balancer target group events with h. Pass the result to lambda.Start.
@@ -31,7 +48,7 @@ const maxALBResponseBytes = 1_000_000
 // request path as the client sent it, with no stage prefix, and does not
 // decode query strings; the adapter does both.
 //
-// A response whose encoded body exceeds 1,000,000 bytes cannot be returned
+// A response whose serialized event exceeds 1,000,000 bytes cannot be returned
 // through the load balancer; it becomes a 502 "response_too_large" error
 // instead of an opaque load balancer failure.
 func ALBHandler(h http.Handler) func(context.Context, events.ALBTargetGroupRequest) (events.ALBTargetGroupResponse, error) {
@@ -55,7 +72,7 @@ func ALBHandler(h http.Handler) func(context.Context, events.ALBTargetGroupReque
 		serve(h, rec, req)
 
 		resp := albResponse(rec, req.Method)
-		if len(resp.Body) > maxALBResponseBytes {
+		if tooLarge(resp) {
 			slog.WarnContext(ctx, "lambdahttp: response too large for the load balancer",
 				"requestId", traceID, "method", req.Method, "path", req.URL.Path, "bytes", len(resp.Body))
 			resp = albError(http.StatusBadGateway, "response_too_large", "response is too large to return")

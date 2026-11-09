@@ -249,22 +249,47 @@ func TestALBTooLarge(t *testing.T) {
 			_, _ = w.Write(bytes.Repeat([]byte("a"), n))
 		})
 	}
+	serveByte := func(ct string, b byte, n int) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", ct)
+			_, _ = w.Write(bytes.Repeat([]byte{b}, n))
+		})
+	}
 	req := events.ALBTargetGroupRequest{HTTPMethod: "GET", Path: "/v1/x"}
 
-	t.Run("text over 1,000,000 bytes", func(t *testing.T) {
+	t.Run("plain text over 1,000,000 bytes", func(t *testing.T) {
 		assertTooLarge(t, callALB(t, serveN("application/json", 1_000_001), req))
 	})
-	t.Run("text of exactly 1,000,000 bytes passes", func(t *testing.T) {
-		resp := callALB(t, serveN("application/json", 1_000_000), req)
-		if resp.StatusCode != 200 || len(resp.Body) != 1_000_000 {
+	t.Run("plain text comfortably under passes", func(t *testing.T) {
+		resp := callALB(t, serveN("application/json", 900_000), req)
+		if resp.StatusCode != 200 || len(resp.Body) != 900_000 {
 			t.Errorf("status = %d, body %d bytes", resp.StatusCode, len(resp.Body))
 		}
 	})
-	t.Run("binary is measured after base64 encoding", func(t *testing.T) {
-		// 750,000 raw bytes encode to exactly 1,000,000; one more byte tips it over.
-		if resp := callALB(t, serveN("application/octet-stream", 750_000), req); resp.StatusCode != 200 {
-			t.Errorf("750000 raw bytes: status = %d", resp.StatusCode)
+	t.Run("quote-heavy JSON under 1,000,000 body bytes is measured as serialized", func(t *testing.T) {
+		// Each quote serializes as \" : 600,000 body bytes become about 1.2 MB.
+		resp := callALB(t, serveByte("application/json", '"', 600_000), req)
+		assertTooLarge(t, resp)
+	})
+	t.Run("escaping-dense JSON well under the old body limit is measured as serialized", func(t *testing.T) {
+		// Each < serializes as \u003c : 200,000 body bytes become 1.2 MB.
+		assertTooLarge(t, callALB(t, serveByte("application/json", '<', 200_000), req))
+	})
+	t.Run("quote-heavy JSON comfortably under passes", func(t *testing.T) {
+		resp := callALB(t, serveByte("application/json", '"', 300_000), req)
+		if resp.StatusCode != 200 || len(resp.Body) != 300_000 {
+			t.Errorf("status = %d, body %d bytes", resp.StatusCode, len(resp.Body))
 		}
-		assertTooLarge(t, callALB(t, serveN("application/octet-stream", 750_001), req))
+		if b, _ := json.Marshal(resp); len(b) > 1_000_000 {
+			t.Errorf("serialized %d bytes; the case should sit under the limit", len(b))
+		}
+	})
+	t.Run("binary is measured after base64 encoding", func(t *testing.T) {
+		// 700,000 raw bytes encode to 933,336; 750,000 encode to 1,000,000
+		// and, with the envelope, serialize past the limit.
+		if resp := callALB(t, serveN("application/octet-stream", 700_000), req); resp.StatusCode != 200 {
+			t.Errorf("700000 raw bytes: status = %d", resp.StatusCode)
+		}
+		assertTooLarge(t, callALB(t, serveN("application/octet-stream", 750_000), req))
 	})
 }
