@@ -1,4 +1,4 @@
-# OpsVision
+# OpsVision Service Availability Metrics (SAM)
 
 OpsVision is an open-source, multi-tenant operational metrics program app. It
 provides a versioned metric framework, a monthly close process, dashboards, and
