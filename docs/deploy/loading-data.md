@@ -31,9 +31,23 @@ Use your own.
    export AWS_REGION=us-east-1
    ```
 
-   The identity needs read and write access to the table and its indexes
-   (`dynamodb:GetItem`, `Query`, `PutItem`, `UpdateItem`, `TransactWriteItems`
-   and `BatchWriteItem`). It needs no S3 access.
+   The identity needs these DynamoDB actions on the table (the table ARN
+   only; the tool never reads an index and never touches S3):
+
+   | Action | `bootstrap` | `import` | Used for |
+   |--------|:-----------:|:--------:|----------|
+   | `dynamodb:GetItem` | yes | yes | reading the tenant, templates and versions |
+   | `dynamodb:Query` | yes | yes | listing what the table already holds, and the fiscal-year data an import compares with |
+   | `dynamodb:PutItem` | yes | yes | writing items; also authorizes the items inside a transaction |
+   | `dynamodb:BatchGetItem` | no | yes | reading current data points before an import writes them |
+
+   `TransactWriteItems` (creating the tenant, writing levels, writing data
+   points) has no IAM action of its own: DynamoDB authorizes each write inside
+   it as `dynamodb:PutItem`. The tool makes no `UpdateItem`, `DeleteItem`,
+   `BatchWriteItem` or `Scan` calls, and no calls on indexes. So `bootstrap`
+   needs `GetItem`, `Query` and `PutItem`; `import` needs those and
+   `BatchGetItem`. With `-dry-run`, both commands need only `GetItem` and
+   `Query`.
 
 3. Write a bootstrap file. Its format is the dev server's, described in
    [local-bootstrap.md](local-bootstrap.md). Try it locally first with
@@ -105,6 +119,17 @@ is saved against the revision found in the table, so its revision goes up by
 one, and a version someone else changed meanwhile is reported as a conflict
 instead of being overwritten. **This replaces in-app edits to those items,
 including import text written into a draft version.** Check the dry run first.
+
+A version that is **not a draft** (published, superseded or in review) is
+never overwritten, even with `-overwrite`, because the app treats it as
+immutable. If the file differs from it, the run reports it and leaves it alone:
+
+```text
+versions: 0 created, 1 updated, 0 unchanged, 1 differs (kept)
+differs (kept, published): version sc/v1
+```
+
+To change a published version, publish a new version in the app.
 
 ### The tenant record
 

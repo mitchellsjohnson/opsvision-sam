@@ -390,7 +390,7 @@ func TestSyncKeepsDifferingLevelsWithoutOverwrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Levels != (Count{Created: 1, Unchanged: 1, Differs: 1}) || len(c.Differing) != 1 || c.Differing[0] != (Difference{"level", "co"}) {
+	if c.Levels != (Count{Created: 1, Unchanged: 1, Differs: 1}) || len(c.Differing) != 1 || c.Differing[0] != (Difference{Kind: "level", ID: "co"}) {
 		t.Errorf("levels = %+v, differing = %v", c.Levels, c.Differing)
 	}
 	ls, _ := st.ListLevels(ctx, f.Tenant.ID)

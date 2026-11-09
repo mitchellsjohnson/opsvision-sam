@@ -276,6 +276,59 @@ func TestBootstrapOverwrite(t *testing.T) {
 	}
 }
 
+// A published version is immutable in the app, so -overwrite never touches
+// it, whether the file rewrites it or turns it back into a draft.
+func TestBootstrapOverwriteNeverTouchesPublished(t *testing.T) {
+	ctx := context.Background()
+	st := loaded(t)
+	before, err := st.GetVersion(ctx, tenantID, "sc", "v1")
+	if err != nil || before.Status != "published" {
+		t.Fatalf("v1 = %+v, %v; want a published version", before, err)
+	}
+	raw, _ := os.ReadFile(syntheticBootstrap)
+	body := string(raw)
+	for _, r := range [][2]string{
+		{`"name": "v1"`, `"name": "Rewritten"`},
+		{`"status": "published"`, `"status": "draft"`}, // the first one is v1's
+		{`"name": "v2"`, `"name": "Version two"`},
+	} {
+		if !strings.Contains(body, r[0]) {
+			t.Fatalf("fixture no longer contains %s", r[0])
+		}
+		body = strings.Replace(body, r[0], r[1], 1)
+	}
+	path := filepath.Join(t.TempDir(), "rewrite.json")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, extra := range [][]string{{"-dry-run"}, {}} {
+		args := append([]string{"bootstrap", "-table", "t", "-file", path, "-overwrite"}, extra...)
+		code, out, errOut := admin(t, st, args...)
+		if code != 0 {
+			t.Fatalf("%v: exit %d\n%s\n%s", extra, code, out, errOut)
+		}
+		if got := line(t, out, "versions:"); got != "versions: 0 created, 1 updated, 0 unchanged, 1 differs (kept)" {
+			t.Errorf("%v: versions line = %q", extra, got)
+		}
+		if got := line(t, out, "differs (kept"); got != "differs (kept, published): version sc/v1" {
+			t.Errorf("%v: %q", extra, got)
+		}
+		if strings.Contains(out, "pass -overwrite") {
+			t.Errorf("%v: suggests -overwrite for something it cannot change:\n%s", extra, out)
+		}
+	}
+
+	after, _ := st.GetVersion(ctx, tenantID, "sc", "v1")
+	if after.Status != "published" || after.Name != before.Name || after.Revision != before.Revision ||
+		after.PublishedAt == nil || !after.PublishedAt.Equal(*before.PublishedAt) {
+		t.Errorf("published v1 changed: %+v -> %+v", before, after)
+	}
+	if d, _ := st.GetVersion(ctx, tenantID, "sc", "v2-draft"); d.Name != "Version two" {
+		t.Errorf("draft v2-draft = %q, want it overwritten", d.Name)
+	}
+}
+
 func TestBootstrapDryRunWritesNothing(t *testing.T) {
 	st := memstore.New()
 	code, out, errOut := admin(t, st, bootstrapArgs("-dry-run")...)

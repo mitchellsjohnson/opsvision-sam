@@ -14,7 +14,9 @@
 // version, template, member) that differs from the file is reported as
 // "differs (kept)" and left untouched, so running it again after go-live never
 // wipes edits made in the app. -overwrite updates those items instead (versions
-// against their stored revision). It is safe to run again: nothing is
+// against their stored revision), except a version that is not a draft: it is
+// immutable in the app, so it is never overwritten and is reported as
+// "differs (kept, published)". It is safe to run again: nothing is
 // duplicated. A tenant without an auth0OrgId is accepted, as a
 // single-organization deployment has none.
 //
@@ -186,10 +188,16 @@ func printCounts(w io.Writer, tenantID string, c bootstrap.Counts, dry, overwrit
 		}
 		fmt.Fprintln(w)
 	}
+	canOverwrite := false
 	for _, d := range c.Differing {
+		if d.Locked != "" {
+			fmt.Fprintf(w, "differs (kept, %s): %s %s\n", d.Locked, d.Kind, d.ID)
+			continue
+		}
 		fmt.Fprintf(w, "differs (kept): %s %s\n", d.Kind, d.ID)
+		canOverwrite = true
 	}
-	if len(c.Differing) > 0 && !overwrite {
+	if canOverwrite && !overwrite {
 		fmt.Fprintln(w, "existing items that differ from the file were left as they are; pass -overwrite to update them")
 	}
 }
