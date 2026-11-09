@@ -35,8 +35,10 @@ import (
 //   - the configured tenant missing: 403 "forbidden" (tenant not provisioned)
 //   - no email claim and /userinfo failing: 503 "identity_unavailable"
 //
-// and first sign-in binds the invitation for the verified email, else makes a
-// verified bootstrap admin email an admin, else uses the tenant's DefaultRole.
+// and first sign-in binds the invitation for the email, else makes a bootstrap
+// admin email an admin, else uses the tenant's DefaultRole. A trusted caller's
+// email counts as verified whatever email_verified says: the trusted
+// connection is the organization's own directory.
 //
 // Middleware returns an error for an invalid Config (including a dev secret
 // shorter than 32 bytes, or single-organization mode without trusted

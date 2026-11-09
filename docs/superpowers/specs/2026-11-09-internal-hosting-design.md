@@ -27,6 +27,7 @@ The main spec's multi-tenant model (one Auth0 Organization per tenant) stays the
   1. A pending invitation for the caller's verified email binds as today.
   2. Otherwise, an email listed in **bootstrap admins** becomes an admin.
   3. Otherwise, the caller gets the tenant's default role.
+- A trusted caller's email counts as verified for steps 1 and 2, whatever `email_verified` says, because the trusted connection is the organization's own directory.
 - Roles and scopes inside OpsVision work exactly as in the main spec.
 
 ## 4. Data loading

@@ -73,7 +73,9 @@ type Config struct {
 	// Required with SingleTenantID.
 	TrustedSubPrefixes []string
 	// BootstrapAdmins are emails that become admins on their first sign-in in
-	// single-organization mode. Compared case-insensitively.
+	// single-organization mode. Compared case-insensitively. A demotion is
+	// kept, but a deleted membership is re-created as admin; revoke one by
+	// removing the email from this list.
 	BootstrapAdmins []string
 	// UserInfoURL is the identity provider's OIDC /userinfo endpoint, used in
 	// single-organization mode when the token has no email claim. Defaults to

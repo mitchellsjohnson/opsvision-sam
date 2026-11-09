@@ -139,6 +139,7 @@ func (a *authenticator) authenticateSingle(ctx context.Context, token string, v 
 		return Principal{}, errIdentityUnavailable
 	}
 	p.Email, p.Name = id.email, id.name
-	bootstrapAdmin := id.verified && s.admins[normalizeEmail(id.email)]
-	return a.withMembership(ctx, p, id.verified, bootstrapAdmin)
+	// The trusted connection is the organization's own directory, so its
+	// emails count as verified whatever email_verified says.
+	return a.withMembership(ctx, p, true, s.admins[normalizeEmail(id.email)])
 }

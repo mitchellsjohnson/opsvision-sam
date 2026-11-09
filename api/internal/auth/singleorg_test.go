@@ -189,18 +189,67 @@ func TestSingleOrgBootstrapAdmin(t *testing.T) {
 	}
 }
 
-func TestSingleOrgBootstrapAdminNeedsVerifiedEmail(t *testing.T) {
+// unverifiedEmailSources are the ways a trusted caller's email can arrive
+// without email_verified true: /userinfo or the token claim, false or absent.
+func unverifiedEmailSources(t *testing.T, f *rsaFixture, email string) map[string]struct {
+	userInfo map[string]any
+	token    string
+} {
+	return map[string]struct {
+		userInfo map[string]any
+		token    string
+	}{
+		"userinfo false":  {map[string]any{"email": email, "email_verified": false}, employeeToken(t, f, nil)},
+		"userinfo absent": {map[string]any{"email": email}, employeeToken(t, f, nil)},
+		"claim false": {map[string]any{}, employeeToken(t, f, map[string]any{
+			testNS + "email": email, testNS + "email_verified": false,
+		})},
+		"claim absent": {map[string]any{}, employeeToken(t, f, map[string]any{testNS + "email": email})},
+	}
+}
+
+// The trusted connection is the organization's own directory, so its emails
+// count as verified in single-organization mode.
+func TestSingleOrgBootstrapAdminUnverifiedEmail(t *testing.T) {
 	f := newRSAFixture(t, "kid-1")
-	for name, body := range map[string]map[string]any{
-		"unverified":        {"email": "boss@example.test", "email_verified": false},
-		"no verified claim": {"email": "boss@example.test"},
-	} {
-		u := newUserInfoFixture(t, body)
-		ts := newStore(t)
-		_, p := run(t, singleOrgConfig(f, u), ts, employeeToken(t, f, nil))
-		if p == nil || p.Membership == nil || p.Membership.Role != domain.RoleViewer {
-			t.Errorf("%s: principal = %+v, want the default viewer", name, p)
+	for name, src := range unverifiedEmailSources(t, f, "Boss@Example.test") {
+		u := newUserInfoFixture(t, src.userInfo)
+		_, p := run(t, singleOrgConfig(f, u), newStore(t), src.token)
+		if p == nil || p.Membership == nil || p.Membership.Role != domain.RoleAdmin {
+			t.Errorf("%s: principal = %+v, want a bootstrap admin", name, p)
 		}
+	}
+}
+
+func TestSingleOrgInviteBindsUnverifiedEmail(t *testing.T) {
+	f := newRSAFixture(t, "kid-1")
+	ctx := context.Background()
+	pendingID := store.PendingUserPrefix + "jane.doe@example.test"
+	for name, src := range unverifiedEmailSources(t, f, "Jane.Doe@Example.test") {
+		u := newUserInfoFixture(t, src.userInfo)
+		ts := newStore(t)
+		if err := ts.PutMembership(ctx, "t1", domain.Membership{UserID: pendingID, Role: domain.RoleContributor}); err != nil {
+			t.Fatal(err)
+		}
+		_, p := run(t, singleOrgConfig(f, u), ts, src.token)
+		if p == nil || p.Membership == nil || p.Membership.Role != domain.RoleContributor || p.Membership.UserID != employeeSub {
+			t.Errorf("%s: principal = %+v, want the bound invitation", name, p)
+		}
+		if _, err := ts.GetMembership(ctx, "t1", pendingID); !errors.Is(err, store.ErrNotFound) {
+			t.Errorf("%s: invitation not removed: %v", name, err)
+		}
+	}
+}
+
+func TestSingleOrgNoEmailGetsDefaultRole(t *testing.T) {
+	f := newRSAFixture(t, "kid-1")
+	u := newUserInfoFixture(t, map[string]any{})
+	ts := newStore(t)
+	// A pending record under the empty email must never be bound.
+	_ = ts.PutMembership(context.Background(), "t1", domain.Membership{UserID: store.PendingUserPrefix, Role: domain.RoleAdmin})
+	_, p := run(t, singleOrgConfig(f, u), ts, employeeToken(t, f, nil))
+	if p == nil || p.Membership == nil || p.Membership.Role != domain.RoleViewer {
+		t.Fatalf("principal = %+v, want the default viewer", p)
 	}
 }
 
