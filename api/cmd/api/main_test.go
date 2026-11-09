@@ -311,6 +311,99 @@ func TestEmbeddedWebFitsLoadBalancer(t *testing.T) {
 	}
 }
 
+func singleOrgEnv() map[string]string {
+	e := validEnv()
+	e["AUTH0_DOMAIN"] = "example.us.auth0.com"
+	e["OPSVISION_TENANT_ID"] = "t-corp"
+	e["OPSVISION_TRUSTED_SUB_PREFIXES"] = "oidc|corp-employees|, samlp|corp-sso|"
+	e["OPSVISION_BOOTSTRAP_ADMINS"] = "Boss@Example.test ,ops-lead@example.test"
+	return e
+}
+
+func TestSingleOrgConfig(t *testing.T) {
+	cfg, err := loadConfig(env(validEnv()))
+	if err != nil || cfg.SingleTenantID != "" || cfg.TrustedSubPrefixes != nil || cfg.BootstrapAdmins != nil || cfg.UserInfoURL != "" {
+		t.Errorf("default: %+v, %v; want multi-tenant", cfg, err)
+	}
+
+	cfg, err = loadConfig(env(singleOrgEnv()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SingleTenantID != "t-corp" ||
+		strings.Join(cfg.TrustedSubPrefixes, " ") != "oidc|corp-employees| samlp|corp-sso|" ||
+		strings.Join(cfg.BootstrapAdmins, " ") != "boss@example.test ops-lead@example.test" ||
+		cfg.UserInfoURL != "" {
+		t.Errorf("cfg = %+v", cfg)
+	}
+
+	e := singleOrgEnv()
+	e["OPSVISION_USERINFO_URL"] = "https://login.example.test/userinfo"
+	if cfg, err := loadConfig(env(e)); err != nil || cfg.UserInfoURL != "https://login.example.test/userinfo" {
+		t.Errorf("userinfo override: %q, %v", cfg.UserInfoURL, err)
+	}
+	e = singleOrgEnv()
+	delete(e, "OPSVISION_BOOTSTRAP_ADMINS")
+	if cfg, err := loadConfig(env(e)); err != nil || cfg.BootstrapAdmins != nil {
+		t.Errorf("no bootstrap admins: %+v, %v", cfg.BootstrapAdmins, err)
+	}
+
+	refusals := map[string]struct {
+		key, value string // "" value deletes the key
+		name       string // the variable the error must name
+	}{
+		"no prefixes":          {"OPSVISION_TRUSTED_SUB_PREFIXES", "", "OPSVISION_TRUSTED_SUB_PREFIXES"},
+		"blank prefixes":       {"OPSVISION_TRUSTED_SUB_PREFIXES", " , ", "OPSVISION_TRUSTED_SUB_PREFIXES"},
+		"empty prefix item":    {"OPSVISION_TRUSTED_SUB_PREFIXES", "oidc|corp-employees|,", "OPSVISION_TRUSTED_SUB_PREFIXES"},
+		"prefix without |":     {"OPSVISION_TRUSTED_SUB_PREFIXES", "oidc|corp-employees", "OPSVISION_TRUSTED_SUB_PREFIXES"},
+		"empty admin item":     {"OPSVISION_BOOTSTRAP_ADMINS", "boss@example.test,,", "OPSVISION_BOOTSTRAP_ADMINS"},
+		"admin not an email":   {"OPSVISION_BOOTSTRAP_ADMINS", "boss", "OPSVISION_BOOTSTRAP_ADMINS"},
+		"padded tenant":        {"OPSVISION_TENANT_ID", " t-corp", "OPSVISION_TENANT_ID"},
+		"http userinfo":        {"OPSVISION_USERINFO_URL", "http://login.example.test/userinfo", "OPSVISION_USERINFO_URL"},
+		"relative userinfo":    {"OPSVISION_USERINFO_URL", "/userinfo", "OPSVISION_USERINFO_URL"},
+		"userinfo with spaces": {"OPSVISION_USERINFO_URL", " https://login.example.test/userinfo", "OPSVISION_USERINFO_URL"},
+	}
+	for label, r := range refusals {
+		e := singleOrgEnv()
+		if r.value == "" {
+			delete(e, r.key)
+		} else {
+			e[r.key] = r.value
+		}
+		if _, err := loadConfig(env(e)); err == nil || !strings.Contains(err.Error(), r.name) {
+			t.Errorf("%s: err = %v, want a refusal naming %s", label, err, r.name)
+		}
+	}
+
+	// Single-organization settings without the mode are configuration drift.
+	for _, key := range []string{"OPSVISION_TRUSTED_SUB_PREFIXES", "OPSVISION_BOOTSTRAP_ADMINS", "OPSVISION_USERINFO_URL"} {
+		e := validEnv()
+		e[key] = singleOrgEnv()[key]
+		if key == "OPSVISION_USERINFO_URL" {
+			e[key] = "https://login.example.test/userinfo"
+		}
+		if _, err := loadConfig(env(e)); err == nil || !strings.Contains(err.Error(), "OPSVISION_TENANT_ID") {
+			t.Errorf("%s without OPSVISION_TENANT_ID: err = %v, want a refusal naming OPSVISION_TENANT_ID", key, err)
+		}
+	}
+}
+
+func TestSingleOrgHandler(t *testing.T) {
+	cfg, err := loadConfig(env(singleOrgEnv()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := newHandler(cfg, memstore.New(), objects.NewMem("", nil))
+	if err != nil {
+		t.Fatalf("newHandler in single-organization mode: %v", err)
+	}
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v1/me", nil))
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("GET /v1/me without a token = %d, want 401", w.Code)
+	}
+}
+
 func TestHandlerCORSAndAuth(t *testing.T) {
 	cfg, err := loadConfig(env(validEnv()))
 	if err != nil {

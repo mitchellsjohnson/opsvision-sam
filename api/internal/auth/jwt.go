@@ -64,8 +64,26 @@ type Config struct {
 	// It exists so tests can point at an httptest JWKS server.
 	IssuerURL string
 
-	// now overrides the clock of the JWKS cache; tests only.
+	// SingleTenantID enables single-organization sign-in: every caller whose
+	// sub starts with one of TrustedSubPrefixes belongs to this tenant, and
+	// org_id is ignored. Empty keeps the multi-tenant model.
+	SingleTenantID string
+	// TrustedSubPrefixes are the sub prefixes admitted in single-organization
+	// mode, each ending in "|" (for example "oidc|corp-employees|").
+	// Required with SingleTenantID.
+	TrustedSubPrefixes []string
+	// BootstrapAdmins are emails that become admins on their first sign-in in
+	// single-organization mode. Compared case-insensitively.
+	BootstrapAdmins []string
+	// UserInfoURL is the identity provider's OIDC /userinfo endpoint, used in
+	// single-organization mode when the token has no email claim. Defaults to
+	// https://<Domain>/userinfo.
+	UserInfoURL string
+
+	// now overrides the clock of the JWKS and /userinfo caches; tests only.
 	now func() time.Time
+	// userInfoTimeout overrides the /userinfo timeout; tests only.
+	userInfoTimeout time.Duration
 }
 
 func (c Config) claimNamespace() string {
@@ -240,6 +258,7 @@ type tokenValidator interface {
 // verified is the outcome of validating a token.
 type verified struct {
 	subject string
+	expiry  time.Time
 	claims  *tokenClaims
 }
 
@@ -279,5 +298,9 @@ func verify(ctx context.Context, v tokenValidator, tokenString string) (verified
 	if strings.HasPrefix(vc.RegisteredClaims.Subject, store.PendingUserPrefix) {
 		return verified{}, fmt.Errorf("%w: reserved sub prefix", errInvalidToken)
 	}
-	return verified{subject: vc.RegisteredClaims.Subject, claims: tc}, nil
+	return verified{
+		subject: vc.RegisteredClaims.Subject,
+		expiry:  time.Unix(vc.RegisteredClaims.Expiry, 0),
+		claims:  tc,
+	}, nil
 }

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"strings"
 	"time"
 
 	jwtmiddleware "github.com/auth0/go-jwt-middleware/v3"
@@ -31,8 +30,17 @@ import (
 // membership with the tenant's DefaultRole. Operators are never auto-provisioned
 // into a tenant.
 //
+// With Config.SingleTenantID set, org_id is ignored instead:
+//   - sub without a trusted prefix: 403 "forbidden"
+//   - the configured tenant missing: 403 "forbidden" (tenant not provisioned)
+//   - no email claim and /userinfo failing: 503 "identity_unavailable"
+//
+// and first sign-in binds the invitation for the verified email, else makes a
+// verified bootstrap admin email an admin, else uses the tenant's DefaultRole.
+//
 // Middleware returns an error for an invalid Config (including a dev secret
-// shorter than 32 bytes) or a nil store.
+// shorter than 32 bytes, or single-organization mode without trusted
+// prefixes) or a nil store.
 func Middleware(cfg Config, ts store.TenantStore) (func(http.Handler) http.Handler, error) {
 	if ts == nil {
 		return nil, errors.New("auth: tenant store is required")
@@ -41,10 +49,14 @@ func Middleware(cfg Config, ts store.TenantStore) (func(http.Handler) http.Handl
 	if err != nil {
 		return nil, err
 	}
+	single, err := newSingleOrg(cfg)
+	if err != nil {
+		return nil, err
+	}
 	if cfg.Mode == ModeDev {
 		slog.Warn("auth: dev mode enabled; tokens are signed with a shared secret. Never use outside local development")
 	}
-	a := &authenticator{validator: v, ts: ts}
+	a := &authenticator{validator: v, ts: ts, single: single}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			p, herr := a.authenticate(r)
@@ -60,6 +72,7 @@ func Middleware(cfg Config, ts store.TenantStore) (func(http.Handler) http.Handl
 type authenticator struct {
 	validator tokenValidator
 	ts        store.TenantStore
+	single    *singleOrg // nil in the multi-tenant model
 }
 
 // httpError is an error already shaped for the client.
@@ -114,6 +127,9 @@ func (a *authenticator) authenticate(r *http.Request) (Principal, *httpError) {
 		Name:       c.Name,
 		IsOperator: c.isOperator(),
 	}
+	if a.single != nil {
+		return a.authenticateSingle(ctx, extracted.Token, v, p)
+	}
 
 	if c.OrgID == "" {
 		if !p.IsOperator {
@@ -131,7 +147,13 @@ func (a *authenticator) authenticate(r *http.Request) (Principal, *httpError) {
 		return Principal{}, errInternal
 	}
 	p.Tenant = &tenant
+	return a.withMembership(ctx, p, c.EmailVerified != nil && *c.EmailVerified, false)
+}
 
+// withMembership attaches the caller's membership in p.Tenant, provisioning
+// one on first sign-in (see provision).
+func (a *authenticator) withMembership(ctx context.Context, p Principal, emailVerified, bootstrapAdmin bool) (Principal, *httpError) {
+	tenant := *p.Tenant
 	m, err := a.ts.GetMembership(ctx, tenant.ID, p.UserID)
 	switch {
 	case err == nil:
@@ -143,7 +165,7 @@ func (a *authenticator) authenticate(r *http.Request) (Principal, *httpError) {
 		// Operators run the platform; they get tenant rights only through an
 		// explicit membership, never by signing in.
 	default:
-		m, err := a.provision(ctx, tenant, p, c)
+		m, err := a.provision(ctx, tenant, p, emailVerified, bootstrapAdmin)
 		if err != nil {
 			slog.Error("auth: first sign-in provisioning failed", "tenant", tenant.ID, "err", err)
 			return Principal{}, errInternal
@@ -155,16 +177,17 @@ func (a *authenticator) authenticate(r *http.Request) (Principal, *httpError) {
 
 // provision creates the caller's membership on first sign-in.
 //
-// If an invitation exists for the token's email (a pending membership keyed
+// If an invitation exists for the caller's email (a pending membership keyed
 // PendingUserPrefix+lowercase(email)) it is bound to the caller's user ID,
-// keeping its role, scope, and creation time. Otherwise the caller gets the
-// tenant's default role. The invitation is honored only when the token has an
-// email and <ns>email_verified is present and true; an absent or false claim
-// falls through to the default role, because an unverified address proves
-// nothing about who holds it.
-func (a *authenticator) provision(ctx context.Context, tenant domain.Tenant, p Principal, c *tokenClaims) (domain.Membership, error) {
-	email := strings.ToLower(strings.TrimSpace(p.Email))
-	if email != "" && c.EmailVerified != nil && *c.EmailVerified {
+// keeping its role, scope, and creation time. Otherwise the caller gets admin
+// when bootstrapAdmin is set, else the tenant's default role. The invitation
+// is honored only when the email is verified (in a token, <ns>email_verified
+// present and true); an unverified address proves nothing about who holds it.
+// The membership is written only when none exists, so a later demotion is
+// never undone by signing in again.
+func (a *authenticator) provision(ctx context.Context, tenant domain.Tenant, p Principal, emailVerified, bootstrapAdmin bool) (domain.Membership, error) {
+	email := normalizeEmail(p.Email)
+	if email != "" && emailVerified {
 		pendingID := store.PendingUserPrefix + email
 		pending, err := a.ts.GetMembership(ctx, tenant.ID, pendingID)
 		switch {
@@ -204,6 +227,9 @@ func (a *authenticator) provision(ctx context.Context, tenant domain.Tenant, p P
 	if !role.Valid() {
 		role = domain.RoleViewer
 	}
+	if bootstrapAdmin {
+		role = domain.RoleAdmin
+	}
 	m := domain.Membership{
 		UserID:    p.UserID,
 		Email:     p.Email,
@@ -213,6 +239,9 @@ func (a *authenticator) provision(ctx context.Context, tenant domain.Tenant, p P
 	}
 	if err := a.ts.PutMembership(ctx, tenant.ID, m); err != nil {
 		return domain.Membership{}, fmt.Errorf("create membership: %w", err)
+	}
+	if bootstrapAdmin {
+		slog.Info("auth: bootstrap admin signed in for the first time", "tenant", tenant.ID, "user", p.UserID)
 	}
 	return m, nil
 }

@@ -20,6 +20,17 @@
 //	                     when serving the web app)
 //	OPSVISION_UPLOADS_ORIGIN  origin browsers upload to, for the web app's CSP
 //	                     (default https://<UPLOADS_BUCKET>.s3.<AWS_REGION>.amazonaws.com)
+//
+// Single-organization sign-in (one tenant; org_id is ignored):
+//
+//	OPSVISION_TENANT_ID  the one tenant every trusted caller belongs to;
+//	                     setting it enables the mode
+//	OPSVISION_TRUSTED_SUB_PREFIXES  comma-separated sub prefixes allowed to
+//	                     sign in, each ending in "|" (required with the mode)
+//	OPSVISION_BOOTSTRAP_ADMINS  comma-separated emails that become admins on
+//	                     their first sign-in (optional)
+//	OPSVISION_USERINFO_URL  https /userinfo endpoint for callers whose token
+//	                     has no email claim (default https://<AUTH0_DOMAIN>/userinfo)
 package main
 
 import (
@@ -28,6 +39,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 
@@ -67,6 +79,11 @@ type appConfig struct {
 	ServeWeb         bool
 	WebAuth0ClientID string
 	UploadsOrigin    string
+
+	SingleTenantID     string
+	TrustedSubPrefixes []string
+	BootstrapAdmins    []string
+	UserInfoURL        string
 }
 
 // loadConfig reads the configuration from getenv. The auth mode is checked
@@ -105,6 +122,9 @@ func loadConfig(getenv func(string) string) (appConfig, error) {
 	if c.ClaimNamespace == "" {
 		c.ClaimNamespace = auth.DefaultClaimNamespace
 	}
+	if err := loadSingleOrg(getenv, &c); err != nil {
+		return appConfig{}, err
+	}
 
 	switch getenv("OPSVISION_SERVE_WEB") {
 	case "", "0":
@@ -129,16 +149,92 @@ func loadConfig(getenv func(string) string) (appConfig, error) {
 	return c, nil
 }
 
+// loadSingleOrg reads the single-organization sign-in settings into c. They
+// apply only with OPSVISION_TENANT_ID; any of them without it refuses to
+// start, as does a malformed list or URL.
+func loadSingleOrg(getenv func(string) string, c *appConfig) error {
+	tenantID := getenv("OPSVISION_TENANT_ID")
+	prefixes := getenv("OPSVISION_TRUSTED_SUB_PREFIXES")
+	admins := getenv("OPSVISION_BOOTSTRAP_ADMINS")
+	userInfoURL := getenv("OPSVISION_USERINFO_URL")
+	if tenantID == "" {
+		if prefixes != "" || admins != "" || userInfoURL != "" {
+			return errors.New("refusing to start: OPSVISION_TRUSTED_SUB_PREFIXES, OPSVISION_BOOTSTRAP_ADMINS " +
+				"and OPSVISION_USERINFO_URL apply only with OPSVISION_TENANT_ID")
+		}
+		return nil
+	}
+	if strings.TrimSpace(tenantID) != tenantID {
+		return errors.New("refusing to start: OPSVISION_TENANT_ID must not have surrounding spaces")
+	}
+	c.SingleTenantID = tenantID
+
+	if strings.TrimSpace(prefixes) == "" {
+		return errors.New("refusing to start: OPSVISION_TRUSTED_SUB_PREFIXES is required with OPSVISION_TENANT_ID")
+	}
+	list, err := commaList("OPSVISION_TRUSTED_SUB_PREFIXES", prefixes)
+	if err != nil {
+		return err
+	}
+	for _, p := range list {
+		if len(p) < 2 || !strings.HasSuffix(p, "|") {
+			return fmt.Errorf("refusing to start: OPSVISION_TRUSTED_SUB_PREFIXES entry %q must end with \"|\"", p)
+		}
+	}
+	c.TrustedSubPrefixes = list
+
+	if admins != "" {
+		list, err := commaList("OPSVISION_BOOTSTRAP_ADMINS", admins)
+		if err != nil {
+			return err
+		}
+		for i, a := range list {
+			local, domain, ok := strings.Cut(a, "@")
+			if !ok || local == "" || domain == "" || strings.Contains(domain, "@") {
+				return fmt.Errorf("refusing to start: OPSVISION_BOOTSTRAP_ADMINS entry %q is not an email address", a)
+			}
+			list[i] = strings.ToLower(a)
+		}
+		c.BootstrapAdmins = list
+	}
+
+	if userInfoURL != "" {
+		u, err := url.Parse(userInfoURL)
+		if err != nil || u.Scheme != "https" || u.Host == "" || strings.TrimSpace(userInfoURL) != userInfoURL {
+			return errors.New("refusing to start: OPSVISION_USERINFO_URL must be an https URL")
+		}
+		c.UserInfoURL = userInfoURL
+	}
+	return nil
+}
+
+// commaList splits a comma-separated variable, trimming spaces around each
+// entry. An empty entry refuses to start.
+func commaList(name, value string) ([]string, error) {
+	parts := strings.Split(value, ",")
+	for i, p := range parts {
+		parts[i] = strings.TrimSpace(p)
+		if parts[i] == "" {
+			return nil, fmt.Errorf("refusing to start: %s has an empty entry", name)
+		}
+	}
+	return parts, nil
+}
+
 // newHandler assembles the API: CORS outermost (so preflights are answered
 // before authentication), then compression and Auth0 token validation around
 // the /v1 routes. With cfg.ServeWeb, the embedded web app answers every path
 // other than /v1/ and /healthz, and is never behind CORS or authentication.
 func newHandler(cfg appConfig, st store.Store, objs objects.Store) (http.Handler, error) {
 	authMW, err := auth.Middleware(auth.Config{
-		Mode:           auth.ModeAuth0,
-		Domain:         cfg.Auth0Domain,
-		Audience:       cfg.Auth0Audience,
-		ClaimNamespace: cfg.ClaimNamespace,
+		Mode:               auth.ModeAuth0,
+		Domain:             cfg.Auth0Domain,
+		Audience:           cfg.Auth0Audience,
+		ClaimNamespace:     cfg.ClaimNamespace,
+		SingleTenantID:     cfg.SingleTenantID,
+		TrustedSubPrefixes: cfg.TrustedSubPrefixes,
+		BootstrapAdmins:    cfg.BootstrapAdmins,
+		UserInfoURL:        cfg.UserInfoURL,
 	}, st)
 	if err != nil {
 		return nil, fmt.Errorf("auth: %w", err)

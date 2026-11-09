@@ -3,8 +3,9 @@
 //
 // The API trusts only the verified access token for identity: the user is the
 // token's sub claim and the tenant is resolved from its org_id claim (an Auth0
-// Organization). Nothing in the URL, query string, headers, or body can select
-// a tenant or user.
+// Organization), or in single-organization mode is the one configured tenant.
+// Nothing in the URL, query string, headers, or body can select a tenant or
+// user.
 package auth
 
 import (
@@ -23,8 +24,9 @@ type Principal struct {
 	// permission. Operators administer the platform, not tenant data: an
 	// operator has tenant rights only through an explicit membership.
 	IsOperator bool
-	// Tenant is the tenant named by the token's org_id claim; nil for an
-	// operator token without an organization.
+	// Tenant is the tenant named by the token's org_id claim (the configured
+	// tenant in single-organization mode); nil for an operator token without
+	// an organization.
 	Tenant *domain.Tenant
 	// Membership is the caller's membership in Tenant; nil when Tenant is nil
 	// and for an operator who is not a member of Tenant.
