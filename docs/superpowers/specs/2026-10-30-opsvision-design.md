@@ -62,6 +62,7 @@ Contributor and viewer roles can be scoped to an org-unit subtree, a set of metr
 - **Stack:** React + TypeScript frontend; Go backend.
 - **AWS shape mirrors the maintainer's existing app ("task-vision"):** static SPA on S3 + CloudFront + Route 53 + ACM; API Gateway in front of a Lambda; DynamoDB; Auth0 for identity; GitHub Actions for deploys. All AWS infrastructure is CloudFormation through AWS SAM (Terraform provider versions could not be vetted through the dependency process, so Terraform is not used). Auth0 configuration is managed with the Auth0 Deploy CLI.
 - **Identity:** Auth0, multi-tenant via Auth0 Organizations.
+- **First adopter's hosting (supersedes the CloudFront/API Gateway/WAF shape and the CloudFormation-only rule for that deployment):** internal load balancer, one Lambda serving API and web app, single-organization sign-in, Terraform in the private deployment repository. See `2026-11-09-internal-hosting-design.md`.
 - **AI:** Amazon Bedrock, model chosen by configuration. The maintainer expects to use a Kimi model; confirm availability in the target region and native tool-use support through the Bedrock Converse API before relying on it.
 - **Dependencies:** versions are selected during planning through the maintainer's dependency-vetting process; the plan must not pin versions from memory.
 - **First adopter's deployment:** runs in the first adopter's own AWS accounts and is reachable **only from the company VPN**. Deployment specifics (domain, account IDs, Auth0 tenant, network allowlists, Terraform state) live in a **private deployment repository** in the company's GitHub, which deploys a pinned release of the public repo. The public repo contains only generic, variable-driven infrastructure and the project's own demo environment (demo data only).
@@ -281,6 +282,8 @@ openapi/    API contract; generates Go types/server stubs and the TypeScript cli
 ```
 
 ### 10.2 AWS
+
+The first adopter's deployment uses the internal hosting mode in `2026-11-09-internal-hosting-design.md`; the shape below remains the design for a future public deployment.
 
 - SPA: S3 + CloudFront + Route 53 + ACM.
 - API: API Gateway → single Go Lambda (router inside), `provided.al2023`, arm64.
