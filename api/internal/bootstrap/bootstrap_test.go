@@ -328,3 +328,48 @@ func TestBootstrapAllowsZeroEffectiveDraft(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadWithAllowEmptyOrg(t *testing.T) {
+	m := syntheticMap(t)
+	m["tenant"].(map[string]any)["auth0OrgId"] = ""
+	path := writeMap(t, m)
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "auth0OrgId") {
+		t.Errorf("Load accepted an empty auth0OrgId: %v", err)
+	}
+	f, err := LoadWith(path, LoadOptions{AllowEmptyOrg: true})
+	if err != nil || f.Tenant.Auth0OrgID != "" {
+		t.Errorf("LoadWith(AllowEmptyOrg) = %+v, %v", f.Tenant, err)
+	}
+}
+
+func TestSyncKeepsWhatTheFileDoesNotName(t *testing.T) {
+	ctx := context.Background()
+	f, err := Load(syntheticFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := memstore.New()
+	if _, err := Sync(ctx, st, f, time.Now(), false); err != nil {
+		t.Fatal(err)
+	}
+	// Someone adds a level and a membership in the app after the first load.
+	if err := st.PutLevels(ctx, f.Tenant.ID, append(append([]domain.Level(nil), f.Levels...), domain.Level{ID: "team", Name: "Team", Depth: 2})); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PutMembership(ctx, f.Tenant.ID, domain.Membership{UserID: "extra", Email: "extra@example.test", Role: domain.RoleViewer}); err != nil {
+		t.Fatal(err)
+	}
+	f.Levels[0].Name = "Whole company"
+	c, err := Sync(ctx, st, f, time.Now(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Levels != (Count{Updated: 1, Unchanged: 1}) {
+		t.Errorf("levels = %+v", c.Levels)
+	}
+	ls, _ := st.ListLevels(ctx, f.Tenant.ID)
+	ms, _ := st.ListMemberships(ctx, f.Tenant.ID)
+	if len(ls) != 3 || len(ms) != len(f.Users)+1 {
+		t.Errorf("levels=%d members=%d: Sync deleted something the file does not name", len(ls), len(ms))
+	}
+}

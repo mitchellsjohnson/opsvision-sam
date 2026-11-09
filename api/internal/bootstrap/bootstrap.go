@@ -1,8 +1,10 @@
-// Package bootstrap reads a tenant configuration file and writes it into an
-// empty store. The local devserver and the importcheck command use it so a
-// maintainer can work against their own tenant (org tree, scorecards,
-// methodology, import templates, dev users) without a database or any real
-// data in the repository.
+// Package bootstrap reads a tenant configuration file and writes it into a
+// store. The local devserver and the importcheck command use Apply to load it
+// into an empty in-memory store, so a maintainer can work against their own
+// tenant (org tree, scorecards, methodology, import templates, dev users)
+// without a database or any real data in the repository. The opsvision-admin
+// command uses Sync, which is safe to repeat, to load it into a deployed
+// table.
 //
 // The file format is the domain's JSON (camelCase), one top-level key per
 // kind of thing; see docs/deploy/local-bootstrap.md. Real files belong in the
@@ -58,7 +60,18 @@ type DevUser struct {
 // fields and trailing data are errors), fills the tenant's defaults (January
 // fiscal year start, the green/yellow/red scale, a viewer default role), and
 // reports every problem it finds, not just the first.
-func Load(path string) (File, error) {
+func Load(path string) (File, error) { return LoadWith(path, LoadOptions{}) }
+
+// LoadOptions relaxes what Load requires.
+type LoadOptions struct {
+	// AllowEmptyOrg accepts a tenant with no auth0OrgId, as a
+	// single-organization deployment has: the tenant comes from configuration,
+	// not from the sign-in organization.
+	AllowEmptyOrg bool
+}
+
+// LoadWith is Load with options.
+func LoadWith(path string, opts LoadOptions) (File, error) {
 	fh, err := os.Open(path)
 	if err != nil {
 		return File{}, fmt.Errorf("bootstrap: %w", err)
@@ -92,7 +105,7 @@ func Load(path string) (File, error) {
 		f.Tenant.DefaultRole = domain.RoleViewer
 	}
 
-	if errs := f.validate(); len(errs) > 0 {
+	if errs := f.validate(opts); len(errs) > 0 {
 		return File{}, fmt.Errorf("bootstrap: %s is not valid:\n%w", path, errors.Join(errs...))
 	}
 	return f, nil
@@ -119,7 +132,7 @@ func (s *idSet) add(path, id string) {
 	s.seen[id] = true
 }
 
-func (f File) validate() []error {
+func (f File) validate(opts LoadOptions) []error {
 	var errs []error
 	bad := func(format string, a ...any) { errs = append(errs, fmt.Errorf(format, a...)) }
 
@@ -130,7 +143,7 @@ func (f File) validate() []error {
 	case !importer.ValidID(t.ID):
 		bad("tenant.id %q %s", t.ID, importer.IDRule)
 	}
-	if t.Auth0OrgID == "" {
+	if t.Auth0OrgID == "" && !opts.AllowEmptyOrg {
 		bad("tenant.auth0OrgId is required")
 	}
 	if strings.TrimSpace(t.Name) == "" {
