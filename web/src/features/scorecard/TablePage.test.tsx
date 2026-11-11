@@ -48,6 +48,12 @@ describe('TablePage', () => {
     expect(grid.className).toMatch(/table-fixed/)
   })
 
+  it('does not focus a grid cell when the table first loads', async () => {
+    renderTable()
+    await screen.findByRole('grid')
+    expect(document.activeElement?.getAttribute('role')).not.toBe('gridcell')
+  })
+
   it('disables Later on the last month in the range', async () => {
     renderTable()
     await screen.findByRole('grid')

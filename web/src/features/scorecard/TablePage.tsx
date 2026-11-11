@@ -314,6 +314,7 @@ export function TablePage({ scorecardId, scorecardName, compact = false }: Table
   const [showGrouped, setShowGrouped] = useState<Set<string>>(() => new Set())
   const opener = useRef<HTMLElement | null>(null)
   const measureRef = useRef<HTMLDivElement>(null)
+  const shouldFocusCell = useRef(false)
   const [contentWidth, setContentWidth] = useState(0)
   const [focus, setFocus] = useState({ row: 0, col: 0 })
 
@@ -446,6 +447,7 @@ export function TablePage({ scorecardId, scorecardName, compact = false }: Table
   const moveFocus = useCallback(
     (dr: number, dc: number) => {
       if (flatDataRows.length === 0 || displayColumns.length === 0) return
+      shouldFocusCell.current = true
       setFocus((prev) => ({
         row: Math.max(0, Math.min(flatDataRows.length - 1, prev.row + dr)),
         col: Math.max(0, Math.min(displayColumns.length - 1, prev.col + dc)),
@@ -455,6 +457,8 @@ export function TablePage({ scorecardId, scorecardName, compact = false }: Table
   )
 
   useEffect(() => {
+    if (!shouldFocusCell.current) return
+    shouldFocusCell.current = false
     if (compact || view.isPending || !view.data) return
     const col = displayColumns[focus.col]
     if (!col) return
