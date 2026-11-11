@@ -66,6 +66,11 @@ describe('OverviewPage', () => {
     })
     await screen.findByRole('heading', { name: 'Overview', level: 1 })
     expect(screen.getByText('worst of 2 segments')).toBeTruthy()
+    const card = metricCard('On-time delivery')
+    expect(within(card).getByText('Company total not reported; 2 segments reported')).toBeTruthy()
+    expect(within(card).getByText('R')).toBeTruthy()
+    expect(within(card).getByRole('button', { name: /Oct: 70\.0%/ })).toBeTruthy()
+    expect(within(card).getByRole('button', { name: /Oct: 95\.0%/ })).toBeTruthy()
     const health = screen.getByRole('region', { name: 'Health this month' })
     const offTrack = within(health).getByRole('button', { name: /Off track/ })
     expect(offTrack.textContent).toMatch(/1\b/)
@@ -108,6 +113,50 @@ describe('OverviewPage', () => {
     await screen.findByRole('heading', { name: 'Overview', level: 1 })
     const card = metricCard('On-time delivery')
     await waitFor(() => expect(within(card).getByText(/YTD 95\.0%/)).toBeTruthy())
+  })
+
+  it('draws tinted status band areas on ratio charts', async () => {
+    renderOverview(ROUTE, (view) => {
+      Object.assign(cellOf(view, 'on_time_pct', 'root', '2026-M10'), {
+        rule: {
+          type: 'bands',
+          bands: [
+            { status: 'G', op: '>=', value: 90 },
+            { status: 'Y', op: '>=', value: 80 },
+            { status: 'R', op: '', value: 0 },
+          ],
+        },
+      })
+    })
+    await screen.findByRole('heading', { name: 'Overview', level: 1 })
+    const chart = within(metricCard('On-time delivery')).getByTestId('metric-chart')
+    expect(Number(chart.getAttribute('data-band-areas'))).toBeGreaterThan(0)
+    expect(within(metricCard('On-time delivery')).getByTestId('current-point-label').textContent).toMatch(/84\.3%/)
+    expect(within(metricCard('On-time delivery')).getByTestId('current-point-label').textContent).toContain('Y')
+  })
+
+  it('omits YTD on the card when the scope row has no YTD value', async () => {
+    renderOverview(`${ROUTE}&ytd=1`, (view) => {
+      if (view.periods.length > 0) return
+      const row = view.rows.find((r) => r.metricKey === 'on_time_pct' && r.subjectId === 'root')
+      const ytd = row?.cells.find((c) => c.ytd)
+      if (ytd) Object.assign(ytd, { value: null, display: '', status: '' })
+    })
+    await screen.findByRole('heading', { name: 'Overview', level: 1 })
+    const card = metricCard('On-time delivery')
+    expect(within(card).queryByText(/^YTD /)).toBeNull()
+  })
+
+  it('uptime rows show a status marker for each period in the window', async () => {
+    renderOverview(ROUTE, (view) => {
+      for (const row of view.rows.filter((r) => r.metricKey === 'on_time_pct')) {
+        row.chartKind = 'uptime'
+      }
+    })
+    await screen.findByRole('heading', { name: 'Overview', level: 1 })
+    const card = metricCard('On-time delivery')
+    const strip = within(card).getByTestId('uptime-strip-unit-a')
+    expect(strip.children.length).toBe(12)
   })
 
   it('shows the period header sentence', async () => {

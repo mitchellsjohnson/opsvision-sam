@@ -2,7 +2,15 @@ import { useMemo } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router'
 import { useMe, useOrgUnits, useVersions, useView } from '../../api/queries'
 import type { components } from '../../api/schema'
-import { monthLabel, parsePeriod, periodLabel, type ViewRequest } from '../../lib/period'
+import {
+  monthLabel,
+  parent,
+  parsePeriod,
+  periodLabel,
+  type Grain,
+  type Period,
+  type ViewRequest,
+} from '../../lib/period'
 import { StatusBadge } from '../../ui/StatusBadge'
 import { usePeriodState } from '../../shell/usePeriodState'
 import { buildTrendColumns, columnRequest, type Column } from './columns'
@@ -10,7 +18,7 @@ import { changeText } from './format'
 import { needsAttention, type NeedsAttentionItem } from './logic/needsAttention'
 import { defaultStatusScale } from './charts/chartTheme'
 import { MetricChart } from './charts/MetricChart'
-import { statusAtScope, type StatusScaleEntry } from './logic/statusAtScope'
+import { cellReported, statusAtScope, type StatusScaleEntry } from './logic/statusAtScope'
 import { cellKey, groupRows } from './viewHelpers'
 
 type Schemas = components['schemas']
@@ -34,6 +42,29 @@ function metricNoun(chartKind: string, children: ViewRow[]): 'segments' | 'servi
 function priorColumn(columns: Column[]): string | undefined {
   if (columns.length < 2) return undefined
   return columns[columns.length - 2]?.key
+}
+
+function scopeCell(row: ViewRow, columnKey: string): Cell | undefined {
+  return row.cells.find((c) => cellKey(c) === columnKey)
+}
+
+function nextPeriod(p: Period): Period {
+  if (p.grain === 'year') return { grain: 'year', fy: p.fy + 1, index: 0 }
+  const max = p.grain === 'month' ? 12 : p.grain === 'quarter' ? 4 : 2
+  if (p.index < max) return { ...p, index: p.index + 1 }
+  return { grain: p.grain, fy: p.fy + 1, index: 1 }
+}
+
+/** Next reporting period for quarterly, biannual, or annual metrics after the selected month. */
+function nextDuePeriodLabel(frequency: ViewRow['frequency'], selectedPeriod: string, fyStart: number): string | null {
+  if (frequency === 'monthly') return null
+  const month = parsePeriod(selectedPeriod)
+  if (!month || month.grain !== 'month') return null
+  const grain: Grain =
+    frequency === 'quarterly' ? 'quarter' : frequency === 'biannual' ? 'half' : frequency === 'annual' ? 'year' : 'month'
+  if (grain === 'month') return null
+  const containing = parent(month, grain)
+  return periodLabel(nextPeriod(containing), fyStart)
 }
 
 function healthLabels(scale: StatusScaleEntry[]): Map<string, string> {
@@ -108,14 +139,10 @@ export function OverviewPage() {
     return { pathname: '../table', search, hash: `#metric-${metricKey}` }
   }
 
-  const ytdByMetric = useMemo(() => {
-    const map = new Map<string, Cell>()
-    for (const row of ytdView.data?.rows ?? []) {
-      const cell = row.cells.find((c) => c.ytd)
-      if (cell) map.set(row.metricKey, cell)
-    }
-    return map
-  }, [ytdView.data?.rows])
+  const ytdCellFor = (row: ViewRow): Cell | undefined =>
+    ytdView.data?.rows
+      .find((r) => r.metricKey === row.metricKey && r.subjectId === row.subjectId)
+      ?.cells.find((c) => c.ytd && c.display !== '')
 
   if (view.isPending || (ytdRequest && ytdView.isPending)) return <Skeleton />
   if (view.isError) {
@@ -301,19 +328,15 @@ export function OverviewPage() {
             </h2>
             <ul className="mt-3 grid gap-4 sm:grid-cols-2">
               {sectionMetrics.map(({ metric, scope, children, atScope, noun }) => {
-                const cell = scope.cells.find((c) => cellKey(c) === columnKey)
-                const chartRow =
-                  cell && cell.value == null && cell.naReason === '' && cell.status === '' && children.length > 0
-                    ? children[0]!
-                    : scope
-                const scopeNote =
-                  chartRow !== scope && children.some((ch) => ch.cells.some((c) => cellKey(c) === columnKey && (c.value != null || c.status !== '')))
-                    ? `Company total not reported; ${children.filter((ch) => {
-                        const c = ch.cells.find((x) => cellKey(x) === columnKey)
-                        return c && (c.value != null || (c.status !== '' && c.naReason === ''))
-                      }).length} ${noun} reported`
-                    : atScope.caption || undefined
-                const ytdCell = ytdByMetric.get(scope.metricKey)
+                const cell = scopeCell(scope, columnKey)
+                const scopeReported = cellReported(cell)
+                const reportedChildren = children.filter((ch) => cellReported(scopeCell(ch, columnKey)))
+                const chartChildren = !scopeReported && reportedChildren.length > 0
+                const scopeNote = chartChildren
+                  ? `Company total not reported; ${reportedChildren.length} ${noun} reported`
+                  : atScope.caption || undefined
+                const chartRows = chartChildren ? reportedChildren : [scope]
+                const ytdCell = ytdCellFor(scope)
                 const ytdDisplay = ytdCell?.display ? `YTD ${ytdCell.display}` : null
                 return (
                   <li key={metric.key}>
@@ -335,15 +358,16 @@ export function OverviewPage() {
                           Expand
                         </button>
                       </div>
-                      {atScope.caption && chartRow === scope && (
+                      {atScope.caption && !chartChildren && (
                         <p className="text-xs text-ink/80">{atScope.caption}</p>
                       )}
                       <MetricChart
-                        row={chartRow}
+                        row={scope}
+                        chartRows={chartRows}
                         childRows={children}
                         columns={trendColumns}
                         currentColumnKey={columnKey}
-                        currentDisplay={cell?.display ?? chartRow.cells.find((c) => cellKey(c) === columnKey)?.display ?? ''}
+                        currentDisplay={cell?.display ?? ''}
                         currentStatus={atScope.status}
                         statusLabel={statusLabel}
                         scale={statusColors}
@@ -375,7 +399,13 @@ export function OverviewPage() {
 
       {unreported.length > 0 && (
         <p className="mt-6 text-sm text-ink/80">
-          Not reported: {unreported.map((m) => m.scope.metricName).join(', ')}
+          Not reported:{' '}
+          {unreported
+            .map((m) => {
+              const due = nextDuePeriodLabel(m.scope.frequency, period.period, fy)
+              return due ? `${m.scope.metricName} (next due ${due})` : m.scope.metricName
+            })
+            .join(', ')}
           {canEnter && (
             <>
               {' '}

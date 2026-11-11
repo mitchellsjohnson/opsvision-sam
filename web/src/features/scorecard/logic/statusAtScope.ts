@@ -21,7 +21,9 @@ function findCell(columnKey: string, cells: ScopeRow['cells']): ScopeCell | unde
   return cells.find((c) => !c.ytd && c.period === columnKey)
 }
 
-export function cellReported(cell: ScopeCell | undefined): boolean {
+export function cellReported(
+  cell: (ScopeCell & { period?: string; ytd?: boolean }) | undefined,
+): boolean {
   if (!cell) return false
   if (cell.value != null) return true
   return cell.status !== '' && cell.naReason === ''
