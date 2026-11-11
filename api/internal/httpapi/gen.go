@@ -728,6 +728,9 @@ type Cell struct {
 	// Example: 2026-M10
 	Period Period `json:"period"`
 
+	// Rule The rule after per-subject bands are applied. Omitted when no methodology version applied.
+	Rule *StatusRule `json:"rule,omitempty"`
+
 	// Status Status key, or the empty string when there is no outcome.
 	Status string `json:"status"`
 
@@ -1300,7 +1303,11 @@ type Metric struct {
 	// CategoryId Client-supplied identifier.
 	//
 	// Example: team-alpha
-	CategoryId Id           `json:"categoryId"`
+	CategoryId Id `json:"categoryId"`
+
+	// ChartKind Chart presentation override. Empty means automatic. One of
+	// `ratio`, `money_plan`, `change`, `uptime`, `days`, `discrete`, `line`.
+	ChartKind  *string      `json:"chartKind,omitempty"`
 	Definition string       `json:"definition"`
 	Direction  Direction    `json:"direction"`
 	Example    string       `json:"example"`
@@ -2166,9 +2173,12 @@ type ViewRow struct {
 	// Example: team-alpha
 	CategoryId Id           `json:"categoryId"`
 	Cells      []Cell       `json:"cells"`
+	ChartKind  string       `json:"chartKind"`
+	Definition *string      `json:"definition,omitempty"`
 	Depth      int          `json:"depth"`
 	Direction  Direction    `json:"direction"`
 	Format     MetricFormat `json:"format"`
+	Frequency  Frequency    `json:"frequency"`
 
 	// MetricKey Measure or metric key.
 	//

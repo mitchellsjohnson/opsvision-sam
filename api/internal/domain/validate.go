@@ -19,6 +19,14 @@ func (e ValidationError) Error() string { return e.Path + ": " + e.Message }
 
 var keyPattern = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 
+func validChartKind(s string) bool {
+	switch s {
+	case "ratio", "money_plan", "change", "uptime", "days", "discrete", "line":
+		return true
+	}
+	return false
+}
+
 // reservedKeys are formula function names and cannot be used as keys.
 var reservedKeys = map[string]bool{"min": true, "max": true, "abs": true}
 
@@ -125,6 +133,9 @@ func (m Methodology) Validate(scale []StatusLevel) []ValidationError {
 		}
 		if !mt.Frequency.Valid() {
 			v.add(path+".frequency", "invalid frequency %q", mt.Frequency)
+		}
+		if mt.ChartKind != "" && !validChartKind(mt.ChartKind) {
+			v.add(path+".chartKind", "invalid chart kind %q", mt.ChartKind)
 		}
 		for j, s := range mt.ReportedAt {
 			sp := fmt.Sprintf("%s.reportedAt[%d]", path, j)

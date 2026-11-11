@@ -52,9 +52,12 @@ type Row struct {
 	// Depth is indentation: distance from the root for org units; for
 	// tracked items one more than the unit they are attached to, or 0 when
 	// unattached.
-	Depth     int
-	Direction domain.Direction
-	Cells     []Cell
+	Depth        int
+	Direction    domain.Direction
+	Frequency    domain.Frequency
+	ChartKind    string
+	Definition   string
+	Cells        []Cell
 }
 
 // View is the table a scorecard renders.
@@ -336,6 +339,7 @@ func Compute(in *Input, req ViewRequest) (View, error) {
 			MetricKey: sp.key, MetricName: ref.m.Name, CategoryID: ref.m.CategoryID,
 			SubjectID: sp.s.id, SubjectName: sp.s.name, Format: ref.m.Format,
 			Depth: sp.s.depth, Direction: ref.m.Direction,
+			Frequency: ref.m.Frequency, ChartKind: ChartKind(ref.m), Definition: ref.m.Definition,
 			Cells: cells[i*len(cols) : (i+1)*len(cols) : (i+1)*len(cols)],
 		}
 		for j, c := range cols {

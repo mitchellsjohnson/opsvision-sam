@@ -1865,6 +1865,11 @@ components:
         example: { type: string }
         source: { type: string }
         link: { type: string }
+        chartKind:
+          type: string
+          description: |
+            Chart presentation override. Empty means automatic. One of
+            `ratio`, `money_plan`, `change`, `uptime`, `days`, `discrete`, `line`.
     Methodology:
       type: object
       required: [categories, measures, metrics]
@@ -2035,6 +2040,9 @@ components:
           description: The methodology version the cell was computed under; empty when none applied.
         override: { $ref: '#/components/schemas/Override' }
         computed: { $ref: '#/components/schemas/CellComputed' }
+        rule:
+          allOf: [{ $ref: '#/components/schemas/StatusRule' }]
+          description: The rule after per-subject bands are applied. Omitted when no methodology version applied.
         cutoff:
           allOf: [{ $ref: '#/components/schemas/Date' }]
           description: |
@@ -2046,7 +2054,7 @@ components:
     ViewRow:
       type: object
       description: One metric for one subject. `cells` has one entry per `periods` column, then one per `ytd` column.
-      required: [metricKey, metricName, categoryId, subjectId, subjectName, format, depth, direction, cells]
+      required: [metricKey, metricName, categoryId, subjectId, subjectName, format, depth, direction, frequency, chartKind, cells]
       properties:
         metricKey: { $ref: '#/components/schemas/Key' }
         metricName: { type: string }
@@ -2056,6 +2064,9 @@ components:
         format: { $ref: '#/components/schemas/MetricFormat' }
         depth: { type: integer, minimum: 0 }
         direction: { $ref: '#/components/schemas/Direction' }
+        frequency: { $ref: '#/components/schemas/Frequency' }
+        chartKind: { type: string }
+        definition: { type: string }
         cells:
           type: array
           items: { $ref: '#/components/schemas/Cell' }

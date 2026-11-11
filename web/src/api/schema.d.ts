@@ -1187,6 +1187,11 @@ export interface components {
             example: string;
             source: string;
             link: string;
+            /**
+             * @description Chart presentation override. Empty means automatic. One of
+             *     `ratio`, `money_plan`, `change`, `uptime`, `days`, `discrete`, `line`.
+             */
+            chartKind?: string;
         };
         Methodology: {
             categories: components["schemas"]["Category"][];
@@ -1305,6 +1310,8 @@ export interface components {
             versionId: string;
             override?: components["schemas"]["Override"];
             computed?: components["schemas"]["CellComputed"];
+            /** @description The rule after per-subject bands are applied. Omitted when no methodology version applied. */
+            rule?: components["schemas"]["StatusRule"];
             /**
              * @description Set only on a month cell (not year to date) whose metric, under
              *     the version in force for the month, references a derived measure
@@ -1324,6 +1331,9 @@ export interface components {
             format: components["schemas"]["MetricFormat"];
             depth: number;
             direction: components["schemas"]["Direction"];
+            frequency: components["schemas"]["Frequency"];
+            chartKind: string;
+            definition?: string;
             cells: components["schemas"]["Cell"][];
         };
         ScorecardView: {

@@ -248,6 +248,10 @@ func apiMetric(mt domain.Metric) Metric {
 		Source:         mt.Source,
 		Link:           mt.Link,
 	}
+	if mt.ChartKind != "" {
+		ck := mt.ChartKind
+		out.ChartKind = &ck
+	}
 	for _, s := range mt.ReportedAt {
 		out.ReportedAt = append(out.ReportedAt, Subject{Kind: SubjectKind(s.Kind), Id: s.ID})
 	}
@@ -333,6 +337,9 @@ func domainMetric(mt Metric, path string, pr *problems) domain.Metric {
 		Example:        mt.Example,
 		Source:         mt.Source,
 		Link:           mt.Link,
+	}
+	if mt.ChartKind != nil {
+		out.ChartKind = *mt.ChartKind
 	}
 	for _, s := range mt.ReportedAt {
 		out.ReportedAt = append(out.ReportedAt, domain.Subject{Kind: string(s.Kind), ID: s.Id})

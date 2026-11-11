@@ -188,6 +188,12 @@ func TestValidateEnums(t *testing.T) {
 	}
 }
 
+func TestValidateChartKind(t *testing.T) {
+	m := validMethodology()
+	m.Metrics[0].ChartKind = "bogus"
+	requireError(t, m, "metrics[0].chartKind", "invalid chart kind")
+}
+
 func TestValidateCategoryMustExist(t *testing.T) {
 	m := validMethodology()
 	m.Metrics[0].CategoryID = "nope"

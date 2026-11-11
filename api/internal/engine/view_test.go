@@ -525,6 +525,59 @@ func TestComputeEmpty(t *testing.T) {
 	}
 }
 
+func TestViewRowChartKindFrequencyAndResolvedRule(t *testing.T) {
+	in := viewInput(t,
+		pt("on_time", "gateway", month(2026, 1), 85), pt("committed", "gateway", month(2026, 1), 100),
+		pt("on_time", "platform", month(2026, 1), 90), pt("committed", "platform", month(2026, 1), 100),
+	)
+	perSubject := []domain.SubjectBands{{
+		SubjectID: "gateway",
+		Bands:     []domain.Band{band("G", ">=", 80), band("Y", ">=", 70), band("R", "", 0)},
+	}}
+	for i := range in.Versions {
+		for j := range in.Versions[i].Content.Metrics {
+			m := &in.Versions[i].Content.Metrics[j]
+			if m.Key != "on_time_pct" {
+				continue
+			}
+			m.Format = domain.FormatPercent1
+			m.Rule = domain.StatusRule{
+				Type:       domain.RuleBands,
+				Bands:      []domain.Band{band("G", ">=", 90), band("Y", ">=", 80), band("R", "", 0)},
+				PerSubject: perSubject,
+			}
+		}
+	}
+	v, err := Compute(in, ViewRequest{Periods: []period.Period{month(2026, 1)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var row *Row
+	for i := range v.Rows {
+		if v.Rows[i].MetricKey == "on_time_pct" && v.Rows[i].SubjectID == "gateway" {
+			row = &v.Rows[i]
+			break
+		}
+	}
+	if row == nil {
+		t.Fatal("no on_time_pct/gateway row")
+	}
+	if row.ChartKind != "ratio" {
+		t.Errorf("ChartKind = %q, want ratio", row.ChartKind)
+	}
+	if row.Frequency != domain.FrequencyMonthly {
+		t.Errorf("Frequency = %q, want monthly", row.Frequency)
+	}
+	c := row.Cells[0]
+	wantBands := perSubject[0].Bands
+	if !reflect.DeepEqual(c.Rule.Bands, wantBands) {
+		t.Errorf("cell Rule.Bands = %+v, want per-subject %+v", c.Rule.Bands, wantBands)
+	}
+	if len(c.Rule.PerSubject) != 0 {
+		t.Errorf("resolved rule still has PerSubject: %+v", c.Rule.PerSubject)
+	}
+}
+
 func TestCompiledFormulaCacheIsConcurrencySafe(t *testing.T) {
 	in := viewInput(t,
 		pt("on_time", "gateway", month(2026, 1), 85), pt("committed", "gateway", month(2026, 1), 100))

@@ -172,6 +172,7 @@ type Metric struct {
 	Example        string     `json:"example"`
 	Source         string     `json:"source"`
 	Link           string     `json:"link"`
+	ChartKind      string     `json:"chartKind,omitempty"`
 }
 
 // RuleType selects how a StatusRule derives status.

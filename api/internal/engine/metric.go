@@ -57,6 +57,8 @@ type Cell struct {
 	Override  *domain.Override `json:"override,omitempty"`
 	// Computed is set only when an override applied.
 	Computed *Computed `json:"computed,omitempty"`
+	// Rule is the status rule after per-subject bands are applied for this cell.
+	Rule domain.StatusRule `json:"rule,omitempty"`
 }
 
 // span is the set of months a cell covers.
@@ -154,6 +156,7 @@ func (ix *Index) cell(v domain.MethodologyVersion, m domain.Metric, subjectID st
 			c.Change, c.ChangeKind = &d, ChangeDelta
 		}
 	}
+	c.Rule = ResolveRule(m.Rule, subjectID)
 	return c
 }
 

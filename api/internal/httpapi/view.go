@@ -60,6 +60,10 @@ func apiCell(c engine.Cell) Cell {
 	if c.Computed != nil {
 		out.Computed = &CellComputed{Value: c.Computed.Value, Status: c.Computed.Status}
 	}
+	if c.Rule.Type.Valid() {
+		r := apiRule(c.Rule)
+		out.Rule = &r
+	}
 	return out
 }
 
@@ -158,7 +162,12 @@ func apiView(v engine.View, keep func(engine.Row) bool, cutoffs map[cutoffKey]ti
 			Format:      MetricFormat(r.Format),
 			Depth:       r.Depth,
 			Direction:   Direction(r.Direction),
+			Frequency:   Frequency(r.Frequency),
+			ChartKind:   r.ChartKind,
 			Cells:       make([]Cell, 0, len(r.Cells)),
+		}
+		if r.Definition != "" {
+			row.Definition = &r.Definition
 		}
 		for _, c := range r.Cells {
 			cell := apiCell(c)
