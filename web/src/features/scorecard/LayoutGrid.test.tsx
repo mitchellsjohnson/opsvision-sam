@@ -7,7 +7,7 @@ import { App } from '../../App'
 import { API, server } from '../../test/server'
 import { renderApp } from '../../test/utils'
 import { viewHandlers } from '../../test/viewFixtures'
-import { applyLayout, defaultLayout } from './logic/layout'
+import { defaultLayout } from './logic/layout'
 
 type LayoutItem = components['schemas']['LayoutItem']
 type LayoutResponse = components['schemas']['LayoutResponse']
@@ -34,13 +34,11 @@ function layoutHandlers(opts: {
   onFetched?: () => void
 }) {
   let revision = opts.revision ?? 1
-  const fallback = baseFallback()
-  const merged = opts.initial !== undefined ? applyLayout(fallback, opts.initial) : fallback
 
   let state: LayoutResponse = {
-    items: merged,
+    items: opts.initial !== undefined ? opts.initial : [],
     revision,
-    source: 'user',
+    source: opts.initial !== undefined ? 'user' : 'empty',
     defaultRevision: 0,
   }
 
