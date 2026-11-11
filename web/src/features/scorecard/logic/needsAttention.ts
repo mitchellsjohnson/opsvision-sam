@@ -78,10 +78,10 @@ type Tiered = NeedsAttentionItem & {
   ranksLost: number
 }
 
-function tierFor(item: NeedsAttentionItem, scale: StatusScaleEntry[], distance: number): number | null {
+function tierFor(item: NeedsAttentionItem, scale: StatusScaleEntry[]): number | null {
   const rank = rankOf(scale, item.status)
   if (rank === bestRank(scale)) return null
-  if (rank === worstRank(scale)) return distance > 0 ? 1 : 4
+  if (rank === worstRank(scale)) return 1
   const lost = rankOf(scale, item.status) - rankOf(scale, item.priorStatus)
   if (item.priorStatus && lost >= 1) return 2
   if (rank > bestRank(scale) && rank < worstRank(scale)) return 3
@@ -92,7 +92,7 @@ export function needsAttention(items: NeedsAttentionItem[], scale: StatusScaleEn
   const tiered: Tiered[] = []
   for (const item of items) {
     const distance = distancePastWorst(item, scale)
-    const tier = tierFor(item, scale, distance)
+    const tier = tierFor(item, scale)
     if (tier == null) continue
     tiered.push({
       ...item,
@@ -111,9 +111,6 @@ export function needsAttention(items: NeedsAttentionItem[], scale: StatusScaleEn
     if (a.tier === 2) {
       if (b.ranksLost !== a.ranksLost) return b.ranksLost - a.ranksLost
       if (b.distance !== a.distance) return b.distance - a.distance
-      return a.categoryOrder - b.categoryOrder
-    }
-    if (a.tier === 4) {
       return a.categoryOrder - b.categoryOrder
     }
     return a.categoryOrder - b.categoryOrder

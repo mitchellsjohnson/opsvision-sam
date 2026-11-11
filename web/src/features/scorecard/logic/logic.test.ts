@@ -71,7 +71,7 @@ describe('applyLayout', () => {
 })
 
 describe('needsAttention', () => {
-  it('three off-track metrics keep only the two furthest past the threshold and the next by category order is dropped at the cap of 3', () => {
+  it('three off-track metrics with distances 2, 1, and 0 beat a worsened watch metric at the cap of 3', () => {
     const offTrack = (metricKey: string, categoryOrder: number, value: number) => ({
       metricKey,
       name: metricKey,
@@ -84,8 +84,8 @@ describe('needsAttention', () => {
       priorStatus: 'R',
     })
     const items = [
-      offTrack('a', 1, 70),
-      offTrack('b', 2, 75),
+      offTrack('a', 1, 60),
+      offTrack('b', 2, 70),
       offTrack('c', 3, 80),
       {
         metricKey: 'w',
@@ -99,11 +99,12 @@ describe('needsAttention', () => {
         priorStatus: 'G',
       },
     ]
-    expect(distancePastWorst(items[0]!, scale)).toBeGreaterThan(distancePastWorst(items[1]!, scale))
+    expect(distancePastWorst(items[0]!, scale)).toBe(2)
+    expect(distancePastWorst(items[1]!, scale)).toBe(1)
     expect(distancePastWorst(items[2]!, scale)).toBe(0)
     const picked = needsAttention(items, scale).map((i) => i.metricKey)
-    expect(picked).toEqual(['a', 'b', 'w'])
-    expect(picked).not.toContain('c')
+    expect(picked).toEqual(['a', 'b', 'c'])
+    expect(picked).not.toContain('w')
   })
 
   it('a worsened watch metric ranks above a stable watch metric', () => {
