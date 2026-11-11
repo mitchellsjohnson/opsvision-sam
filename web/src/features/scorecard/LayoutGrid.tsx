@@ -23,7 +23,7 @@ import { useLayout, usePutDefaultLayout, usePutLayout } from '../../api/queries'
 import type { components } from '../../api/schema'
 import { menuItemHighlight } from '../../ui/focus'
 import { applyLayout, defaultLayout, type LayoutCategory, type LayoutMetric } from './logic/layout'
-import { moveBlock, reorderSectionAfterDrop } from './logic/layoutReorder'
+import { moveBlock, reorderSectionDrop } from './logic/layoutReorder'
 
 type LayoutItem = components['schemas']['LayoutItem']
 
@@ -73,13 +73,12 @@ interface SortableTileProps {
   id: string
   item: LayoutItem
   label: string
-  pointerDrag: boolean
   onUpdate: (next: LayoutItem[]) => void
   allItems: LayoutItem[]
   children: React.ReactNode
 }
 
-function SortableTile({ id, item, label, pointerDrag, onUpdate, allItems, children }: SortableTileProps) {
+function SortableTile({ id, item, label, onUpdate, allItems, children }: SortableTileProps) {
   const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } = useSortable({
     id,
   })
@@ -112,7 +111,7 @@ function SortableTile({ id, item, label, pointerDrag, onUpdate, allItems, childr
           className="rounded border border-ink/20 bg-white p-1 hover:bg-cream"
           aria-label={`Drag ${label}`}
           {...attributes}
-          {...(pointerDrag ? listeners : {})}
+          {...listeners}
         >
           <GripVertical aria-hidden size={16} />
         </button>
@@ -212,7 +211,10 @@ export function LayoutGrid({
   }, [])
 
   const keyboardSensor = useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
-  const pointerSensor = useSensor(PointerSensor, { activationConstraint: { distance: 6 } })
+  const pointerActivation = pointerDrag
+    ? { distance: 8 }
+    : { distance: Number.MAX_SAFE_INTEGER }
+  const pointerSensor = useSensor(PointerSensor, { activationConstraint: pointerActivation })
   const sensors = useSensors(keyboardSensor, pointerSensor)
 
   const persist = useCallback(
@@ -246,7 +248,7 @@ export function LayoutGrid({
     if (oldIndex < 0 || newIndex < 0) return
 
     const normalized = active.id.toString().startsWith('section:')
-      ? reorderSectionAfterDrop(merged, oldIndex, newIndex)
+      ? reorderSectionDrop(merged, oldIndex, newIndex)
       : arrayMove(merged, oldIndex, newIndex)
     if (normalized === null) return
 
@@ -329,7 +331,6 @@ export function LayoutGrid({
                     id={item.id}
                     item={item}
                     label={label}
-                    pointerDrag={pointerDrag}
                     onUpdate={onUpdate}
                     allItems={merged}
                   >

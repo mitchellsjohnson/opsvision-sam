@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { components } from '../../../api/schema'
-import { moveBlock, reorderSectionAfterDrop } from './layoutReorder'
+import { moveBlock, reorderSectionDrop } from './layoutReorder'
 
 type LayoutItem = components['schemas']['LayoutItem']
 
@@ -8,36 +8,75 @@ function item(id: string): LayoutItem {
   return { id, size: 'small', hidden: false }
 }
 
-describe('moveBlock up', () => {
-  const items = [
+function ids(items: LayoutItem[]): string[] {
+  return items.map((i) => i.id)
+}
+
+function uniqueIds(items: LayoutItem[]) {
+  expect(new Set(ids(items)).size).toBe(items.length)
+}
+
+describe('moveBlock up on metrics', () => {
+  it('swaps with the single previous item', () => {
+    const items = [item('section:a'), item('metric:a1'), item('metric:a2')]
+    const next = moveBlock(items, 2, 'up')
+    expect(ids(next)).toEqual(['section:a', 'metric:a2', 'metric:a1'])
+    uniqueIds(next)
+  })
+
+  it('swaps b1 with section B when B is the previous item', () => {
+    const items = [item('section:a'), item('metric:a1'), item('section:b'), item('metric:b1')]
+    const next = moveBlock(items, 3, 'up')
+    expect(ids(next)).toEqual(['section:a', 'metric:a1', 'metric:b1', 'section:b'])
+    uniqueIds(next)
+  })
+})
+
+describe('moveBlock up on sections and widgets', () => {
+  it('swaps the section block with the immediately previous block', () => {
+    const items = [item('section:a'), item('metric:a1'), item('section:b'), item('metric:b1')]
+    const next = moveBlock(items, 2, 'up')
+    expect(ids(next)).toEqual(['section:b', 'metric:b1', 'section:a', 'metric:a1'])
+    uniqueIds(next)
+  })
+
+  it('swaps with the widget block only when a widget sits between sections', () => {
+    const items = [
+      item('section:a'),
+      item('metric:a1'),
+      item('widget:x'),
+      item('section:b'),
+      item('metric:b1'),
+    ]
+    const next = moveBlock(items, 3, 'up')
+    expect(ids(next)).toEqual(['section:a', 'metric:a1', 'section:b', 'metric:b1', 'widget:x'])
+    uniqueIds(next)
+  })
+})
+
+describe('reorderSectionDrop', () => {
+  const five = [
     item('section:a'),
     item('metric:a1'),
     item('section:b'),
     item('metric:b1'),
+    item('section:c'),
+    item('metric:c1'),
   ]
 
-  it('on the first metric under a section, moves that metric to the end of the previous section', () => {
-    const next = moveBlock(items, 3, 'up')
-    expect(next.map((i) => i.id)).toEqual(['section:a', 'metric:a1', 'metric:b1', 'section:b'])
-    expect(new Set(next.map((i) => i.id)).size).toBe(next.length)
+  it('inserts the dragged section before the target block when moving up', () => {
+    const next = reorderSectionDrop(five, 4, 2)
+    expect(ids(next!)).toEqual(['section:a', 'metric:a1', 'section:c', 'metric:c1', 'section:b', 'metric:b1'])
   })
 
-  it('on a section marker, swaps that block with the previous block', () => {
-    const next = moveBlock(items, 2, 'up')
-    expect(next.map((i) => i.id)).toEqual(['section:b', 'metric:b1', 'section:a', 'metric:a1'])
-    expect(new Set(next.map((i) => i.id)).size).toBe(next.length)
-  })
-})
-
-describe('reorderSectionAfterDrop', () => {
-  const items = [item('section:a'), item('metric:a1'), item('section:b'), item('metric:b1')]
-
-  it('inserts the dragged section block after the block dropped on', () => {
-    const next = reorderSectionAfterDrop(items, 0, 2)
-    expect(next?.map((i) => i.id)).toEqual(['section:b', 'metric:b1', 'section:a', 'metric:a1'])
+  it('inserts the dragged section after the target block when moving down', () => {
+    const four = five.slice(0, 4)
+    const next = reorderSectionDrop(four, 0, 2)
+    expect(ids(next!)).toEqual(['section:b', 'metric:b1', 'section:a', 'metric:a1'])
   })
 
   it('does not reorder when dropping on a member of the same block', () => {
-    expect(reorderSectionAfterDrop(items, 0, 1)).toBeNull()
+    const four = five.slice(0, 4)
+    expect(reorderSectionDrop(four, 0, 1)).toBeNull()
   })
 })
