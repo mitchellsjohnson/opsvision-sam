@@ -246,6 +246,22 @@ type RecordRevisionWrite struct {
 	Rev                      domain.RecordRevision
 }
 
+// ReportStore holds report summaries and published-revision indexes.
+type ReportStore interface {
+	// GetReportSummary returns the summary for one month. ErrNotFound when absent.
+	GetReportSummary(ctx context.Context, tenantID, scorecardID, period string) (domain.ReportSummary, error)
+	// PutReportSummary saves a summary with optimistic concurrency: expectedRevision
+	// 0 creates revision 1; otherwise expectedRevision must match the stored
+	// revision, which becomes expectedRevision+1. A mismatch returns ErrConflict.
+	PutReportSummary(ctx context.Context, tenantID, scorecardID, period, text, by string, expectedRevision int, at time.Time) (domain.ReportSummary, error)
+	// ListReportRevisions returns every published revision, newest period first,
+	// then highest revision within a period.
+	ListReportRevisions(ctx context.Context, tenantID, scorecardID string) ([]domain.ReportRevision, error)
+	// PutReportRevision records one published revision. ErrConflict when that
+	// revision number already exists for the period.
+	PutReportRevision(ctx context.Context, tenantID, scorecardID string, rev domain.ReportRevision) error
+}
+
 // LayoutStore holds per-user scorecard layouts and tenant defaults.
 type LayoutStore interface {
 	// GetLayout returns a user's layout. ErrNotFound when absent.
@@ -300,6 +316,7 @@ type Store interface {
 	DataStore
 	AuditStore
 	ImportStore
+	ReportStore
 	LayoutStore
 	RecordStore
 }

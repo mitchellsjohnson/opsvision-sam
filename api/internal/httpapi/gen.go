@@ -514,6 +514,39 @@ func (e RecordFileSpecFormat) Valid() bool {
 	}
 }
 
+// Defines values for ReportDocumentSummaryScope.
+const (
+	Company ReportDocumentSummaryScope = "company"
+)
+
+// Valid indicates whether the value is a known member of the ReportDocumentSummaryScope enum.
+func (e ReportDocumentSummaryScope) Valid() bool {
+	switch e {
+	case Company:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ReportMonthStatus.
+const (
+	ReportMonthStatusLive      ReportMonthStatus = "live"
+	ReportMonthStatusPublished ReportMonthStatus = "published"
+)
+
+// Valid indicates whether the value is a known member of the ReportMonthStatus enum.
+func (e ReportMonthStatus) Valid() bool {
+	switch e {
+	case ReportMonthStatusLive:
+		return true
+	case ReportMonthStatusPublished:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for Role.
 const (
 	Admin       Role = "admin"
@@ -597,22 +630,22 @@ func (e VersionChangeKind) Valid() bool {
 
 // Defines values for VersionStatus.
 const (
-	Draft      VersionStatus = "draft"
-	InReview   VersionStatus = "in_review"
-	Published  VersionStatus = "published"
-	Superseded VersionStatus = "superseded"
+	VersionStatusDraft      VersionStatus = "draft"
+	VersionStatusInReview   VersionStatus = "in_review"
+	VersionStatusPublished  VersionStatus = "published"
+	VersionStatusSuperseded VersionStatus = "superseded"
 )
 
 // Valid indicates whether the value is a known member of the VersionStatus enum.
 func (e VersionStatus) Valid() bool {
 	switch e {
-	case Draft:
+	case VersionStatusDraft:
 		return true
-	case InReview:
+	case VersionStatusInReview:
 		return true
-	case Published:
+	case VersionStatusPublished:
 		return true
-	case Superseded:
+	case VersionStatusSuperseded:
 		return true
 	default:
 		return false
@@ -1529,6 +1562,18 @@ type ParseImportRequestProfile string
 // Example: 2026-M10
 type Period = string
 
+// PublishReportRequest defines model for PublishReportRequest.
+type PublishReportRequest struct {
+	// Summary Optional summary text; when omitted the stored summary is used.
+	Summary *string `json:"summary,omitempty"`
+}
+
+// PublishReportResponse defines model for PublishReportResponse.
+type PublishReportResponse struct {
+	Revision int  `json:"revision"`
+	Unlocked bool `json:"unlocked"`
+}
+
 // PublishVersionRequest defines model for PublishVersionRequest.
 type PublishVersionRequest struct {
 	// EffectiveFrom A month, quarter, half, or fiscal year.
@@ -1592,6 +1637,12 @@ type PutOverrideRequest struct {
 
 	// Value The value, or null when not applicable.
 	Value *MeasureValue `json:"value,omitempty"`
+}
+
+// PutReportSummaryRequest defines model for PutReportSummaryRequest.
+type PutReportSummaryRequest struct {
+	ExpectedRevision int    `json:"expectedRevision"`
+	Text             string `json:"text"`
 }
 
 // PutVersionRequest defines model for PutVersionRequest.
@@ -1975,6 +2026,76 @@ type RecordsSampleRequest struct {
 	// Example: open_defects
 	RecordType Key     `json:"recordType"`
 	Where      *string `json:"where,omitempty"`
+}
+
+// ReportChange defines model for ReportChange.
+type ReportChange struct {
+	// MetricKey Measure or metric key.
+	//
+	// Example: open_defects
+	MetricKey Key    `json:"metricKey"`
+	Now       string `json:"now"`
+
+	// Period A month, quarter, half, or fiscal year.
+	//
+	// Example: 2026-M10
+	Period Period `json:"period"`
+
+	// SubjectId Client-supplied identifier.
+	//
+	// Example: team-alpha
+	SubjectId Id     `json:"subjectId"`
+	Was       string `json:"was"`
+}
+
+// ReportDocument defines model for ReportDocument.
+type ReportDocument struct {
+	Changes      []ReportChange             `json:"changes"`
+	DataRevised  bool                       `json:"dataRevised"`
+	Facts        []string                   `json:"facts"`
+	GeneratedAt  time.Time                  `json:"generatedAt"`
+	Live         bool                       `json:"live"`
+	Revision     int                        `json:"revision"`
+	Summary      string                     `json:"summary"`
+	SummaryScope ReportDocumentSummaryScope `json:"summaryScope"`
+	View         ScorecardView              `json:"view"`
+}
+
+// ReportDocumentSummaryScope defines model for ReportDocument.SummaryScope.
+type ReportDocumentSummaryScope string
+
+// ReportMonth defines model for ReportMonth.
+type ReportMonth struct {
+	// Period A month.
+	//
+	// Example: 2026-M10
+	Period      MonthPeriod `json:"period"`
+	PublishedAt *time.Time  `json:"publishedAt,omitempty"`
+	PublishedBy *UserId     `json:"publishedBy,omitempty"`
+
+	// Revision Latest published revision; 0 when live.
+	Revision int               `json:"revision"`
+	Status   ReportMonthStatus `json:"status"`
+}
+
+// ReportMonthStatus defines model for ReportMonth.Status.
+type ReportMonthStatus string
+
+// ReportMonthList defines model for ReportMonthList.
+type ReportMonthList struct {
+	Months []ReportMonth `json:"months"`
+}
+
+// ReportSummary defines model for ReportSummary.
+type ReportSummary struct {
+	Revision  int        `json:"revision"`
+	Text      string     `json:"text"`
+	UpdatedAt *time.Time `json:"updatedAt,omitempty"`
+
+	// UpdatedBy User ID from the identity provider. It never contains `#`.
+	//
+	// Example: auth0|abc123
+	UpdatedBy *UserId `json:"updatedBy,omitempty"`
 }
 
 // Role defines model for Role.
@@ -2366,6 +2487,13 @@ type ListRecordContributionsParams struct {
 	Cursor  *string `form:"cursor,omitempty" json:"cursor,omitempty"`
 }
 
+// GetReportDocumentParams defines parameters for GetReportDocument.
+type GetReportDocumentParams struct {
+	// Revision Omit for the latest published snapshot if any, otherwise live.
+	// `live` always recomputes. A positive integer returns that revision.
+	Revision *string `form:"revision,omitempty" json:"revision,omitempty"`
+}
+
 // GetVersionDiffParams defines parameters for GetVersionDiff.
 type GetVersionDiffParams struct {
 	// Against ID of the version to compare against; it must belong to the same
@@ -2472,6 +2600,12 @@ type PreviewDataJSONRequestBody = DataBatchRequest
 
 // SampleRecordsJSONRequestBody defines body for SampleRecords for application/json ContentType.
 type SampleRecordsJSONRequestBody = RecordsSampleRequest
+
+// PublishReportJSONRequestBody defines body for PublishReport for application/json ContentType.
+type PublishReportJSONRequestBody = PublishReportRequest
+
+// PutReportSummaryJSONRequestBody defines body for PutReportSummary for application/json ContentType.
+type PutReportSummaryJSONRequestBody = PutReportSummaryRequest
 
 // CreateVersionJSONRequestBody defines body for CreateVersion for application/json ContentType.
 type CreateVersionJSONRequestBody = CreateVersionRequest
@@ -2613,6 +2747,21 @@ type ServerInterface interface {
 	// SampleRecords Count the records a condition matches in a period (admin only)
 	// (POST /scorecards/{sc}/records/sample)
 	SampleRecords(w http.ResponseWriter, r *http.Request, sc ScorecardId)
+	// ListReportMonths List report months and their publish status
+	// (GET /scorecards/{sc}/reports)
+	ListReportMonths(w http.ResponseWriter, r *http.Request, sc ScorecardId)
+	// GetReportDocument Live or published report document
+	// (GET /scorecards/{sc}/reports/{period})
+	GetReportDocument(w http.ResponseWriter, r *http.Request, sc ScorecardId, period Period, params GetReportDocumentParams)
+	// PublishReport Publish a monthly operating report (admin only)
+	// (POST /scorecards/{sc}/reports/{period}/publish)
+	PublishReport(w http.ResponseWriter, r *http.Request, sc ScorecardId, period Period)
+	// GetReportSummary Executive summary for a report month
+	// (GET /scorecards/{sc}/reports/{period}/summary)
+	GetReportSummary(w http.ResponseWriter, r *http.Request, sc ScorecardId, period Period)
+	// PutReportSummary Save the executive summary (admin only)
+	// (PUT /scorecards/{sc}/reports/{period}/summary)
+	PutReportSummary(w http.ResponseWriter, r *http.Request, sc ScorecardId, period Period)
 	// ListVersions List a scorecard's methodology versions
 	// (GET /scorecards/{sc}/versions)
 	ListVersions(w http.ResponseWriter, r *http.Request, sc ScorecardId)
@@ -3755,6 +3904,188 @@ func (siw *ServerInterfaceWrapper) SampleRecords(w http.ResponseWriter, r *http.
 	handler.ServeHTTP(w, r)
 }
 
+// ListReportMonths operation middleware
+func (siw *ServerInterfaceWrapper) ListReportMonths(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "sc" -------------
+	var sc ScorecardId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "sc", r.PathValue("sc"), &sc, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "sc", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListReportMonths(w, r, sc)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetReportDocument operation middleware
+func (siw *ServerInterfaceWrapper) GetReportDocument(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "sc" -------------
+	var sc ScorecardId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "sc", r.PathValue("sc"), &sc, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "sc", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "period" -------------
+	var period Period
+
+	err = runtime.BindStyledParameterWithOptions("simple", "period", r.PathValue("period"), &period, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "period", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetReportDocumentParams
+
+	// ------------- Optional query parameter "revision" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "revision", r.URL.Query(), &params.Revision, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "revision"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "revision", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetReportDocument(w, r, sc, period, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PublishReport operation middleware
+func (siw *ServerInterfaceWrapper) PublishReport(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "sc" -------------
+	var sc ScorecardId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "sc", r.PathValue("sc"), &sc, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "sc", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "period" -------------
+	var period Period
+
+	err = runtime.BindStyledParameterWithOptions("simple", "period", r.PathValue("period"), &period, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "period", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PublishReport(w, r, sc, period)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetReportSummary operation middleware
+func (siw *ServerInterfaceWrapper) GetReportSummary(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "sc" -------------
+	var sc ScorecardId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "sc", r.PathValue("sc"), &sc, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "sc", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "period" -------------
+	var period Period
+
+	err = runtime.BindStyledParameterWithOptions("simple", "period", r.PathValue("period"), &period, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "period", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetReportSummary(w, r, sc, period)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PutReportSummary operation middleware
+func (siw *ServerInterfaceWrapper) PutReportSummary(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "sc" -------------
+	var sc ScorecardId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "sc", r.PathValue("sc"), &sc, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "sc", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "period" -------------
+	var period Period
+
+	err = runtime.BindStyledParameterWithOptions("simple", "period", r.PathValue("period"), &period, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "period", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PutReportSummary(w, r, sc, period)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // ListVersions operation middleware
 func (siw *ServerInterfaceWrapper) ListVersions(w http.ResponseWriter, r *http.Request) {
 
@@ -4235,6 +4566,11 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/scorecards", wrapper.ListScorecards)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/scorecards", wrapper.CreateScorecard)
 	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/scorecards/{sc}/default-layout", wrapper.PutDefaultLayout)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/scorecards/{sc}/reports", wrapper.ListReportMonths)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/scorecards/{sc}/reports/{period}/summary", wrapper.GetReportSummary)
+	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/scorecards/{sc}/reports/{period}/summary", wrapper.PutReportSummary)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/scorecards/{sc}/reports/{period}/publish", wrapper.PublishReport)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/scorecards/{sc}/reports/{period}", wrapper.GetReportDocument)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/scorecards/{sc}/versions", wrapper.ListVersions)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/scorecards/{sc}/versions", wrapper.CreateVersion)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/scorecards/{sc}/versions/{v}", wrapper.GetVersion)
@@ -7460,6 +7796,417 @@ func (response SampleRecords404JSONResponse) VisitSampleRecordsResponse(w http.R
 	return err
 }
 
+type ListReportMonthsRequestObject struct {
+	Sc ScorecardId `json:"sc"`
+}
+
+type ListReportMonthsResponseObject interface {
+	VisitListReportMonthsResponse(w http.ResponseWriter) error
+}
+
+type ListReportMonths200JSONResponse ReportMonthList
+
+func (response ListReportMonths200JSONResponse) VisitListReportMonthsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListReportMonths401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response ListReportMonths401JSONResponse) VisitListReportMonthsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListReportMonths403JSONResponse struct{ ForbiddenJSONResponse }
+
+func (response ListReportMonths403JSONResponse) VisitListReportMonthsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListReportMonths404JSONResponse struct{ NotFoundJSONResponse }
+
+func (response ListReportMonths404JSONResponse) VisitListReportMonthsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetReportDocumentRequestObject struct {
+	Sc     ScorecardId `json:"sc"`
+	Period Period      `json:"period"`
+	Params GetReportDocumentParams
+}
+
+type GetReportDocumentResponseObject interface {
+	VisitGetReportDocumentResponse(w http.ResponseWriter) error
+}
+
+type GetReportDocument200JSONResponse ReportDocument
+
+func (response GetReportDocument200JSONResponse) VisitGetReportDocumentResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetReportDocument400JSONResponse struct{ BadRequestJSONResponse }
+
+func (response GetReportDocument400JSONResponse) VisitGetReportDocumentResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetReportDocument401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response GetReportDocument401JSONResponse) VisitGetReportDocumentResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetReportDocument403JSONResponse struct{ ForbiddenJSONResponse }
+
+func (response GetReportDocument403JSONResponse) VisitGetReportDocumentResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetReportDocument404JSONResponse struct{ NotFoundJSONResponse }
+
+func (response GetReportDocument404JSONResponse) VisitGetReportDocumentResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PublishReportRequestObject struct {
+	Sc     ScorecardId `json:"sc"`
+	Period Period      `json:"period"`
+	Body   *PublishReportJSONRequestBody
+}
+
+type PublishReportResponseObject interface {
+	VisitPublishReportResponse(w http.ResponseWriter) error
+}
+
+type PublishReport200JSONResponse PublishReportResponse
+
+func (response PublishReport200JSONResponse) VisitPublishReportResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PublishReport400JSONResponse struct{ BadRequestJSONResponse }
+
+func (response PublishReport400JSONResponse) VisitPublishReportResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PublishReport401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response PublishReport401JSONResponse) VisitPublishReportResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PublishReport403JSONResponse struct{ ForbiddenJSONResponse }
+
+func (response PublishReport403JSONResponse) VisitPublishReportResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PublishReport404JSONResponse struct{ NotFoundJSONResponse }
+
+func (response PublishReport404JSONResponse) VisitPublishReportResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PublishReport409JSONResponse struct{ ConflictJSONResponse }
+
+func (response PublishReport409JSONResponse) VisitPublishReportResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetReportSummaryRequestObject struct {
+	Sc     ScorecardId `json:"sc"`
+	Period Period      `json:"period"`
+}
+
+type GetReportSummaryResponseObject interface {
+	VisitGetReportSummaryResponse(w http.ResponseWriter) error
+}
+
+type GetReportSummary200JSONResponse ReportSummary
+
+func (response GetReportSummary200JSONResponse) VisitGetReportSummaryResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetReportSummary400JSONResponse struct{ BadRequestJSONResponse }
+
+func (response GetReportSummary400JSONResponse) VisitGetReportSummaryResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetReportSummary401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response GetReportSummary401JSONResponse) VisitGetReportSummaryResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetReportSummary403JSONResponse struct{ ForbiddenJSONResponse }
+
+func (response GetReportSummary403JSONResponse) VisitGetReportSummaryResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetReportSummary404JSONResponse struct{ NotFoundJSONResponse }
+
+func (response GetReportSummary404JSONResponse) VisitGetReportSummaryResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PutReportSummaryRequestObject struct {
+	Sc     ScorecardId `json:"sc"`
+	Period Period      `json:"period"`
+	Body   *PutReportSummaryJSONRequestBody
+}
+
+type PutReportSummaryResponseObject interface {
+	VisitPutReportSummaryResponse(w http.ResponseWriter) error
+}
+
+type PutReportSummary200JSONResponse ReportSummary
+
+func (response PutReportSummary200JSONResponse) VisitPutReportSummaryResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PutReportSummary400JSONResponse struct{ BadRequestJSONResponse }
+
+func (response PutReportSummary400JSONResponse) VisitPutReportSummaryResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PutReportSummary401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response PutReportSummary401JSONResponse) VisitPutReportSummaryResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PutReportSummary403JSONResponse struct{ ForbiddenJSONResponse }
+
+func (response PutReportSummary403JSONResponse) VisitPutReportSummaryResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PutReportSummary404JSONResponse struct{ NotFoundJSONResponse }
+
+func (response PutReportSummary404JSONResponse) VisitPutReportSummaryResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PutReportSummary409JSONResponse struct{ ConflictJSONResponse }
+
+func (response PutReportSummary409JSONResponse) VisitPutReportSummaryResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type ListVersionsRequestObject struct {
 	Sc ScorecardId `json:"sc"`
 }
@@ -8230,6 +8977,21 @@ type StrictServerInterface interface {
 	// SampleRecords Count the records a condition matches in a period (admin only)
 	// (POST /scorecards/{sc}/records/sample)
 	SampleRecords(ctx context.Context, request SampleRecordsRequestObject) (SampleRecordsResponseObject, error)
+	// ListReportMonths List report months and their publish status
+	// (GET /scorecards/{sc}/reports)
+	ListReportMonths(ctx context.Context, request ListReportMonthsRequestObject) (ListReportMonthsResponseObject, error)
+	// GetReportDocument Live or published report document
+	// (GET /scorecards/{sc}/reports/{period})
+	GetReportDocument(ctx context.Context, request GetReportDocumentRequestObject) (GetReportDocumentResponseObject, error)
+	// PublishReport Publish a monthly operating report (admin only)
+	// (POST /scorecards/{sc}/reports/{period}/publish)
+	PublishReport(ctx context.Context, request PublishReportRequestObject) (PublishReportResponseObject, error)
+	// GetReportSummary Executive summary for a report month
+	// (GET /scorecards/{sc}/reports/{period}/summary)
+	GetReportSummary(ctx context.Context, request GetReportSummaryRequestObject) (GetReportSummaryResponseObject, error)
+	// PutReportSummary Save the executive summary (admin only)
+	// (PUT /scorecards/{sc}/reports/{period}/summary)
+	PutReportSummary(ctx context.Context, request PutReportSummaryRequestObject) (PutReportSummaryResponseObject, error)
 	// ListVersions List a scorecard's methodology versions
 	// (GET /scorecards/{sc}/versions)
 	ListVersions(ctx context.Context, request ListVersionsRequestObject) (ListVersionsResponseObject, error)
@@ -9549,6 +10311,158 @@ func (sh *strictHandler) SampleRecords(w http.ResponseWriter, r *http.Request, s
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(SampleRecordsResponseObject); ok {
 		if err := validResponse.VisitSampleRecordsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListReportMonths operation middleware
+func (sh *strictHandler) ListReportMonths(w http.ResponseWriter, r *http.Request, sc ScorecardId) {
+	var request ListReportMonthsRequestObject
+
+	request.Sc = sc
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListReportMonths(ctx, request.(ListReportMonthsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListReportMonths")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListReportMonthsResponseObject); ok {
+		if err := validResponse.VisitListReportMonthsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetReportDocument operation middleware
+func (sh *strictHandler) GetReportDocument(w http.ResponseWriter, r *http.Request, sc ScorecardId, period Period, params GetReportDocumentParams) {
+	var request GetReportDocumentRequestObject
+
+	request.Sc = sc
+	request.Period = period
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetReportDocument(ctx, request.(GetReportDocumentRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetReportDocument")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetReportDocumentResponseObject); ok {
+		if err := validResponse.VisitGetReportDocumentResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// PublishReport operation middleware
+func (sh *strictHandler) PublishReport(w http.ResponseWriter, r *http.Request, sc ScorecardId, period Period) {
+	var request PublishReportRequestObject
+
+	request.Sc = sc
+	request.Period = period
+
+	var body PublishReportJSONRequestBody
+	if err := runtime.BindJSONBody(r, &body); err != nil {
+		if !errors.Is(err, io.EOF) {
+			sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+			return
+		}
+	} else {
+		request.Body = &body
+	}
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.PublishReport(ctx, request.(PublishReportRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "PublishReport")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(PublishReportResponseObject); ok {
+		if err := validResponse.VisitPublishReportResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetReportSummary operation middleware
+func (sh *strictHandler) GetReportSummary(w http.ResponseWriter, r *http.Request, sc ScorecardId, period Period) {
+	var request GetReportSummaryRequestObject
+
+	request.Sc = sc
+	request.Period = period
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetReportSummary(ctx, request.(GetReportSummaryRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetReportSummary")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetReportSummaryResponseObject); ok {
+		if err := validResponse.VisitGetReportSummaryResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// PutReportSummary operation middleware
+func (sh *strictHandler) PutReportSummary(w http.ResponseWriter, r *http.Request, sc ScorecardId, period Period) {
+	var request PutReportSummaryRequestObject
+
+	request.Sc = sc
+	request.Period = period
+
+	var body PutReportSummaryJSONRequestBody
+	if err := runtime.BindJSONBody(r, &body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.PutReportSummary(ctx, request.(PutReportSummaryRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "PutReportSummary")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(PutReportSummaryResponseObject); ok {
+		if err := validResponse.VisitPutReportSummaryResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

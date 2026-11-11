@@ -46,8 +46,10 @@ const (
 	prefixRecType   = "RTYPE#"
 	prefixSnapshot  = "SNAP#"
 	prefixRecordRev = "R#"
-	prefixLayout    = "LAYOUT#"
-	prefixLayoutDef = "LAYOUTDEFAULT#"
+	prefixLayout        = "LAYOUT#"
+	prefixLayoutDef     = "LAYOUTDEFAULT#"
+	prefixReportSummary = "REPORTSUMMARY#"
+	prefixReportRev     = "REPORT#"
 
 	versionMarker = "#VER#"
 )

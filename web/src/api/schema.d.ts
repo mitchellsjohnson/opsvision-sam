@@ -288,6 +288,93 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/scorecards/{sc}/reports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Scorecard ID. */
+                sc: components["parameters"]["ScorecardId"];
+            };
+            cookie?: never;
+        };
+        /** List report months and their publish status */
+        get: operations["listReportMonths"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/scorecards/{sc}/reports/{period}/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Scorecard ID. */
+                sc: components["parameters"]["ScorecardId"];
+                /** @description Reporting period string such as 2026-M10. */
+                period: components["parameters"]["Period"];
+            };
+            cookie?: never;
+        };
+        /** Executive summary for a report month */
+        get: operations["getReportSummary"];
+        /** Save the executive summary (admin only) */
+        put: operations["putReportSummary"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/scorecards/{sc}/reports/{period}/publish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Scorecard ID. */
+                sc: components["parameters"]["ScorecardId"];
+                /** @description Reporting period string such as 2026-M10. */
+                period: components["parameters"]["Period"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Publish a monthly operating report (admin only) */
+        post: operations["publishReport"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/scorecards/{sc}/reports/{period}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Scorecard ID. */
+                sc: components["parameters"]["ScorecardId"];
+                /** @description Reporting period string such as 2026-M10. */
+                period: components["parameters"]["Period"];
+            };
+            cookie?: never;
+        };
+        /** Live or published report document */
+        get: operations["getReportDocument"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/scorecards/{sc}/versions": {
         parameters: {
             query?: never;
@@ -1897,6 +1984,58 @@ export interface components {
             /** @enum {string} */
             source: "user" | "default" | "empty";
         };
+        ReportSummary: {
+            text: string;
+            revision: number;
+            updatedBy?: components["schemas"]["UserId"];
+            /** Format: date-time */
+            updatedAt?: string;
+        };
+        PutReportSummaryRequest: {
+            text: string;
+            expectedRevision: number;
+        };
+        ReportMonthList: {
+            months: components["schemas"]["ReportMonth"][];
+        };
+        ReportMonth: {
+            period: components["schemas"]["MonthPeriod"];
+            /** @enum {string} */
+            status: "live" | "published";
+            /** Format: date-time */
+            publishedAt?: string | null;
+            publishedBy?: components["schemas"]["UserId"] | null;
+            /** @description Latest published revision; 0 when live. */
+            revision: number;
+        };
+        PublishReportRequest: {
+            /** @description Optional summary text; when omitted the stored summary is used. */
+            summary?: string;
+        };
+        PublishReportResponse: {
+            revision: number;
+            unlocked: boolean;
+        };
+        ReportChange: {
+            metricKey: components["schemas"]["Key"];
+            subjectId: components["schemas"]["Id"];
+            period: components["schemas"]["Period"];
+            was: string;
+            now: string;
+        };
+        ReportDocument: {
+            live: boolean;
+            revision: number;
+            dataRevised: boolean;
+            changes: components["schemas"]["ReportChange"][];
+            summary: string;
+            facts: string[];
+            view: components["schemas"]["ScorecardView"];
+            /** Format: date-time */
+            generatedAt: string;
+            /** @enum {string} */
+            summaryScope: "company";
+        };
         AuditEntry: {
             id: components["schemas"]["ServerId"];
             actorId: string;
@@ -1984,6 +2123,8 @@ export interface components {
         VersionId: components["schemas"]["ServerId"];
         /** @description Record type ID. */
         RecordTypeId: components["schemas"]["Key"];
+        /** @description Reporting period string such as 2026-M10. */
+        Period: components["schemas"]["Period"];
     };
     requestBodies: never;
     headers: never;
@@ -2623,6 +2764,164 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
+        };
+    };
+    listReportMonths: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Scorecard ID. */
+                sc: components["parameters"]["ScorecardId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Months in the report history window */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReportMonthList"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    getReportSummary: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Scorecard ID. */
+                sc: components["parameters"]["ScorecardId"];
+                /** @description Reporting period string such as 2026-M10. */
+                period: components["parameters"]["Period"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The stored summary */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReportSummary"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    putReportSummary: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Scorecard ID. */
+                sc: components["parameters"]["ScorecardId"];
+                /** @description Reporting period string such as 2026-M10. */
+                period: components["parameters"]["Period"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PutReportSummaryRequest"];
+            };
+        };
+        responses: {
+            /** @description The stored summary */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReportSummary"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+        };
+    };
+    publishReport: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Scorecard ID. */
+                sc: components["parameters"]["ScorecardId"];
+                /** @description Reporting period string such as 2026-M10. */
+                period: components["parameters"]["Period"];
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["PublishReportRequest"];
+            };
+        };
+        responses: {
+            /** @description The new revision number */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublishReportResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+        };
+    };
+    getReportDocument: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Omit for the latest published snapshot if any, otherwise live.
+                 *     `live` always recomputes. A positive integer returns that revision.
+                 */
+                revision?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Scorecard ID. */
+                sc: components["parameters"]["ScorecardId"];
+                /** @description Reporting period string such as 2026-M10. */
+                period: components["parameters"]["Period"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The report document */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReportDocument"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
         };
     };
     listVersions: {

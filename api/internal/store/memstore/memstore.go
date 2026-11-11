@@ -80,8 +80,10 @@ type tenantData struct {
 	recTypes   map[string]domain.RecordType
 	snapshots  map[snapshotKey]domain.Snapshot
 	records        map[string]map[recordKey]*domain.Record // by record type
-	layouts        map[layoutKey]domain.Layout
-	defaultLayouts map[string]domain.Layout
+	layouts          map[layoutKey]domain.Layout
+	defaultLayouts   map[string]domain.Layout
+	reportSummaries  map[reportSummaryKey]domain.ReportSummary
+	reportRevisions  map[reportRevisionKey]domain.ReportRevision
 }
 
 type snapshotKey struct{ recordType, id string }

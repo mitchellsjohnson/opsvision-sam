@@ -518,6 +518,115 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
 
+  /scorecards/{sc}/reports:
+    parameters:
+      - $ref: '#/components/parameters/ScorecardId'
+    get:
+      operationId: listReportMonths
+      tags: [Scorecards]
+      summary: List report months and their publish status
+      responses:
+        '200':
+          description: Months in the report history window
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReportMonthList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /scorecards/{sc}/reports/{period}/summary:
+    parameters:
+      - $ref: '#/components/parameters/ScorecardId'
+      - $ref: '#/components/parameters/Period'
+    get:
+      operationId: getReportSummary
+      tags: [Scorecards]
+      summary: Executive summary for a report month
+      responses:
+        '200':
+          description: The stored summary
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReportSummary' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      operationId: putReportSummary
+      tags: [Scorecards]
+      summary: Save the executive summary (admin only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PutReportSummaryRequest' }
+      responses:
+        '200':
+          description: The stored summary
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReportSummary' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /scorecards/{sc}/reports/{period}/publish:
+    parameters:
+      - $ref: '#/components/parameters/ScorecardId'
+      - $ref: '#/components/parameters/Period'
+    post:
+      operationId: publishReport
+      tags: [Scorecards]
+      summary: Publish a monthly operating report (admin only)
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PublishReportRequest' }
+      responses:
+        '200':
+          description: The new revision number
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PublishReportResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /scorecards/{sc}/reports/{period}:
+    parameters:
+      - $ref: '#/components/parameters/ScorecardId'
+      - $ref: '#/components/parameters/Period'
+    get:
+      operationId: getReportDocument
+      tags: [Scorecards]
+      summary: Live or published report document
+      parameters:
+        - name: revision
+          in: query
+          required: false
+          description: |
+            Omit for the latest published snapshot if any, otherwise live.
+            `live` always recomputes. A positive integer returns that revision.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The report document
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReportDocument' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
   /scorecards/{sc}/versions:
     parameters:
       - $ref: '#/components/parameters/ScorecardId'
@@ -1409,6 +1518,12 @@ components:
       required: true
       description: Record type ID.
       schema: { $ref: '#/components/schemas/Key' }
+    Period:
+      name: period
+      in: path
+      required: true
+      description: Reporting period string such as 2026-M10.
+      schema: { $ref: '#/components/schemas/Period' }
 
   responses:
     BadRequest:
@@ -2883,6 +2998,87 @@ components:
         source:
           type: string
           enum: [user, default, empty]
+
+    ReportSummary:
+      type: object
+      required: [text, revision]
+      properties:
+        text: { type: string }
+        revision: { type: integer, minimum: 0 }
+        updatedBy: { $ref: '#/components/schemas/UserId' }
+        updatedAt: { type: string, format: date-time }
+    PutReportSummaryRequest:
+      type: object
+      required: [text, expectedRevision]
+      properties:
+        text: { type: string }
+        expectedRevision: { type: integer, minimum: 0 }
+    ReportMonthList:
+      type: object
+      required: [months]
+      properties:
+        months:
+          type: array
+          items: { $ref: '#/components/schemas/ReportMonth' }
+    ReportMonth:
+      type: object
+      required: [period, status, revision]
+      properties:
+        period: { $ref: '#/components/schemas/MonthPeriod' }
+        status:
+          type: string
+          enum: [live, published]
+        publishedAt:
+          type: string
+          format: date-time
+          nullable: true
+        publishedBy:
+          allOf: [{ $ref: '#/components/schemas/UserId' }]
+          nullable: true
+        revision:
+          type: integer
+          minimum: 0
+          description: Latest published revision; 0 when live.
+    PublishReportRequest:
+      type: object
+      properties:
+        summary:
+          type: string
+          description: Optional summary text; when omitted the stored summary is used.
+    PublishReportResponse:
+      type: object
+      required: [revision, unlocked]
+      properties:
+        revision: { type: integer, minimum: 1 }
+        unlocked: { type: boolean }
+    ReportChange:
+      type: object
+      required: [metricKey, subjectId, period, was, now]
+      properties:
+        metricKey: { $ref: '#/components/schemas/Key' }
+        subjectId: { $ref: '#/components/schemas/Id' }
+        period: { $ref: '#/components/schemas/Period' }
+        was: { type: string }
+        now: { type: string }
+    ReportDocument:
+      type: object
+      required: [live, revision, dataRevised, changes, summary, facts, view, generatedAt, summaryScope]
+      properties:
+        live: { type: boolean }
+        revision: { type: integer, minimum: 0 }
+        dataRevised: { type: boolean }
+        changes:
+          type: array
+          items: { $ref: '#/components/schemas/ReportChange' }
+        summary: { type: string }
+        facts:
+          type: array
+          items: { type: string }
+        view: { $ref: '#/components/schemas/ScorecardView' }
+        generatedAt: { type: string, format: date-time }
+        summaryScope:
+          type: string
+          enum: [company]
 
     # ---- Audit ------------------------------------------------------------
     AuditEntry:

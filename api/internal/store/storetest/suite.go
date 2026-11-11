@@ -68,6 +68,7 @@ func Run(t *testing.T, newStore func(t *testing.T) store.Store) {
 		{"TemplateRevisionIncrements", templateRevisionIncrements},
 		{"TemplateLastUsedKeepsRevision", templateLastUsedKeepsRevision},
 		{"LayoutRevision", layoutRevision},
+		{"ReportSummaryRevision", reportSummaryRevision},
 		{"RecordTypeRevision", recordTypeRevision},
 		{"ApplySnapshotGroupsRevisions", applySnapshotGroupsRevisions},
 		{"ApplySnapshotLargeBatch", applySnapshotLargeBatch},
@@ -2042,4 +2043,47 @@ func deleteDataPointCrossTenant(t *testing.T, s store.Store) {
 	hist, err := s.History(ctx, b, "sc", "m1", "u1", p)
 	must(t, err)
 	wantEq(t, "B's history", len(hist), 1)
+}
+
+func reportSummaryRevision(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	tn := newTenant(t, s)
+	must(t, s.PutScorecard(ctx, tn, domain.Scorecard{ID: "delivery", Name: "Delivery"}))
+	per := "2026-M10"
+	at := at(10)
+
+	got, err := s.PutReportSummary(ctx, tn, "delivery", per, "first", "user-a", 0, at)
+	must(t, err)
+	if got.Revision != 1 || got.Text != "first" {
+		t.Fatalf("create = %+v", got)
+	}
+
+	read, err := s.GetReportSummary(ctx, tn, "delivery", per)
+	must(t, err)
+	wantEq(t, "round trip", read, got)
+
+	_, err = s.PutReportSummary(ctx, tn, "delivery", per, "first", "user-a", 0, at)
+	wantErr(t, err, store.ErrConflict)
+
+	got, err = s.PutReportSummary(ctx, tn, "delivery", per, "second", "user-b", 1, at.Add(time.Hour))
+	must(t, err)
+	if got.Revision != 2 {
+		t.Fatalf("update revision = %d", got.Revision)
+	}
+
+	rev := domain.ReportRevision{
+		Period: per, Revision: 1, PublishedBy: "user-a", PublishedAt: at, ObjectKey: "obj-1",
+	}
+	must(t, s.PutReportRevision(ctx, tn, "delivery", rev))
+	err = s.PutReportRevision(ctx, tn, "delivery", rev)
+	wantErr(t, err, store.ErrConflict)
+
+	list, err := s.ListReportRevisions(ctx, tn, "delivery")
+	must(t, err)
+	wantEq(t, "list", list, []domain.ReportRevision{rev})
+
+	other := newTenant(t, s)
+	must(t, s.PutScorecard(ctx, other, domain.Scorecard{ID: "delivery", Name: "Theirs"}))
+	_, err = s.GetReportSummary(ctx, other, "delivery", per)
+	wantErr(t, err, store.ErrNotFound)
 }
