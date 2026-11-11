@@ -40,6 +40,16 @@ describe('FocusDialog', () => {
     expect(await screen.findByRole('dialog', { name: /Defect rate/i })).toBeTruthy()
   })
 
+  it('View as table links to /table without focus in the query', async () => {
+    renderOverview(`${OVERVIEW}&focus=on_time_pct`)
+    const dialog = await screen.findByRole('dialog', { name: /On-time delivery/i })
+    for (const link of within(dialog).getAllByRole('link', { name: 'View as table' })) {
+      const href = link.getAttribute('href') ?? ''
+      expect(href).toContain('/scorecards/sc-main/table')
+      expect(href).not.toContain('focus=')
+    }
+  })
+
   it('does not open focus when a chart point is clicked; empty card space sets focus', async () => {
     renderOverview()
     await screen.findByRole('heading', { name: 'Overview', level: 1 })

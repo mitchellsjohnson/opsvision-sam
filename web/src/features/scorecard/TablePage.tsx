@@ -51,6 +51,8 @@ export interface TablePageProps {
   compact?: boolean
   /** When set, use this width for the period window (full-screen table). */
   measureWidth?: number
+  /** Full-screen focus dialog: overlay drawer, no shell dock. */
+  embeddedInFocus?: boolean
 }
 
 interface RowState {
@@ -306,7 +308,13 @@ function Skeleton() {
 }
 
 /** Windowed scorecard table with keyboard grid navigation and a compact card mode. */
-export function TablePage({ scorecardId, scorecardName, compact = false, measureWidth }: TablePageProps) {
+export function TablePage({
+  scorecardId,
+  scorecardName,
+  compact = false,
+  measureWidth,
+  embeddedInFocus = false,
+}: TablePageProps) {
   const uid = useId()
   const [period] = usePeriodState()
   const [, setParams] = useSearchParams()
@@ -322,6 +330,7 @@ export function TablePage({ scorecardId, scorecardName, compact = false, measure
   const [contentWidth, setContentWidth] = useState(0)
   const [focus, setFocus] = useState({ row: 0, col: 0 })
   const { setOpen: setDockOpen, dockRef } = useShellDock()
+  const useShellDockColumn = !embeddedInFocus
 
   useLayoutEffect(() => {
     const el = measureRef.current
@@ -403,8 +412,10 @@ export function TablePage({ scorecardId, scorecardName, compact = false, measure
   }
 
   useEffect(() => {
+    if (!useShellDockColumn) return
     setDockOpen(selected !== null)
-  }, [selected, setDockOpen])
+    return () => setDockOpen(false)
+  }, [selected, setDockOpen, useShellDockColumn])
 
   const earlierDisabled = start <= 0
   const laterDisabled = start >= maxStart
@@ -824,7 +835,8 @@ export function TablePage({ scorecardId, scorecardName, compact = false, measure
         target={selected}
         onClose={() => setSelected(null)}
         returnFocusTo={opener}
-        dockContainer={dockRef.current}
+        dockContainer={useShellDockColumn ? dockRef.current : null}
+        elevatedOverlay={embeddedInFocus}
       />
     </div>
   )

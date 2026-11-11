@@ -46,44 +46,61 @@ function downloadBlob(filename: string, mime: string, body: string | Blob) {
   URL.revokeObjectURL(url)
 }
 
-function metricCsv(columns: Column[], row: ViewRow): string {
-  const lines = ['period,value,status']
-  for (const col of columns) {
-    const cell = row.cells.find((c) => cellKey(c) === col.key)
-    const value = cell?.value ?? ''
-    const status = cell?.status ?? ''
-    lines.push(`${col.period},${value},${status}`)
+function chartCsv(columns: Column[], chartRows: ViewRow[]): string {
+  const lines = ['subject,period,value,status']
+  for (const row of chartRows) {
+    for (const col of columns) {
+      const cell = row.cells.find((c) => cellKey(c) === col.key)
+      const value = cell?.value ?? ''
+      const status = cell?.status ?? ''
+      lines.push(`${row.subjectName},${col.period},${value},${status}`)
+    }
   }
   return lines.join('\n')
 }
 
-function metricSvg(title: string, columns: Column[], row: ViewRow): string {
-  const points: Array<{ x: number; y: number; status: string; label: string }> = []
-  const values = columns
-    .map((col) => row.cells.find((c) => cellKey(c) === col.key))
-    .map((c) => (c?.value != null ? c.value : null))
-  const nums = values.filter((v): v is number => v !== null)
-  const min = nums.length ? Math.min(...nums) : 0
-  const max = nums.length ? Math.max(...nums) : 100
+function chartSvg(title: string, columns: Column[], chartRows: ViewRow[]): string {
+  const allValues = chartRows.flatMap((row) =>
+    columns
+      .map((col) => row.cells.find((c) => cellKey(c) === col.key)?.value)
+      .filter((v): v is number => v != null),
+  )
+  const min = allValues.length ? Math.min(...allValues) : 0
+  const max = allValues.length ? Math.max(...allValues) : 100
   const span = max - min || 1
-  columns.forEach((col, i) => {
-    const cell = row.cells.find((c) => cellKey(c) === col.key)
-    const v = cell?.value
-    if (v == null) return
-    const x = 40 + (i / Math.max(columns.length - 1, 1)) * 520
-    const y = 200 - ((v - min) / span) * 160
-    points.push({ x, y, status: cell?.status ?? '', label: col.label })
+  const strokes = ['#1D2433', '#5B4BDB', '#0E7490', '#B45309']
+  const polylines: string[] = []
+  const letters: string[] = []
+  const legends: string[] = []
+  chartRows.forEach((row, rowIndex) => {
+    const points: Array<{ x: number; y: number; status: string }> = []
+    columns.forEach((col, i) => {
+      const cell = row.cells.find((c) => cellKey(c) === col.key)
+      const v = cell?.value
+      if (v == null) return
+      const x = 40 + (i / Math.max(columns.length - 1, 1)) * 520
+      const y = 200 - ((v - min) / span) * 160
+      points.push({ x, y, status: cell?.status ?? '' })
+    })
+    if (points.length === 0) return
+    const color = strokes[rowIndex % strokes.length]!
+    polylines.push(
+      `<polyline fill="none" stroke="${color}" stroke-width="2" points="${points.map((p) => `${p.x},${p.y}`).join(' ')}" />`,
+    )
+    for (const p of points) {
+      if (p.status) letters.push(`<text x="${p.x}" y="${p.y - 8}" text-anchor="middle" font-size="12">${p.status}</text>`)
+    }
+    if (chartRows.length > 1) {
+      legends.push(`<text x="20" y="${44 + rowIndex * 16}" font-size="12" fill="${color}">${row.subjectName}</text>`)
+    }
   })
-  const poly = points.map((p) => `${p.x},${p.y}`).join(' ')
-  const letters = points
-    .map((p) => `<text x="${p.x}" y="${p.y - 8}" text-anchor="middle" font-size="12">${p.status || '—'}</text>`)
-    .join('')
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="600" height="240" viewBox="0 0 600 240">
   <title>${title}</title>
   <text x="20" y="24" font-size="16" font-weight="600">${title}</text>
-  <polyline fill="none" stroke="#1D2433" stroke-width="2" points="${poly}" />
-  ${letters}
+  ${legends.join('\n  ')}
+  ${polylines.join('\n  ')}
+  ${letters.join('\n  ')}
 </svg>`
 }
 
@@ -178,11 +195,16 @@ function MetricFocusBody({
       .sort((a, b) => b.rank - a.rank)
   }, [children, columnKey, scale])
 
-  const tableLink = {
-    pathname: '../table',
-    search: params.size > 0 ? `?${params.toString()}` : '',
-    hash: `#metric-${metricKey}`,
-  }
+  const tableLink = useMemo(() => {
+    const q = new URLSearchParams(params)
+    q.delete('focus')
+    const search = q.size > 0 ? `?${q.toString()}` : ''
+    return {
+      pathname: `/scorecards/${scorecardId}/table`,
+      search,
+      hash: `#metric-${metricKey}`,
+    }
+  }, [params, scorecardId, metricKey])
 
   const idx = metricIds.indexOf(metricKey)
   const prevId = metricIds[idx > 0 ? idx - 1 : metricIds.length - 1]
@@ -197,18 +219,18 @@ function MetricFocusBody({
   }
 
   const exportCsv = () => {
-    if (!scope) return
-    downloadBlob(`${scope.metricKey}.csv`, 'text/csv', metricCsv(trendColumns, scope))
+    if (!scope || chartRows.length === 0) return
+    downloadBlob(`${scope.metricKey}.csv`, 'text/csv', chartCsv(trendColumns, chartRows))
   }
 
   const exportSvg = () => {
-    if (!scope) return
-    downloadBlob(`${scope.metricKey}.svg`, 'image/svg+xml', metricSvg(scope.metricName, trendColumns, scope))
+    if (!scope || chartRows.length === 0) return
+    downloadBlob(`${scope.metricKey}.svg`, 'image/svg+xml', chartSvg(scope.metricName, trendColumns, chartRows))
   }
 
   const exportPng = async () => {
-    if (!scope) return
-    await metricPng(metricSvg(scope.metricName, trendColumns, scope), `${scope.metricKey}.png`)
+    if (!scope || chartRows.length === 0) return
+    await metricPng(chartSvg(scope.metricName, trendColumns, chartRows), `${scope.metricKey}.png`)
   }
 
   const copyLink = async () => {
@@ -381,7 +403,12 @@ export function FocusDialog() {
           </Dialog.Close>
           <div ref={contentRef} className="mt-4 min-h-0 flex-1 overflow-y-auto">
             {focusId === 'table' ? (
-              <TablePage scorecardId={scorecardId} scorecardName={scorecardName} measureWidth={1600} />
+              <TablePage
+                scorecardId={scorecardId}
+                scorecardName={scorecardName}
+                measureWidth={1600}
+                embeddedInFocus
+              />
             ) : focusId ? (
               <MetricFocusBody metricKey={focusId} metricIds={metricIds} onClose={close} contentRef={contentRef} />
             ) : null}

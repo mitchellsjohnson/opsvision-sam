@@ -204,8 +204,8 @@ function AppShellBody() {
           ref={dockRef}
           aria-hidden={!dockOpen}
           className={clsx(
-            'shrink-0 overflow-hidden border-l border-ink/15 bg-white transition-[width]',
-            dockOpen ? 'w-96' : 'w-0',
+            'sticky top-0 max-h-screen shrink-0 self-start overflow-hidden border-l border-ink/15 bg-white transition-[width]',
+            dockOpen ? 'w-96 overflow-y-auto' : 'w-0',
           )}
         />
       </div>
