@@ -63,15 +63,36 @@ describe('TablePage', () => {
     expect(na.textContent).toMatch(/n\/a/i)
   })
 
-  it('opens the drawer when Enter is pressed on a focused cell', async () => {
+  it('opens the drawer when Enter is pressed on the roving tab stop', async () => {
+    renderTable()
+    const grid = await screen.findByRole('grid')
+    const user = userEvent.setup()
+    const tabStop = grid.querySelector('[tabindex="0"]') as HTMLElement
+    tabStop.focus()
+    expect(document.activeElement).toBe(tabStop)
+    await user.keyboard('{Enter}')
+    expect(await screen.findByRole('dialog', { name: /On-time delivery.*All units.*May 2026/ })).toBeTruthy()
+  })
+
+  it('moves DOM focus to the next cell when ArrowRight is pressed', async () => {
+    renderTable()
+    const grid = await screen.findByRole('grid')
+    const user = userEvent.setup()
+    const tabStop = grid.querySelector('[tabindex="0"]') as HTMLElement
+    tabStop.focus()
+    await user.keyboard('{ArrowRight}')
+    const next = grid.querySelector('[tabindex="0"]') as HTMLElement
+    expect(document.activeElement).toBe(next)
+    expect(next).not.toBe(tabStop)
+  })
+
+  it('each collapsed parent status mix counts only its own children', async () => {
     renderTable()
     await screen.findByRole('grid')
-    const user = userEvent.setup()
-    const cell = gridCell('On-time delivery', 'All units', 'Oct')
-    const button = within(cell).getByRole('button')
-    button.focus()
-    await user.keyboard('{Enter}')
-    expect(await screen.findByRole('dialog', { name: /On-time delivery.*All units.*Oct 2026/ })).toBeTruthy()
+    const unitA = screen.getByRole('row', { name: /On-time delivery.*Unit A/i })
+    expect(within(unitA).getByText(/1 segments · 1G/)).toBeTruthy()
+    const unitB = screen.getByRole('row', { name: /On-time delivery.*Unit B/i })
+    expect(within(unitB).queryByText(/segments ·/)).toBeNull()
   })
 
   it('groups twelve identical legacy override reasons into one note', async () => {

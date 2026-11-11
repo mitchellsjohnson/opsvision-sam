@@ -103,6 +103,19 @@ function withDescendants(selected: string[], units: { id: string; parentId: stri
   return [...out]
 }
 
+/** Rows in `rows` that sit directly under `parent` in the metric hierarchy. */
+export function directChildren(rows: ViewRow[], parent: ViewRow): ViewRow[] {
+  const start = rows.findIndex((r) => r.metricKey === parent.metricKey && r.subjectId === parent.subjectId)
+  if (start < 0) return []
+  const out: ViewRow[] = []
+  for (let i = start + 1; i < rows.length; i++) {
+    const r = rows[i]!
+    if (r.metricKey !== parent.metricKey || r.depth <= parent.depth) break
+    if (r.depth === parent.depth + 1) out.push(r)
+  }
+  return out
+}
+
 function statusMix(children: ViewRow[], columnKey: string): string | null {
   const counts: Record<string, number> = { G: 0, Y: 0, R: 0 }
   let segments = 0
@@ -165,10 +178,11 @@ interface DataCellProps {
   column: Column
   statusLabel: (key: string) => string | undefined
   tabIndex: number
+  dataRowIndex: number
   selected: boolean
   onOpen: (cell: Cell, opener: HTMLElement) => void
   onFocus: () => void
-  onKeyDown: (e: KeyboardEvent<HTMLButtonElement>) => void
+  onCellKeyDown: (e: KeyboardEvent<HTMLTableCellElement>) => void
 }
 
 function DataCell({
@@ -176,10 +190,11 @@ function DataCell({
   column,
   statusLabel,
   tabIndex,
+  dataRowIndex,
   selected,
   onOpen,
   onFocus,
-  onKeyDown,
+  onCellKeyDown,
 }: DataCellProps) {
   const base = clsx(
     'px-2 py-1.5 text-right align-middle text-sm tabular-nums',
@@ -188,7 +203,15 @@ function DataCell({
   )
   if (!cell) {
     return (
-      <td role="gridcell" tabIndex={-1} className={base}>
+      <td
+        role="gridcell"
+        tabIndex={-1}
+        className={base}
+        data-grid-row={dataRowIndex}
+        data-grid-col={column.key}
+        onKeyDown={onCellKeyDown}
+        onFocus={onFocus}
+      >
         <span role="img" aria-label="No data" className="text-ink/80">
           —
         </span>
@@ -204,7 +227,10 @@ function DataCell({
       tabIndex={tabIndex}
       className={base}
       aria-selected={selected || undefined}
+      data-grid-row={dataRowIndex}
       data-grid-col={column.key}
+      onKeyDown={onCellKeyDown}
+      onFocus={onFocus}
     >
       <CellButtonContent
         cell={cell}
@@ -213,8 +239,6 @@ function DataCell({
         isNA={isNA}
         missing={missing}
         onOpen={onOpen}
-        onFocus={onFocus}
-        onKeyDown={onKeyDown}
       />
     </td>
   )
@@ -227,8 +251,6 @@ function CellButtonContent({
   isNA,
   missing,
   onOpen,
-  onFocus,
-  onKeyDown,
 }: {
   cell: Cell
   statusLabel: (key: string) => string | undefined
@@ -236,8 +258,6 @@ function CellButtonContent({
   isNA: boolean
   missing: boolean
   onOpen: (cell: Cell, opener: HTMLElement) => void
-  onFocus: () => void
-  onKeyDown: (e: KeyboardEvent<HTMLButtonElement>) => void
 }) {
   return (
     <div className="flex items-center justify-end gap-1">
@@ -245,8 +265,6 @@ function CellButtonContent({
         type="button"
         aria-haspopup="dialog"
         tabIndex={-1}
-        onFocus={onFocus}
-        onKeyDown={onKeyDown}
         onClick={(e: MouseEvent<HTMLButtonElement>) => onOpen(cell, e.currentTarget)}
         className="inline-flex min-h-8 items-center justify-end gap-2 rounded px-1.5 hover:underline"
       >
@@ -425,49 +443,69 @@ export function TablePage({ scorecardId, scorecardName, compact = false }: Table
 
   const { grouped, singles } = groupOverrides(overrideEntries)
 
-  const moveFocus = (dr: number, dc: number) => {
-    if (flatDataRows.length === 0 || displayColumns.length === 0) return
-    setFocus((prev) => ({
-      row: Math.max(0, Math.min(flatDataRows.length - 1, prev.row + dr)),
-      col: Math.max(0, Math.min(displayColumns.length - 1, prev.col + dc)),
-    }))
-  }
+  const moveFocus = useCallback(
+    (dr: number, dc: number) => {
+      if (flatDataRows.length === 0 || displayColumns.length === 0) return
+      setFocus((prev) => ({
+        row: Math.max(0, Math.min(flatDataRows.length - 1, prev.row + dr)),
+        col: Math.max(0, Math.min(displayColumns.length - 1, prev.col + dc)),
+      }))
+    },
+    [flatDataRows.length, displayColumns.length],
+  )
 
-  const onGridKeyDown = (e: KeyboardEvent) => {
-    if (compact) return
-    switch (e.key) {
-      case 'ArrowRight':
-        e.preventDefault()
-        moveFocus(0, 1)
-        break
-      case 'ArrowLeft':
-        e.preventDefault()
-        moveFocus(0, -1)
-        break
-      case 'ArrowDown':
-        e.preventDefault()
-        moveFocus(1, 0)
-        break
-      case 'ArrowUp':
-        e.preventDefault()
-        moveFocus(-1, 0)
-        break
-      case 'Enter': {
-        const dataRow = flatDataRows[focus.row]
-        const col = displayColumns[focus.col]
-        if (!dataRow || !col) return
-        const cell = dataRow.row.cells.find((c) => cellKey(c) === col.key)
-        if (!cell || cell.naReason !== '' && !cell.display) return
-        const grid = measureRef.current?.querySelector<HTMLElement>(
-          `[data-grid-row="${focus.row}"][data-grid-col="${focus.col}"] button`,
-        )
-        if (grid) openDrawer(dataRow.row, cell, col, grid)
-        break
+  useEffect(() => {
+    if (compact || view.isPending || !view.data) return
+    const col = displayColumns[focus.col]
+    if (!col) return
+    const el = measureRef.current?.querySelector<HTMLElement>(
+      `td[role="gridcell"][data-grid-row="${focus.row}"][data-grid-col="${col.key}"]`,
+    )
+    el?.focus()
+  }, [focus, displayColumns, compact, view.isPending, view.data])
+
+  const handleCellKeyDown = useCallback(
+    (dataRowIndex: number, colIndex: number) => (e: KeyboardEvent<HTMLTableCellElement>) => {
+      setFocus({ row: dataRowIndex, col: colIndex })
+      const dataRow = flatDataRows[dataRowIndex]
+      const col = displayColumns[colIndex]
+      if (!dataRow || !col) return
+      switch (e.key) {
+        case 'ArrowRight':
+          e.preventDefault()
+          moveFocus(0, 1)
+          break
+        case 'ArrowLeft':
+          e.preventDefault()
+          moveFocus(0, -1)
+          break
+        case 'ArrowDown':
+          e.preventDefault()
+          moveFocus(1, 0)
+          break
+        case 'ArrowUp':
+          e.preventDefault()
+          moveFocus(-1, 0)
+          break
+        case 'Enter': {
+          e.preventDefault()
+          const cell = dataRow.row.cells.find((c) => cellKey(c) === col.key)
+          if (!cell || (cell.naReason !== '' && !cell.display)) return
+          const btn = e.currentTarget.querySelector('button')
+          openDrawer(dataRow.row, cell, col, (btn ?? e.currentTarget) as HTMLElement)
+          break
+        }
+        default:
+          break
       }
-      default:
-        break
-    }
-  }
+    },
+    [flatDataRows, displayColumns, moveFocus, openDrawer],
+  )
+
+  const compactPeriodCols = useMemo(
+    () => periodCols.slice(Math.max(0, periodCols.length - 6)),
+    [periodCols],
+  )
 
   let body
   if (view.isPending) {
@@ -489,14 +527,13 @@ export function TablePage({ scorecardId, scorecardName, compact = false }: Table
     body = <p className="text-sm text-ink/80">No results for this selection.</p>
   } else if (compact) {
     const groups = groupRows(view.data)
-    const windowPeriodCols = displayColumns.filter((c) => !c.ytd)
     body = (
       <ul className="space-y-3">
         {groups.flatMap((g) =>
           g.metrics.map((m) => {
             const scope = shallowest(m.rows)
             const current = scope.cells.find((c) => cellKey(c) === selectedColumnKey)
-            const cells = windowPeriodCols.map((col) => scope.cells.find((c) => cellKey(c) === col.key))
+            const cells = compactPeriodCols.map((col) => scope.cells.find((c) => cellKey(c) === col.key))
             return (
               <li key={m.key}>
                 <article
@@ -510,7 +547,7 @@ export function TablePage({ scorecardId, scorecardName, compact = false }: Table
                   <div className="mt-2 flex flex-wrap gap-1">
                     {cells.map((cell, i) => (
                       <StatusBadge
-                        key={windowPeriodCols[i]!.key}
+                        key={compactPeriodCols[i]!.key}
                         status={cell && cell.naReason === '' ? cell.status : null}
                         label={cell?.status ? statusLabel(cell.status) : undefined}
                       />
@@ -529,16 +566,15 @@ export function TablePage({ scorecardId, scorecardName, compact = false }: Table
       <table
         role="grid"
         aria-label={`${scorecardName} table`}
-        onKeyDown={onGridKeyDown}
         className="w-full table-fixed border-separate border-spacing-0 text-sm"
       >
         <caption className="sr-only">{scorecardName}</caption>
         <thead>
-          <tr className="sticky top-[var(--scorecard-control-bar-height)] z-20 bg-white">
+          <tr>
             <th
               scope="col"
               role="columnheader"
-              className="w-[clamp(13rem,24%,18rem)] border-b border-ink/30 bg-white px-3 py-2 text-left font-semibold"
+              className="sticky top-[var(--scorecard-control-bar-height)] z-20 w-[clamp(13rem,24%,18rem)] border-b border-ink/30 bg-white px-3 py-2 text-left font-semibold"
             >
               Metric and subject
             </th>
@@ -549,7 +585,7 @@ export function TablePage({ scorecardId, scorecardName, compact = false }: Table
                 role="columnheader"
                 title={c.fullLabel}
                 className={clsx(
-                  'min-w-[4.5rem] border-b border-ink/30 bg-white px-2 py-2 text-center font-semibold',
+                  'sticky top-[var(--scorecard-control-bar-height)] z-20 min-w-[4.5rem] border-b border-ink/30 bg-white px-2 py-2 text-center font-semibold',
                   c.ytd && 'border-l-2 border-l-ink/30',
                   !c.ytd && c.period === period.period && 'border-t-2 border-t-accent',
                 )}
@@ -563,8 +599,12 @@ export function TablePage({ scorecardId, scorecardName, compact = false }: Table
           if (entry.category) {
             return (
               <tbody key={entry.key}>
-                <tr className="sticky top-[calc(var(--scorecard-control-bar-height)+2.5rem)] z-10 bg-cream">
-                  <th scope="rowgroup" colSpan={colSpan + 1} className="px-3 py-1.5 text-left text-xs font-semibold uppercase tracking-wide">
+                <tr>
+                  <th
+                    scope="rowgroup"
+                    colSpan={colSpan + 1}
+                    className="sticky top-[calc(var(--scorecard-control-bar-height)+2.5rem)] z-10 bg-cream px-3 py-1.5 text-left text-xs font-semibold uppercase tracking-wide"
+                  >
                     {entry.category}
                   </th>
                 </tr>
@@ -597,18 +637,14 @@ export function TablePage({ scorecardId, scorecardName, compact = false }: Table
           const { row, state } = entry
           const dataRowIndex = flatDataRows.findIndex((r) => r.key === entry.key)
           const cells = new Map(row.cells.map((c) => [cellKey(c), c]))
-          const childRows = (entry.metric ?? []).filter((r) => r.depth === row.depth + 1)
           const mix =
             state.collapsible && !expanded.has(expandKey(row))
-              ? statusMix(childRows, selectedColumnKey)
+              ? statusMix(directChildren(entry.metric ?? [], row), selectedColumnKey)
               : null
           const open = state.collapsible && state.childIds.length > 0 && expanded.has(expandKey(row))
           return (
             <tbody key={entry.key}>
-              <tr
-                aria-label={`${row.metricName}, ${row.subjectName}`}
-                data-grid-row={dataRowIndex >= 0 ? dataRowIndex : undefined}
-              >
+              <tr aria-label={`${row.metricName}, ${row.subjectName}`}>
                 <th scope="row" className="border-b border-ink/10 px-3 py-1.5 text-left font-normal">
                   <div className="flex items-start gap-1">
                     {state.collapsible ? (
@@ -650,15 +686,11 @@ export function TablePage({ scorecardId, scorecardName, compact = false }: Table
                       column={c}
                       statusLabel={statusLabel}
                       tabIndex={tabIndex}
+                      dataRowIndex={dataRowIndex}
                       selected={dataRowIndex === focus.row && colIndex === focus.col}
                       onOpen={(opened, button) => openDrawer(row, opened, c, button)}
                       onFocus={() => setFocus({ row: dataRowIndex, col: colIndex })}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' && cell) {
-                          e.preventDefault()
-                          openDrawer(row, cell, c, e.currentTarget)
-                        }
-                      }}
+                      onCellKeyDown={handleCellKeyDown(dataRowIndex, colIndex)}
                     />
                   )
                 })}
