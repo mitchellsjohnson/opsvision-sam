@@ -7,7 +7,8 @@ import { EntryPage } from './features/entry/EntryPage'
 import { HomeRedirect } from './pages/HomeRedirect'
 import { NotFoundPage } from './pages/NotFoundPage'
 import { RequireAdmin } from './pages/RequireAdmin'
-import { ScorecardPage } from './features/scorecard/ScorecardPage'
+import { ScorecardFrame } from './features/scorecard/ScorecardFrame'
+import { ScorecardRedirect } from './features/scorecard/ScorecardPage'
 import { ImportPage } from './features/admin/ImportPage'
 import { MethodologyPage } from './features/admin/MethodologyPage'
 import { RecordTypesPage } from './features/admin/RecordTypesPage'
@@ -20,7 +21,12 @@ export function App() {
       <Route element={<AppShell />}>
         <Route index element={<HomeRedirect />} />
         <Route path="scorecards" element={<Navigate to="/" replace />} />
-        <Route path="scorecards/:sc" element={<ScorecardPage />} />
+        <Route path="scorecards/:sc" element={<ScorecardFrame />}>
+          <Route index element={<ScorecardRedirect />} />
+          <Route path="overview" element={<h1 className="text-2xl font-semibold text-accent-deep">Overview</h1>} />
+          <Route path="table" element={<h1 className="text-2xl font-semibold text-accent-deep">Table</h1>} />
+          <Route path="report" element={<h1 className="text-2xl font-semibold text-accent-deep">Report</h1>} />
+        </Route>
         <Route path="entry" element={<EntryPage />} />
         <Route path="admin" element={<RequireAdmin />}>
           <Route index element={<Navigate to="org" replace />} />

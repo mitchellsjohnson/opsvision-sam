@@ -21,7 +21,7 @@ import { API, server, state } from '../../test/server'
 import { renderApp } from '../../test/utils'
 import { viewHandlers } from '../../test/viewFixtures'
 import { ImportPage } from '../admin/ImportPage'
-import { ScorecardPage } from '../scorecard/ScorecardPage'
+import { App } from '../../App'
 import { RecordsImport } from './RecordsImport'
 import { longDate, todayISO } from './recordsModel'
 
@@ -661,12 +661,7 @@ describe('Scorecard page: upload records', () => {
   function renderScorecard() {
     server.use(...recordsHandlers(fake, { withVersions: false }), ...viewHandlers())
     const user = userEvent.setup()
-    renderApp(
-      <Routes>
-        <Route path="/scorecards/:sc" element={<ScorecardPage />} />
-      </Routes>,
-      { route: '/scorecards/sc-main?period=2026-M10' },
-    )
+    renderApp(<App />, { route: '/scorecards/sc-main/overview?period=2026-M10' })
     return user
   }
 
@@ -686,7 +681,7 @@ describe('Scorecard page: upload records', () => {
   it('opens the import with a file dropped anywhere on the page', async () => {
     renderScorecard()
     await screen.findByRole('button', { name: 'Upload records' })
-    dropOn(screen.getByRole('heading', { level: 1, name: 'Main scorecard' }), [xlsx('epics.xlsx')])
+    dropOn(await screen.findByRole('heading', { level: 1, name: 'Overview' }), [xlsx('epics.xlsx')])
     const dialog = await screen.findByRole('dialog', { name: 'Upload records' })
     expect(await within(dialog).findByRole('region', { name: 'epics.xlsx' })).toBeTruthy()
     await waitFor(() => expect(previews('imp-1')[0]?.scorecardId).toBe('sc-main'))
@@ -735,8 +730,7 @@ describe('Scorecard page: upload records', () => {
   it('shows no "Upload records" to people who are not admins', async () => {
     state.role = 'viewer'
     renderScorecard()
-    expect(await screen.findByRole('heading', { level: 1, name: 'Main scorecard' })).toBeTruthy()
-    await screen.findByRole('table')
+    expect(await screen.findByRole('heading', { level: 1, name: 'Overview' })).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Upload records' })).toBeNull()
     dropOn(screen.getByRole('heading', { level: 1 }), [xlsx('epics.xlsx')])
     expect(screen.queryByRole('dialog')).toBeNull()

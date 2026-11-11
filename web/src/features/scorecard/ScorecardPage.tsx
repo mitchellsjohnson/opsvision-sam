@@ -1,35 +1,8 @@
-import * as Tabs from '@radix-ui/react-tabs'
 import { Upload } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import { useParams, useSearchParams } from 'react-router'
-import { useMe, useScorecards } from '../../api/queries'
-import { PlaceholderPage } from '../../pages/Placeholder'
+import { Navigate, useParams, useSearchParams } from 'react-router'
 import { secondaryButton } from '../admin/formUi'
 import { UploadRecordsDialog } from '../import/RecordsImport'
-import { ChartsTab } from './ChartsTab'
-import { TableTab } from './TableTab'
-
-const TABS = [
-  { value: 'charts', label: 'Charts' },
-  { value: 'table', label: 'Table' },
-] as const
-
-type TabValue = (typeof TABS)[number]['value']
-
-/** localStorage key for the tab a person last used. */
-export const TAB_STORAGE_KEY = 'opsvision.scorecardTab'
-
-function asTab(value: string | null): TabValue | null {
-  return TABS.find((t) => t.value === value)?.value ?? null
-}
-
-function rememberedTab(): TabValue | null {
-  try {
-    return asTab(localStorage.getItem(TAB_STORAGE_KEY))
-  } catch {
-    return null
-  }
-}
 
 function hasFiles(e: DragEvent) {
   return Array.from(e.dataTransfer?.types ?? []).includes('Files')
@@ -39,7 +12,7 @@ function hasFiles(e: DragEvent) {
  * The "Upload records" button, and a file dropped anywhere on the page:
  * both open the records import for this scorecard in a dialog.
  */
-function UploadRecords({ scorecardId }: { scorecardId: string }) {
+export function UploadRecords({ scorecardId }: { scorecardId: string }) {
   const [open, setOpen] = useState(false)
   const [dropped, setDropped] = useState<{ files: File[]; n: number }>({ files: [], n: 0 })
   const [dragging, setDragging] = useState(false)
@@ -62,7 +35,6 @@ function UploadRecords({ scorecardId }: { scorecardId: string }) {
     }
     const drop = (e: DragEvent) => {
       if (!hasFiles(e)) return
-      // Never let the browser open a dropped file in place of the app.
       e.preventDefault()
       depth = 0
       setDragging(false)
@@ -121,63 +93,15 @@ function UploadRecords({ scorecardId }: { scorecardId: string }) {
   )
 }
 
-/**
- * The scorecard page: heading and tabs. The tab is in the URL (`?tab=`) so
- * views are linkable; without it the page opens the tab last used, then Table.
- */
-export function ScorecardPage() {
+/** Legacy `/scorecards/:sc` links: route to overview, table, or report; drop `tab`. */
+export function ScorecardRedirect() {
   const { sc } = useParams()
-  const scorecards = useScorecards()
-  const me = useMe()
-  const isAdmin = me.data?.role === 'admin'
-  const [params, setParams] = useSearchParams()
-  const tab = asTab(params.get('tab')) ?? rememberedTab() ?? 'table'
-
-  if (scorecards.isPending) return <p role="status">Loading…</p>
-  if (scorecards.isError) {
-    return <p role="alert">Could not load scorecards: {scorecards.error.message}</p>
-  }
-  const scorecard = scorecards.data.scorecards.find((s) => s.id === sc)
-  if (!scorecard) return <PlaceholderPage title="Scorecard not found" />
-
-  function choose(value: string) {
-    try {
-      localStorage.setItem(TAB_STORAGE_KEY, value)
-    } catch {
-      // Storage can be unavailable (private mode); the URL still holds the tab.
-    }
-    setParams((prev) => {
-      const next = new URLSearchParams(prev)
-      next.set('tab', value)
-      return next
-    })
-  }
-
-  return (
-    <section>
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-2xl font-semibold text-accent-deep">{scorecard.name}</h1>
-        {isAdmin && <UploadRecords scorecardId={scorecard.id} />}
-      </div>
-      <Tabs.Root className="mt-4" value={tab} onValueChange={choose}>
-        <Tabs.List aria-label="Scorecard views" className="flex gap-1 border-b border-ink/20">
-          {TABS.map((t) => (
-            <Tabs.Trigger
-              key={t.value}
-              value={t.value}
-              className="-mb-px border-b-2 border-transparent px-4 py-2 text-sm font-medium data-[state=active]:border-accent data-[state=active]:text-accent-deep"
-            >
-              {t.label}
-            </Tabs.Trigger>
-          ))}
-        </Tabs.List>
-        <Tabs.Content value="charts" className="py-4">
-          <ChartsTab scorecardId={scorecard.id} />
-        </Tabs.Content>
-        <Tabs.Content value="table" className="py-4">
-          <TableTab scorecardId={scorecard.id} scorecardName={scorecard.name} />
-        </Tabs.Content>
-      </Tabs.Root>
-    </section>
-  )
+  const [params] = useSearchParams()
+  const tab = params.get('tab')
+  let segment = 'overview'
+  if (tab === 'table') segment = 'table'
+  const next = new URLSearchParams(params)
+  next.delete('tab')
+  const search = next.toString()
+  return <Navigate to={`/scorecards/${sc}/${segment}${search ? `?${search}` : ''}`} replace />
 }

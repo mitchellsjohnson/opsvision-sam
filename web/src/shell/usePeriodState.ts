@@ -4,15 +4,21 @@ import { useFiscalYearStartMonth, useMe } from '../api/queries'
 import { currentMonth, parsePeriod, type PeriodState } from '../lib/period'
 
 /** Search params that make up the shared view state and survive navigation. */
-export const VIEW_PARAMS = ['period', 'ytd', 'subject'] as const
+export const VIEW_PARAMS = ['period', 'ytd', 'subject', 'scope', 'restate', 'structure'] as const
 
 export interface PeriodPatch {
   period?: string
   ytd?: boolean
   subjects?: string[]
+  scope?: string | null
+  restate?: string | null
+  structure?: 'as_of' | 'current' | null
 }
 
 export interface PeriodView extends PeriodState {
+  scope: string
+  restate: string
+  structure: 'as_of' | 'current'
   /** The tenant's fiscal year start month; periods are fiscal. */
   fiscalYearStartMonth: number
   /**
@@ -41,6 +47,9 @@ export function usePeriodState(): [PeriodView, (patch: PeriodPatch) => void] {
       period: valid ? raw : currentMonth(fiscalYearStartMonth),
       ytd: p.get('ytd') === '1',
       subjects: p.getAll('subject'),
+      scope: p.get('scope') ?? '',
+      restate: p.get('restate') ?? '',
+      structure: p.get('structure') === 'current' ? 'current' : 'as_of',
       fiscalYearStartMonth,
       ready: valid || !tenantPending,
     }
@@ -58,6 +67,18 @@ export function usePeriodState(): [PeriodView, (patch: PeriodPatch) => void] {
         if (patch.subjects !== undefined) {
           next.delete('subject')
           for (const s of patch.subjects) next.append('subject', s)
+        }
+        if (patch.scope !== undefined) {
+          if (patch.scope) next.set('scope', patch.scope)
+          else next.delete('scope')
+        }
+        if (patch.restate !== undefined) {
+          if (patch.restate) next.set('restate', patch.restate)
+          else next.delete('restate')
+        }
+        if (patch.structure !== undefined) {
+          if (patch.structure === 'current') next.set('structure', 'current')
+          else next.delete('structure')
         }
         return next
       })

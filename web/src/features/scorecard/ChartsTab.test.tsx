@@ -9,7 +9,6 @@ import { API, server } from '../../test/server'
 import { renderApp } from '../../test/utils'
 import { buildView, viewHandlers } from '../../test/viewFixtures'
 import { ChartsTab } from './ChartsTab'
-import { ScorecardPage } from './ScorecardPage'
 
 type ScorecardView = components['schemas']['ScorecardView']
 type Cell = components['schemas']['Cell']
@@ -21,7 +20,7 @@ function LocationProbe() {
 
 const location = () => screen.getByTestId('location').textContent ?? ''
 
-const ROUTE = '/scorecards/sc-main?period=2026-M10&tab=charts'
+const ROUTE = '/scorecards/sc-main/overview?period=2026-M10'
 
 /** Renders the Charts tab; `edit` adjusts the fixture view the API returns. */
 function renderCharts(route = ROUTE, edit?: (view: ScorecardView) => void) {
@@ -292,41 +291,33 @@ describe('ChartsTab', () => {
 
   describe('navigation', () => {
     it('opens the Table tab at the metric, keeping the other parameters', async () => {
-      const scrolled: string[] = []
-      const original = Element.prototype.scrollIntoView
-      Element.prototype.scrollIntoView = function (this: Element) {
-        scrolled.push(this.id)
-      }
-      try {
-        server.use(...viewHandlers())
-        renderApp(
-          <>
-            <Routes>
-              <Route path="/scorecards/:sc" element={<ScorecardPage />} />
-            </Routes>
-            <LocationProbe />
-          </>,
-          { route: '/scorecards/sc-main?period=2026-M10&ytd=1&tab=charts' },
-        )
-        const user = userEvent.setup()
-        await user.click(await screen.findByRole('link', { name: /On-time delivery/ }))
-        await waitFor(() => expect(location()).toContain('tab=table'))
-        expect(location()).toContain('period=2026-M10')
-        expect(location()).toContain('ytd=1')
-        expect(location().endsWith('#metric-on_time_pct')).toBe(true)
-        expect(await screen.findByRole('table')).toBeTruthy()
-        await waitFor(() => expect(scrolled).toContain('metric-on_time_pct'))
-        expect(screen.getByRole('tab', { name: 'Table' }).getAttribute('aria-selected')).toBe('true')
-      } finally {
-        Element.prototype.scrollIntoView = original
-      }
+      server.use(...viewHandlers())
+      renderApp(
+        <>
+          <Routes>
+            <Route path="/scorecards/:sc">
+              <Route path="overview" element={<ChartsTab scorecardId="sc-main" />} />
+              <Route path="table" element={<h1>Table</h1>} />
+            </Route>
+          </Routes>
+          <LocationProbe />
+        </>,
+        { route: '/scorecards/sc-main/overview?period=2026-M10&ytd=1' },
+      )
+      const user = userEvent.setup()
+      await user.click(await screen.findByRole('link', { name: /On-time delivery/ }))
+      await waitFor(() => expect(location()).toContain('/scorecards/sc-main/table'))
+      expect(location()).toContain('period=2026-M10')
+      expect(location()).toContain('ytd=1')
+      expect(location().endsWith('#metric-on_time_pct')).toBe(true)
+      expect(await screen.findByRole('heading', { name: 'Table', level: 1 })).toBeTruthy()
     })
 
     it('links each tile with a href to the table anchor', async () => {
       renderCharts()
       await screen.findByRole('heading', { name: 'Delivery', level: 2 })
       const href = tile('Defect rate').getAttribute('href') ?? ''
-      expect(href).toContain('tab=table')
+      expect(href).toContain('/table')
       expect(href).toContain('period=2026-M10')
       expect(href.endsWith('#metric-defect_rate')).toBe(true)
     })

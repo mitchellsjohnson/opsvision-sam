@@ -1,4 +1,4 @@
-import { screen, waitFor, within } from '@testing-library/react'
+import { screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { Route, Routes } from 'react-router'
@@ -69,10 +69,18 @@ describe('AppShell', () => {
     expect(signOut).toHaveBeenCalledOnce()
   })
 
-  it('shows the period picker and subject filter on scorecard pages', async () => {
+  it('shows the period picker on entry only, not on scorecard placeholder pages', async () => {
     shell()
+    expect(screen.queryByRole('group', { name: 'Period' })).toBeNull()
+    shell('/entry?period=2026-M10')
     expect(screen.getByRole('group', { name: 'Period' })).toBeTruthy()
-    await waitFor(() => expect(screen.getByRole('button', { name: /Subjects/ })).toBeTruthy())
+  })
+
+  it('uses the icon-rail nav width class below 1440px', async () => {
+    shell()
+    const nav = await screen.findByRole('navigation', { name: 'Main' })
+    expect(nav.classList.contains('w-16')).toBe(true)
+    expect(nav.classList.contains('min-[1440px]:w-60')).toBe(true)
   })
 
   it("remembers the active tenant's organization", async () => {
@@ -98,7 +106,6 @@ describe('AppShell', () => {
   it('has no accessibility violations', async () => {
     const { container } = shell()
     await screen.findByRole('link', { name: 'Org' })
-    await screen.findByRole('button', { name: /Subjects/ })
     expect((await axe(container)).violations).toEqual([])
   })
 })

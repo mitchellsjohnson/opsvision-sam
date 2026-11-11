@@ -3,12 +3,11 @@ import clsx from 'clsx'
 import { ChevronDown, LogOut } from 'lucide-react'
 import { useEffect } from 'react'
 import { NavLink, Outlet, useLocation, useSearchParams } from 'react-router'
-import { useMe, useOrgUnits, useScorecards } from '../api/queries'
+import { useMe, useScorecards } from '../api/queries'
 import { useAuth } from '../auth/context'
 import { focusOnDark, menuItemHighlight } from '../ui/focus'
 import { Sam } from '../ui/Sam'
 import { PeriodPicker } from './PeriodPicker'
-import { SubjectFilter } from './SubjectFilter'
 import { TenantSwitcher } from './TenantSwitcher'
 import { VIEW_PARAMS } from './usePeriodState'
 
@@ -33,12 +32,11 @@ export function AppShell() {
   const auth = useAuth()
   const me = useMe()
   const scorecards = useScorecards()
-  const orgUnits = useOrgUnits()
   const { pathname } = useLocation()
   const [params] = useSearchParams()
 
   const isAdmin = me.data?.role === 'admin'
-  const showFilters = pathname.startsWith('/scorecards') || pathname === '/entry'
+  const showFilters = pathname === '/entry'
 
   // Carry the period/YTD/subject selection between report pages.
   const carried = new URLSearchParams()
@@ -116,12 +114,15 @@ export function AppShell() {
         </div>
       </header>
 
-      <div className="flex flex-1">
-        <nav aria-label="Main" className="w-56 shrink-0 border-r border-ink/15 bg-cream/60 p-3">
+      <div className="grid flex-1 grid-cols-[auto_minmax(0,1fr)]">
+        <nav
+          aria-label="Main"
+          className="w-16 shrink-0 border-r border-ink/15 bg-cream/60 p-3 min-[1440px]:w-60"
+        >
           <ul className="space-y-1">
             {(scorecards.data?.scorecards ?? []).map((sc) => (
               <li key={sc.id}>
-                <NavLink to={{ pathname: `/scorecards/${sc.id}`, search }} className={navClass}>
+                <NavLink to={{ pathname: `/scorecards/${sc.id}/overview`, search }} className={navClass}>
                   {sc.name}
                 </NavLink>
               </li>
@@ -156,17 +157,10 @@ export function AppShell() {
               aria-label="Report filters"
               className="flex flex-wrap items-end gap-4 border-b border-ink/15 bg-white px-6 py-3"
             >
-              {pathname === '/entry' ? (
-                <PeriodPicker monthOnly />
-              ) : (
-                <>
-                  <PeriodPicker />
-                  <SubjectFilter subjects={orgUnits.data?.units} />
-                </>
-              )}
+              <PeriodPicker monthOnly />
             </section>
           )}
-          <main id="main" tabIndex={-1} className="p-6 outline-none">
+          <main id="main" tabIndex={-1} className="min-w-0 p-6 outline-none">
             <Outlet />
           </main>
         </div>

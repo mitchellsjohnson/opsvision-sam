@@ -54,8 +54,9 @@ export function ChartsTab({ scorecardId }: ChartsTabProps) {
 
   const tableLink = (metricKey: string) => {
     const next = new URLSearchParams(params)
-    next.set('tab', 'table')
-    return { search: `?${next.toString()}`, hash: `#metric-${metricKey}` }
+    next.delete('tab')
+    const search = next.size > 0 ? `?${next.toString()}` : ''
+    return { pathname: '../table', search, hash: `#metric-${metricKey}` }
   }
 
   if (view.isPending) return <Skeleton />
