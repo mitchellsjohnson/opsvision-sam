@@ -43,6 +43,8 @@ func TestKeys(t *testing.T) {
 		{"item SK", itemSK("i1"), "ITEM#i1"},
 
 		{"scorecard SK", scorecardSK("sc1"), "SC#sc1"},
+		{"layout SK", layoutSK("user-1", "delivery"), "LAYOUT#user-1#delivery"},
+		{"layout default SK", layoutDefaultSK("delivery"), "LAYOUTDEFAULT#delivery"},
 		{"version SK", versionSK("sc1", "v1"), "SC#sc1#VER#v1"},
 
 		{"data current PK", dataPK("acme", "sc1", 2026), "T#acme#SC#sc1#FY#2026"},
@@ -92,6 +94,8 @@ func TestSKPrefixes(t *testing.T) {
 		prefixRecType:   "RTYPE#",
 		prefixSnapshot:  "SNAP#",
 		prefixRecordRev: "R#",
+		prefixLayout:    "LAYOUT#",
+		prefixLayoutDef: "LAYOUTDEFAULT#",
 	}
 	for got, want := range cases {
 		if got != want {

@@ -79,12 +79,16 @@ type tenantData struct {
 	templates  map[string]store.Template
 	recTypes   map[string]domain.RecordType
 	snapshots  map[snapshotKey]domain.Snapshot
-	records    map[string]map[recordKey]*domain.Record // by record type
+	records        map[string]map[recordKey]*domain.Record // by record type
+	layouts        map[layoutKey]domain.Layout
+	defaultLayouts map[string]domain.Layout
 }
 
 type snapshotKey struct{ recordType, id string }
 
 type recordKey struct{ source, externalID string }
+
+type layoutKey struct{ userID, scorecardID string }
 
 // tenant returns the tenant's data for writing, creating it if needed.
 // Callers must hold the write lock.
@@ -104,7 +108,9 @@ func (s *Store) tenant(id string) *tenantData {
 			templates:  map[string]store.Template{},
 			recTypes:   map[string]domain.RecordType{},
 			snapshots:  map[snapshotKey]domain.Snapshot{},
-			records:    map[string]map[recordKey]*domain.Record{},
+			records:        map[string]map[recordKey]*domain.Record{},
+			layouts:        map[layoutKey]domain.Layout{},
+			defaultLayouts: map[string]domain.Layout{},
 		}
 		s.data[id] = td
 	}
@@ -822,6 +828,87 @@ func (s *Store) ListTemplates(_ context.Context, tenantID string) ([]store.Templ
 	return sortedValues(s.read(tenantID).templates, cloneTemplate, func(a, b store.Template) int {
 		return strings.Compare(a.ID, b.ID)
 	}), nil
+}
+
+// --- LayoutStore -----------------------------------------------------------
+
+func cloneLayoutItems(items []domain.LayoutItem) []domain.LayoutItem {
+	if len(items) == 0 {
+		return []domain.LayoutItem{}
+	}
+	out := make([]domain.LayoutItem, len(items))
+	copy(out, items)
+	return out
+}
+
+func cloneLayout(l domain.Layout) domain.Layout {
+	return domain.Layout{Items: cloneLayoutItems(l.Items), Revision: l.Revision}
+}
+
+func putLayoutRevision(td *tenantData, key layoutKey, items []domain.LayoutItem, expectedRevision int) (domain.Layout, error) {
+	cur, exists := td.layouts[key]
+	switch {
+	case expectedRevision == 0:
+		if exists {
+			return domain.Layout{}, store.ErrConflict
+		}
+	case expectedRevision < 0 || !exists || cur.Revision != expectedRevision:
+		return domain.Layout{}, store.ErrConflict
+	}
+	stored := domain.Layout{Items: cloneLayoutItems(items), Revision: expectedRevision + 1}
+	td.layouts[key] = stored
+	return cloneLayout(stored), nil
+}
+
+func putDefaultLayoutRevision(td *tenantData, scorecardID string, items []domain.LayoutItem, expectedRevision int) (domain.Layout, error) {
+	cur, exists := td.defaultLayouts[scorecardID]
+	switch {
+	case expectedRevision == 0:
+		if exists {
+			return domain.Layout{}, store.ErrConflict
+		}
+	case expectedRevision < 0 || !exists || cur.Revision != expectedRevision:
+		return domain.Layout{}, store.ErrConflict
+	}
+	stored := domain.Layout{Items: cloneLayoutItems(items), Revision: expectedRevision + 1}
+	td.defaultLayouts[scorecardID] = stored
+	return cloneLayout(stored), nil
+}
+
+// GetLayout implements store.LayoutStore.
+func (s *Store) GetLayout(_ context.Context, tenantID, userID, scorecardID string) (domain.Layout, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	l, ok := s.read(tenantID).layouts[layoutKey{userID, scorecardID}]
+	if !ok {
+		return domain.Layout{}, store.ErrNotFound
+	}
+	return cloneLayout(l), nil
+}
+
+// PutLayout implements store.LayoutStore.
+func (s *Store) PutLayout(_ context.Context, tenantID, userID, scorecardID string, items []domain.LayoutItem, expectedRevision int) (domain.Layout, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return putLayoutRevision(s.tenant(tenantID), layoutKey{userID, scorecardID}, items, expectedRevision)
+}
+
+// GetDefaultLayout implements store.LayoutStore.
+func (s *Store) GetDefaultLayout(_ context.Context, tenantID, scorecardID string) (domain.Layout, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	l, ok := s.read(tenantID).defaultLayouts[scorecardID]
+	if !ok {
+		return domain.Layout{}, store.ErrNotFound
+	}
+	return cloneLayout(l), nil
+}
+
+// PutDefaultLayout implements store.LayoutStore.
+func (s *Store) PutDefaultLayout(_ context.Context, tenantID, scorecardID string, items []domain.LayoutItem, expectedRevision int) (domain.Layout, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return putDefaultLayoutRevision(s.tenant(tenantID), scorecardID, items, expectedRevision)
 }
 
 // --- RecordStore -----------------------------------------------------------

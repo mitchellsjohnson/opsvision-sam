@@ -21,6 +21,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/me/layouts/{sc}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Scorecard ID. */
+                sc: components["parameters"]["ScorecardId"];
+            };
+            cookie?: never;
+        };
+        /** Layout for the current user and scorecard */
+        get: operations["getMyLayout"];
+        /** Save the current user's layout for a scorecard */
+        put: operations["putMyLayout"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/operator/tenants": {
         parameters: {
             query?: never;
@@ -241,6 +262,26 @@ export interface paths {
         put?: never;
         /** Create a scorecard (admin only) */
         post: operations["createScorecard"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/scorecards/{sc}/default-layout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Scorecard ID. */
+                sc: components["parameters"]["ScorecardId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        /** Save the tenant default layout (admin only) */
+        put: operations["putDefaultLayout"];
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1840,6 +1881,22 @@ export interface components {
             /** @description Absent on the last page. */
             nextCursor?: string;
         };
+        LayoutItem: {
+            id: string;
+            /** @enum {string} */
+            size: "small" | "wide";
+            hidden: boolean;
+        };
+        PutLayoutRequest: {
+            items: components["schemas"]["LayoutItem"][];
+            expectedRevision: number;
+        };
+        LayoutResponse: {
+            items: components["schemas"]["LayoutItem"][];
+            revision: number;
+            /** @enum {string} */
+            source: "user" | "default" | "empty";
+        };
         AuditEntry: {
             id: components["schemas"]["ServerId"];
             actorId: string;
@@ -1953,6 +2010,64 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthorized"];
+        };
+    };
+    getMyLayout: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Scorecard ID. */
+                sc: components["parameters"]["ScorecardId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The effective layout for the caller */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LayoutResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    putMyLayout: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Scorecard ID. */
+                sc: components["parameters"]["ScorecardId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PutLayoutRequest"];
+            };
+        };
+        responses: {
+            /** @description The stored layout */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LayoutResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
         };
     };
     listOperatorTenants: {
@@ -2475,6 +2590,38 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+        };
+    };
+    putDefaultLayout: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Scorecard ID. */
+                sc: components["parameters"]["ScorecardId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PutLayoutRequest"];
+            };
+        };
+        responses: {
+            /** @description The stored default layout */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LayoutResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
         };
     };

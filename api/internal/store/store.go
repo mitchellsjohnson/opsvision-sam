@@ -246,6 +246,22 @@ type RecordRevisionWrite struct {
 	Rev                      domain.RecordRevision
 }
 
+// LayoutStore holds per-user scorecard layouts and tenant defaults.
+type LayoutStore interface {
+	// GetLayout returns a user's layout. ErrNotFound when absent.
+	GetLayout(ctx context.Context, tenantID, userID, scorecardID string) (domain.Layout, error)
+	// PutLayout saves a user's layout. expectedRevision 0 creates revision 1;
+	// otherwise expectedRevision must equal the stored revision, which becomes
+	// expectedRevision+1. A mismatch or an existing layout on create returns
+	// ErrConflict. The returned layout has the new revision.
+	PutLayout(ctx context.Context, tenantID, userID, scorecardID string, items []domain.LayoutItem, expectedRevision int) (domain.Layout, error)
+	// GetDefaultLayout returns the tenant default for a scorecard.
+	GetDefaultLayout(ctx context.Context, tenantID, scorecardID string) (domain.Layout, error)
+	// PutDefaultLayout saves the tenant default with the same revision rules
+	// as PutLayout.
+	PutDefaultLayout(ctx context.Context, tenantID, scorecardID string, items []domain.LayoutItem, expectedRevision int) (domain.Layout, error)
+}
+
 // RecordStore holds record types, records (one stored item per revision),
 // and upload snapshots.
 type RecordStore interface {
@@ -284,6 +300,7 @@ type Store interface {
 	DataStore
 	AuditStore
 	ImportStore
+	LayoutStore
 	RecordStore
 }
 

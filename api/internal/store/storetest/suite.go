@@ -67,6 +67,7 @@ func Run(t *testing.T, newStore func(t *testing.T) store.Store) {
 		{"ConcurrentWritersOneWins", concurrentWritersOneWins},
 		{"TemplateRevisionIncrements", templateRevisionIncrements},
 		{"TemplateLastUsedKeepsRevision", templateLastUsedKeepsRevision},
+		{"LayoutRevision", layoutRevision},
 		{"RecordTypeRevision", recordTypeRevision},
 		{"ApplySnapshotGroupsRevisions", applySnapshotGroupsRevisions},
 		{"ApplySnapshotLargeBatch", applySnapshotLargeBatch},
@@ -1480,6 +1481,81 @@ func templateLastUsedKeepsRevision(t *testing.T, s store.Store) {
 	if got.LastUsed != nil {
 		t.Fatalf("LastUsed = %v, want nil", got.LastUsed)
 	}
+}
+
+func layoutRevision(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	tn := newTenant(t, s)
+	must(t, s.PutScorecard(ctx, tn, domain.Scorecard{ID: "delivery", Name: "Delivery"}))
+
+	userA, userB := "user-a", "user-b"
+	items1 := []domain.LayoutItem{
+		{ID: "metric:closure_rate", Size: "small", Hidden: false},
+		{ID: "widget:health", Size: "wide", Hidden: false},
+	}
+	items2 := []domain.LayoutItem{{ID: "section:quality", Size: "wide", Hidden: true}}
+
+	got, err := s.PutLayout(ctx, tn, userA, "delivery", items1, 0)
+	must(t, err)
+	if got.Revision != 1 {
+		t.Fatalf("create revision = %d, want 1", got.Revision)
+	}
+	wantEq(t, "created items", got.Items, items1)
+
+	_, err = s.PutLayout(ctx, tn, userA, "delivery", items1, 0)
+	wantErr(t, err, store.ErrConflict)
+
+	read, err := s.GetLayout(ctx, tn, userA, "delivery")
+	must(t, err)
+	wantEq(t, "get user layout", read, got)
+
+	got, err = s.PutLayout(ctx, tn, userA, "delivery", items2, 1)
+	must(t, err)
+	wantEq(t, "updated items", got.Items, items2)
+	if got.Revision != 2 {
+		t.Fatalf("update revision = %d, want 2", got.Revision)
+	}
+
+	_, err = s.PutLayout(ctx, tn, userA, "delivery", items2, 1)
+	wantErr(t, err, store.ErrConflict)
+
+	defItems := []domain.LayoutItem{{ID: "widget:ribbon", Size: "wide", Hidden: false}}
+	def, err := s.PutDefaultLayout(ctx, tn, "delivery", defItems, 0)
+	must(t, err)
+	if def.Revision != 1 {
+		t.Fatalf("default revision = %d, want 1", def.Revision)
+	}
+	wantEq(t, "default items", def.Items, defItems)
+
+	read, err = s.GetLayout(ctx, tn, userA, "delivery")
+	must(t, err)
+	wantEq(t, "user layout after default", read, got)
+
+	defGot, err := s.GetDefaultLayout(ctx, tn, "delivery")
+	must(t, err)
+	wantEq(t, "default unchanged by user", defGot, def)
+
+	_, err = s.GetLayout(ctx, tn, userB, "delivery")
+	wantErr(t, err, store.ErrNotFound)
+
+	userBLayout, err := s.PutLayout(ctx, tn, userB, "delivery", items1, 0)
+	must(t, err)
+	defGot, err = s.GetDefaultLayout(ctx, tn, "delivery")
+	must(t, err)
+	wantEq(t, "default after other user layout", defGot, def)
+
+	_, err = s.PutDefaultLayout(ctx, tn, "delivery", defItems, 0)
+	wantErr(t, err, store.ErrConflict)
+	_, err = s.PutDefaultLayout(ctx, tn, "delivery", defItems, 1)
+	must(t, err)
+	wantEq(t, "user B unchanged", userBLayout.Revision, 1)
+
+	other := newTenant(t, s)
+	must(t, s.PutScorecard(ctx, other, domain.Scorecard{ID: "delivery", Name: "Theirs"}))
+	_, err = s.GetLayout(ctx, other, userA, "delivery")
+	wantErr(t, err, store.ErrNotFound)
+	_, err = s.GetDefaultLayout(ctx, other, "delivery")
+	wantErr(t, err, store.ErrNotFound)
 }
 
 func recordType(id, name string) domain.RecordType {

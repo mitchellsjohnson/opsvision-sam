@@ -46,6 +46,8 @@ const (
 	prefixRecType   = "RTYPE#"
 	prefixSnapshot  = "SNAP#"
 	prefixRecordRev = "R#"
+	prefixLayout    = "LAYOUT#"
+	prefixLayoutDef = "LAYOUTDEFAULT#"
 
 	versionMarker = "#VER#"
 )
@@ -60,6 +62,10 @@ func unitSK(id string) string          { return prefixUnit + id }
 func kindSK(id string) string          { return prefixKind + id }
 func itemSK(id string) string          { return prefixItem + id }
 func scorecardSK(id string) string     { return prefixScorecard + id }
+func layoutSK(userID, scorecardID string) string {
+	return prefixLayout + userID + "#" + scorecardID
+}
+func layoutDefaultSK(scorecardID string) string { return prefixLayoutDef + scorecardID }
 func importSK(id string) string        { return prefixImport + id }
 func templateSK(id string) string      { return prefixTemplate + id }
 func recordTypeSK(id string) string    { return prefixRecType + id }

@@ -47,6 +47,43 @@ paths:
               schema: { $ref: '#/components/schemas/Me' }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
+  /me/layouts/{sc}:
+    parameters:
+      - $ref: '#/components/parameters/ScorecardId'
+    get:
+      operationId: getMyLayout
+      tags: [Scorecards]
+      summary: Layout for the current user and scorecard
+      responses:
+        '200':
+          description: The effective layout for the caller
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LayoutResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      operationId: putMyLayout
+      tags: [Scorecards]
+      summary: Save the current user's layout for a scorecard
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PutLayoutRequest' }
+      responses:
+        '200':
+          description: The stored layout
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LayoutResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
   /operator/tenants:
     get:
       operationId: listOperatorTenants
@@ -455,6 +492,30 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /scorecards/{sc}/default-layout:
+    parameters:
+      - $ref: '#/components/parameters/ScorecardId'
+    put:
+      operationId: putDefaultLayout
+      tags: [Scorecards]
+      summary: Save the tenant default layout (admin only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PutLayoutRequest' }
+      responses:
+        '200':
+          description: The stored default layout
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LayoutResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
 
   /scorecards/{sc}/versions:
@@ -2786,6 +2847,42 @@ components:
         nextCursor:
           type: string
           description: Absent on the last page.
+
+    # ---- Layouts -----------------------------------------------------------
+    LayoutItem:
+      type: object
+      required: [id, size, hidden]
+      properties:
+        id:
+          type: string
+          pattern: '^[a-z0-9][a-z0-9:_-]{0,80}$'
+        size:
+          type: string
+          enum: [small, wide]
+        hidden:
+          type: boolean
+    PutLayoutRequest:
+      type: object
+      required: [items, expectedRevision]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/LayoutItem' }
+        expectedRevision:
+          type: integer
+          minimum: 0
+    LayoutResponse:
+      type: object
+      required: [items, revision, source]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/LayoutItem' }
+        revision:
+          type: integer
+        source:
+          type: string
+          enum: [user, default, empty]
 
     # ---- Audit ------------------------------------------------------------
     AuditEntry:

@@ -364,6 +364,45 @@ func (e ImportTemplateProfile) Valid() bool {
 	}
 }
 
+// Defines values for LayoutItemSize.
+const (
+	Small LayoutItemSize = "small"
+	Wide  LayoutItemSize = "wide"
+)
+
+// Valid indicates whether the value is a known member of the LayoutItemSize enum.
+func (e LayoutItemSize) Valid() bool {
+	switch e {
+	case Small:
+		return true
+	case Wide:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for LayoutResponseSource.
+const (
+	Default LayoutResponseSource = "default"
+	Empty   LayoutResponseSource = "empty"
+	User    LayoutResponseSource = "user"
+)
+
+// Valid indicates whether the value is a known member of the LayoutResponseSource enum.
+func (e LayoutResponseSource) Valid() bool {
+	switch e {
+	case Default:
+		return true
+	case Empty:
+		return true
+	case User:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for MeasureSource.
 const (
 	Derived MeasureSource = "derived"
@@ -1185,6 +1224,26 @@ type ItemKind struct {
 // Example: open_defects
 type Key = string
 
+// LayoutItem defines model for LayoutItem.
+type LayoutItem struct {
+	Hidden bool           `json:"hidden"`
+	Id     string         `json:"id"`
+	Size   LayoutItemSize `json:"size"`
+}
+
+// LayoutItemSize defines model for LayoutItem.Size.
+type LayoutItemSize string
+
+// LayoutResponse defines model for LayoutResponse.
+type LayoutResponse struct {
+	Items    []LayoutItem         `json:"items"`
+	Revision int                  `json:"revision"`
+	Source   LayoutResponseSource `json:"source"`
+}
+
+// LayoutResponseSource defines model for LayoutResponse.Source.
+type LayoutResponseSource string
+
 // Level One tier of the org hierarchy. Depth 0 is the root tier.
 type Level struct {
 	Depth int `json:"depth"`
@@ -1504,6 +1563,12 @@ type PublishVersionResult struct {
 	// Example: team-alpha
 	ScorecardId Id            `json:"scorecardId"`
 	Status      VersionStatus `json:"status"`
+}
+
+// PutLayoutRequest defines model for PutLayoutRequest.
+type PutLayoutRequest struct {
+	ExpectedRevision int          `json:"expectedRevision"`
+	Items            []LayoutItem `json:"items"`
 }
 
 // PutOverrideRequest defines model for PutOverrideRequest.
@@ -2363,6 +2428,9 @@ type CreateItemJSONRequestBody = TrackedItem
 // UpdateItemJSONRequestBody defines body for UpdateItem for application/json ContentType.
 type UpdateItemJSONRequestBody = UpdateItemRequest
 
+// PutMyLayoutJSONRequestBody defines body for PutMyLayout for application/json ContentType.
+type PutMyLayoutJSONRequestBody = PutLayoutRequest
+
 // InviteMemberJSONRequestBody defines body for InviteMember for application/json ContentType.
 type InviteMemberJSONRequestBody = InviteMemberRequest
 
@@ -2392,6 +2460,9 @@ type CreateScorecardJSONRequestBody = Scorecard
 
 // BatchSaveDataJSONRequestBody defines body for BatchSaveData for application/json ContentType.
 type BatchSaveDataJSONRequestBody = DataBatchRequest
+
+// PutDefaultLayoutJSONRequestBody defines body for PutDefaultLayout for application/json ContentType.
+type PutDefaultLayoutJSONRequestBody = PutLayoutRequest
 
 // PutOverrideJSONRequestBody defines body for PutOverride for application/json ContentType.
 type PutOverrideJSONRequestBody = PutOverrideRequest
@@ -2458,6 +2529,12 @@ type ServerInterface interface {
 	// GetMe Current user, active tenant, and accessible tenants
 	// (GET /me)
 	GetMe(w http.ResponseWriter, r *http.Request)
+	// GetMyLayout Layout for the current user and scorecard
+	// (GET /me/layouts/{sc})
+	GetMyLayout(w http.ResponseWriter, r *http.Request, sc ScorecardId)
+	// PutMyLayout Save the current user's layout for a scorecard
+	// (PUT /me/layouts/{sc})
+	PutMyLayout(w http.ResponseWriter, r *http.Request, sc ScorecardId)
 	// ListMembers List the tenant's members
 	// (GET /members)
 	ListMembers(w http.ResponseWriter, r *http.Request)
@@ -2512,6 +2589,9 @@ type ServerInterface interface {
 	// BatchSaveData Save data points, all or nothing
 	// (POST /scorecards/{sc}/data:batch)
 	BatchSaveData(w http.ResponseWriter, r *http.Request, sc ScorecardId)
+	// PutDefaultLayout Save the tenant default layout (admin only)
+	// (PUT /scorecards/{sc}/default-layout)
+	PutDefaultLayout(w http.ResponseWriter, r *http.Request, sc ScorecardId)
 	// GetDataEntry The data-entry grid for one period
 	// (GET /scorecards/{sc}/entry)
 	GetDataEntry(w http.ResponseWriter, r *http.Request, sc ScorecardId, params GetDataEntryParams)
@@ -2901,6 +2981,58 @@ func (siw *ServerInterfaceWrapper) GetMe(w http.ResponseWriter, r *http.Request)
 	handler.ServeHTTP(w, r)
 }
 
+// GetMyLayout operation middleware
+func (siw *ServerInterfaceWrapper) GetMyLayout(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "sc" -------------
+	var sc ScorecardId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "sc", r.PathValue("sc"), &sc, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "sc", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetMyLayout(w, r, sc)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PutMyLayout operation middleware
+func (siw *ServerInterfaceWrapper) PutMyLayout(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "sc" -------------
+	var sc ScorecardId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "sc", r.PathValue("sc"), &sc, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "sc", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PutMyLayout(w, r, sc)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // ListMembers operation middleware
 func (siw *ServerInterfaceWrapper) ListMembers(w http.ResponseWriter, r *http.Request) {
 
@@ -3251,6 +3383,32 @@ func (siw *ServerInterfaceWrapper) BatchSaveData(w http.ResponseWriter, r *http.
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.BatchSaveData(w, r, sc)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PutDefaultLayout operation middleware
+func (siw *ServerInterfaceWrapper) PutDefaultLayout(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "sc" -------------
+	var sc ScorecardId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "sc", r.PathValue("sc"), &sc, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "sc", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PutDefaultLayout(w, r, sc)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -4055,6 +4213,8 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	}
 
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/me", wrapper.GetMe)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/me/layouts/{sc}", wrapper.GetMyLayout)
+	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/me/layouts/{sc}", wrapper.PutMyLayout)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/operator/tenants", wrapper.ListOperatorTenants)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/operator/tenants", wrapper.CreateOperatorTenant)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/members", wrapper.ListMembers)
@@ -4074,6 +4234,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPatch+" "+options.BaseURL+"/items/{id}", wrapper.UpdateItem)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/scorecards", wrapper.ListScorecards)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/scorecards", wrapper.CreateScorecard)
+	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/scorecards/{sc}/default-layout", wrapper.PutDefaultLayout)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/scorecards/{sc}/versions", wrapper.ListVersions)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/scorecards/{sc}/versions", wrapper.CreateVersion)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/scorecards/{sc}/versions/{v}", wrapper.GetVersion)
@@ -5226,6 +5387,163 @@ func (response GetMe401JSONResponse) VisitGetMeResponse(w http.ResponseWriter) e
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetMyLayoutRequestObject struct {
+	Sc ScorecardId `json:"sc"`
+}
+
+type GetMyLayoutResponseObject interface {
+	VisitGetMyLayoutResponse(w http.ResponseWriter) error
+}
+
+type GetMyLayout200JSONResponse LayoutResponse
+
+func (response GetMyLayout200JSONResponse) VisitGetMyLayoutResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetMyLayout401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response GetMyLayout401JSONResponse) VisitGetMyLayoutResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetMyLayout403JSONResponse struct{ ForbiddenJSONResponse }
+
+func (response GetMyLayout403JSONResponse) VisitGetMyLayoutResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetMyLayout404JSONResponse struct{ NotFoundJSONResponse }
+
+func (response GetMyLayout404JSONResponse) VisitGetMyLayoutResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PutMyLayoutRequestObject struct {
+	Sc   ScorecardId `json:"sc"`
+	Body *PutMyLayoutJSONRequestBody
+}
+
+type PutMyLayoutResponseObject interface {
+	VisitPutMyLayoutResponse(w http.ResponseWriter) error
+}
+
+type PutMyLayout200JSONResponse LayoutResponse
+
+func (response PutMyLayout200JSONResponse) VisitPutMyLayoutResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PutMyLayout400JSONResponse struct{ BadRequestJSONResponse }
+
+func (response PutMyLayout400JSONResponse) VisitPutMyLayoutResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PutMyLayout401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response PutMyLayout401JSONResponse) VisitPutMyLayoutResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PutMyLayout403JSONResponse struct{ ForbiddenJSONResponse }
+
+func (response PutMyLayout403JSONResponse) VisitPutMyLayoutResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PutMyLayout404JSONResponse struct{ NotFoundJSONResponse }
+
+func (response PutMyLayout404JSONResponse) VisitPutMyLayoutResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PutMyLayout409JSONResponse struct{ ConflictJSONResponse }
+
+func (response PutMyLayout409JSONResponse) VisitPutMyLayoutResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(409)
 	_, err := buf.WriteTo(w)
 	return err
 }
@@ -6498,6 +6816,99 @@ func (response BatchSaveData409JSONResponse) VisitBatchSaveDataResponse(w http.R
 	return err
 }
 
+type PutDefaultLayoutRequestObject struct {
+	Sc   ScorecardId `json:"sc"`
+	Body *PutDefaultLayoutJSONRequestBody
+}
+
+type PutDefaultLayoutResponseObject interface {
+	VisitPutDefaultLayoutResponse(w http.ResponseWriter) error
+}
+
+type PutDefaultLayout200JSONResponse LayoutResponse
+
+func (response PutDefaultLayout200JSONResponse) VisitPutDefaultLayoutResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PutDefaultLayout400JSONResponse struct{ BadRequestJSONResponse }
+
+func (response PutDefaultLayout400JSONResponse) VisitPutDefaultLayoutResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PutDefaultLayout401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response PutDefaultLayout401JSONResponse) VisitPutDefaultLayoutResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PutDefaultLayout403JSONResponse struct{ ForbiddenJSONResponse }
+
+func (response PutDefaultLayout403JSONResponse) VisitPutDefaultLayoutResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PutDefaultLayout404JSONResponse struct{ NotFoundJSONResponse }
+
+func (response PutDefaultLayout404JSONResponse) VisitPutDefaultLayoutResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PutDefaultLayout409JSONResponse struct{ ConflictJSONResponse }
+
+func (response PutDefaultLayout409JSONResponse) VisitPutDefaultLayoutResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type GetDataEntryRequestObject struct {
 	Sc     ScorecardId `json:"sc"`
 	Params GetDataEntryParams
@@ -7735,6 +8146,12 @@ type StrictServerInterface interface {
 	// GetMe Current user, active tenant, and accessible tenants
 	// (GET /me)
 	GetMe(ctx context.Context, request GetMeRequestObject) (GetMeResponseObject, error)
+	// GetMyLayout Layout for the current user and scorecard
+	// (GET /me/layouts/{sc})
+	GetMyLayout(ctx context.Context, request GetMyLayoutRequestObject) (GetMyLayoutResponseObject, error)
+	// PutMyLayout Save the current user's layout for a scorecard
+	// (PUT /me/layouts/{sc})
+	PutMyLayout(ctx context.Context, request PutMyLayoutRequestObject) (PutMyLayoutResponseObject, error)
 	// ListMembers List the tenant's members
 	// (GET /members)
 	ListMembers(ctx context.Context, request ListMembersRequestObject) (ListMembersResponseObject, error)
@@ -7789,6 +8206,9 @@ type StrictServerInterface interface {
 	// BatchSaveData Save data points, all or nothing
 	// (POST /scorecards/{sc}/data:batch)
 	BatchSaveData(ctx context.Context, request BatchSaveDataRequestObject) (BatchSaveDataResponseObject, error)
+	// PutDefaultLayout Save the tenant default layout (admin only)
+	// (PUT /scorecards/{sc}/default-layout)
+	PutDefaultLayout(ctx context.Context, request PutDefaultLayoutRequestObject) (PutDefaultLayoutResponseObject, error)
 	// GetDataEntry The data-entry grid for one period
 	// (GET /scorecards/{sc}/entry)
 	GetDataEntry(ctx context.Context, request GetDataEntryRequestObject) (GetDataEntryResponseObject, error)
@@ -8320,6 +8740,65 @@ func (sh *strictHandler) GetMe(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// GetMyLayout operation middleware
+func (sh *strictHandler) GetMyLayout(w http.ResponseWriter, r *http.Request, sc ScorecardId) {
+	var request GetMyLayoutRequestObject
+
+	request.Sc = sc
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetMyLayout(ctx, request.(GetMyLayoutRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetMyLayout")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetMyLayoutResponseObject); ok {
+		if err := validResponse.VisitGetMyLayoutResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// PutMyLayout operation middleware
+func (sh *strictHandler) PutMyLayout(w http.ResponseWriter, r *http.Request, sc ScorecardId) {
+	var request PutMyLayoutRequestObject
+
+	request.Sc = sc
+
+	var body PutMyLayoutJSONRequestBody
+	if err := runtime.BindJSONBody(r, &body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.PutMyLayout(ctx, request.(PutMyLayoutRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "PutMyLayout")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(PutMyLayoutResponseObject); ok {
+		if err := validResponse.VisitPutMyLayoutResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // ListMembers operation middleware
 func (sh *strictHandler) ListMembers(w http.ResponseWriter, r *http.Request) {
 	var request ListMembersRequestObject
@@ -8830,6 +9309,39 @@ func (sh *strictHandler) BatchSaveData(w http.ResponseWriter, r *http.Request, s
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(BatchSaveDataResponseObject); ok {
 		if err := validResponse.VisitBatchSaveDataResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// PutDefaultLayout operation middleware
+func (sh *strictHandler) PutDefaultLayout(w http.ResponseWriter, r *http.Request, sc ScorecardId) {
+	var request PutDefaultLayoutRequestObject
+
+	request.Sc = sc
+
+	var body PutDefaultLayoutJSONRequestBody
+	if err := runtime.BindJSONBody(r, &body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.PutDefaultLayout(ctx, request.(PutDefaultLayoutRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "PutDefaultLayout")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(PutDefaultLayoutResponseObject); ok {
+		if err := validResponse.VisitPutDefaultLayoutResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
