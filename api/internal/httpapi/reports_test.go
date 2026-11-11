@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"opsvision/internal/domain"
 )
 
 func TestReportSummaryPutGet(t *testing.T) {
@@ -173,6 +175,97 @@ func TestReportPublishAudit(t *testing.T) {
 	if !found {
 		t.Fatalf("audit missing report.publish among %#v", entries)
 	}
+}
+
+func TestReportLiveAllGreenFactsEmptyArray(t *testing.T) {
+	e := newTestEnv(t)
+	seedDelivery(t, e)
+	admin := e.tokens["t1-admin"]
+	// Strong on-time numbers yield green rollup with no fact sentences for M10.
+	e.expect(t, 200, admin, "POST", "/scorecards/delivery/data:batch", batchBody(
+		wr("on_time", "prod-1", "2026-M10", 240, 0), wr("committed", "prod-1", "2026-M10", 250, 0),
+		wr("on_time", "prod-2", "2026-M10", 280, 0), wr("committed", "prod-2", "2026-M10", 290, 0),
+		wr("reviews", "prod-1", "2026-Q4", 5, 0), wr("reviews", "prod-2", "2026-Q4", 5, 0),
+		wr("defects", "pay", "2026-M10", 1, 0), wr("defects", "shop", "2026-M10", 1, 0),
+	), nil)
+	// Company-level facts read the root row; quarterly reviews need an explicit root cell for M10.
+	e.expect(t, 200, admin, "PUT", "/scorecards/delivery/overrides", map[string]any{
+		"metricKey": "reviews_score", "subjectId": "acme", "period": "2026-M10",
+		"value": 5, "status": "G", "reason": "fixture",
+	}, nil)
+	_, raw := e.call(t, e.tokens["t1-viewer"], "GET", "/scorecards/delivery/reports/2026-M10?revision=live", nil)
+	if strings.Contains(string(raw), `"facts":null`) {
+		t.Fatalf("facts must not be null: %s", raw)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	facts, ok := doc["facts"].([]any)
+	if !ok {
+		t.Fatalf("facts type = %T", doc["facts"])
+	}
+	if len(facts) != 0 {
+		t.Fatalf("facts = %#v, want empty for all-green month", facts)
+	}
+}
+
+func TestReportPublishedUndriftedChangesEmptyArray(t *testing.T) {
+	e := newTestEnv(t)
+	seedDelivery(t, e)
+	saveSplit(t, e)
+	admin := e.tokens["t1-admin"]
+	e.expect(t, 200, admin, "POST", "/scorecards/delivery/reports/2026-M10/publish", map[string]any{}, nil)
+	_, raw := e.call(t, admin, "GET", "/scorecards/delivery/reports/2026-M10", nil)
+	if strings.Contains(string(raw), `"changes":null`) {
+		t.Fatalf("changes must not be null: %s", raw)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	changes, ok := doc["changes"].([]any)
+	if !ok {
+		t.Fatalf("changes type = %T", doc["changes"])
+	}
+	if len(changes) != 0 {
+		t.Fatalf("changes = %#v, want empty when data undrifted", changes)
+	}
+}
+
+func TestReportPublishedViewerScopeFiltersRows(t *testing.T) {
+	e := newTestEnv(t)
+	seedDelivery(t, e)
+	saveSplit(t, e)
+	setScope(t, e, domain.RoleViewer, domain.Scope{OrgUnitIDs: []string{"prod-1"}})
+	admin, viewer := e.tokens["t1-admin"], e.tokens["t1-viewer"]
+	e.expect(t, 200, admin, "POST", "/scorecards/delivery/reports/2026-M10/publish", map[string]any{}, nil)
+
+	var adminDoc, viewerDoc map[string]any
+	e.expect(t, 200, admin, "GET", "/scorecards/delivery/reports/2026-M10", nil, &adminDoc)
+	e.expect(t, 200, viewer, "GET", "/scorecards/delivery/reports/2026-M10", nil, &viewerDoc)
+	adminRows := reportRowSubjects(t, adminDoc)
+	viewerRows := reportRowSubjects(t, viewerDoc)
+	for subj := range viewerRows {
+		if subj == "prod-2" || subj == "seg-b" {
+			t.Fatalf("viewer sees out-of-scope subject %q", subj)
+		}
+	}
+	if len(viewerRows) >= len(adminRows) {
+		t.Fatalf("viewer rows %#v should be fewer than admin %#v", viewerRows, adminRows)
+	}
+}
+
+func reportRowSubjects(t *testing.T, doc map[string]any) map[string]struct{} {
+	t.Helper()
+	view, _ := doc["view"].(map[string]any)
+	rows, _ := view["rows"].([]any)
+	out := map[string]struct{}{}
+	for _, r := range rows {
+		row, _ := r.(map[string]any)
+		out[row["subjectId"].(string)] = struct{}{}
+	}
+	return out
 }
 
 func TestReportSummaryLength(t *testing.T) {

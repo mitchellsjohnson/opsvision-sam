@@ -58,7 +58,7 @@ func Facts(v FactsView, scale []domain.StatusLevel) []string {
 	best := bestRank(rank)
 	root := orgRootSubject(v.Rows)
 	if root == "" {
-		return nil
+		return []string{}
 	}
 	byMetric := map[string]FactsRow{}
 	for _, r := range v.Rows {
@@ -92,7 +92,7 @@ func Facts(v FactsView, scale []domain.StatusLevel) []string {
 			notReported = append(notReported, r.MetricName)
 		}
 	}
-	var out []string
+	out := []string{}
 	if len(turned) > 0 {
 		out = append(out, fmt.Sprintf("%d metric%s turned red: %s", len(turned), plural(len(turned)), strings.Join(turned, ", ")))
 	}

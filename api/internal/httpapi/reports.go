@@ -233,8 +233,8 @@ func (s *Server) PublishReport(ctx context.Context, req PublishReportRequestObje
 	if err != nil {
 		return nil, err
 	}
-	facts := report.Facts(factsViewFromAPI(apiView, mo.String()), statusScale(*p.Tenant))
-	verIDs := versionIDsFromView(apiView)
+	facts := reportStrings(report.Facts(factsViewFromAPI(apiView, mo.String()), statusScale(*p.Tenant)))
+	verIDs := reportStrings(versionIDsFromView(apiView))
 	viewRaw, err := json.Marshal(apiView)
 	if err != nil {
 		return nil, err
@@ -367,8 +367,8 @@ func (s *Server) liveReportDocument(ctx context.Context, p auth.Principal, score
 		return nil, err
 	}
 	return GetReportDocument200JSONResponse(ReportDocument{
-		Live: true, Revision: 0, DataRevised: false, Changes: []ReportChange{},
-		Summary: summaryText, Facts: facts, View: apiView, GeneratedAt: s.now(),
+		Live: true, Revision: 0, DataRevised: false, Changes: reportChanges(nil),
+		Summary: summaryText, Facts: reportStrings(facts), View: apiView, GeneratedAt: s.now(),
 		SummaryScope: Company,
 	}), nil
 }
@@ -400,15 +400,18 @@ func (s *Server) publishedReportDocument(ctx context.Context, p auth.Principal, 
 		}
 		return nil, err
 	}
-	filteredSnap := s.filterScorecardView(ctx, p, scorecardID, mo, snapView)
+	filteredSnap, err := s.filterScorecardView(ctx, p, scorecardID, mo, snapView)
+	if err != nil {
+		return nil, err
+	}
 	freshView, _, err := s.memberReportView(ctx, p, scorecardID, mo)
 	if err != nil {
 		return nil, err
 	}
 	dataRevised, changes := diffReportViews(filteredSnap, freshView)
 	return GetReportDocument200JSONResponse(ReportDocument{
-		Live: false, Revision: revision, DataRevised: dataRevised, Changes: changes,
-		Summary: doc.Summary, Facts: doc.Facts, View: filteredSnap, GeneratedAt: doc.GeneratedAt,
+		Live: false, Revision: revision, DataRevised: dataRevised, Changes: reportChanges(changes),
+		Summary: doc.Summary, Facts: reportStrings(doc.Facts), View: filteredSnap, GeneratedAt: doc.GeneratedAt,
 		SummaryScope: Company,
 	}), nil
 }
@@ -477,14 +480,14 @@ func (s *Server) memberReportView(ctx context.Context, p auth.Principal, scoreca
 		return acc.canRead(r.SubjectID, []string{r.MetricKey}, asOf)
 	}, cutoffs)
 	company := apiView(view, nil, cutoffs)
-	facts := report.Facts(factsViewFromAPI(company, mo.String()), statusScale(*p.Tenant))
+	facts := reportStrings(report.Facts(factsViewFromAPI(company, mo.String()), statusScale(*p.Tenant)))
 	return filtered, facts, nil
 }
 
-func (s *Server) filterScorecardView(ctx context.Context, p auth.Principal, scorecardID string, mo period.Period, v ScorecardView) ScorecardView {
+func (s *Server) filterScorecardView(ctx context.Context, p auth.Principal, scorecardID string, mo period.Period, v ScorecardView) (ScorecardView, error) {
 	in, err := s.loadInput(ctx, *p.Tenant, scorecardID, fiscalYears(true, mo))
 	if err != nil {
-		return v
+		return ScorecardView{}, err
 	}
 	acc := newAccess(p, in)
 	keep := map[string]struct{}{}
@@ -498,7 +501,21 @@ func (s *Server) filterScorecardView(ctx context.Context, p auth.Principal, scor
 		_, ok := keep[r.MetricKey+"/"+r.SubjectId]
 		return !ok
 	})
-	return out
+	return out, nil
+}
+
+func reportStrings(ss []string) []string {
+	if ss == nil {
+		return []string{}
+	}
+	return ss
+}
+
+func reportChanges(cc []ReportChange) []ReportChange {
+	if cc == nil {
+		return []ReportChange{}
+	}
+	return cc
 }
 
 func reportViewRequest(tenant domain.Tenant, scorecardID string, mo period.Period) (engine.ViewRequest, []period.Period, error) {
@@ -540,7 +557,7 @@ func factsViewFromAPI(v ScorecardView, reportPeriod string) report.FactsView {
 
 func versionIDsFromView(v ScorecardView) []string {
 	seen := map[string]struct{}{}
-	var out []string
+	out := make([]string, 0)
 	for _, id := range v.VersionByPeriod {
 		s := string(id)
 		if s == "" {
@@ -566,7 +583,7 @@ func diffReportViews(was, live ScorecardView) (bool, []ReportChange) {
 			wasCells[cellKey{r.MetricKey, r.SubjectId, string(c.Period)}] = c
 		}
 	}
-	var changes []ReportChange
+	changes := make([]ReportChange, 0)
 	for _, r := range live.Rows {
 		for _, c := range r.Cells {
 			if c.Ytd {

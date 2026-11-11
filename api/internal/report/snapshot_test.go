@@ -1,6 +1,7 @@
 package report
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -81,6 +82,16 @@ func TestFactsAllGreenNoTurnedRed(t *testing.T) {
 		if strings.Contains(s, "turned red") {
 			t.Fatalf("unexpected turned red in %#v", got)
 		}
+	}
+	if got == nil {
+		t.Fatal("Facts returned nil slice")
+	}
+	raw, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != "[]" {
+		t.Fatalf("marshal = %s, want []", raw)
 	}
 }
 
