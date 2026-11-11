@@ -1,6 +1,19 @@
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import clsx from 'clsx'
-import { ChevronDown, LogOut } from 'lucide-react'
+import type { LucideIcon } from 'lucide-react'
+import {
+  BarChart3,
+  BookOpen,
+  Building2,
+  ChevronDown,
+  ClipboardPen,
+  FileText,
+  List,
+  LogOut,
+  Tags,
+  Upload,
+  Users,
+} from 'lucide-react'
 import { useEffect } from 'react'
 import { NavLink, Outlet, useLocation, useSearchParams } from 'react-router'
 import { useMe, useScorecards } from '../api/queries'
@@ -11,20 +24,39 @@ import { PeriodPicker } from './PeriodPicker'
 import { TenantSwitcher } from './TenantSwitcher'
 import { VIEW_PARAMS } from './usePeriodState'
 
-const ADMIN_LINKS = [
-  { to: '/admin/org', label: 'Org' },
-  { to: '/admin/items', label: 'Items' },
-  { to: '/admin/members', label: 'Members' },
-  { to: '/admin/methodology', label: 'Methodology' },
-  { to: '/admin/import', label: 'Import' },
-  { to: '/admin/record-types', label: 'Record types' },
-  { to: '/admin/templates', label: 'Templates' },
+const ADMIN_LINKS: { to: string; label: string; icon: LucideIcon }[] = [
+  { to: '/admin/org', label: 'Org', icon: Building2 },
+  { to: '/admin/items', label: 'Items', icon: List },
+  { to: '/admin/members', label: 'Members', icon: Users },
+  { to: '/admin/methodology', label: 'Methodology', icon: BookOpen },
+  { to: '/admin/import', label: 'Import', icon: Upload },
+  { to: '/admin/record-types', label: 'Record types', icon: Tags },
+  { to: '/admin/templates', label: 'Templates', icon: FileText },
 ]
+
+const navLabelClass = 'max-[1439px]:sr-only'
 
 function navClass({ isActive }: { isActive: boolean }) {
   return clsx(
-    'block rounded-md px-3 py-2 text-sm font-medium',
+    'flex items-center gap-2 rounded-md px-2 py-2 text-sm font-medium max-[1439px]:justify-center min-[1440px]:px-3',
     isActive ? 'bg-accent text-white' : 'text-ink hover:bg-white',
+  )
+}
+
+function ShellNavLink({
+  to,
+  label,
+  icon: Icon,
+}: {
+  to: { pathname: string; search?: string } | string
+  label: string
+  icon: LucideIcon
+}) {
+  return (
+    <NavLink to={to} className={navClass}>
+      <Icon aria-hidden="true" className="size-5 shrink-0" />
+      <span className={navLabelClass}>{label}</span>
+    </NavLink>
   )
 }
 
@@ -122,28 +154,29 @@ export function AppShell() {
           <ul className="space-y-1">
             {(scorecards.data?.scorecards ?? []).map((sc) => (
               <li key={sc.id}>
-                <NavLink to={{ pathname: `/scorecards/${sc.id}/overview`, search }} className={navClass}>
-                  {sc.name}
-                </NavLink>
+                <ShellNavLink
+                  to={{ pathname: `/scorecards/${sc.id}/overview`, search }}
+                  label={sc.name}
+                  icon={BarChart3}
+                />
               </li>
             ))}
             <li>
-              <NavLink to={{ pathname: '/entry', search }} className={navClass}>
-                Enter data
-              </NavLink>
+              <ShellNavLink to={{ pathname: '/entry', search }} label="Enter data" icon={ClipboardPen} />
             </li>
           </ul>
           {isAdmin && (
             <>
-              <p id="admin-nav" className="mt-6 px-3 text-xs font-semibold uppercase tracking-wide text-ink/80">
+              <p
+                id="admin-nav"
+                className="mt-6 px-3 text-xs font-semibold uppercase tracking-wide text-ink/80 max-[1439px]:sr-only"
+              >
                 Admin
               </p>
-              <ul aria-labelledby="admin-nav" className="mt-1 space-y-1">
+              <ul aria-labelledby="admin-nav" className="mt-1 space-y-1 max-[1439px]:mt-6">
                 {ADMIN_LINKS.map((l) => (
                   <li key={l.to}>
-                    <NavLink to={l.to} className={navClass}>
-                      {l.label}
-                    </NavLink>
+                    <ShellNavLink to={l.to} label={l.label} icon={l.icon} />
                   </li>
                 ))}
               </ul>

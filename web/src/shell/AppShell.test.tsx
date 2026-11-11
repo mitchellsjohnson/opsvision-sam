@@ -83,6 +83,17 @@ describe('AppShell', () => {
     expect(nav.classList.contains('min-[1440px]:w-60')).toBe(true)
   })
 
+  it('shows icons and visually hides link labels in the compact nav rail', async () => {
+    shell()
+    const nav = await screen.findByRole('navigation', { name: 'Main' })
+    for (const name of ['Main scorecard', 'Enter data', 'Org']) {
+      const link = await within(nav).findByRole('link', { name })
+      expect(link.querySelector('svg')).toBeTruthy()
+      const label = link.querySelector('span')
+      expect(label?.classList.contains('max-[1439px]:sr-only')).toBe(true)
+    }
+  })
+
   it("remembers the active tenant's organization", async () => {
     const rememberTenant = vi.fn()
     shell(undefined, testAuth({ rememberTenant }))
