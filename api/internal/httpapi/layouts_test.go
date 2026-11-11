@@ -6,9 +6,10 @@ import (
 )
 
 type layoutJSON struct {
-	Items    []layoutItemJSON `json:"items"`
-	Revision int              `json:"revision"`
-	Source   string           `json:"source"`
+	Items            []layoutItemJSON `json:"items"`
+	Revision         int              `json:"revision"`
+	Source           string           `json:"source"`
+	DefaultRevision  int              `json:"defaultRevision"`
 }
 
 type layoutItemJSON struct {
@@ -82,11 +83,17 @@ func TestLayoutMemberPutGet(t *testing.T) {
 
 	var fromDefault layoutJSON
 	e.expect(t, 200, viewer, "GET", "/me/layouts/delivery", nil, &fromDefault)
-	if fromDefault.Source != "default" || fromDefault.Revision != 0 {
+	if fromDefault.Source != "default" || fromDefault.Revision != 0 || fromDefault.DefaultRevision != 1 {
 		t.Fatalf("viewer default get: %+v", fromDefault)
 	}
 	if len(fromDefault.Items) != 1 || fromDefault.Items[0].ID != "widget:ribbon" {
 		t.Fatalf("viewer default items: %+v", fromDefault.Items)
+	}
+
+	var adminGet layoutJSON
+	e.expect(t, 200, admin, "GET", "/me/layouts/delivery", nil, &adminGet)
+	if adminGet.DefaultRevision != 1 {
+		t.Fatalf("defaultRevision on user layout: %+v", adminGet)
 	}
 
 	// Unknown scorecard.
@@ -117,7 +124,7 @@ func TestLayoutEmpty(t *testing.T) {
 
 	var got layoutJSON
 	e.expect(t, 200, contrib, "GET", "/me/layouts/delivery", nil, &got)
-	if got.Source != "empty" || got.Revision != 0 {
+	if got.Source != "empty" || got.Revision != 0 || got.DefaultRevision != 0 {
 		t.Fatalf("empty: %+v", got)
 	}
 	if got.Items == nil {

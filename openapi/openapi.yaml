@@ -2988,7 +2988,7 @@ components:
           minimum: 0
     LayoutResponse:
       type: object
-      required: [items, revision, source]
+      required: [items, revision, source, defaultRevision]
       properties:
         items:
           type: array
@@ -2998,6 +2998,9 @@ components:
         source:
           type: string
           enum: [user, default, empty]
+        defaultRevision:
+          type: integer
+          minimum: 0
 
     ReportSummary:
       type: object

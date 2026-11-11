@@ -19,6 +19,7 @@ import { needsAttention, type NeedsAttentionItem } from './logic/needsAttention'
 import { defaultStatusScale } from './charts/chartTheme'
 import { MetricChart } from './charts/MetricChart'
 import { focusReturnRef } from './focusTrigger'
+import { LayoutGrid } from './LayoutGrid'
 import { cellReported, statusAtScope, type StatusScaleEntry } from './logic/statusAtScope'
 import { cellKey, groupRows } from './viewHelpers'
 
@@ -204,8 +205,6 @@ export function OverviewPage() {
   }
   const attention = needsAttention(attentionItems, scale)
 
-  const visibleMetrics = metrics.filter(({ atScope }) => !healthFilter || atScope.status === healthFilter)
-
   const ribbonLabel =
     parsed?.grain === 'quarter'
       ? '8-quarter status'
@@ -217,12 +216,112 @@ export function OverviewPage() {
 
   const unreported = metrics.filter(({ atScope }) => !atScope.status)
 
+  const metricsByCategory: Record<string, { key: string }[]> = {}
+  const metricCategories: Record<string, string> = {}
+  const itemLabels: Record<string, string> = {
+    'widget:health': 'Health this month',
+    'widget:ribbon': ribbonLabel,
+    'widget:needs': 'Needs attention',
+    'widget:unreported': 'Not reported',
+  }
+  for (const g of groups) {
+    metricsByCategory[g.id] = g.metrics.map((m) => ({ key: m.key }))
+    itemLabels[`section:${g.id}`] = g.name
+    for (const m of g.metrics) {
+      const meta = metrics.find((x) => x.metric.key === m.key)
+      itemLabels[`metric:${m.key}`] = meta?.scope.metricName ?? m.name
+      metricCategories[m.key] = g.name
+    }
+  }
+
+  const renderMetricCard = (metricKey: string) => {
+    const meta = metrics.find((m) => m.metric.key === metricKey)
+    if (!meta || (healthFilter && meta.atScope.status !== healthFilter)) return null
+    const { metric, scope, children, atScope, noun } = meta
+    const cell = scopeCell(scope, columnKey)
+    const scopeReported = cellReported(cell)
+    const reportedChildren = children.filter((ch) => cellReported(scopeCell(ch, columnKey)))
+    const chartChildren = !scopeReported && reportedChildren.length > 0
+    const scopeNote = chartChildren
+      ? `Company total not reported; ${reportedChildren.length} ${noun} reported`
+      : atScope.caption || undefined
+    const chartRows = chartChildren ? reportedChildren : [scope]
+    const ytdCell = ytdCellFor(scope)
+    const ytdDisplay = ytdCell?.display ? `YTD ${ytdCell.display}` : null
+    return (
+      <article
+        aria-label={scope.metricName}
+        className="h-full cursor-pointer rounded-lg border border-ink/20 bg-white p-4 pt-10"
+        onClick={(e) => {
+          const target = e.target as HTMLElement
+          if (target.closest('button, a, [role="button"]')) return
+          focusReturnRef.current = e.currentTarget
+          const next = new URLSearchParams(params)
+          next.set('focus', metric.key)
+          setParams(next)
+        }}
+      >
+        <div className="flex items-start justify-between gap-2">
+          <h3 className="text-base font-semibold">{scope.metricName}</h3>
+          <button
+            type="button"
+            className="rounded border border-ink/20 px-2 py-0.5 text-xs hover:bg-cream"
+            onClick={(e) => {
+              focusReturnRef.current = e.currentTarget
+              const next = new URLSearchParams(params)
+              next.set('focus', metric.key)
+              setParams(next)
+            }}
+          >
+            Expand
+          </button>
+        </div>
+        {atScope.caption && !chartChildren && <p className="text-xs text-ink/80">{atScope.caption}</p>}
+        <MetricChart
+          row={scope}
+          chartRows={chartRows}
+          childRows={children}
+          columns={trendColumns}
+          currentColumnKey={columnKey}
+          currentDisplay={cell?.display ?? ''}
+          currentStatus={atScope.status}
+          statusLabel={statusLabel}
+          scale={statusColors}
+          tableTo={tableLink(metric.key)}
+          scopeNote={scopeNote}
+          ytdDisplay={ytdDisplay}
+        />
+        {cell && cell.changeKind && (
+          <p className="mt-1 text-xs text-ink/70">
+            {changeText({
+              period: cell.period,
+              ytd: cell.ytd,
+              format: scope.format,
+              change: cell.change,
+              changeKind: cell.changeKind,
+              compare: undefined,
+              fyStart: fy,
+            })}
+          </p>
+        )}
+      </article>
+    )
+  }
+
   return (
     <div>
       <h1 className="text-2xl font-semibold text-accent-deep">Overview</h1>
       <p className="mt-1 text-sm text-ink/80">{headerParts.join(' · ')}</p>
 
-      <section aria-label="Health this month" className="mt-6">
+      <LayoutGrid
+        scorecardId={scorecardId}
+        categories={view.data.categories}
+        metricsByCategory={metricsByCategory}
+        isAdmin={me.data?.role === 'admin'}
+        itemLabels={itemLabels}
+        metricCategories={metricCategories}
+        renderHealth={() => (
+      <section aria-label="Health this month">
         <h2 className="sr-only">Health this month</h2>
         <div className="flex flex-wrap gap-2">
             {[...healthCounts].map(([key, count]) => (
@@ -261,8 +360,9 @@ export function OverviewPage() {
           </div>
         )}
       </section>
-
-      <section aria-label={ribbonLabel} className="mt-6">
+        )}
+        renderRibbon={() => (
+      <section aria-label={ribbonLabel}>
         <h2 className="text-base font-semibold text-accent-deep">{ribbonLabel}</h2>
         <ul className="mt-2 space-y-1 text-sm">
           {metrics.map(({ metric, scope, atScope }) => {
@@ -283,9 +383,10 @@ export function OverviewPage() {
           })}
         </ul>
       </section>
-
-      {attention.length > 0 && (
-        <section aria-label="Needs attention" className="mt-6">
+        )}
+        renderNeeds={() =>
+          attention.length > 0 ? (
+        <section aria-label="Needs attention">
           <h2 className="text-lg font-semibold text-accent-deep">Needs attention</h2>
           <ul className="mt-3 grid gap-4 lg:grid-cols-3">
             {attention.map((item) => {
@@ -308,124 +409,52 @@ export function OverviewPage() {
             })}
           </ul>
         </section>
-      )}
-
-      {groups.map((g) => {
-        const sectionMetrics = visibleMetrics.filter((m) => m.category.id === g.id)
-        if (sectionMetrics.length === 0) return null
-        const sectionCounts = new Map<string, number>()
-        for (const m of g.metrics) {
-          const meta = metrics.find((x) => x.metric.key === m.key)
-          if (!meta) continue
-          if (meta.atScope.status) sectionCounts.set(meta.atScope.status, (sectionCounts.get(meta.atScope.status) ?? 0) + 1)
+          ) : null
         }
-        return (
-          <section key={g.id} aria-labelledby={`overview-cat-${g.id}`} className="mt-8">
-            <h2 id={`overview-cat-${g.id}`} className="text-lg font-semibold text-accent-deep">
-              {g.name}
-              <span className="ml-2 text-sm font-normal text-ink/70">
-                {[...sectionCounts].map(([k, n]) => `${n}${k}`).join(' ')}
-              </span>
-            </h2>
-            <ul className="mt-3 grid gap-4 sm:grid-cols-2">
-              {sectionMetrics.map(({ metric, scope, children, atScope, noun }) => {
-                const cell = scopeCell(scope, columnKey)
-                const scopeReported = cellReported(cell)
-                const reportedChildren = children.filter((ch) => cellReported(scopeCell(ch, columnKey)))
-                const chartChildren = !scopeReported && reportedChildren.length > 0
-                const scopeNote = chartChildren
-                  ? `Company total not reported; ${reportedChildren.length} ${noun} reported`
-                  : atScope.caption || undefined
-                const chartRows = chartChildren ? reportedChildren : [scope]
-                const ytdCell = ytdCellFor(scope)
-                const ytdDisplay = ytdCell?.display ? `YTD ${ytdCell.display}` : null
-                return (
-                  <li key={metric.key}>
-                    <article
-                      aria-label={scope.metricName}
-                      className="h-full cursor-pointer rounded-lg border border-ink/20 bg-white p-4"
-                      onClick={(e) => {
-                        const target = e.target as HTMLElement
-                        if (target.closest('button, a, [role="button"]')) return
-                        focusReturnRef.current = e.currentTarget
-                        const next = new URLSearchParams(params)
-                        next.set('focus', metric.key)
-                        setParams(next)
-                      }}
-                    >
-                      <div className="flex items-start justify-between gap-2">
-                        <h3 className="text-base font-semibold">{scope.metricName}</h3>
-                        <button
-                          type="button"
-                          className="rounded border border-ink/20 px-2 py-0.5 text-xs hover:bg-cream"
-                          onClick={(e) => {
-                            focusReturnRef.current = e.currentTarget
-                            const next = new URLSearchParams(params)
-                            next.set('focus', metric.key)
-                            setParams(next)
-                          }}
-                        >
-                          Expand
-                        </button>
-                      </div>
-                      {atScope.caption && !chartChildren && (
-                        <p className="text-xs text-ink/80">{atScope.caption}</p>
-                      )}
-                      <MetricChart
-                        row={scope}
-                        chartRows={chartRows}
-                        childRows={children}
-                        columns={trendColumns}
-                        currentColumnKey={columnKey}
-                        currentDisplay={cell?.display ?? ''}
-                        currentStatus={atScope.status}
-                        statusLabel={statusLabel}
-                        scale={statusColors}
-                        tableTo={tableLink(metric.key)}
-                        scopeNote={scopeNote}
-                        ytdDisplay={ytdDisplay}
-                      />
-                      {cell && cell.changeKind && (
-                        <p className="mt-1 text-xs text-ink/70">
-                          {changeText({
-                            period: cell.period,
-                            ytd: cell.ytd,
-                            format: scope.format,
-                            change: cell.change,
-                            changeKind: cell.changeKind,
-                            compare: undefined,
-                            fyStart: fy,
-                          })}
-                        </p>
-                      )}
-                    </article>
-                  </li>
-                )
-              })}
-            </ul>
-          </section>
-        )
-      })}
-
-      {unreported.length > 0 && (
-        <p className="mt-6 text-sm text-ink/80">
-          Not reported:{' '}
-          {unreported
-            .map((m) => {
-              const due = nextDuePeriodLabel(m.scope.frequency, period.period, fy)
-              return due ? `${m.scope.metricName} (next due ${due})` : m.scope.metricName
-            })
-            .join(', ')}
-          {canEnter && (
-            <>
-              {' '}
-              <Link to={`/entry?period=${period.period}`} className="font-medium text-accent-deep hover:underline">
-                Enter data
-              </Link>
-            </>
-          )}
-        </p>
-      )}
+        renderSection={(categoryId) => {
+          const g = groups.find((x) => x.id === categoryId)
+          if (!g) return null
+          const sectionCounts = new Map<string, number>()
+          for (const m of g.metrics) {
+            const meta = metrics.find((x) => x.metric.key === m.key)
+            if (!meta) continue
+            if (meta.atScope.status)
+              sectionCounts.set(meta.atScope.status, (sectionCounts.get(meta.atScope.status) ?? 0) + 1)
+          }
+          return (
+            <section aria-labelledby={`overview-cat-${g.id}`} className="pt-8">
+              <h2 id={`overview-cat-${g.id}`} className="text-lg font-semibold text-accent-deep">
+                {g.name}
+                <span className="ml-2 text-sm font-normal text-ink/70">
+                  {[...sectionCounts].map(([k, n]) => `${n}${k}`).join(' ')}
+                </span>
+              </h2>
+            </section>
+          )
+        }}
+        renderMetric={renderMetricCard}
+        renderUnreported={() =>
+          unreported.length > 0 ? (
+            <p className="text-sm text-ink/80">
+              Not reported:{' '}
+              {unreported
+                .map((m) => {
+                  const due = nextDuePeriodLabel(m.scope.frequency, period.period, fy)
+                  return due ? `${m.scope.metricName} (next due ${due})` : m.scope.metricName
+                })
+                .join(', ')}
+              {canEnter && (
+                <>
+                  {' '}
+                  <Link to={`/entry?period=${period.period}`} className="font-medium text-accent-deep hover:underline">
+                    Enter data
+                  </Link>
+                </>
+              )}
+            </p>
+          ) : null
+        }
+      />
     </div>
   )
 }

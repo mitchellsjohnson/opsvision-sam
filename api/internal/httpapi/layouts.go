@@ -22,16 +22,28 @@ func domainLayoutItems(items []LayoutItem) []domain.LayoutItem {
 	return out
 }
 
-func apiLayoutResponse(items []domain.LayoutItem, revision int, source LayoutResponseSource) LayoutResponse {
+func apiLayoutResponse(items []domain.LayoutItem, revision int, source LayoutResponseSource, defaultRevision int) LayoutResponse {
 	out := LayoutResponse{
-		Items:    make([]LayoutItem, len(items)),
-		Revision: revision,
-		Source:   source,
+		Items:           make([]LayoutItem, len(items)),
+		Revision:        revision,
+		Source:          source,
+		DefaultRevision: defaultRevision,
 	}
 	for i, it := range items {
 		out.Items[i] = LayoutItem{Id: it.ID, Size: LayoutItemSize(it.Size), Hidden: it.Hidden}
 	}
 	return out
+}
+
+func (s *Server) layoutDefaultRevision(ctx context.Context, tenantID, scorecardID string) (int, error) {
+	def, err := s.store.GetDefaultLayout(ctx, tenantID, scorecardID)
+	if err == nil {
+		return def.Revision, nil
+	}
+	if errors.Is(err, store.ErrNotFound) {
+		return 0, nil
+	}
+	return 0, err
 }
 
 func validateLayoutItems(pr *problems, items []LayoutItem) {
@@ -64,21 +76,25 @@ func (s *Server) GetMyLayout(ctx context.Context, req GetMyLayoutRequestObject) 
 	if _, err := s.scorecardOf(ctx, p.Tenant.ID, req.Sc); err != nil {
 		return nil, err
 	}
+	defaultRevision, err := s.layoutDefaultRevision(ctx, p.Tenant.ID, req.Sc)
+	if err != nil {
+		return nil, err
+	}
 	userLayout, err := s.store.GetLayout(ctx, p.Tenant.ID, p.UserID, req.Sc)
 	if err == nil {
-		return GetMyLayout200JSONResponse(apiLayoutResponse(userLayout.Items, userLayout.Revision, User)), nil
+		return GetMyLayout200JSONResponse(apiLayoutResponse(userLayout.Items, userLayout.Revision, User, defaultRevision)), nil
 	}
 	if !errors.Is(err, store.ErrNotFound) {
 		return nil, err
 	}
 	def, err := s.store.GetDefaultLayout(ctx, p.Tenant.ID, req.Sc)
 	if err == nil {
-		return GetMyLayout200JSONResponse(apiLayoutResponse(def.Items, 0, Default)), nil
+		return GetMyLayout200JSONResponse(apiLayoutResponse(def.Items, 0, Default, defaultRevision)), nil
 	}
 	if !errors.Is(err, store.ErrNotFound) {
 		return nil, err
 	}
-	return GetMyLayout200JSONResponse(apiLayoutResponse([]domain.LayoutItem{}, 0, Empty)), nil
+	return GetMyLayout200JSONResponse(apiLayoutResponse([]domain.LayoutItem{}, 0, Empty, defaultRevision)), nil
 }
 
 func (s *Server) putLayout(ctx context.Context, tenantID, userID, scorecardID string, b PutLayoutRequest, source LayoutResponseSource) (LayoutResponse, error) {
@@ -98,7 +114,11 @@ func (s *Server) putLayout(ctx context.Context, tenantID, userID, scorecardID st
 		}
 		return LayoutResponse{}, err
 	}
-	return apiLayoutResponse(stored.Items, stored.Revision, source), nil
+	defaultRevision, err := s.layoutDefaultRevision(ctx, tenantID, scorecardID)
+	if err != nil {
+		return LayoutResponse{}, err
+	}
+	return apiLayoutResponse(stored.Items, stored.Revision, source, defaultRevision), nil
 }
 
 // PutMyLayout saves the caller's layout for a scorecard.
@@ -137,7 +157,7 @@ func (s *Server) putDefaultLayout(ctx context.Context, tenantID, scorecardID str
 		}
 		return LayoutResponse{}, err
 	}
-	return apiLayoutResponse(stored.Items, stored.Revision, Default), nil
+	return apiLayoutResponse(stored.Items, stored.Revision, Default, stored.Revision), nil
 }
 
 // PutDefaultLayout saves the tenant default layout. Admins only.

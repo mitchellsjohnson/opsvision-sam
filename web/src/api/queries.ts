@@ -73,6 +73,7 @@ export const keys = {
     ['history', sc, measure, subject, period] as const,
   contributions: (sc: string, metric: string, subject: string, period: string) =>
     ['contributions', sc, metric, subject, period] as const,
+  layout: (sc: string) => ['layout', sc] as const,
 }
 
 type Result<T> = { data?: T; error?: unknown; response: Response }
@@ -657,4 +658,42 @@ export function usePublishedMetrics(): {
   }
   const data = [...byKey.values()].sort((a, b) => a.name.localeCompare(b.name))
   return { data, isPending: false, isError: false }
+}
+
+/** Saved overview tile order for a scorecard. */
+export function useLayout(sc: string | undefined) {
+  const api = useApi()
+  return useQuery({
+    queryKey: keys.layout(sc ?? ''),
+    enabled: sc !== undefined,
+    queryFn: () => unwrap(api.GET('/me/layouts/{sc}', { params: { path: { sc: sc ?? '' } } })),
+  })
+}
+
+/** Persists overview tile order; callers handle 409 by refetching. */
+export function usePutLayout(sc: string) {
+  const api = useApi()
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (body: Schemas['PutLayoutRequest']) =>
+      unwrap(api.PUT('/me/layouts/{sc}', { params: { path: { sc } }, body })),
+    onSuccess: (data) => {
+      queryClient.setQueryData(keys.layout(sc), data)
+    },
+  })
+}
+
+/** Saves the tenant default overview layout (admin). */
+export function usePutDefaultLayout(sc: string) {
+  const api = useApi()
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (body: Schemas['PutLayoutRequest']) =>
+      unwrap(api.PUT('/scorecards/{sc}/default-layout', { params: { path: { sc } }, body })),
+    onSuccess: (data) => {
+      queryClient.setQueryData(keys.layout(sc), (prev: Schemas['LayoutResponse'] | undefined) =>
+        prev ? { ...prev, defaultRevision: data.revision } : prev,
+      )
+    },
+  })
 }

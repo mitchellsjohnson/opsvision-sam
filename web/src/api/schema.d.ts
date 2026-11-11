@@ -1983,6 +1983,7 @@ export interface components {
             revision: number;
             /** @enum {string} */
             source: "user" | "default" | "empty";
+            defaultRevision: number;
         };
         ReportSummary: {
             text: string;

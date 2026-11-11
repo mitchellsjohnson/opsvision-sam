@@ -1269,9 +1269,10 @@ type LayoutItemSize string
 
 // LayoutResponse defines model for LayoutResponse.
 type LayoutResponse struct {
-	Items    []LayoutItem         `json:"items"`
-	Revision int                  `json:"revision"`
-	Source   LayoutResponseSource `json:"source"`
+	DefaultRevision int                  `json:"defaultRevision"`
+	Items           []LayoutItem         `json:"items"`
+	Revision        int                  `json:"revision"`
+	Source          LayoutResponseSource `json:"source"`
 }
 
 // LayoutResponseSource defines model for LayoutResponse.Source.
