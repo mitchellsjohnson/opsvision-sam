@@ -68,6 +68,25 @@ describe('applyLayout', () => {
     expect(spendIdx).toBeGreaterThan(onTimeIdx)
     expect(spendIdx).toBeGreaterThan(deliveryIdx)
   })
+
+  it('appends omitted widgets and sections after saved items, not by fallback index', () => {
+    const fallback = defaultLayout([{ id: 'a' }, { id: 'b' }], {
+      a: [{ key: 'm1' }],
+      b: [{ key: 'm2' }],
+    })
+    const saved = [
+      { id: 'widget:health', size: 'wide' as const, hidden: false },
+      { id: 'section:a', size: 'wide' as const, hidden: false },
+      { id: 'metric:m1', size: 'small' as const, hidden: false },
+    ]
+    const merged = applyLayout(fallback, saved)
+    const ids = merged.map((i) => i.id)
+    const lastSavedIdx = ids.findIndex((id) => id === 'metric:m1')
+    expect(ids.indexOf('widget:needs')).toBeGreaterThan(lastSavedIdx)
+    expect(ids.indexOf('section:b')).toBeGreaterThan(lastSavedIdx)
+    expect(ids.indexOf('metric:m2')).toBeGreaterThan(ids.indexOf('section:b'))
+    expect(ids.slice(0, saved.length)).toEqual(saved.map((i) => i.id))
+  })
 })
 
 describe('needsAttention', () => {
@@ -105,6 +124,31 @@ describe('needsAttention', () => {
     const picked = needsAttention(items, scale).map((i) => i.metricKey)
     expect(picked).toEqual(['a', 'b', 'c'])
     expect(picked).not.toContain('w')
+  })
+
+  it('four off-track metrics at cap 3 keep distance 3, distance 2, then lowest category order at distance 0', () => {
+    const offTrack = (metricKey: string, categoryOrder: number, value: number) => ({
+      metricKey,
+      name: metricKey,
+      categoryOrder,
+      status: 'R',
+      value,
+      change: null,
+      direction: 'higher_better' as const,
+      rule: higherBands,
+      priorStatus: 'R',
+    })
+    const items = [
+      offTrack('far', 5, 50),
+      offTrack('mid', 4, 60),
+      offTrack('tieA', 1, 80),
+      offTrack('tieB', 2, 80),
+    ]
+    expect(distancePastWorst(items[0]!, scale)).toBe(3)
+    expect(distancePastWorst(items[1]!, scale)).toBe(2)
+    expect(distancePastWorst(items[2]!, scale)).toBe(0)
+    expect(distancePastWorst(items[3]!, scale)).toBe(0)
+    expect(needsAttention(items, scale).map((i) => i.metricKey)).toEqual(['far', 'mid', 'tieA'])
   })
 
   it('a worsened watch metric ranks above a stable watch metric', () => {

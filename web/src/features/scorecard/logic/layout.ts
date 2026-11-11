@@ -80,16 +80,7 @@ export function applyLayout(fallback: LayoutItem[], saved: LayoutItem[]): Layout
       const at = insertAfterSection(merged, sectionId, fallback)
       merged.splice(at + 1, 0, item)
     } else {
-      let insertAt = merged.length
-      const fallbackIndex = fallback.findIndex((f) => f.id === item.id)
-      for (let i = 0; i < merged.length; i++) {
-        const idx = fallback.findIndex((f) => f.id === merged[i]!.id)
-        if (idx > fallbackIndex) {
-          insertAt = i
-          break
-        }
-      }
-      merged.splice(insertAt, 0, item)
+      merged.push(item)
     }
     present.add(item.id)
   }
