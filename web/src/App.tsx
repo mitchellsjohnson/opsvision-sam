@@ -7,6 +7,7 @@ import { EntryPage } from './features/entry/EntryPage'
 import { HomeRedirect } from './pages/HomeRedirect'
 import { NotFoundPage } from './pages/NotFoundPage'
 import { RequireAdmin } from './pages/RequireAdmin'
+import { OverviewPage } from './features/scorecard/OverviewPage'
 import { ScorecardFrame } from './features/scorecard/ScorecardFrame'
 import { ScorecardRedirect } from './features/scorecard/ScorecardPage'
 import { ImportPage } from './features/admin/ImportPage'
@@ -23,7 +24,7 @@ export function App() {
         <Route path="scorecards" element={<Navigate to="/" replace />} />
         <Route path="scorecards/:sc" element={<ScorecardFrame />}>
           <Route index element={<ScorecardRedirect />} />
-          <Route path="overview" element={<h1 className="text-2xl font-semibold text-accent-deep">Overview</h1>} />
+          <Route path="overview" element={<OverviewPage />} />
           <Route path="table" element={<h1 className="text-2xl font-semibold text-accent-deep">Table</h1>} />
           <Route path="report" element={<h1 className="text-2xl font-semibold text-accent-deep">Report</h1>} />
         </Route>

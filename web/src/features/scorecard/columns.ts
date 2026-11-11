@@ -84,6 +84,21 @@ export function buildColumns(period: string, ytd: boolean, fiscalYearStartMonth:
   return columns
 }
 
+const TREND_SPAN: Record<Period['grain'], number> = { month: 12, quarter: 8, half: 4, year: 3 }
+
+/**
+ * Trend columns for the Overview chart window: 12 months, 8 quarters, 4 halves,
+ * or 3 years ending at the selected period (no YTD column).
+ */
+export function buildTrendColumns(period: string, fiscalYearStartMonth: number): Column[] {
+  const selected = parsePeriod(period)
+  if (!selected) return []
+  const count = TREND_SPAN[selected.grain]
+  let periods: Period[] = [selected]
+  for (let i = 1; i < count; i++) periods.unshift(prev(periods[0] as Period))
+  return periods.map((p) => periodColumn(p, fiscalYearStartMonth))
+}
+
 /** The `periods` and `ytd` view query parameters for a set of columns. */
 export function columnRequest(columns: Column[]): { periods: string[]; ytd?: string[] } {
   const periods = columns.filter((c) => !c.ytd).map((c) => c.period)

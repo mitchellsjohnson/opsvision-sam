@@ -189,8 +189,24 @@ const SUBJECTS: Record<string, { id: string; name: string; depth: number }[]> = 
 }
 
 const METRICS = [
-  { key: 'on_time_pct', name: 'On-time delivery', categoryId: 'delivery', format: 'percent1', direction: 'higher_better' },
-  { key: 'defect_rate', name: 'Defect rate', categoryId: 'quality', format: 'number1', direction: 'lower_better' },
+  {
+    key: 'on_time_pct',
+    name: 'On-time delivery',
+    categoryId: 'delivery',
+    format: 'percent1',
+    direction: 'higher_better',
+    frequency: 'monthly' as const,
+    chartKind: 'ratio',
+  },
+  {
+    key: 'defect_rate',
+    name: 'Defect rate',
+    categoryId: 'quality',
+    format: 'number1',
+    direction: 'lower_better',
+    frequency: 'monthly' as const,
+    chartKind: 'change',
+  },
 ] as const
 
 /** Builds the view the API would return for a request, honoring `subjects`. */
@@ -211,6 +227,9 @@ export function buildView(query: URLSearchParams): ScorecardView {
         format: m.format,
         depth: s.depth,
         direction: m.direction,
+        frequency: m.frequency,
+        chartKind: m.chartKind,
+        definition: '',
         cells: [
           ...periods.map((p) => cell(m.key, s.id, p, false)),
           ...ytd.map((p) => cell(m.key, s.id, p, true)),
