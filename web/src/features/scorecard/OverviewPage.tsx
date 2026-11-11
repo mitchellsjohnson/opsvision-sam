@@ -18,6 +18,7 @@ import { changeText } from './format'
 import { needsAttention, type NeedsAttentionItem } from './logic/needsAttention'
 import { defaultStatusScale } from './charts/chartTheme'
 import { MetricChart } from './charts/MetricChart'
+import { focusReturnRef } from './focusTrigger'
 import { cellReported, statusAtScope, type StatusScaleEntry } from './logic/statusAtScope'
 import { cellKey, groupRows } from './viewHelpers'
 
@@ -342,14 +343,23 @@ export function OverviewPage() {
                   <li key={metric.key}>
                     <article
                       aria-label={scope.metricName}
-                      className="h-full rounded-lg border border-ink/20 bg-white p-4"
+                      className="h-full cursor-pointer rounded-lg border border-ink/20 bg-white p-4"
+                      onClick={(e) => {
+                        const target = e.target as HTMLElement
+                        if (target.closest('button, a, [role="button"]')) return
+                        focusReturnRef.current = e.currentTarget
+                        const next = new URLSearchParams(params)
+                        next.set('focus', metric.key)
+                        setParams(next)
+                      }}
                     >
                       <div className="flex items-start justify-between gap-2">
                         <h3 className="text-base font-semibold">{scope.metricName}</h3>
                         <button
                           type="button"
                           className="rounded border border-ink/20 px-2 py-0.5 text-xs hover:bg-cream"
-                          onClick={() => {
+                          onClick={(e) => {
+                            focusReturnRef.current = e.currentTarget
                             const next = new URLSearchParams(params)
                             next.set('focus', metric.key)
                             setParams(next)

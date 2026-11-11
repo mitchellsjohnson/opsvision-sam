@@ -1,5 +1,6 @@
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import clsx from 'clsx'
+import { ShellDockProvider, useShellDock } from './ShellDock'
 import type { LucideIcon } from 'lucide-react'
 import {
   BarChart3,
@@ -60,7 +61,8 @@ function ShellNavLink({
   )
 }
 
-export function AppShell() {
+function AppShellBody() {
+  const { open: dockOpen, dockRef } = useShellDock()
   const auth = useAuth()
   const me = useMe()
   const scorecards = useScorecards()
@@ -146,7 +148,7 @@ export function AppShell() {
         </div>
       </header>
 
-      <div className="grid flex-1 grid-cols-[auto_minmax(0,1fr)]">
+      <div className="grid flex-1 grid-cols-[auto_minmax(0,1fr)_auto]">
         <nav
           aria-label="Main"
           className="w-16 shrink-0 border-r border-ink/15 bg-cream/60 p-3 min-[1440px]:w-60"
@@ -197,7 +199,24 @@ export function AppShell() {
             <Outlet />
           </main>
         </div>
+
+        <aside
+          ref={dockRef}
+          aria-hidden={!dockOpen}
+          className={clsx(
+            'shrink-0 overflow-hidden border-l border-ink/15 bg-white transition-[width]',
+            dockOpen ? 'w-96' : 'w-0',
+          )}
+        />
       </div>
     </div>
+  )
+}
+
+export function AppShell() {
+  return (
+    <ShellDockProvider>
+      <AppShellBody />
+    </ShellDockProvider>
   )
 }

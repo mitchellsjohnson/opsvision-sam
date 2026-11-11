@@ -2,6 +2,7 @@ import { Outlet, useParams } from 'react-router'
 import { useMe, useScorecards } from '../../api/queries'
 import { PlaceholderPage } from '../../pages/Placeholder'
 import { ControlBar } from './ControlBar'
+import { FocusDialog } from './FocusDialog'
 import { UploadRecords } from './ScorecardPage'
 
 /** Scorecard shell: shared controls, upload, and nested view routes. */
@@ -27,6 +28,7 @@ export function ScorecardFrame() {
       )}
       <ControlBar scorecardId={scorecard.id} />
       <div className="mt-4 min-w-0">
+        <FocusDialog />
         <Outlet />
       </div>
     </div>

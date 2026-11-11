@@ -43,6 +43,8 @@ export interface CellDrawerProps {
   onClose: () => void
   /** Where focus goes when the drawer closes: the cell button that opened it. */
   returnFocusTo?: RefObject<HTMLElement | null>
+  /** When set, the panel portals into the shell dock instead of a fixed overlay. */
+  dockContainer?: HTMLElement | null
 }
 
 function errorText(error: unknown): string {
@@ -63,11 +65,12 @@ function Item({ label, children }: { label: string; children: ReactNode }) {
 }
 
 /** A radix dialog styled as a right-hand drawer with one cell's details. */
-export function CellDrawer({ scorecardId, target, onClose, returnFocusTo }: CellDrawerProps) {
+export function CellDrawer({ scorecardId, target, onClose, returnFocusTo, dockContainer }: CellDrawerProps) {
+  const docked = dockContainer != null
   return (
-    <Dialog.Root open={target !== null} onOpenChange={(open) => !open && onClose()}>
-      <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-40 bg-ink/40" />
+    <Dialog.Root open={target !== null} modal={!docked} onOpenChange={(open) => !open && onClose()}>
+      <Dialog.Portal container={dockContainer ?? undefined}>
+        {!docked && <Dialog.Overlay className="fixed inset-0 z-40 bg-ink/40" />}
         <Dialog.Content
           // Opened from a cell, not a Dialog.Trigger, so Radix has nowhere to return focus to.
           onCloseAutoFocus={(e) => {
@@ -76,7 +79,11 @@ export function CellDrawer({ scorecardId, target, onClose, returnFocusTo }: Cell
               returnFocusTo.current.focus()
             }
           }}
-          className="fixed inset-y-0 right-0 z-50 w-full max-w-lg overflow-y-auto bg-white p-6 shadow-xl"
+          className={
+            docked
+              ? 'h-full w-full overflow-y-auto p-6 outline-none'
+              : 'fixed inset-y-0 right-0 z-50 w-full max-w-lg overflow-y-auto bg-white p-6 shadow-xl'
+          }
         >
           {target && <DrawerBody scorecardId={scorecardId} target={target} onClose={onClose} />}
         </Dialog.Content>

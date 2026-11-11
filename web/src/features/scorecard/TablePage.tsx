@@ -15,7 +15,9 @@ import { Link, useParams, useSearchParams } from 'react-router'
 import { useMe, useOrgUnits, useScorecards, useView } from '../../api/queries'
 import type { components } from '../../api/schema'
 import type { ViewRequest } from '../../lib/period'
+import { useShellDock } from '../../shell/ShellDock'
 import { usePeriodState } from '../../shell/usePeriodState'
+import { focusReturnRef } from './focusTrigger'
 import { StatusBadge } from '../../ui/StatusBadge'
 import { CellDrawer, type DrawerTarget } from './CellDrawer'
 import {
@@ -47,6 +49,8 @@ export interface TablePageProps {
   scorecardName: string
   /** Mobile card layout instead of the grid (tests and narrow layouts). */
   compact?: boolean
+  /** When set, use this width for the period window (full-screen table). */
+  measureWidth?: number
 }
 
 interface RowState {
@@ -302,7 +306,7 @@ function Skeleton() {
 }
 
 /** Windowed scorecard table with keyboard grid navigation and a compact card mode. */
-export function TablePage({ scorecardId, scorecardName, compact = false }: TablePageProps) {
+export function TablePage({ scorecardId, scorecardName, compact = false, measureWidth }: TablePageProps) {
   const uid = useId()
   const [period] = usePeriodState()
   const [, setParams] = useSearchParams()
@@ -317,6 +321,7 @@ export function TablePage({ scorecardId, scorecardName, compact = false }: Table
   const shouldFocusCell = useRef(false)
   const [contentWidth, setContentWidth] = useState(0)
   const [focus, setFocus] = useState({ row: 0, col: 0 })
+  const { setOpen: setDockOpen, dockRef } = useShellDock()
 
   useLayoutEffect(() => {
     const el = measureRef.current
@@ -328,7 +333,7 @@ export function TablePage({ scorecardId, scorecardName, compact = false }: Table
     return () => ro.disconnect()
   }, [])
 
-  const width = contentWidth > 0 ? contentWidth : 960
+  const width = measureWidth ?? (contentWidth > 0 ? contentWidth : 960)
   const visible = periodWindowSize(width)
   const fy = period.fiscalYearStartMonth
   const allColumns = useMemo(() => buildColumns(period.period, period.ytd, fy), [period.period, period.ytd, fy])
@@ -388,13 +393,18 @@ export function TablePage({ scorecardId, scorecardName, compact = false }: Table
 
   const collapseAll = () => setExpanded(new Set())
 
-  function setFocusParam() {
+  function setFocusParam(opener?: HTMLElement) {
+    if (opener) focusReturnRef.current = opener
     setParams((prev) => {
       const next = new URLSearchParams(prev)
       next.set('focus', 'table')
       return next
     })
   }
+
+  useEffect(() => {
+    setDockOpen(selected !== null)
+  }, [selected, setDockOpen])
 
   const earlierDisabled = start <= 0
   const laterDisabled = start >= maxStart
@@ -744,7 +754,11 @@ export function TablePage({ scorecardId, scorecardName, compact = false }: Table
         >
           Later
         </button>
-        <button type="button" className="rounded-md border border-ink/30 bg-white px-2 py-1 text-sm" onClick={setFocusParam}>
+        <button
+          type="button"
+          className="rounded-md border border-ink/30 bg-white px-2 py-1 text-sm"
+          onClick={(e) => setFocusParam(e.currentTarget)}
+        >
           Expand
         </button>
       </div>
@@ -810,6 +824,7 @@ export function TablePage({ scorecardId, scorecardName, compact = false }: Table
         target={selected}
         onClose={() => setSelected(null)}
         returnFocusTo={opener}
+        dockContainer={dockRef.current}
       />
     </div>
   )

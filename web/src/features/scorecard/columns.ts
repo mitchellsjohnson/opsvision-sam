@@ -99,6 +99,20 @@ export function buildTrendColumns(period: string, fiscalYearStartMonth: number):
   return periods.map((p) => periodColumn(p, fiscalYearStartMonth))
 }
 
+/** Month grain only: `monthCount` fiscal months ending at `period`. Other grains use `buildTrendColumns`. */
+export function buildMonthTrendColumns(
+  period: string,
+  monthCount: number,
+  fiscalYearStartMonth: number,
+): Column[] {
+  const selected = parsePeriod(period)
+  if (!selected) return []
+  if (selected.grain !== 'month') return buildTrendColumns(period, fiscalYearStartMonth)
+  let periods: Period[] = [selected]
+  for (let i = 1; i < monthCount; i++) periods.unshift(prev(periods[0] as Period))
+  return periods.map((p) => periodColumn(p, fiscalYearStartMonth))
+}
+
 /** The `periods` and `ytd` view query parameters for a set of columns. */
 export function columnRequest(columns: Column[]): { periods: string[]; ytd?: string[] } {
   const periods = columns.filter((c) => !c.ytd).map((c) => c.period)
