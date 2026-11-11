@@ -105,3 +105,34 @@ export function columnRequest(columns: Column[]): { periods: string[]; ytd?: str
   const ytd = columns.filter((c) => c.ytd).map((c) => c.period)
   return ytd.length > 0 ? { periods, ytd } : { periods }
 }
+
+/** Non-YTD columns only. */
+export function periodColumns(columns: Column[]): Column[] {
+  return columns.filter((c) => !c.ytd)
+}
+
+/** The index of the selected period among non-YTD columns. */
+export function selectedColumnIndex(allColumns: Column[], selectedPeriod: string): number {
+  const periods = periodColumns(allColumns)
+  const idx = periods.findIndex((c) => c.period === selectedPeriod)
+  return idx >= 0 ? idx : periods.length - 1
+}
+
+/** Period columns in the visible window, with any YTD column pinned at the end. */
+export function sliceTableWindow(allColumns: Column[], start: number, visible: number): Column[] {
+  const periods = periodColumns(allColumns)
+  const ytd = allColumns.filter((c) => c.ytd)
+  const span = Math.min(visible, periods.length)
+  const slice = periods.slice(start, start + span)
+  return [...slice, ...ytd]
+}
+
+/** Standard legacy import override reason; identical reasons group under the table. */
+export const LEGACY_OVERRIDE_REASON = 'As reported in legacy workbook'
+
+export function groupedOverrideLabel(reason: string, count: number): string {
+  if (reason === LEGACY_OVERRIDE_REASON) {
+    return `${count} values as reported in the legacy workbook`
+  }
+  return `${count} overridden values: ${reason}`
+}

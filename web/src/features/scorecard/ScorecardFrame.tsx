@@ -19,7 +19,7 @@ export function ScorecardFrame() {
   if (!scorecard) return <PlaceholderPage title="Scorecard not found" />
 
   return (
-    <div className="min-w-0">
+    <div className="min-w-0" style={{ ['--scorecard-control-bar-height' as string]: '4.5rem' }}>
       {isAdmin && (
         <div className="mb-3 flex justify-end">
           <UploadRecords scorecardId={scorecard.id} />
