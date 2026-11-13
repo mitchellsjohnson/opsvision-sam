@@ -39,7 +39,6 @@ const UNIT_LABEL = { month: 'Month', quarter: 'Quarter', half: 'Half' }
 const VIEWS = [
   { segment: 'overview', label: 'Overview' },
   { segment: 'table', label: 'Table' },
-  { segment: 'report', label: 'Report' },
 ] as const
 
 function viewLinkClass({ isActive }: { isActive: boolean }) {
@@ -111,6 +110,9 @@ export function ControlBar({ scorecardId }: { scorecardId: string }) {
             {v.label}
           </NavLink>
         ))}
+        <span aria-disabled="true" className="cursor-not-allowed rounded-md px-3 py-1.5 text-sm font-medium text-ink/70">
+          Report <span className="text-xs font-normal">(Coming soon)</span>
+        </span>
       </nav>
 
       <Popover.Root>
@@ -266,7 +268,7 @@ export function ControlBar({ scorecardId }: { scorecardId: string }) {
       </Popover.Root>
 
       <Popover.Root>
-        <Popover.Trigger className={triggerClass}>As reported</Popover.Trigger>
+        <Popover.Trigger className={triggerClass}>{restated ? `Under ${restated.name}` : 'As reported'}</Popover.Trigger>
         <Popover.Portal>
           <Popover.Content
             aria-label="View options"

@@ -1,6 +1,6 @@
 import { Upload } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import { Navigate, useParams, useSearchParams } from 'react-router'
+import { Navigate, useLocation, useParams, useSearchParams } from 'react-router'
 import { secondaryButton } from '../admin/formUi'
 import { UploadRecordsDialog } from '../import/RecordsImport'
 
@@ -93,7 +93,14 @@ export function UploadRecords({ scorecardId }: { scorecardId: string }) {
   )
 }
 
-/** Legacy `/scorecards/:sc` links: route to overview, table, or report; drop `tab`. */
+/** The Report view is not built yet: its links open the overview. */
+export function ReportRedirect() {
+  const { sc } = useParams()
+  const { search } = useLocation()
+  return <Navigate to={`/scorecards/${sc}/overview${search}`} replace />
+}
+
+/** Legacy `/scorecards/:sc` links: route to overview or table; drop `tab`. */
 export function ScorecardRedirect() {
   const { sc } = useParams()
   const [params] = useSearchParams()

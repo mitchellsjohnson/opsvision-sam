@@ -57,6 +57,27 @@ describe('ControlBar', () => {
     expect(await screen.findByText('Restated under FY27 proposal')).toBeTruthy()
   })
 
+  it('the view options button names the restated version', async () => {
+    renderScorecard('/scorecards/sc-main/overview?period=2026-M10&restate=ver-2')
+    await screen.findByRole('heading', { name: 'Overview', level: 1 })
+    const bar = screen.getByRole('toolbar', { name: 'Scorecard controls' })
+    expect(await within(bar).findByRole('button', { name: 'Under FY27 proposal' })).toBeTruthy()
+    expect(within(bar).queryByRole('button', { name: 'As reported' })).toBeNull()
+  })
+
+  it('shows Report as coming soon, not as a link to a placeholder', async () => {
+    renderScorecard('/scorecards/sc-main/overview?period=2026-M10')
+    await screen.findByRole('heading', { name: 'Overview', level: 1 })
+    const views = screen.getByRole('navigation', { name: 'Scorecard views' })
+    expect(within(views).queryByRole('link', { name: /Report/ })).toBeNull()
+    expect(within(views).getByText('Report').closest('[aria-disabled="true"]')?.textContent).toMatch(/Coming soon/)
+  })
+
+  it('an old report link opens the overview', async () => {
+    renderScorecard('/scorecards/sc-main/report?period=2026-M10')
+    await waitFor(() => expect(location()).toBe('/scorecards/sc-main/overview?period=2026-M10'))
+  })
+
   it('keeps Ask SAM disabled in the control bar', async () => {
     renderScorecard('/scorecards/sc-main/overview?period=2026-M10')
     await screen.findByRole('heading', { name: 'Overview', level: 1 })
