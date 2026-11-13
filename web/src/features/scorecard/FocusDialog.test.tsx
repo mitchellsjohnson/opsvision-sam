@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest'
 import { App } from '../../App'
 import { server } from '../../test/server'
 import { renderApp } from '../../test/utils'
-import { viewHandlers } from '../../test/viewFixtures'
+import { addServiceUptime, buildView, viewHandlers } from '../../test/viewFixtures'
 
 const OVERVIEW = '/scorecards/sc-main/overview?period=2026-M10'
 
@@ -97,6 +97,16 @@ describe('FocusDialog', () => {
     expect(alert.textContent).toMatch(/couldn’t load this chart/)
     expect(within(alert).getByRole('button', { name: 'Try again' })).toBeTruthy()
     expect(within(dialog).getByRole('button', { name: '24' })).toBeTruthy()
+  })
+
+  it('an item-only metric shows the worst of its services and lists them without scope buttons', async () => {
+    server.use(...viewHandlers({ respond: (u) => HttpResponse.json(addServiceUptime(buildView(u.searchParams))) }))
+    renderApp(<App />, { route: `${OVERVIEW}&focus=svc_uptime` })
+    const dialog = await screen.findByRole('dialog', { name: /Service uptime/i })
+    expect(await within(dialog).findByText('worst of 2 services')).toBeTruthy()
+    const breakdown = within(dialog).getByRole('region', { name: 'Org breakdown' })
+    expect(within(breakdown).getByText('Web service')).toBeTruthy()
+    expect(within(breakdown).queryByRole('button')).toBeNull()
   })
 
   it('closing after a card background click returns focus to that card’s Expand button', async () => {

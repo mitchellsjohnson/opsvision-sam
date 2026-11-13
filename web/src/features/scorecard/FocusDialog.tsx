@@ -12,7 +12,7 @@ import { focusReturnRef } from './focusTrigger'
 import { defaultLayout } from './logic/layout'
 import { cellReported, statusAtScope, type StatusScaleEntry } from './logic/statusAtScope'
 import { TablePage } from './TablePage'
-import { cellKey, groupRows } from './viewHelpers'
+import { cellKey, groupRows, metricScope } from './viewHelpers'
 import { useScorecardViewRequest } from './viewRequest'
 
 type ViewRow = components['schemas']['ViewRow']
@@ -26,14 +26,6 @@ function metricKeysInLayout(view: components['schemas']['ScorecardView']): strin
   return defaultLayout(view.categories, metricsByCategory)
     .filter((i) => i.id.startsWith('metric:'))
     .map((i) => i.id.slice('metric:'.length))
-}
-
-function shallowest(rows: ViewRow[]): ViewRow {
-  return rows.reduce((best, r) => (r.depth < best.depth ? r : best))
-}
-
-function childRows(rows: ViewRow[], scope: ViewRow): ViewRow[] {
-  return rows.filter((r) => r.depth === scope.depth + 1)
 }
 
 function downloadBlob(filename: string, mime: string, body: string | Blob) {
@@ -171,33 +163,30 @@ function MetricFocusBody({
 
   const groups = view.data ? groupRows(view.data) : []
   const metricGroup = groups.flatMap((g) => g.metrics).find((m) => m.key === metricKey)
-  const scope = metricGroup ? shallowest(metricGroup.rows) : undefined
-  const children = scope ? childRows(metricGroup!.rows, scope) : []
+  const measured = metricGroup ? metricScope(metricGroup.rows) : null
+  const head = measured?.head
+  const scope = measured?.scope ?? null
+  const children = measured?.children ?? []
+  // A metric with no org-unit row (item-only) has no scope value to chart.
+  const chartRow = scope ?? (head ? { ...head, subjectId: '', subjectName: '', cells: [] } : undefined)
   const cell = scope?.cells.find((c) => cellKey(c) === columnKey)
   const scopeReported = cellReported(cell)
   const reportedChildren = children.filter((ch) => cellReported(ch.cells.find((c) => cellKey(c) === columnKey)))
   const chartChildren = !scopeReported && reportedChildren.length > 0
-  const chartRows = chartChildren ? reportedChildren : scope ? [scope] : []
-  const atScope = scope
-    ? statusAtScope({
-        scope,
-        children,
-        columnKey,
-        scale,
-        noun: children.length > 0 ? 'segments' : 'items',
-      })
+  const chartRows = chartChildren ? reportedChildren : chartRow ? [chartRow] : []
+  const noun = head?.chartKind === 'uptime' ? 'services' : scope && children.length > 0 ? 'segments' : 'items'
+  const atScope = head
+    ? statusAtScope({ scope: scope ?? { cells: [] }, children, columnKey, scale, noun })
     : null
 
-  const rankedChildren = useMemo(() => {
-    return [...children]
-      .map((ch) => {
-        const c = ch.cells.find((x) => cellKey(x) === columnKey)
-        const rank = scale.find((s) => s.key === c?.status)?.rank ?? -1
-        return { row: ch, cell: c, rank }
-      })
-      .filter((x) => x.cell && cellReported(x.cell))
-      .sort((a, b) => b.rank - a.rank)
-  }, [children, columnKey, scale])
+  const rankedChildren = children
+    .map((ch) => {
+      const c = ch.cells.find((x) => cellKey(x) === columnKey)
+      const rank = scale.find((s) => s.key === c?.status)?.rank ?? -1
+      return { row: ch, cell: c, rank }
+    })
+    .filter((x) => x.cell && cellReported(x.cell))
+    .sort((a, b) => b.rank - a.rank)
 
   const tableLink = useMemo(() => {
     const q = new URLSearchParams(params)
@@ -223,18 +212,18 @@ function MetricFocusBody({
   }
 
   const exportCsv = () => {
-    if (!scope || chartRows.length === 0) return
-    downloadBlob(`${scope.metricKey}.csv`, 'text/csv', chartCsv(trendColumns, chartRows))
+    if (!head || chartRows.length === 0) return
+    downloadBlob(`${head.metricKey}.csv`, 'text/csv', chartCsv(trendColumns, chartRows))
   }
 
   const exportSvg = () => {
-    if (!scope || chartRows.length === 0) return
-    downloadBlob(`${scope.metricKey}.svg`, 'image/svg+xml', chartSvg(scope.metricName, trendColumns, chartRows))
+    if (!head || chartRows.length === 0) return
+    downloadBlob(`${head.metricKey}.svg`, 'image/svg+xml', chartSvg(head.metricName, trendColumns, chartRows))
   }
 
   const exportPng = async () => {
-    if (!scope || chartRows.length === 0) return
-    await metricPng(chartSvg(scope.metricName, trendColumns, chartRows), `${scope.metricKey}.png`)
+    if (!head || chartRows.length === 0) return
+    await metricPng(chartSvg(head.metricName, trendColumns, chartRows), `${head.metricKey}.png`)
   }
 
   const copyLink = async () => {
@@ -267,14 +256,14 @@ function MetricFocusBody({
     )
   } else if (waiting) {
     chartArea = <div className="mt-4" style={{ minHeight: 280 }} aria-busy="true" />
-  } else if (!scope) {
+  } else if (!chartRow) {
     chartArea = <p role="alert">This metric has no rows for this selection.</p>
   } else {
     chartArea = (
       <>
         <div className="mt-4" style={{ minHeight: 280 }} aria-busy={view.isPlaceholderData || undefined}>
           <MetricChart
-            row={scope}
+            row={chartRow}
             chartRows={chartRows}
             childRows={children}
             columns={trendColumns}
@@ -284,6 +273,7 @@ function MetricFocusBody({
             statusLabel={statusLabel}
             scale={statusColors}
             tableTo={tableLink}
+            scopeNote={atScope?.caption || undefined}
           />
         </div>
 
@@ -291,19 +281,30 @@ function MetricFocusBody({
           <section aria-label="Org breakdown" className="mt-6">
             <h3 className="text-sm font-semibold text-accent-deep">Breakdown</h3>
             <ul className="mt-2 space-y-1">
-              {rankedChildren.map(({ row: ch, cell: c }) => (
-                <li key={ch.subjectId}>
-                  <button
-                    type="button"
-                    className="w-full rounded border border-ink/20 px-3 py-2 text-left text-sm hover:bg-cream"
-                    onClick={() => updatePeriod({ scope: ch.subjectId })}
-                  >
+              {rankedChildren.map(({ row: ch, cell: c }) => {
+                const content = (
+                  <>
                     <span className="font-medium">{ch.subjectName}</span>
                     <span className="ml-2 tabular-nums">{c?.display || '—'}</span>
                     {c?.status && <span className="ml-2">{c.status}</span>}
-                  </button>
-                </li>
-              ))}
+                  </>
+                )
+                return (
+                  <li key={ch.subjectId}>
+                    {ch.subjectKind === 'item' ? (
+                      <p className="rounded border border-ink/20 px-3 py-2 text-sm">{content}</p>
+                    ) : (
+                      <button
+                        type="button"
+                        className="w-full rounded border border-ink/20 px-3 py-2 text-left text-sm hover:bg-cream"
+                        onClick={() => updatePeriod({ scope: ch.subjectId })}
+                      >
+                        {content}
+                      </button>
+                    )}
+                  </li>
+                )
+              })}
             </ul>
           </section>
         )}

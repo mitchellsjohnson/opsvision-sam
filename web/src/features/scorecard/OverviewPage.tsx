@@ -20,25 +20,22 @@ import { MetricChart } from './charts/MetricChart'
 import { focusReturnRef } from './focusTrigger'
 import { LayoutGrid } from './LayoutGrid'
 import { cellReported, statusAtScope, type StatusScaleEntry } from './logic/statusAtScope'
-import { cellKey, groupRows } from './viewHelpers'
+import { cellKey, groupRows, metricScope } from './viewHelpers'
 import { useScorecardViewRequest } from './viewRequest'
 
 type Schemas = components['schemas']
 type ViewRow = Schemas['ViewRow']
 type Cell = Schemas['Cell']
 
-function shallowest(rows: ViewRow[]): ViewRow {
-  return rows.reduce((best, r) => (r.depth < best.depth ? r : best))
-}
-
-function childRows(rows: ViewRow[], scope: ViewRow): ViewRow[] {
-  return rows.filter((r) => r.depth === scope.depth + 1)
-}
-
-function metricNoun(chartKind: string, children: ViewRow[]): 'segments' | 'services' | 'items' {
+function metricNoun(chartKind: string, scope: ViewRow | null, children: ViewRow[]): 'segments' | 'services' | 'items' {
   if (chartKind === 'uptime') return 'services'
-  if (children.length > 0) return 'segments'
+  if (scope && children.length > 0) return 'segments'
   return 'items'
+}
+
+/** Stands in for the scope row of a metric that has none: no cells. */
+function emptyScope(head: ViewRow): ViewRow {
+  return { ...head, subjectId: '', subjectName: '', cells: [] }
 }
 
 function priorColumn(columns: Column[]): string | undefined {
@@ -46,8 +43,8 @@ function priorColumn(columns: Column[]): string | undefined {
   return columns[columns.length - 2]?.key
 }
 
-function scopeCell(row: ViewRow, columnKey: string): Cell | undefined {
-  return row.cells.find((c) => cellKey(c) === columnKey)
+function scopeCell(row: ViewRow | null, columnKey: string): Cell | undefined {
+  return row?.cells.find((c) => cellKey(c) === columnKey)
 }
 
 function nextPeriod(p: Period): Period {
@@ -145,17 +142,16 @@ export function OverviewPage() {
 
   const metrics = groups.flatMap((g) =>
     g.metrics.map((m) => {
-      const scope = shallowest(m.rows)
-      const children = childRows(m.rows, scope)
-      const noun = metricNoun(scope.chartKind, children)
+      const { scope, children, head } = metricScope(m.rows)
+      const noun = metricNoun(head.chartKind, scope, children)
       const atScope = statusAtScope({
-        scope,
+        scope: scope ?? { cells: [] },
         children,
         columnKey,
         scale,
         noun,
       })
-      return { category: g, metric: m, scope, children, atScope, noun }
+      return { category: g, metric: m, scope, head, children, atScope, noun }
     }),
   )
 
@@ -168,21 +164,21 @@ export function OverviewPage() {
   }
 
   const attentionItems: NeedsAttentionItem[] = []
-  for (const { category, scope, atScope } of metrics) {
+  for (const { category, scope, head, atScope } of metrics) {
     if (!atScope.status) continue
-    const cell = scope.cells.find((c) => cellKey(c) === columnKey)
-    const prior = priorKey ? scope.cells.find((c) => cellKey(c) === priorKey) : undefined
+    const cell = scopeCell(scope, columnKey)
+    const prior = priorKey ? scopeCell(scope, priorKey) : undefined
     const metricDef = versions.data?.versions
       .find((v) => v.id === cell?.versionId)
-      ?.content.metrics.find((x) => x.key === scope.metricKey)
+      ?.content.metrics.find((x) => x.key === head.metricKey)
     attentionItems.push({
-      metricKey: scope.metricKey,
-      name: scope.metricName,
+      metricKey: head.metricKey,
+      name: head.metricName,
       categoryOrder: view.data.categories.find((c) => c.id === category.id)?.order ?? 0,
       status: atScope.status,
       value: cell?.value ?? null,
       change: cell?.change ?? null,
-      direction: scope.direction,
+      direction: head.direction,
       rule: cell?.rule ?? metricDef?.rule ?? { type: 'bands' },
       priorStatus: prior?.status ?? '',
     })
@@ -213,7 +209,7 @@ export function OverviewPage() {
     itemLabels[`section:${g.id}`] = g.name
     for (const m of g.metrics) {
       const meta = metrics.find((x) => x.metric.key === m.key)
-      itemLabels[`metric:${m.key}`] = meta?.scope.metricName ?? m.name
+      itemLabels[`metric:${m.key}`] = meta?.head.metricName ?? m.name
       metricCategories[m.key] = g.name
     }
   }
@@ -221,22 +217,24 @@ export function OverviewPage() {
   const renderMetricCard = (metricKey: string) => {
     const meta = metrics.find((m) => m.metric.key === metricKey)
     if (!meta || (healthFilter && meta.atScope.status !== healthFilter)) return null
-    const { metric, scope, children, atScope, noun } = meta
+    const { metric, scope, head, children, atScope, noun } = meta
     const cell = scopeCell(scope, columnKey)
     const scopeReported = cellReported(cell)
     const reportedChildren = children.filter((ch) => cellReported(scopeCell(ch, columnKey)))
     const chartChildren = !scopeReported && reportedChildren.length > 0
-    const scopeNote = chartChildren
-      ? `Company total not reported; ${reportedChildren.length} ${noun} reported`
-      : atScope.caption || undefined
-    const chartRows = chartChildren ? reportedChildren : [scope]
-    const ytdCell = ytdCellFor(scope)
+    const scopeNote =
+      chartChildren && scope
+        ? `Company total not reported; ${reportedChildren.length} ${noun} reported`
+        : atScope.caption || undefined
+    const chartRow = scope ?? emptyScope(head)
+    const chartRows = chartChildren ? reportedChildren : [chartRow]
+    const ytdCell = scope ? ytdCellFor(scope) : undefined
     const ytdDisplay = ytdCell?.display ? `YTD ${ytdCell.display}` : null
     return (
       // A pointer shortcut only: the Expand button is the keyboard and screen reader path.
       // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions
       <article
-        aria-label={scope.metricName}
+        aria-label={head.metricName}
         className="h-full cursor-pointer rounded-lg border border-ink/20 bg-white p-4 pt-10"
         onClick={(e) => {
           const target = e.target as HTMLElement
@@ -248,7 +246,7 @@ export function OverviewPage() {
         }}
       >
         <div className="flex items-start justify-between gap-2">
-          <h3 className="text-base font-semibold">{scope.metricName}</h3>
+          <h3 className="text-base font-semibold">{head.metricName}</h3>
           <button
             type="button"
             data-card-expand=""
@@ -263,9 +261,8 @@ export function OverviewPage() {
             Expand
           </button>
         </div>
-        {atScope.caption && !chartChildren && <p className="text-xs text-ink/80">{atScope.caption}</p>}
         <MetricChart
-          row={scope}
+          row={chartRow}
           chartRows={chartRows}
           childRows={children}
           columns={trendColumns}
@@ -283,7 +280,7 @@ export function OverviewPage() {
             {changeText({
               period: cell.period,
               ytd: cell.ytd,
-              format: scope.format,
+              format: head.format,
               change: cell.change,
               changeKind: cell.changeKind,
               compare: undefined,
@@ -352,15 +349,22 @@ export function OverviewPage() {
       <section aria-label={ribbonLabel}>
         <h2 className="text-base font-semibold text-accent-deep">{ribbonLabel}</h2>
         <ul className="mt-2 space-y-1 text-sm">
-          {metrics.map(({ metric, scope, atScope }) => {
-            const cells = trendColumns.map((col) => scope.cells.find((c) => cellKey(c) === col.key))
-            const current = scope.cells.find((c) => cellKey(c) === columnKey)
+          {metrics.map(({ metric, scope, head, children, noun, atScope }) => {
+            const statuses = trendColumns.map(
+              (col) => statusAtScope({ scope: scope ?? { cells: [] }, children, columnKey: col.key, scale, noun }).status,
+            )
+            const current = scopeCell(scope, columnKey)
             return (
               <li key={metric.key} className="flex flex-wrap items-center gap-2">
-                <span className="min-w-40 font-medium">{scope.metricName}</span>
-                <span className="flex gap-0.5">
-                  {cells.map((cell, i) => (
-                    <StatusBadge key={trendColumns[i]!.key} status={cell?.status ?? ''} label={statusLabel(cell?.status ?? '')} className="min-w-6 px-1" />
+                <span className="min-w-40 font-medium">{head.metricName}</span>
+                <span className="flex gap-0.5" data-testid={`ribbon-${metric.key}`}>
+                  {statuses.map((status, i) => (
+                    <StatusBadge
+                      key={trendColumns[i]!.key}
+                      status={status}
+                      label={`${trendColumns[i]!.fullLabel} ${statusLabel(status) ?? status}`}
+                      className="min-w-6 px-1"
+                    />
                   ))}
                 </span>
                 <span className="tabular-nums">{current?.display || '—'}</span>
@@ -426,8 +430,8 @@ export function OverviewPage() {
               Not reported:{' '}
               {unreported
                 .map((m) => {
-                  const due = nextDuePeriodLabel(m.scope.frequency, period.period, fy)
-                  return due ? `${m.scope.metricName} (next due ${due})` : m.scope.metricName
+                  const due = nextDuePeriodLabel(m.head.frequency, period.period, fy)
+                  return due ? `${m.head.metricName} (next due ${due})` : m.head.metricName
                 })
                 .join(', ')}
               {canEnter && (

@@ -7,7 +7,7 @@ import { App } from '../../App'
 import { monthLabel, parsePeriod } from '../../lib/period'
 import { server } from '../../test/server'
 import { renderApp } from '../../test/utils'
-import { buildView, viewHandlers } from '../../test/viewFixtures'
+import { addServiceUptime, buildView, viewHandlers } from '../../test/viewFixtures'
 
 type ScorecardView = components['schemas']['ScorecardView']
 type Cell = components['schemas']['Cell']
@@ -163,6 +163,50 @@ describe('OverviewPage', () => {
     const card = metricCard('On-time delivery')
     const strip = within(card).getByTestId('uptime-strip-unit-a')
     expect(strip.children.length).toBe(12)
+  })
+
+  it('the 12-month status widget uses the shared rule for each column', async () => {
+    renderOverview(ROUTE, (view) => {
+      Object.assign(cellOf(view, 'on_time_pct', 'root', '2026-M10'), {
+        value: null,
+        display: '',
+        status: '',
+        naReason: '',
+        components: {},
+      })
+    })
+    await screen.findByRole('heading', { name: 'Overview', level: 1 })
+    const ribbon = screen.getByTestId('ribbon-on_time_pct')
+    const badges = within(ribbon).getAllByRole('img')
+    expect(badges).toHaveLength(12)
+    expect(badges.at(-1)!.textContent).toBe('R')
+    expect(badges.at(-1)!.getAttribute('aria-label')).toMatch(/Oct 2026/)
+    expect(badges.at(-2)!.textContent).toBe('G')
+  })
+
+  it('an item-only metric shows the worst of its services, not one service as the company', async () => {
+    renderOverview(ROUTE, (view) => {
+      addServiceUptime(view)
+    })
+    await screen.findByRole('heading', { name: 'Overview', level: 1 })
+    const card = metricCard('Service uptime')
+    expect(within(card).getByText('worst of 2 services')).toBeTruthy()
+    expect(within(card).getByText(/Service uptime: no data, status R/)).toBeTruthy()
+    expect(within(card).queryByText(/^Company total not reported/)).toBeNull()
+    expect(within(card).getByTestId('uptime-strip-svc-api')).toBeTruthy()
+    expect(within(card).getByTestId('uptime-strip-svc-web')).toBeTruthy()
+  })
+
+  it('each uptime square has a per-period accessible name', async () => {
+    renderOverview(ROUTE, (view) => {
+      addServiceUptime(view)
+    })
+    await screen.findByRole('heading', { name: 'Overview', level: 1 })
+    const strip = within(metricCard('Service uptime')).getByTestId('uptime-strip-svc-web')
+    const squares = within(strip).getAllByRole('img')
+    expect(squares).toHaveLength(12)
+    expect(squares.at(-1)!.getAttribute('aria-label')).toMatch(/^Oct\w* 2026: 99\.20%, status R/)
+    expect(squares.at(-2)!.getAttribute('aria-label')).toMatch(/^Sep\w* 2026: 99\.90%, status G/)
   })
 
   it('shows the period header sentence', async () => {

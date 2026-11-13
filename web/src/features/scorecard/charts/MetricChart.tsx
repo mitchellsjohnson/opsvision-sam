@@ -361,12 +361,20 @@ function UptimeRows({
           <li key={child.subjectId} className="flex flex-wrap items-center justify-between gap-2">
             <span className="min-w-24">{child.subjectName}</span>
             <span className="flex gap-0.5" data-testid={`uptime-strip-${child.subjectId}`}>
-              {statuses.map((c, i) => (
-                <StatusMarker
-                  key={columns[i]!.key}
-                  theme={chartTheme(scale, c?.status && c.naReason === '' ? c.status : '')}
-                />
-              ))}
+              {statuses.map((c, i) => {
+                const col = columns[i]!
+                const status = c?.status && c.naReason === '' ? c.status : ''
+                const label = !c
+                  ? `${col.fullLabel}: no data`
+                  : c.naReason
+                    ? `${col.fullLabel}: not applicable, ${c.naReason}`
+                    : `${col.fullLabel}: ${c.display || 'no data'}${status ? `, status ${status}` : ''}`
+                return (
+                  <span key={col.key} role="img" aria-label={label}>
+                    <StatusMarker theme={chartTheme(scale, status)} />
+                  </span>
+                )
+              })}
             </span>
             <span className="flex items-center gap-2">
               <StatusMarker theme={theme} />

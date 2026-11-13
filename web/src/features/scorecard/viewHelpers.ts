@@ -39,6 +39,27 @@ export function groupRows(view: ScorecardView): CategoryGroup[] {
   return groups
 }
 
+export interface MetricScope {
+  /** The metric's row at the shallowest org unit shown; null when it has no org-unit row. */
+  scope: ViewRow | null
+  /** The rows directly below the scope, or every row when there is no scope row. */
+  children: ViewRow[]
+  /** A row to read the metric's name, format and kind from. */
+  head: ViewRow
+}
+
+/**
+ * The scope row of one metric's rows and its children. A metric reported
+ * only for tracked items (uptime per service) has no org-unit row, so no
+ * scope value: every item row is a child.
+ */
+export function metricScope(rows: ViewRow[]): MetricScope {
+  const units = rows.filter((r) => r.subjectKind !== 'item')
+  if (units.length === 0) return { scope: null, children: rows, head: rows[0]! }
+  const scope = units.reduce((best, r) => (r.depth < best.depth ? r : best))
+  return { scope, children: rows.filter((r) => r.depth === scope.depth + 1), head: scope }
+}
+
 /** The key of a cell's column, matching `Column.key`: `2026-M10` or `YTD:2026-M10`. */
 export function cellKey(c: Cell): string {
   return c.ytd ? `YTD:${c.period}` : c.period
