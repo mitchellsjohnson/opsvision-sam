@@ -18,12 +18,12 @@ import { usePrefersReducedMotion } from '../../../ui/Sparkline'
 import type { Column } from '../columns'
 import { formatMetricValue, overrideSentence } from '../format'
 import { cellKey } from '../viewHelpers'
+import { statusIntervals } from './bands'
 import { chartTheme, type StatusTheme } from './chartTheme'
 
 type Schemas = components['schemas']
 type ViewRow = Schemas['ViewRow']
 type CellT = Schemas['Cell']
-type Band = Schemas['Band']
 
 export interface MetricChartProps {
   row: ViewRow
@@ -91,25 +91,6 @@ function sparseOverride(kind: string, columns: Column[], points: PointRow[]): bo
     else if (p.kind === 'value') valued++
   }
   return na > valued
-}
-
-function bandRects(
-  bands: Band[] | undefined,
-  direction: ViewRow['direction'],
-  yDomain: [number, number],
-): Array<{ y0: number; y1: number; status: string }> {
-  if (!bands?.length) return []
-  const sorted = [...bands].sort((a, b) => a.value - b.value)
-  const rects: Array<{ y0: number; y1: number; status: string }> = []
-  for (let i = 0; i < sorted.length; i++) {
-    const band = sorted[i]!
-    const next = sorted[i + 1]
-    const y0 = band.value
-    const y1 = next?.value ?? yDomain[1]
-    if (direction === 'higher_better') rects.push({ y0, y1, status: band.status })
-    else rects.push({ y0: Math.min(y0, y1), y1: Math.max(y0, y1), status: band.status })
-  }
-  return rects
 }
 
 function yDomain(points: PointRow[], target: number | null, extra: number[] = []): [number, number] {
@@ -209,7 +190,7 @@ function RatioChart({
   const domain = yDomain(flatPoints, target)
   const currentCell = row.cells.find((c) => cellKey(c) === columns[columns.length - 1]?.key)
   const bands = currentCell?.rule?.type === 'bands' ? currentCell.rule.bands : undefined
-  const rects = bandRects(bands, row.direction, domain)
+  const rects = statusIntervals(bands, domain)
   const lastIndex = columns.length - 1
   const currentPoint = series.length === 1 ? series[0]!.points[lastIndex] : undefined
 
@@ -230,7 +211,7 @@ function RatioChart({
     <div>
       <div
         data-testid="metric-chart"
-        data-band-areas={rects.length}
+        data-bands={rects.map((r) => `${r.status}:${r.y0}-${r.y1}`).join(' ')}
         aria-hidden="true"
         className="text-accent-deep"
         style={{ height: 120 }}
@@ -245,13 +226,12 @@ function RatioChart({
               return (
                 <ReferenceArea
                   key={`band-${i}`}
-                  y1={Math.min(r.y0, r.y1)}
-                  y2={Math.max(r.y0, r.y1)}
+                  y1={r.y0}
+                  y2={r.y1}
                   fill={theme.color}
                   fillOpacity={0.1}
                   stroke={theme.color}
                   strokeWidth={1}
-                  ifOverflow="extendDomain"
                 />
               )
             })}

@@ -115,7 +115,7 @@ describe('OverviewPage', () => {
     await waitFor(() => expect(within(card).getByText(/YTD 95\.0%/)).toBeTruthy())
   })
 
-  it('draws tinted status band areas on ratio charts', async () => {
+  it('tints each band with the status the engine gives its values', async () => {
     renderOverview(ROUTE, (view) => {
       Object.assign(cellOf(view, 'on_time_pct', 'root', '2026-M10'), {
         rule: {
@@ -130,7 +130,14 @@ describe('OverviewPage', () => {
     })
     await screen.findByRole('heading', { name: 'Overview', level: 1 })
     const chart = within(metricCard('On-time delivery')).getByTestId('metric-chart')
-    expect(Number(chart.getAttribute('data-band-areas'))).toBeGreaterThan(0)
+    const bands = (chart.getAttribute('data-bands') ?? '').split(' ').map((b) => {
+      const [status, range] = b.split(':')
+      const [y0, y1] = (range ?? '').split('-').map(Number)
+      return { status, y0, y1 }
+    })
+    expect(bands.map((b) => b.status)).toEqual(['Y', 'G'])
+    expect(bands[0]!.y1).toBe(90)
+    expect(bands[1]!.y0).toBe(90)
     expect(within(metricCard('On-time delivery')).getByTestId('current-point-label').textContent).toMatch(/84\.3%/)
     expect(within(metricCard('On-time delivery')).getByTestId('current-point-label').textContent).toContain('Y')
   })
