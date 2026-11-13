@@ -6,6 +6,7 @@ import {
   CartesianGrid,
   Cell,
   ComposedChart,
+  LabelList,
   Line,
   ReferenceArea,
   ReferenceLine,
@@ -123,6 +124,28 @@ function StatusMarker({ theme, title }: { theme: StatusTheme; title?: string }) 
   )
 }
 
+interface DotProps {
+  cx?: number
+  cy?: number
+  index?: number
+  payload?: Record<string, unknown>
+}
+
+/** A line point drawn as a ring with its status letter above it, so status never rests on color. */
+function StatusDot({ cx, cy, index, payload, statusKey, scale }: DotProps & { statusKey: string; scale: components['schemas']['StatusLevel'][] }) {
+  const status = typeof payload?.[statusKey] === 'string' ? (payload[statusKey] as string) : ''
+  if (cx == null || cy == null || !status) return <g key={`dot-${statusKey}-${index}`} />
+  const theme = chartTheme(scale, status)
+  return (
+    <g key={`dot-${statusKey}-${index}`} data-status-dot={status}>
+      <circle cx={cx} cy={cy} r={3.5} fill="#FFFFFF" stroke={theme.color} strokeWidth={1.5} />
+      <text x={cx} y={cy - 7} textAnchor="middle" fontSize={9} fontWeight={600} fill="var(--color-ink)">
+        {status}
+      </text>
+    </g>
+  )
+}
+
 function PointButtons({ points, onSelect, prefix }: { points: PointRow[]; onSelect: (p: PointRow) => void; prefix?: string }) {
   return (
     <div className="mt-2 flex flex-wrap gap-1">
@@ -199,10 +222,12 @@ function RatioChart({
     for (const { row: r, points } of series) {
       const p = points[i]!
       entry[`plot_${r.subjectId}`] = p.kind === 'value' ? p.value : null
+      entry[`status_${r.subjectId}`] = p.kind === 'value' ? p.status : ''
     }
     if (series.length === 1) {
       const p = series[0]!.points[i]!
       entry.plot = p.kind === 'value' ? p.value : null
+      entry.status = p.kind === 'value' ? p.status : ''
     }
     return entry
   })
@@ -229,9 +254,10 @@ function RatioChart({
                   y1={r.y0}
                   y2={r.y1}
                   fill={theme.color}
-                  fillOpacity={0.1}
+                  fillOpacity={0.15}
                   stroke={theme.color}
                   strokeWidth={1}
+                  label={{ value: r.status, position: 'insideLeft', fontSize: 9, fontWeight: 600, fill: 'var(--color-ink)', className: 'band-label' }}
                 />
               )
             })}
@@ -256,7 +282,14 @@ function RatioChart({
                 dataKey={series.length === 1 ? 'plot' : `plot_${r.subjectId}`}
                 stroke="currentColor"
                 strokeWidth={2}
-                dot={series.length === 1}
+                dot={(props: DotProps) => (
+                  <StatusDot
+                    {...props}
+                    key={`dot-${r.subjectId}-${props.index}`}
+                    statusKey={series.length === 1 ? 'status' : `status_${r.subjectId}`}
+                    scale={scale}
+                  />
+                )}
                 activeDot={{ r: 5 }}
                 isAnimationActive={animated}
                 connectNulls={false}
@@ -290,18 +323,19 @@ function RatioChart({
 
 function DiscreteChart({ points, scale, animated }: { points: PointRow[]; scale: components['schemas']['StatusLevel'][]; animated: boolean }) {
   const [tip, setTip] = useState<PointRow | null>(null)
-  const data = points.map((p) => ({ ...p, h: p.kind === 'value' ? p.value ?? 0 : 0 }))
+  const data = points.map((p) => ({ ...p, h: p.kind === 'value' ? p.value ?? 0 : 0, letter: p.kind === 'value' ? p.status : '' }))
   return (
     <div>
       <div aria-hidden="true" style={{ height: 100 }}>
-        <ResponsiveContainer width="100%" height={100}>
-          <BarChart data={data} margin={{ top: 4, right: 4, bottom: 4, left: 4 }}>
+        <ResponsiveContainer width="100%" height={100} initialDimension={{ width: 300, height: 100 }}>
+          <BarChart data={data} margin={{ top: 14, right: 4, bottom: 4, left: 4 }}>
             <XAxis dataKey="label" tick={{ fontSize: 10 }} />
             <YAxis hide />
             <Bar dataKey="h" isAnimationActive={animated}>
               {data.map((p) => (
-                <Cell key={p.key} fill={p.kind === 'value' ? chartTheme(scale, p.status).color : 'var(--color-ink)'} fillOpacity={p.kind === 'value' ? 0.35 : 0.1} />
+                <Cell key={p.key} fill={p.kind === 'value' ? chartTheme(scale, p.status).color : 'var(--color-ink)'} fillOpacity={p.kind === 'value' ? 1 : 0.1} />
               ))}
+              <LabelList dataKey="letter" position="top" fontSize={10} fontWeight={600} fill="var(--color-ink)" />
             </Bar>
           </BarChart>
         </ResponsiveContainer>
@@ -314,13 +348,13 @@ function DiscreteChart({ points, scale, animated }: { points: PointRow[]; scale:
 
 function MoneyPlanChart({ points, scale, animated }: { points: PointRow[]; scale: components['schemas']['StatusLevel'][]; animated: boolean }) {
   const [tip, setTip] = useState<PointRow | null>(null)
-  const data = points.map((p) => ({ ...p, h: p.kind === 'value' ? p.value ?? 0 : null }))
+  const data = points.map((p) => ({ ...p, h: p.kind === 'value' ? p.value ?? 0 : null, letter: p.kind === 'value' ? p.status : '' }))
   const domain = moneyDomain(points)
   return (
     <div>
       <div data-testid="metric-chart" aria-hidden="true" style={{ height: 100 }}>
-        <ResponsiveContainer width="100%" height={100}>
-          <BarChart data={data} margin={{ top: 4, right: 4, bottom: 4, left: 4 }}>
+        <ResponsiveContainer width="100%" height={100} initialDimension={{ width: 300, height: 100 }}>
+          <BarChart data={data} margin={{ top: 14, right: 4, bottom: 4, left: 4 }}>
             <XAxis dataKey="label" tick={{ fontSize: 10 }} />
             <YAxis hide domain={domain} />
             <ReferenceLine y={100} stroke="var(--color-ink)" strokeWidth={1} ifOverflow="extendDomain" label={{ value: '100%', fontSize: 10 }} />
@@ -328,6 +362,7 @@ function MoneyPlanChart({ points, scale, animated }: { points: PointRow[]; scale
               {data.map((p) => (
                 <Cell key={p.key} fill={p.kind === 'value' ? chartTheme(scale, p.status).color : 'transparent'} />
               ))}
+              <LabelList dataKey="letter" position="top" fontSize={10} fontWeight={600} fill="var(--color-ink)" />
             </Bar>
           </BarChart>
         </ResponsiveContainer>
