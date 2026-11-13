@@ -36,6 +36,18 @@ function gridCell(metric: string, subject: string, columnLabel: string): HTMLEle
   return cells[idx] as HTMLElement
 }
 
+describe('TablePage sticky rows', () => {
+  it('a category header shares a row group with its metrics, so it can stick while they scroll', async () => {
+    renderTable()
+    const grid = await screen.findByRole('grid')
+    const delivery = within(grid).getByRole('rowheader', { name: 'Delivery' })
+    expect(delivery.className).toContain('sticky')
+    const group = delivery.closest('tbody')!
+    expect(within(group).getByRole('row', { name: /On-time delivery, All units/ })).toBeTruthy()
+    expect(within(group).queryByRole('row', { name: /Defect rate/ })).toBeNull()
+  })
+})
+
 describe('TablePage', () => {
   it('at content width 960 shows six period headers and no horizontal scroll container', async () => {
     renderTable()

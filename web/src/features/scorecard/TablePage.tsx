@@ -18,6 +18,7 @@ import { useShellDock } from '../../shell/ShellDock'
 import { usePeriodState } from '../../shell/usePeriodState'
 import { focusReturnRef } from './focusTrigger'
 import { StatusBadge } from '../../ui/StatusBadge'
+import { useElementHeight } from '../../ui/useElementHeight'
 import { CellDrawer, type DrawerTarget } from './CellDrawer'
 import {
   buildColumns,
@@ -118,6 +119,17 @@ function statusMix(children: ViewRow[], columnKey: string): string | null {
   if (counts.Y) parts.push(`${counts.Y}Y`)
   if (counts.R) parts.push(`${counts.R}R`)
   return `${segments} segments · ${parts.join(' ')}`
+}
+
+/** Grid rows split at each category heading, one row group per category. */
+function categorySections<T extends { key: string; category?: string }>(rows: T[]): { key: string; entries: T[] }[] {
+  const sections: { key: string; entries: T[] }[] = []
+  for (const row of rows) {
+    const last = sections[sections.length - 1]
+    if (row.category !== undefined || !last) sections.push({ key: row.key, entries: [row] })
+    else last.entries.push(row)
+  }
+  return sections
 }
 
 function shallowest(rows: ViewRow[]): ViewRow {
@@ -309,6 +321,7 @@ export function TablePage({
   const [contentWidth, setContentWidth] = useState(0)
   const [focus, setFocus] = useState({ row: 0, col: 0 })
   const { setOpen: setDockOpen, dockElement } = useShellDock()
+  const [headRef, headHeight] = useElementHeight<HTMLTableSectionElement>()
   const useShellDockColumn = !embeddedInFocus
 
   useLayoutEffect(() => {
@@ -559,9 +572,10 @@ export function TablePage({
         role="grid"
         aria-label={`${scorecardName} table`}
         className="w-full table-fixed border-separate border-spacing-0 text-sm"
+        style={headHeight > 0 ? { ['--table-header-height' as string]: `${headHeight}px` } : undefined}
       >
         <caption className="sr-only">{scorecardName}</caption>
-        <thead>
+        <thead ref={headRef}>
           <tr>
             <th
               scope="col"
@@ -587,109 +601,107 @@ export function TablePage({
             ))}
           </tr>
         </thead>
-        {gridRows.map((entry) => {
-          if (entry.category) {
-            return (
-              <tbody key={entry.key}>
-                <tr>
-                  <th
-                    scope="rowgroup"
-                    colSpan={colSpan + 1}
-                    className="sticky top-[calc(var(--scorecard-control-bar-height)+2.5rem)] z-10 bg-cream px-3 py-1.5 text-left text-xs font-semibold uppercase tracking-wide"
-                  >
-                    {entry.category}
+        {categorySections(gridRows).map((section) => (
+          <tbody key={section.key}>
+            {section.entries.map((entry) => {
+              if (entry.category) {
+                return (
+                  <tr key={entry.key}>
+                    <th
+                      scope="rowgroup"
+                      colSpan={colSpan + 1}
+                      className="sticky top-[calc(var(--scorecard-control-bar-height)+var(--table-header-height,2.5rem))] z-10 bg-cream px-3 py-1.5 text-left text-xs font-semibold uppercase tracking-wide"
+                    >
+                      {entry.category}
+                    </th>
+                  </tr>
+                )
+              }
+              if (entry.metricEmpty && entry.row) {
+                return (
+                  <tr key={entry.key} aria-label={`${entry.row.metricName}, ${entry.row.subjectName}`}>
+                    <th scope="row" className="border-b border-ink/10 px-3 py-2 text-left font-medium">
+                      {entry.row.metricName}
+                    </th>
+                    <td role="gridcell" colSpan={colSpan} tabIndex={-1} className="border-b border-ink/10 px-3 py-2 text-sm text-ink/80">
+                      No data in this range
+                      {canEnter && (
+                        <>
+                          {' · '}
+                          <Link to={`/entry?scorecard=${scorecardId}&period=${period.period}`} className="font-medium text-accent-deep underline">
+                            Enter data
+                          </Link>
+                        </>
+                      )}
+                    </td>
+                  </tr>
+                )
+              }
+              if (!entry.row || !entry.state) return null
+              const { row, state } = entry
+              const dataRowIndex = flatDataRows.findIndex((r) => r.key === entry.key)
+              const cells = new Map(row.cells.map((c) => [cellKey(c), c]))
+              const mix =
+                state.collapsible && !expanded.has(expandKey(row))
+                  ? statusMix(directChildren(entry.metric ?? [], row), selectedColumnKey)
+                  : null
+              const open = state.collapsible && state.childIds.length > 0 && expanded.has(expandKey(row))
+              return (
+                <tr key={entry.key} aria-label={`${row.metricName}, ${row.subjectName}`}>
+                  <th scope="row" className="border-b border-ink/10 px-3 py-1.5 text-left font-normal">
+                    <div className="flex items-start gap-1">
+                      {state.collapsible ? (
+                        <button
+                          type="button"
+                          aria-expanded={open}
+                          aria-controls={state.childIds.join(' ')}
+                          aria-label={`${open ? 'Hide' : 'Show'} subjects under ${row.subjectName}`}
+                          onClick={() => {
+                            setExpanded((prev) => {
+                              const next = new Set(prev)
+                              const key = expandKey(row)
+                              if (next.has(key)) next.delete(key)
+                              else next.add(key)
+                              return next
+                            })
+                          }}
+                          className="mt-0.5 shrink-0 rounded p-0.5 hover:bg-cream"
+                        >
+                          {open ? <ChevronDown aria-hidden size={16} /> : <ChevronRight aria-hidden size={16} />}
+                        </button>
+                      ) : (
+                        <span className="inline-block w-5 shrink-0" aria-hidden />
+                      )}
+                      <span>
+                        <span className="block font-medium">{row.metricName}</span>
+                        <span className="text-xs text-ink/80">{row.subjectName}</span>
+                        {mix && <span className="mt-0.5 block text-xs text-ink/70">{mix}</span>}
+                      </span>
+                    </div>
                   </th>
+                  {displayColumns.map((c, colIndex) => {
+                    const cell = cells.get(c.key)
+                    const tabIndex = dataRowIndex === focus.row && colIndex === focus.col ? 0 : -1
+                    return (
+                      <DataCell
+                        key={c.key}
+                        cell={cell}
+                        column={c}
+                        statusLabel={statusLabel}
+                        tabIndex={tabIndex}
+                        dataRowIndex={dataRowIndex}
+                        selected={dataRowIndex === focus.row && colIndex === focus.col}
+                        onOpen={(opened, button) => openDrawer(row, opened, c, button)}
+                        onFocus={() => setFocus({ row: dataRowIndex, col: colIndex })}
+                        onCellKeyDown={handleCellKeyDown(dataRowIndex, colIndex)}
+                      />
+                    )
+                  })}
                 </tr>
-              </tbody>
-            )
-          }
-          if (entry.metricEmpty && entry.row) {
-            return (
-              <tbody key={entry.key}>
-                <tr aria-label={`${entry.row.metricName}, ${entry.row.subjectName}`}>
-                  <th scope="row" className="border-b border-ink/10 px-3 py-2 text-left font-medium">
-                    {entry.row.metricName}
-                  </th>
-                  <td role="gridcell" colSpan={colSpan} tabIndex={-1} className="border-b border-ink/10 px-3 py-2 text-sm text-ink/80">
-                    No data in this range
-                    {canEnter && (
-                      <>
-                        {' · '}
-                        <Link to={`/entry?scorecard=${scorecardId}&period=${period.period}`} className="font-medium text-accent-deep underline">
-                          Enter data
-                        </Link>
-                      </>
-                    )}
-                  </td>
-                </tr>
-              </tbody>
-            )
-          }
-          if (!entry.row || !entry.state) return null
-          const { row, state } = entry
-          const dataRowIndex = flatDataRows.findIndex((r) => r.key === entry.key)
-          const cells = new Map(row.cells.map((c) => [cellKey(c), c]))
-          const mix =
-            state.collapsible && !expanded.has(expandKey(row))
-              ? statusMix(directChildren(entry.metric ?? [], row), selectedColumnKey)
-              : null
-          const open = state.collapsible && state.childIds.length > 0 && expanded.has(expandKey(row))
-          return (
-            <tbody key={entry.key}>
-              <tr aria-label={`${row.metricName}, ${row.subjectName}`}>
-                <th scope="row" className="border-b border-ink/10 px-3 py-1.5 text-left font-normal">
-                  <div className="flex items-start gap-1">
-                    {state.collapsible ? (
-                      <button
-                        type="button"
-                        aria-expanded={open}
-                        aria-controls={state.childIds.join(' ')}
-                        aria-label={`${open ? 'Hide' : 'Show'} subjects under ${row.subjectName}`}
-                        onClick={() => {
-                          setExpanded((prev) => {
-                            const next = new Set(prev)
-                            const key = expandKey(row)
-                            if (next.has(key)) next.delete(key)
-                            else next.add(key)
-                            return next
-                          })
-                        }}
-                        className="mt-0.5 shrink-0 rounded p-0.5 hover:bg-cream"
-                      >
-                        {open ? <ChevronDown aria-hidden size={16} /> : <ChevronRight aria-hidden size={16} />}
-                      </button>
-                    ) : (
-                      <span className="inline-block w-5 shrink-0" aria-hidden />
-                    )}
-                    <span>
-                      <span className="block font-medium">{row.metricName}</span>
-                      <span className="text-xs text-ink/80">{row.subjectName}</span>
-                      {mix && <span className="mt-0.5 block text-xs text-ink/70">{mix}</span>}
-                    </span>
-                  </div>
-                </th>
-                {displayColumns.map((c, colIndex) => {
-                  const cell = cells.get(c.key)
-                  const tabIndex = dataRowIndex === focus.row && colIndex === focus.col ? 0 : -1
-                  return (
-                    <DataCell
-                      key={c.key}
-                      cell={cell}
-                      column={c}
-                      statusLabel={statusLabel}
-                      tabIndex={tabIndex}
-                      dataRowIndex={dataRowIndex}
-                      selected={dataRowIndex === focus.row && colIndex === focus.col}
-                      onOpen={(opened, button) => openDrawer(row, opened, c, button)}
-                      onFocus={() => setFocus({ row: dataRowIndex, col: colIndex })}
-                      onCellKeyDown={handleCellKeyDown(dataRowIndex, colIndex)}
-                    />
-                  )
-                })}
-              </tr>
-            </tbody>
-          )
-        })}
+              )
+            })}
+          </tbody>
+        ))}
       </table>
     )
   }

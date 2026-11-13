@@ -1,7 +1,7 @@
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { useLocation } from 'react-router'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { App } from '../../App'
 import { server } from '../../test/server'
 import { renderApp } from '../../test/utils'
@@ -76,6 +76,22 @@ describe('ControlBar', () => {
   it('an old report link opens the overview', async () => {
     renderScorecard('/scorecards/sc-main/report?period=2026-M10')
     await waitFor(() => expect(location()).toBe('/scorecards/sc-main/overview?period=2026-M10'))
+  })
+
+  it('sets the sticky offset from the measured bar height', async () => {
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      return { height: this.getAttribute('aria-label') === 'Scorecard controls' ? 112 : 0 } as DOMRect
+    })
+    try {
+      renderScorecard('/scorecards/sc-main/overview?period=2026-M10')
+      await screen.findByRole('heading', { name: 'Overview', level: 1 })
+      const bar = screen.getByRole('region', { name: 'Scorecard controls' })
+      await waitFor(() =>
+        expect(bar.parentElement!.style.getPropertyValue('--scorecard-control-bar-height')).toBe('112px'),
+      )
+    } finally {
+      vi.restoreAllMocks()
+    }
   })
 
   it('keeps Ask SAM disabled in the control bar', async () => {

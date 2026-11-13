@@ -49,7 +49,7 @@ function viewLinkClass({ isActive }: { isActive: boolean }) {
 }
 
 /** Shared sticky bar: view links, period, scope, view options, and Ask SAM. */
-export function ControlBar({ scorecardId }: { scorecardId: string }) {
+export function ControlBar({ scorecardId, barRef }: { scorecardId: string; barRef?: (el: HTMLElement | null) => void }) {
   const { sc } = useParams()
   const { search } = useLocation()
   const id = useId()
@@ -94,7 +94,7 @@ export function ControlBar({ scorecardId }: { scorecardId: string }) {
   const unitGrain = parsed.grain === 'year' ? null : parsed.grain
 
   return (
-  <section aria-label="Scorecard controls" className="sticky top-0 z-10 border-b border-ink/15 bg-white px-4 py-2">
+  <section ref={barRef} aria-label="Scorecard controls" className="sticky top-0 z-10 border-b border-ink/15 bg-white px-4 py-2">
     <div
       role="toolbar"
       aria-label="Scorecard controls"
