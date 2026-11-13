@@ -6,10 +6,10 @@ import (
 )
 
 type layoutJSON struct {
-	Items            []layoutItemJSON `json:"items"`
-	Revision         int              `json:"revision"`
-	Source           string           `json:"source"`
-	DefaultRevision  int              `json:"defaultRevision"`
+	Items           []layoutItemJSON `json:"items"`
+	Revision        int              `json:"revision"`
+	Source          string           `json:"source"`
+	DefaultRevision int              `json:"defaultRevision"`
 }
 
 type layoutItemJSON struct {

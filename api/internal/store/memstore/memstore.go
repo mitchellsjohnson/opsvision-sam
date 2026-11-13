@@ -65,25 +65,25 @@ type scorecardData struct {
 }
 
 type tenantData struct {
-	members    map[string]domain.Membership
-	levels     []domain.Level
-	units      map[string]domain.OrgUnit
-	moves      map[moveKey]domain.OrgMove
-	kinds      map[string]domain.ItemKind
-	items      map[string]domain.TrackedItem
-	scorecards map[string]domain.Scorecard
-	versions   map[versionKey]domain.MethodologyVersion
-	scData     map[string]*scorecardData
-	audit      []domain.AuditEntry
-	imports    map[string]store.Import
-	templates  map[string]store.Template
-	recTypes   map[string]domain.RecordType
-	snapshots  map[snapshotKey]domain.Snapshot
-	records        map[string]map[recordKey]*domain.Record // by record type
-	layouts          map[layoutKey]domain.Layout
-	defaultLayouts   map[string]domain.Layout
-	reportSummaries  map[reportSummaryKey]domain.ReportSummary
-	reportRevisions  map[reportRevisionKey]domain.ReportRevision
+	members         map[string]domain.Membership
+	levels          []domain.Level
+	units           map[string]domain.OrgUnit
+	moves           map[moveKey]domain.OrgMove
+	kinds           map[string]domain.ItemKind
+	items           map[string]domain.TrackedItem
+	scorecards      map[string]domain.Scorecard
+	versions        map[versionKey]domain.MethodologyVersion
+	scData          map[string]*scorecardData
+	audit           []domain.AuditEntry
+	imports         map[string]store.Import
+	templates       map[string]store.Template
+	recTypes        map[string]domain.RecordType
+	snapshots       map[snapshotKey]domain.Snapshot
+	records         map[string]map[recordKey]*domain.Record // by record type
+	layouts         map[layoutKey]domain.Layout
+	defaultLayouts  map[string]domain.Layout
+	reportSummaries map[reportSummaryKey]domain.ReportSummary
+	reportRevisions map[reportRevisionKey]domain.ReportRevision
 }
 
 type snapshotKey struct{ recordType, id string }
@@ -98,18 +98,18 @@ func (s *Store) tenant(id string) *tenantData {
 	td := s.data[id]
 	if td == nil {
 		td = &tenantData{
-			members:    map[string]domain.Membership{},
-			units:      map[string]domain.OrgUnit{},
-			moves:      map[moveKey]domain.OrgMove{},
-			kinds:      map[string]domain.ItemKind{},
-			items:      map[string]domain.TrackedItem{},
-			scorecards: map[string]domain.Scorecard{},
-			versions:   map[versionKey]domain.MethodologyVersion{},
-			scData:     map[string]*scorecardData{},
-			imports:    map[string]store.Import{},
-			templates:  map[string]store.Template{},
-			recTypes:   map[string]domain.RecordType{},
-			snapshots:  map[snapshotKey]domain.Snapshot{},
+			members:        map[string]domain.Membership{},
+			units:          map[string]domain.OrgUnit{},
+			moves:          map[moveKey]domain.OrgMove{},
+			kinds:          map[string]domain.ItemKind{},
+			items:          map[string]domain.TrackedItem{},
+			scorecards:     map[string]domain.Scorecard{},
+			versions:       map[versionKey]domain.MethodologyVersion{},
+			scData:         map[string]*scorecardData{},
+			imports:        map[string]store.Import{},
+			templates:      map[string]store.Template{},
+			recTypes:       map[string]domain.RecordType{},
+			snapshots:      map[snapshotKey]domain.Snapshot{},
 			records:        map[string]map[recordKey]*domain.Record{},
 			layouts:        map[layoutKey]domain.Layout{},
 			defaultLayouts: map[string]domain.Layout{},

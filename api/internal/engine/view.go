@@ -52,12 +52,12 @@ type Row struct {
 	// Depth is indentation: distance from the root for org units; for
 	// tracked items one more than the unit they are attached to, or 0 when
 	// unattached.
-	Depth        int
-	Direction    domain.Direction
-	Frequency    domain.Frequency
-	ChartKind    string
-	Definition   string
-	Cells        []Cell
+	Depth      int
+	Direction  domain.Direction
+	Frequency  domain.Frequency
+	ChartKind  string
+	Definition string
+	Cells      []Cell
 }
 
 // View is the table a scorecard renders.

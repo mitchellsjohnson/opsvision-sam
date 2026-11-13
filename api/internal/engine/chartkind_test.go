@@ -44,7 +44,7 @@ func TestChartKind(t *testing.T) {
 			name: "override_ratio",
 			m: metricChart(domain.Metric{
 				Key: "a", Format: domain.FormatPercent1,
-				Rule: bandsRule(band("G", ">=", 90), band("R", "", 0)),
+				Rule:      bandsRule(band("G", ">=", 90), band("R", "", 0)),
 				ChartKind: "ratio",
 			}),
 			want: "ratio",
@@ -53,7 +53,7 @@ func TestChartKind(t *testing.T) {
 			name: "override_line_on_ratio_metric",
 			m: metricChart(domain.Metric{
 				Key: "a", Format: domain.FormatPercent1,
-				Rule: bandsRule(band("G", ">=", 90), band("R", "", 0)),
+				Rule:      bandsRule(band("G", ">=", 90), band("R", "", 0)),
 				ChartKind: "line",
 			}),
 			want: "line",
@@ -62,7 +62,7 @@ func TestChartKind(t *testing.T) {
 			name: "invalid_override_falls_through",
 			m: metricChart(domain.Metric{
 				Key: "a", Format: domain.FormatPercent1,
-				Rule: bandsRule(band("G", ">=", 90), band("R", "", 0)),
+				Rule:      bandsRule(band("G", ">=", 90), band("R", "", 0)),
 				ChartKind: "not_a_kind",
 			}),
 			want: "ratio",
@@ -96,7 +96,7 @@ func TestChartKind(t *testing.T) {
 			m: metricChart(domain.Metric{
 				Key: "a", Format: domain.FormatPercent2,
 				ReportedAt: []domain.Subject{{Kind: domain.SubjectItemKind, ID: "app"}},
-				Rule: bandsRule(band("G", ">=", 99), band("R", "", 0)),
+				Rule:       bandsRule(band("G", ">=", 99), band("R", "", 0)),
 			}),
 			want: "uptime",
 		},

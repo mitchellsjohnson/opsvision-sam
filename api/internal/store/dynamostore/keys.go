@@ -32,20 +32,20 @@ const (
 // Sort-key prefixes inside a tenant partition (T#<tid>) and inside a
 // fiscal-year data partition.
 const (
-	prefixMember    = "MEMBER#"
-	prefixLevel     = "LEVEL#"
-	prefixUnit      = "UNIT#"
-	prefixMove      = "MOVE#"
-	prefixKind      = "KIND#"
-	prefixItem      = "ITEM#"
-	prefixScorecard = "SC#"
-	prefixImport    = "IMPORT#"
-	prefixTemplate  = "TEMPLATE#"
-	prefixPoint     = "DP#"
-	prefixOverride  = "OV#"
-	prefixRecType   = "RTYPE#"
-	prefixSnapshot  = "SNAP#"
-	prefixRecordRev = "R#"
+	prefixMember        = "MEMBER#"
+	prefixLevel         = "LEVEL#"
+	prefixUnit          = "UNIT#"
+	prefixMove          = "MOVE#"
+	prefixKind          = "KIND#"
+	prefixItem          = "ITEM#"
+	prefixScorecard     = "SC#"
+	prefixImport        = "IMPORT#"
+	prefixTemplate      = "TEMPLATE#"
+	prefixPoint         = "DP#"
+	prefixOverride      = "OV#"
+	prefixRecType       = "RTYPE#"
+	prefixSnapshot      = "SNAP#"
+	prefixRecordRev     = "R#"
 	prefixLayout        = "LAYOUT#"
 	prefixLayoutDef     = "LAYOUTDEFAULT#"
 	prefixReportSummary = "REPORTSUMMARY#"
@@ -54,24 +54,24 @@ const (
 	versionMarker = "#VER#"
 )
 
-func tenantPK(tid string) string       { return "T#" + tid }
-func auth0OrgPK(orgID string) string   { return "AUTH0ORG#" + orgID }
-func gsiTenantSK(tid string) string    { return "T#" + tid }
-func gsiUserPK(userID string) string   { return "USER#" + userID }
-func memberSK(userID string) string    { return prefixMember + userID }
-func levelSK(id string) string         { return prefixLevel + id }
-func unitSK(id string) string          { return prefixUnit + id }
-func kindSK(id string) string          { return prefixKind + id }
-func itemSK(id string) string          { return prefixItem + id }
-func scorecardSK(id string) string     { return prefixScorecard + id }
+func tenantPK(tid string) string     { return "T#" + tid }
+func auth0OrgPK(orgID string) string { return "AUTH0ORG#" + orgID }
+func gsiTenantSK(tid string) string  { return "T#" + tid }
+func gsiUserPK(userID string) string { return "USER#" + userID }
+func memberSK(userID string) string  { return prefixMember + userID }
+func levelSK(id string) string       { return prefixLevel + id }
+func unitSK(id string) string        { return prefixUnit + id }
+func kindSK(id string) string        { return prefixKind + id }
+func itemSK(id string) string        { return prefixItem + id }
+func scorecardSK(id string) string   { return prefixScorecard + id }
 func layoutSK(userID, scorecardID string) string {
 	return prefixLayout + userID + "#" + scorecardID
 }
 func layoutDefaultSK(scorecardID string) string { return prefixLayoutDef + scorecardID }
-func importSK(id string) string        { return prefixImport + id }
-func templateSK(id string) string      { return prefixTemplate + id }
-func recordTypeSK(id string) string    { return prefixRecType + id }
-func versionPrefix(scID string) string { return prefixScorecard + scID + versionMarker }
+func importSK(id string) string                 { return prefixImport + id }
+func templateSK(id string) string               { return prefixTemplate + id }
+func recordTypeSK(id string) string             { return prefixRecType + id }
+func versionPrefix(scID string) string          { return prefixScorecard + scID + versionMarker }
 
 func versionSK(scID, versionID string) string { return versionPrefix(scID) + versionID }
 

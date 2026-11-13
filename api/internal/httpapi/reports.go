@@ -14,8 +14,8 @@ import (
 
 	"opsvision/internal/auth"
 	"opsvision/internal/domain"
-	"opsvision/internal/objects"
 	"opsvision/internal/engine"
+	"opsvision/internal/objects"
 	"opsvision/internal/period"
 	"opsvision/internal/report"
 	"opsvision/internal/store"

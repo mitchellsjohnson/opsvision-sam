@@ -16,12 +16,12 @@ const jsonContentType = "application/json"
 
 // Document is the JSON snapshot stored for a published revision.
 type Document struct {
-	Period       string          `json:"period"`
-	GeneratedAt  time.Time       `json:"generatedAt"`
-	Summary      string          `json:"summary"`
-	Facts        []string        `json:"facts"`
-	VersionIds   []string        `json:"versionIds"`
-	View         json.RawMessage `json:"view"`
+	Period      string          `json:"period"`
+	GeneratedAt time.Time       `json:"generatedAt"`
+	Summary     string          `json:"summary"`
+	Facts       []string        `json:"facts"`
+	VersionIds  []string        `json:"versionIds"`
+	View        json.RawMessage `json:"view"`
 }
 
 // FactsView is the slice of a scorecard view used to compute fact sentences.
@@ -257,4 +257,3 @@ func greenStreak(r FactsRow, period string, order []string, rank map[string]int,
 func ObjectKey(tenantID, scorecardID, period string, revision int) string {
 	return fmt.Sprintf("t/%s/reports/%s/%s/%d.json", tenantID, scorecardID, period, revision)
 }
-
