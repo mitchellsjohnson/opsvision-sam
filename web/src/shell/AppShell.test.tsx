@@ -8,6 +8,17 @@ import { renderApp, testAuth } from '../test/utils'
 import { meFor, tenant } from '../test/fixtures'
 import { API, server, state } from '../test/server'
 import { AppShell } from './AppShell'
+import { useShellDock } from './ShellDock'
+import { useEffect } from 'react'
+
+function DockOpener() {
+  const { setOpen } = useShellDock()
+  useEffect(() => {
+    setOpen(true)
+    return () => setOpen(false)
+  }, [setOpen])
+  return <p>Drawer open</p>
+}
 
 function shell(route = '/scorecards/sc-main?period=2026-M10', auth = testAuth()) {
   return renderApp(
@@ -132,7 +143,7 @@ describe('AppShell collapsible navigation', () => {
     expect(nav.querySelector('button, a')).toBe(toggle)
   })
 
-  it('collapses to a 56px rail, keeps link names, and persists the choice', async () => {
+  it('collapses to a 64px rail, keeps link names, and persists the choice', async () => {
     shell()
     const user = userEvent.setup()
     const nav = await screen.findByRole('navigation', { name: 'Main' })
@@ -141,7 +152,7 @@ describe('AppShell collapsible navigation', () => {
 
     const toggle = within(nav).getByRole('button', { name: 'Expand navigation' })
     expect(toggle.getAttribute('aria-expanded')).toBe('false')
-    expect(nav.classList.contains('w-14')).toBe(true)
+    expect(nav.classList.contains('w-16')).toBe(true)
     expect(nav.classList.contains('w-60')).toBe(false)
     expect(localStorage.getItem(KEY)).toBe('true')
     for (const name of ['Main scorecard', 'Enter data', ...ADMIN_LINKS]) {
@@ -173,7 +184,7 @@ describe('AppShell collapsible navigation', () => {
     shell()
     const nav = await screen.findByRole('navigation', { name: 'Main' })
     expect(within(nav).getByRole('button', { name: 'Expand navigation' }).getAttribute('aria-expanded')).toBe('false')
-    expect(nav.classList.contains('w-14')).toBe(true)
+    expect(nav.classList.contains('w-16')).toBe(true)
   })
 
   it('opens collapsed on a narrow screen when nothing is stored, and an explicit choice wins', async () => {
@@ -182,7 +193,7 @@ describe('AppShell collapsible navigation', () => {
     try {
       shell()
       const nav = await screen.findByRole('navigation', { name: 'Main' })
-      expect(nav.classList.contains('w-14')).toBe(true)
+      expect(nav.classList.contains('w-16')).toBe(true)
       expect(localStorage.getItem(KEY)).toBeNull()
     } finally {
       window.matchMedia = original
@@ -299,5 +310,41 @@ describe('AppShell focus indicators', () => {
     for (const item of items) {
       for (const cls of HIGHLIGHT) expect(item.classList.contains(cls), cls).toBe(true)
     }
+  })
+  it('links to another scorecard drop restate and the health filter; the current one keeps restate', async () => {
+    server.use(
+      http.get(`${API}/v1/scorecards`, () =>
+        HttpResponse.json({
+          scorecards: [
+            { id: 'sc-main', name: 'Main scorecard', latestDataMonth: null },
+            { id: 'sc-ops', name: 'Ops scorecard', latestDataMonth: null },
+          ],
+        }),
+      ),
+    )
+    shell('/scorecards/sc-main/overview?period=2026-M10&scope=unit-a&restate=ver-2&health=R')
+    const nav = await screen.findByRole('navigation', { name: 'Main' })
+    const ops = new URL((await within(nav).findByRole('link', { name: 'Ops scorecard' })).getAttribute('href')!, 'http://x')
+    expect(ops.searchParams.get('period')).toBe('2026-M10')
+    expect(ops.searchParams.get('scope')).toBe('unit-a')
+    expect(ops.searchParams.has('restate')).toBe(false)
+    expect(ops.searchParams.has('health')).toBe(false)
+    const main = new URL(within(nav).getByRole('link', { name: 'Main scorecard' }).getAttribute('href')!, 'http://x')
+    expect(main.searchParams.get('restate')).toBe('ver-2')
+  })
+
+  it('collapses the nav to the rail while the dock is open', async () => {
+    renderApp(
+      <Routes>
+        <Route element={<AppShell />}>
+          <Route path="*" element={<DockOpener />} />
+        </Route>
+      </Routes>,
+      { route: '/scorecards/sc-main/table?period=2026-M10' },
+    )
+    const nav = await screen.findByRole('navigation', { name: 'Main' })
+    await screen.findByText('Drawer open')
+    expect(nav.classList.contains('w-16')).toBe(true)
+    expect(within(nav).getByRole('button', { name: 'Expand navigation' }).getAttribute('aria-expanded')).toBe('false')
   })
 })

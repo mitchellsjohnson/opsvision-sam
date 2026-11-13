@@ -101,15 +101,25 @@ function AppShellBody() {
   const scorecards = useScorecards()
   const { pathname } = useLocation()
   const [params] = useSearchParams()
-  const [collapsed, toggleNav] = useNavCollapsed()
+  const [navCollapsed, toggleNav] = useNavCollapsed()
+  // The open dock needs the room: the nav shows as the rail meanwhile.
+  const collapsed = navCollapsed || dockOpen
 
   const isAdmin = me.data?.role === 'admin'
   const showFilters = pathname === '/entry'
 
-  // Carry the period/YTD/subject selection between report pages.
-  const carried = new URLSearchParams()
-  for (const key of VIEW_PARAMS) for (const v of params.getAll(key)) carried.append(key, v)
-  const search = carried.size > 0 ? `?${carried.toString()}` : ''
+  // Carry the period/YTD/subject selection between report pages. A
+  // restatement names one scorecard's methodology version, so it stays behind
+  // on links to anywhere else.
+  const currentScorecard = /^\/scorecards\/([^/]+)/.exec(pathname)?.[1]
+  const searchFor = (scorecardId?: string) => {
+    const carried = new URLSearchParams()
+    for (const key of VIEW_PARAMS) {
+      if (key === 'restate' && scorecardId !== currentScorecard) continue
+      for (const v of params.getAll(key)) carried.append(key, v)
+    }
+    return carried.size > 0 ? `?${carried.toString()}` : ''
+  }
 
   const tenant = me.data?.tenant
   const { rememberTenant } = auth
@@ -187,7 +197,7 @@ function AppShellBody() {
           aria-label="Main"
           className={clsx(
             'shrink-0 border-r border-ink/15 bg-cream/60 motion-safe:transition-[width]',
-            collapsed ? 'w-14 p-2' : 'w-60 p-3',
+            collapsed ? 'w-16 p-3' : 'w-60 p-3',
           )}
         >
           <RailTip label={collapsed ? 'Expand navigation' : 'Collapse navigation'} collapsed={collapsed}>
@@ -212,7 +222,7 @@ function AppShellBody() {
               {(scorecards.data?.scorecards ?? []).map((sc) => (
                 <li key={sc.id}>
                   <ShellNavLink
-                    to={{ pathname: `/scorecards/${sc.id}/overview`, search }}
+                    to={{ pathname: `/scorecards/${sc.id}/overview`, search: searchFor(sc.id) }}
                     label={sc.name}
                     icon={BarChart3}
                     collapsed={collapsed}
@@ -221,7 +231,7 @@ function AppShellBody() {
               ))}
               <li>
                 <ShellNavLink
-                  to={{ pathname: '/entry', search }}
+                  to={{ pathname: '/entry', search: searchFor() }}
                   label="Enter data"
                   icon={ClipboardPen}
                   collapsed={collapsed}
