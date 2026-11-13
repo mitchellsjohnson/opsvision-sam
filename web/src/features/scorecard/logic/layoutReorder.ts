@@ -16,17 +16,20 @@ export function blockRange(items: LayoutItem[], index: number): [number, number]
   return [index, index]
 }
 
-/** The layout block that contains this index (section+metrics, or a single widget/metric). */
+/**
+ * The layout block that contains this index: a section and its metrics, a
+ * widget, or a run of metrics with no section of their own (after a widget,
+ * or before the first section).
+ */
 export function blockContaining(items: LayoutItem[], index: number): [number, number] {
   const id = items[index]!.id
-  if (id.startsWith('section:') || id.startsWith('widget:')) return blockRange(items, index)
-  if (id.startsWith('metric:')) {
-    let i = index
-    while (i >= 0 && !items[i]!.id.startsWith('section:')) i--
-    if (i >= 0) return blockRange(items, i)
-    return [index, index]
-  }
-  return [index, index]
+  if (!id.startsWith('metric:')) return blockRange(items, index)
+  let head = index
+  while (head >= 0 && items[head]!.id.startsWith('metric:')) head--
+  if (head >= 0 && items[head]!.id.startsWith('section:')) return blockRange(items, head)
+  let end = index
+  while (end + 1 < items.length && items[end + 1]!.id.startsWith('metric:')) end++
+  return [head + 1, end]
 }
 
 function swapWithPreviousItem(items: LayoutItem[], index: number): LayoutItem[] {
@@ -49,7 +52,7 @@ function swapBlockWithPreviousBlock(items: LayoutItem[], index: number): LayoutI
   const [prevStart, prevEnd] = blockContaining(items, start - 1)
   const activeBlock = items.slice(start, end + 1)
   const prevBlock = items.slice(prevStart, prevEnd + 1)
-  return [...items.slice(0, prevStart), ...activeBlock, ...prevBlock, ...items.slice(end + 1)]
+  return [...items.slice(0, prevStart), ...activeBlock, ...items.slice(prevEnd + 1, start), ...prevBlock, ...items.slice(end + 1)]
 }
 
 function swapBlockWithNextBlock(items: LayoutItem[], index: number): LayoutItem[] {

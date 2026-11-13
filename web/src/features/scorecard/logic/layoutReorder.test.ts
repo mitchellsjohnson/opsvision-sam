@@ -80,3 +80,24 @@ describe('reorderSectionDrop', () => {
     expect(reorderSectionDrop(four, 0, 1)).toBeNull()
   })
 })
+
+describe('metrics that follow a widget', () => {
+  const items = [item('section:a'), item('metric:m1'), item('widget:needs'), item('metric:m2'), item('section:b')]
+
+  it('moving section:b up keeps every item', () => {
+    const next = moveBlock(items, 4, 'up')
+    expect(ids(next)).toEqual(['section:a', 'metric:m1', 'widget:needs', 'section:b', 'metric:m2'])
+    expect([...ids(next)].sort()).toEqual([...ids(items)].sort())
+  })
+
+  it('moving the widget down past the stray metric keeps every item', () => {
+    const next = moveBlock(items, 2, 'down')
+    expect(ids(next)).toEqual(['section:a', 'metric:m1', 'metric:m2', 'widget:needs', 'section:b'])
+  })
+
+  it('dragging section:b onto the stray metric keeps every item', () => {
+    const next = reorderSectionDrop(items, 4, 3)!
+    expect([...ids(next)].sort()).toEqual([...ids(items)].sort())
+    uniqueIds(next)
+  })
+})
