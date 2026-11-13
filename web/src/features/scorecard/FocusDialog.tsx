@@ -7,15 +7,14 @@ import type { components } from '../../api/schema'
 import { usePeriodState } from '../../shell/usePeriodState'
 import { defaultStatusScale } from './charts/chartTheme'
 import { MetricChart } from './charts/MetricChart'
-import { buildMonthTrendColumns, buildTrendColumns, type Column } from './columns'
+import { buildMonthTrendColumns, buildTrendColumns } from './columns'
 import { focusReturnRef } from './focusTrigger'
 import { defaultLayout } from './logic/layout'
 import { cellReported, statusAtScope, type StatusScaleEntry } from './logic/statusAtScope'
 import { TablePage } from './TablePage'
+import { chartCsv, chartSvg, downloadBlob, metricPng } from './exports'
 import { cellKey, groupRows, metricScope } from './viewHelpers'
 import { useScorecardViewRequest } from './viewRequest'
-
-type ViewRow = components['schemas']['ViewRow']
 
 function metricKeysInLayout(view: components['schemas']['ScorecardView']): string[] {
   const groups = groupRows(view)
@@ -26,94 +25,6 @@ function metricKeysInLayout(view: components['schemas']['ScorecardView']): strin
   return defaultLayout(view.categories, metricsByCategory)
     .filter((i) => i.id.startsWith('metric:'))
     .map((i) => i.id.slice('metric:'.length))
-}
-
-function downloadBlob(filename: string, mime: string, body: string | Blob) {
-  const blob = body instanceof Blob ? body : new Blob([body], { type: mime })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = filename
-  a.click()
-  URL.revokeObjectURL(url)
-}
-
-function chartCsv(columns: Column[], chartRows: ViewRow[]): string {
-  const lines = ['subject,period,value,status']
-  for (const row of chartRows) {
-    for (const col of columns) {
-      const cell = row.cells.find((c) => cellKey(c) === col.key)
-      const value = cell?.value ?? ''
-      const status = cell?.status ?? ''
-      lines.push(`${row.subjectName},${col.period},${value},${status}`)
-    }
-  }
-  return lines.join('\n')
-}
-
-function chartSvg(title: string, columns: Column[], chartRows: ViewRow[]): string {
-  const allValues = chartRows.flatMap((row) =>
-    columns
-      .map((col) => row.cells.find((c) => cellKey(c) === col.key)?.value)
-      .filter((v): v is number => v != null),
-  )
-  const min = allValues.length ? Math.min(...allValues) : 0
-  const max = allValues.length ? Math.max(...allValues) : 100
-  const span = max - min || 1
-  const strokes = ['#1D2433', '#5B4BDB', '#0E7490', '#B45309']
-  const polylines: string[] = []
-  const letters: string[] = []
-  const legends: string[] = []
-  chartRows.forEach((row, rowIndex) => {
-    const points: Array<{ x: number; y: number; status: string }> = []
-    columns.forEach((col, i) => {
-      const cell = row.cells.find((c) => cellKey(c) === col.key)
-      const v = cell?.value
-      if (v == null) return
-      const x = 40 + (i / Math.max(columns.length - 1, 1)) * 520
-      const y = 200 - ((v - min) / span) * 160
-      points.push({ x, y, status: cell?.status ?? '' })
-    })
-    if (points.length === 0) return
-    const color = strokes[rowIndex % strokes.length]!
-    polylines.push(
-      `<polyline fill="none" stroke="${color}" stroke-width="2" points="${points.map((p) => `${p.x},${p.y}`).join(' ')}" />`,
-    )
-    for (const p of points) {
-      if (p.status) letters.push(`<text x="${p.x}" y="${p.y - 8}" text-anchor="middle" font-size="12">${p.status}</text>`)
-    }
-    if (chartRows.length > 1) {
-      legends.push(`<text x="20" y="${44 + rowIndex * 16}" font-size="12" fill="${color}">${row.subjectName}</text>`)
-    }
-  })
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="600" height="240" viewBox="0 0 600 240">
-  <title>${title}</title>
-  <text x="20" y="24" font-size="16" font-weight="600">${title}</text>
-  ${legends.join('\n  ')}
-  ${polylines.join('\n  ')}
-  ${letters.join('\n  ')}
-</svg>`
-}
-
-async function metricPng(svg: string, filename: string) {
-  const img = new Image()
-  const url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }))
-  await new Promise<void>((resolve, reject) => {
-    img.onload = () => resolve()
-    img.onerror = reject
-    img.src = url
-  })
-  const canvas = document.createElement('canvas')
-  canvas.width = 600
-  canvas.height = 240
-  const ctx = canvas.getContext('2d')
-  if (!ctx) return
-  ctx.drawImage(img, 0, 0)
-  URL.revokeObjectURL(url)
-  canvas.toBlob((blob) => {
-    if (blob) downloadBlob(filename, 'image/png', blob)
-  }, 'image/png')
 }
 
 function MetricFocusBody({
@@ -132,6 +43,7 @@ function MetricFocusBody({
   const [period, updatePeriod] = usePeriodState()
   const [params, setParams] = useSearchParams()
   const [windowMonths, setWindowMonths] = useState<12 | 24>(12)
+  const [exportError, setExportError] = useState('')
   const me = useMe()
   const fy = period.fiscalYearStartMonth
   const scale: StatusScaleEntry[] = useMemo(
@@ -223,7 +135,12 @@ function MetricFocusBody({
 
   const exportPng = async () => {
     if (!head || chartRows.length === 0) return
-    await metricPng(chartSvg(head.metricName, trendColumns, chartRows), `${head.metricKey}.png`)
+    setExportError('')
+    try {
+      await metricPng(chartSvg(head.metricName, trendColumns, chartRows), `${head.metricKey}.png`)
+    } catch {
+      setExportError('We couldn’t make the image. Try SVG or CSV.')
+    }
   }
 
   const copyLink = async () => {
@@ -321,7 +238,7 @@ function MetricFocusBody({
   return (
     <div className="min-h-0">
       <div className="flex flex-wrap gap-2 border-b border-ink/15 pb-3">
-        <button type="button" className="rounded border border-ink/20 px-2 py-1 text-sm hover:bg-cream" onClick={exportPng}>
+        <button type="button" className="rounded border border-ink/20 px-2 py-1 text-sm hover:bg-cream" onClick={() => void exportPng()}>
           Export PNG
         </button>
         <button type="button" className="rounded border border-ink/20 px-2 py-1 text-sm hover:bg-cream" onClick={exportSvg}>
@@ -340,6 +257,11 @@ function MetricFocusBody({
           Ask SAM
         </button>
       </div>
+      {exportError && (
+        <p role="alert" className="mt-2 text-sm text-status-r">
+          {exportError}
+        </p>
+      )}
 
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <span className="text-sm text-ink/80">Period window</span>

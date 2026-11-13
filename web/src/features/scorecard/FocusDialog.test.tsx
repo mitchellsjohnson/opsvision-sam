@@ -1,7 +1,7 @@
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { HttpResponse } from 'msw'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { App } from '../../App'
 import { server } from '../../test/server'
 import { renderApp } from '../../test/utils'
@@ -107,6 +107,26 @@ describe('FocusDialog', () => {
     const breakdown = within(dialog).getByRole('region', { name: 'Org breakdown' })
     expect(within(breakdown).getByText('Web service')).toBeTruthy()
     expect(within(breakdown).queryByRole('button')).toBeNull()
+  })
+
+  it('says so in plain words when the PNG cannot be made', async () => {
+    class FailingImage {
+      onload: (() => void) | null = null
+      onerror: (() => void) | null = null
+      set src(_value: string) {
+        setTimeout(() => this.onerror?.(), 0)
+      }
+    }
+    vi.stubGlobal('Image', FailingImage)
+    try {
+      renderOverview(`${OVERVIEW}&focus=on_time_pct`)
+      const dialog = await screen.findByRole('dialog', { name: /On-time delivery/i })
+      await within(dialog).findByRole('region', { name: 'Org breakdown' })
+      await userEvent.setup().click(within(dialog).getByRole('button', { name: 'Export PNG' }))
+      expect((await within(dialog).findByRole('alert')).textContent).toBe('We couldn’t make the image. Try SVG or CSV.')
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 
   it('closing after a card background click returns focus to that card’s Expand button', async () => {
