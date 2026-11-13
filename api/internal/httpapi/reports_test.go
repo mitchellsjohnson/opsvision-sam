@@ -268,6 +268,93 @@ func reportRowSubjects(t *testing.T, doc map[string]any) map[string]struct{} {
 	return out
 }
 
+func reportFacts(t *testing.T, doc map[string]any) []string {
+	t.Helper()
+	raw, ok := doc["facts"].([]any)
+	if !ok {
+		t.Fatalf("facts type = %T", doc["facts"])
+	}
+	out := make([]string, 0, len(raw))
+	for _, f := range raw {
+		out = append(out, f.(string))
+	}
+	return out
+}
+
+// Facts name metrics; a viewer scoped to one metric must not learn the
+// status of the others, and a viewer who cannot read the company row gets
+// none.
+func TestReportFactsRespectViewerScope(t *testing.T) {
+	hidden := []string{"Reviews held", "Open defects"}
+	mentions := func(facts []string) bool {
+		for _, f := range facts {
+			for _, h := range hidden {
+				if strings.Contains(f, h) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	for _, mode := range []struct {
+		name string
+		path string
+	}{
+		{"live", "/scorecards/delivery/reports/2026-M10?revision=live"},
+		{"published", "/scorecards/delivery/reports/2026-M10"},
+	} {
+		for _, sc := range []struct {
+			name  string
+			scope domain.Scope
+			check func(t *testing.T, facts []string)
+		}{
+			{"metric-scoped", domain.Scope{MetricKeys: []string{"on_time_pct"}}, func(t *testing.T, facts []string) {
+				if mentions(facts) {
+					t.Fatalf("facts %q name out-of-scope metrics", facts)
+				}
+			}},
+			{"subject-scoped", domain.Scope{OrgUnitIDs: []string{"prod-1"}}, func(t *testing.T, facts []string) {
+				if len(facts) != 0 {
+					t.Fatalf("facts = %q, want none without the company row", facts)
+				}
+			}},
+		} {
+			t.Run(mode.name+"/"+sc.name, func(t *testing.T) {
+				e := newTestEnv(t)
+				seedDelivery(t, e)
+				saveSplit(t, e)
+				admin, viewer := e.tokens["t1-admin"], e.tokens["t1-viewer"]
+				setScope(t, e, domain.RoleViewer, sc.scope)
+				if mode.name == "published" {
+					e.expect(t, 200, admin, "POST", "/scorecards/delivery/reports/2026-M10/publish", map[string]any{}, nil)
+				}
+				var adminDoc, viewerDoc map[string]any
+				e.expect(t, 200, admin, "GET", mode.path, nil, &adminDoc)
+				e.expect(t, 200, viewer, "GET", mode.path, nil, &viewerDoc)
+				if af := reportFacts(t, adminDoc); !mentions(af) {
+					t.Fatalf("admin facts %q should name another metric, or the test proves nothing", af)
+				}
+				sc.check(t, reportFacts(t, viewerDoc))
+			})
+		}
+	}
+}
+
+func TestReportPublishSummaryLength(t *testing.T) {
+	e := newTestEnv(t)
+	seedDelivery(t, e)
+	admin := e.tokens["t1-admin"]
+	_, raw := e.call(t, admin, "POST", "/scorecards/delivery/reports/2026-M10/publish",
+		map[string]any{"summary": strings.Repeat("é", 8001)})
+	if !strings.Contains(string(raw), `"summary"`) {
+		t.Fatalf("publish with a long summary: %s, want a problem at path summary", raw)
+	}
+	e.expectError(t, 400, "invalid", admin, "POST", "/scorecards/delivery/reports/2026-M10/publish",
+		map[string]any{"summary": strings.Repeat("é", 8001)})
+	e.expect(t, 200, admin, "POST", "/scorecards/delivery/reports/2026-M10/publish",
+		map[string]any{"summary": strings.Repeat("é", 8000)}, nil)
+}
+
 func TestReportSummaryLength(t *testing.T) {
 	e := newTestEnv(t)
 	seedDelivery(t, e)

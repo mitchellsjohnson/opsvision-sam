@@ -224,16 +224,20 @@ func (s *Server) PublishReport(ctx context.Context, req PublishReportRequestObje
 	summaryText := ""
 	if req.Body != nil && req.Body.Summary != nil {
 		summaryText = *req.Body.Summary
+		if utf8.RuneCountInString(summaryText) > maxReportSummaryRunes {
+			pr.add("summary", "must be at most %d characters", maxReportSummaryRunes)
+			return nil, pr.err()
+		}
 	} else if sum, err := s.store.GetReportSummary(ctx, p.Tenant.ID, req.Sc, mo.String()); err == nil {
 		summaryText = sum.Text
 	} else if !errors.Is(err, store.ErrNotFound) {
 		return nil, err
 	}
-	apiView, err := s.companyReportView(ctx, *p.Tenant, sc.ID, mo)
+	apiView, root, err := s.companyReportView(ctx, *p.Tenant, sc.ID, mo)
 	if err != nil {
 		return nil, err
 	}
-	facts := reportStrings(report.Facts(factsViewFromAPI(apiView, mo.String()), statusScale(*p.Tenant)))
+	facts := reportStrings(report.Facts(factsViewFromAPI(apiView, mo.String(), root), statusScale(*p.Tenant)))
 	verIDs := reportStrings(versionIDsFromView(apiView))
 	viewRaw, err := json.Marshal(apiView)
 	if err != nil {
@@ -400,9 +404,13 @@ func (s *Server) publishedReportDocument(ctx context.Context, p auth.Principal, 
 		}
 		return nil, err
 	}
-	filteredSnap, err := s.filterScorecardView(ctx, p, scorecardID, mo, snapView)
+	filteredSnap, root, err := s.filterScorecardView(ctx, p, scorecardID, mo, snapView)
 	if err != nil {
 		return nil, err
+	}
+	facts := doc.Facts
+	if len(filteredSnap.Rows) != len(snapView.Rows) {
+		facts = report.Facts(factsViewFromAPI(filteredSnap, mo.String(), root), statusScale(*p.Tenant))
 	}
 	freshView, _, err := s.memberReportView(ctx, p, scorecardID, mo)
 	if err != nil {
@@ -411,7 +419,7 @@ func (s *Server) publishedReportDocument(ctx context.Context, p auth.Principal, 
 	dataRevised, changes := diffReportViews(filteredSnap, freshView)
 	return GetReportDocument200JSONResponse(ReportDocument{
 		Live: false, Revision: revision, DataRevised: dataRevised, Changes: reportChanges(changes),
-		Summary: doc.Summary, Facts: reportStrings(doc.Facts), View: filteredSnap, GeneratedAt: doc.GeneratedAt,
+		Summary: doc.Summary, Facts: reportStrings(facts), View: filteredSnap, GeneratedAt: doc.GeneratedAt,
 		SummaryScope: Company,
 	}), nil
 }
@@ -437,26 +445,41 @@ func loadReportSnapshot(ctx context.Context, objs objects.Store, key string) (re
 	return doc, view, nil
 }
 
-func (s *Server) companyReportView(ctx context.Context, tenant domain.Tenant, scorecardID string, mo period.Period) (ScorecardView, error) {
+// reportRoot is the org tree's single root unit at mo, the company the facts
+// describe; "" when the tree has no single root.
+func reportRoot(in *engine.Input, mo period.Period) string {
+	if in.Tree == nil {
+		return ""
+	}
+	roots := in.Tree.RootsAt(mo)
+	if len(roots) != 1 {
+		return ""
+	}
+	return roots[0]
+}
+
+func (s *Server) companyReportView(ctx context.Context, tenant domain.Tenant, scorecardID string, mo period.Period) (ScorecardView, string, error) {
 	vr, cols, err := reportViewRequest(tenant, scorecardID, mo)
 	if err != nil {
-		return ScorecardView{}, err
+		return ScorecardView{}, "", err
 	}
 	in, err := s.loadInput(ctx, tenant, scorecardID, fiscalYears(true, cols...))
 	if err != nil {
-		return ScorecardView{}, err
+		return ScorecardView{}, "", err
 	}
 	view, err := engine.Compute(in, vr)
 	if err != nil {
-		return ScorecardView{}, err
+		return ScorecardView{}, "", err
 	}
 	cutoffs, err := s.viewCutoffs(ctx, tenant.ID, in, vr.Periods)
 	if err != nil {
-		return ScorecardView{}, err
+		return ScorecardView{}, "", err
 	}
-	return apiView(view, nil, cutoffs), nil
+	return apiView(view, nil, cutoffs), reportRoot(in, mo), nil
 }
 
+// memberReportView is the report view the caller may read, and the facts
+// computed from it alone: none when the caller cannot read the root row.
 func (s *Server) memberReportView(ctx context.Context, p auth.Principal, scorecardID string, mo period.Period) (ScorecardView, []string, error) {
 	vr, cols, err := reportViewRequest(*p.Tenant, scorecardID, mo)
 	if err != nil {
@@ -479,15 +502,16 @@ func (s *Server) memberReportView(ctx context.Context, p auth.Principal, scoreca
 	filtered := apiView(view, func(r engine.Row) bool {
 		return acc.canRead(r.SubjectID, []string{r.MetricKey}, asOf)
 	}, cutoffs)
-	company := apiView(view, nil, cutoffs)
-	facts := reportStrings(report.Facts(factsViewFromAPI(company, mo.String()), statusScale(*p.Tenant)))
+	facts := reportStrings(report.Facts(factsViewFromAPI(filtered, mo.String(), reportRoot(in, mo)), statusScale(*p.Tenant)))
 	return filtered, facts, nil
 }
 
-func (s *Server) filterScorecardView(ctx context.Context, p auth.Principal, scorecardID string, mo period.Period, v ScorecardView) (ScorecardView, error) {
+// filterScorecardView keeps the rows of v the caller may read and returns
+// the org tree's root at mo.
+func (s *Server) filterScorecardView(ctx context.Context, p auth.Principal, scorecardID string, mo period.Period, v ScorecardView) (ScorecardView, string, error) {
 	in, err := s.loadInput(ctx, *p.Tenant, scorecardID, fiscalYears(true, mo))
 	if err != nil {
-		return ScorecardView{}, err
+		return ScorecardView{}, "", err
 	}
 	acc := newAccess(p, in)
 	keep := map[string]struct{}{}
@@ -501,7 +525,7 @@ func (s *Server) filterScorecardView(ctx context.Context, p auth.Principal, scor
 		_, ok := keep[r.MetricKey+"/"+r.SubjectId]
 		return !ok
 	})
-	return out, nil
+	return out, reportRoot(in, mo), nil
 }
 
 func reportStrings(ss []string) []string {
@@ -534,8 +558,8 @@ func reportViewRequest(tenant domain.Tenant, scorecardID string, mo period.Perio
 	return vr, append(months, mo), nil
 }
 
-func factsViewFromAPI(v ScorecardView, reportPeriod string) report.FactsView {
-	out := report.FactsView{ReportPeriod: reportPeriod, Rows: make([]report.FactsRow, 0, len(v.Rows))}
+func factsViewFromAPI(v ScorecardView, reportPeriod, root string) report.FactsView {
+	out := report.FactsView{ReportPeriod: reportPeriod, RootSubjectID: root, Rows: make([]report.FactsRow, 0, len(v.Rows))}
 	for _, r := range v.Rows {
 		row := report.FactsRow{
 			MetricKey: r.MetricKey, MetricName: r.MetricName,

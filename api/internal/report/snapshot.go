@@ -25,9 +25,12 @@ type Document struct {
 }
 
 // FactsView is the slice of a scorecard view used to compute fact sentences.
+// RootSubjectID is the org tree's root unit: facts describe its rows only,
+// and there are none when it is empty.
 type FactsView struct {
-	ReportPeriod string
-	Rows         []FactsRow
+	ReportPeriod  string
+	RootSubjectID string
+	Rows          []FactsRow
 }
 
 // FactsRow is one metric row at one subject.
@@ -56,7 +59,7 @@ func Facts(v FactsView, scale []domain.StatusLevel) []string {
 	rank := statusRanks(scale)
 	worst := worstRank(rank)
 	best := bestRank(rank)
-	root := orgRootSubject(v.Rows)
+	root := v.RootSubjectID
 	if root == "" {
 		return []string{}
 	}
@@ -121,33 +124,6 @@ func sortRows(by map[string]FactsRow) []FactsRow {
 		out = append(out, by[k])
 	}
 	return out
-}
-
-func orgRootSubject(rows []FactsRow) string {
-	if len(rows) == 0 {
-		return ""
-	}
-	minDepth := rows[0].Depth
-	for _, r := range rows {
-		if r.Depth < minDepth {
-			minDepth = r.Depth
-		}
-	}
-	var ids []string
-	seen := map[string]struct{}{}
-	for _, r := range rows {
-		if r.Depth == minDepth {
-			if _, ok := seen[r.SubjectID]; !ok {
-				seen[r.SubjectID] = struct{}{}
-				ids = append(ids, r.SubjectID)
-			}
-		}
-	}
-	sort.Strings(ids)
-	if len(ids) == 0 {
-		return ""
-	}
-	return ids[0]
 }
 
 func statusRanks(scale []domain.StatusLevel) map[string]int {

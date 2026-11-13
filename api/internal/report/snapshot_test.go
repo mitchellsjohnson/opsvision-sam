@@ -21,7 +21,28 @@ func row(metric, name, subject string, depth int, cells ...FactsCell) FactsRow {
 }
 
 func view(reportMonth string, rows ...FactsRow) FactsView {
-	return FactsView{ReportPeriod: reportMonth, Rows: rows}
+	return FactsView{ReportPeriod: reportMonth, RootSubjectID: "co", Rows: rows}
+}
+
+// An item row (depth 0, id sorting first) must not stand in for the company.
+func TestFactsUseTheGivenRoot(t *testing.T) {
+	v := view("2026-M03",
+		row("a", "Alpha", "aaa-item", 0,
+			cell("2026-M02", "G", pf(99)),
+			cell("2026-M03", "R", pf(10)),
+		),
+		row("a", "Alpha", "co", 0,
+			cell("2026-M02", "G", pf(95)),
+			cell("2026-M03", "G", pf(96)),
+		),
+	)
+	if got := Facts(v, defaultScale()); len(got) != 0 {
+		t.Fatalf("facts = %#v, want none from the company row", got)
+	}
+	v.RootSubjectID = ""
+	if got := Facts(v, defaultScale()); len(got) != 0 {
+		t.Fatalf("facts without a root = %#v, want none", got)
+	}
 }
 
 func TestFactsTurnedRed(t *testing.T) {
