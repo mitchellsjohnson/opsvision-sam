@@ -2126,6 +2126,24 @@ type Scorecard struct {
 	Name string `json:"name"`
 }
 
+// ScorecardSummary defines model for ScorecardSummary.
+type ScorecardSummary struct {
+	// Id Client-supplied identifier.
+	//
+	// Example: team-alpha
+	Id Id `json:"id"`
+
+	// LatestDataMonth The newest month with any stored data point for this scorecard,
+	// looking at the tenant's current and previous fiscal years. Null
+	// when there is none. Clients open on this month when no period is
+	// chosen.
+	//
+	//
+	// Example: 2026-M08
+	LatestDataMonth *string `json:"latestDataMonth"`
+	Name            string  `json:"name"`
+}
+
 // ScorecardView defines model for ScorecardView.
 type ScorecardView struct {
 	Categories []Category `json:"categories"`
@@ -6937,7 +6955,7 @@ type ListScorecardsResponseObject interface {
 }
 
 type ListScorecards200JSONResponse struct {
-	Scorecards []Scorecard `json:"scorecards"`
+	Scorecards []ScorecardSummary `json:"scorecards"`
 }
 
 func (response ListScorecards200JSONResponse) VisitListScorecardsResponse(w http.ResponseWriter) error {

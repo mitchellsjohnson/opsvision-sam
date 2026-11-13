@@ -1161,6 +1161,18 @@ export interface components {
             id: components["schemas"]["Id"];
             name: string;
         };
+        ScorecardSummary: {
+            id: components["schemas"]["Id"];
+            name: string;
+            /**
+             * @description The newest month with any stored data point for this scorecard,
+             *     looking at the tenant's current and previous fiscal years. Null
+             *     when there is none. Clients open on this month when no period is
+             *     chosen.
+             * @example 2026-M08
+             */
+            latestDataMonth: string | null;
+        };
         /** @enum {string} */
         VersionStatus: "draft" | "in_review" | "published" | "superseded";
         /**
@@ -2699,7 +2711,7 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
-                        scorecards: components["schemas"]["Scorecard"][];
+                        scorecards: components["schemas"]["ScorecardSummary"][];
                     };
                 };
             };

@@ -2,7 +2,7 @@ import type { components } from '../api/schema'
 
 type Me = components['schemas']['Me']
 type Tenant = components['schemas']['Tenant']
-type Scorecard = components['schemas']['Scorecard']
+type Scorecard = components['schemas']['ScorecardSummary']
 
 // All fixtures are synthetic.
 export const tenant: Tenant = {
@@ -33,7 +33,7 @@ export function meFor(role: 'admin' | 'contributor' | 'viewer'): Me {
 }
 
 export const scorecards: Scorecard[] = [
-  { id: 'sc-main', name: 'Main scorecard' },
+  { id: 'sc-main', name: 'Main scorecard', latestDataMonth: null },
 ]
 
 export const orgUnits: components['schemas']['OrgUnit'][] = [

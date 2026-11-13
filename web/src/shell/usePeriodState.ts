@@ -1,6 +1,6 @@
 import { useCallback, useMemo } from 'react'
-import { useSearchParams } from 'react-router'
-import { useFiscalYearStartMonth, useMe } from '../api/queries'
+import { useParams, useSearchParams } from 'react-router'
+import { useFiscalYearStartMonth, useMe, useScorecards } from '../api/queries'
 import { currentMonth, parsePeriod, type PeriodState } from '../lib/period'
 
 /** Search params that make up the shared view state and survive navigation. */
@@ -22,38 +22,62 @@ export interface PeriodView extends PeriodState {
   /** The tenant's fiscal year start month; periods are fiscal. */
   fiscalYearStartMonth: number
   /**
-   * False while the default period (the current fiscal month) cannot be known
-   * yet because the tenant has not loaded. Wait for it before querying data.
+   * False while the default period cannot be known yet because the tenant or
+   * the scorecard list (which says where data starts) has not loaded. Wait
+   * for it before querying data.
    */
   ready: boolean
 }
 
 /**
+ * The latest month with data: the named scorecard's, or, when the page is not
+ * about one scorecard, the newest across all of them. Null when there is none.
+ */
+function defaultMonth(
+  cards: { id: string; latestDataMonth: string | null }[] | undefined,
+  scorecardId: string | null | undefined,
+): string | null {
+  const named = cards?.find((c) => c.id === scorecardId)
+  const months = (named ? [named] : (cards ?? []))
+    .map((c) => c.latestDataMonth)
+    .filter((m): m is string => m !== null && parsePeriod(m)?.grain === 'month')
+  // Zero-padded month periods sort chronologically as strings.
+  return months.reduce<string | null>((a, b) => (a === null || b > a ? b : a), null)
+}
+
+/**
  * The shell's period, YTD and subject selection. It lives in the URL
  * (`?period=2026-M10&ytd=1&subject=a&subject=b`; periods are fiscal) so views
- * are linkable. Without `?period=` it defaults to the current fiscal month.
+ * are linkable. Without `?period=` it defaults to the latest month that has
+ * data (see `latestDataMonth`), or the current fiscal month when none does.
  */
 export function usePeriodState(): [PeriodView, (patch: PeriodPatch) => void] {
   const [params, setParams] = useSearchParams()
   const key = params.toString()
   const fiscalYearStartMonth = useFiscalYearStartMonth()
   const tenantPending = useMe().isPending
+  const { sc } = useParams()
+  const scorecards = useScorecards()
+  const scorecardsPending = scorecards.isPending
+  const cards = scorecards.data?.scorecards
 
   const state = useMemo<PeriodView>(() => {
     const p = new URLSearchParams(key)
     const raw = p.get('period')
     const valid = raw !== null && parsePeriod(raw) !== null
     return {
-      period: valid ? raw : currentMonth(fiscalYearStartMonth),
+      period: valid
+        ? raw
+        : (defaultMonth(cards, sc ?? p.get('scorecard')) ?? currentMonth(fiscalYearStartMonth)),
       ytd: p.get('ytd') === '1',
       subjects: p.getAll('subject'),
       scope: p.get('scope') ?? '',
       restate: p.get('restate') ?? '',
       structure: p.get('structure') === 'current' ? 'current' : 'as_of',
       fiscalYearStartMonth,
-      ready: valid || !tenantPending,
+      ready: valid || (!tenantPending && !scorecardsPending),
     }
-  }, [key, fiscalYearStartMonth, tenantPending])
+  }, [key, fiscalYearStartMonth, tenantPending, scorecardsPending, cards, sc])
 
   const update = useCallback(
     (patch: PeriodPatch) => {

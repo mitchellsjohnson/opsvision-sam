@@ -76,21 +76,15 @@ describe('AppShell', () => {
     expect(screen.getByRole('group', { name: 'Period' })).toBeTruthy()
   })
 
-  it('uses the icon-rail nav width class below 1440px', async () => {
+  it('shows icons and keeps the link labels visible when the nav is expanded', async () => {
     shell()
     const nav = await screen.findByRole('navigation', { name: 'Main' })
-    expect(nav.classList.contains('w-16')).toBe(true)
-    expect(nav.classList.contains('min-[1440px]:w-60')).toBe(true)
-  })
-
-  it('shows icons and visually hides link labels in the compact nav rail', async () => {
-    shell()
-    const nav = await screen.findByRole('navigation', { name: 'Main' })
+    expect(nav.classList.contains('w-60')).toBe(true)
     for (const name of ['Main scorecard', 'Enter data', 'Org']) {
       const link = await within(nav).findByRole('link', { name })
       expect(link.querySelector('svg')).toBeTruthy()
-      const label = link.querySelector('span')
-      expect(label?.classList.contains('max-[1439px]:sr-only')).toBe(true)
+      expect(link.textContent).toBe(name)
+      expect(link.getAttribute('aria-label')).toBeNull()
     }
   })
 
@@ -115,6 +109,133 @@ describe('AppShell', () => {
   })
 
   it('has no accessibility violations', async () => {
+    const { container } = shell()
+    await screen.findByRole('link', { name: 'Org' })
+    expect((await axe(container)).violations).toEqual([])
+  })
+})
+
+describe('AppShell collapsible navigation', () => {
+  const KEY = 'opsvision.nav.collapsed'
+  const toggleOf = (nav: HTMLElement) => within(nav).getByRole('button', { name: /navigation$/ })
+
+  it('starts expanded with a toggle that names its action and controls the links', async () => {
+    shell()
+    const nav = await screen.findByRole('navigation', { name: 'Main' })
+    const toggle = within(nav).getByRole('button', { name: 'Collapse navigation' })
+    expect(toggle.getAttribute('aria-expanded')).toBe('true')
+    const controlled = document.getElementById(toggle.getAttribute('aria-controls') ?? '')
+    expect(controlled).toBeTruthy()
+    expect(nav.contains(controlled)).toBe(true)
+    expect(within(controlled as HTMLElement).getByRole('link', { name: 'Enter data' })).toBeTruthy()
+    // The toggle is the first thing in the nav.
+    expect(nav.querySelector('button, a')).toBe(toggle)
+  })
+
+  it('collapses to a 56px rail, keeps link names, and persists the choice', async () => {
+    shell()
+    const user = userEvent.setup()
+    const nav = await screen.findByRole('navigation', { name: 'Main' })
+    await within(nav).findByRole('link', { name: 'Org' })
+    await user.click(toggleOf(nav))
+
+    const toggle = within(nav).getByRole('button', { name: 'Expand navigation' })
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    expect(nav.classList.contains('w-14')).toBe(true)
+    expect(nav.classList.contains('w-60')).toBe(false)
+    expect(localStorage.getItem(KEY)).toBe('true')
+    for (const name of ['Main scorecard', 'Enter data', ...ADMIN_LINKS]) {
+      const link = within(nav).getByRole('link', { name })
+      expect(link.getAttribute('aria-label')).toBe(name)
+      expect(link.querySelector('svg')).toBeTruthy()
+      expect(link.textContent).toBe('')
+    }
+
+    await user.click(toggle)
+    expect(within(nav).getByRole('button', { name: 'Collapse navigation' })).toBeTruthy()
+    expect(nav.classList.contains('w-60')).toBe(true)
+    expect(localStorage.getItem(KEY)).toBe('false')
+  })
+
+  it('keeps keyboard focus on the toggle when it is pressed', async () => {
+    shell()
+    const user = userEvent.setup()
+    const nav = await screen.findByRole('navigation', { name: 'Main' })
+    const toggle = toggleOf(nav)
+    toggle.focus()
+    await user.keyboard('{Enter}')
+    expect(document.activeElement).toBe(within(nav).getByRole('button', { name: 'Expand navigation' }))
+    expect(document.activeElement).toBe(toggle)
+  })
+
+  it('restores a collapsed nav from storage', async () => {
+    localStorage.setItem(KEY, 'true')
+    shell()
+    const nav = await screen.findByRole('navigation', { name: 'Main' })
+    expect(within(nav).getByRole('button', { name: 'Expand navigation' }).getAttribute('aria-expanded')).toBe('false')
+    expect(nav.classList.contains('w-14')).toBe(true)
+  })
+
+  it('opens collapsed on a narrow screen when nothing is stored, and an explicit choice wins', async () => {
+    const original = window.matchMedia
+    window.matchMedia = ((query: string) => ({ matches: query.includes('max-width'), media: query })) as typeof window.matchMedia
+    try {
+      shell()
+      const nav = await screen.findByRole('navigation', { name: 'Main' })
+      expect(nav.classList.contains('w-14')).toBe(true)
+      expect(localStorage.getItem(KEY)).toBeNull()
+    } finally {
+      window.matchMedia = original
+    }
+  })
+
+  it('ignores an unreadable stored value', async () => {
+    localStorage.setItem(KEY, 'not-a-boolean')
+    shell()
+    const nav = await screen.findByRole('navigation', { name: 'Main' })
+    expect(nav.classList.contains('w-60')).toBe(true)
+  })
+
+  it('reaches every rail link and the toggle by Tab, each with a name', async () => {
+    localStorage.setItem(KEY, 'true')
+    shell()
+    const user = userEvent.setup()
+    const nav = await screen.findByRole('navigation', { name: 'Main' })
+    await within(nav).findByRole('link', { name: 'Templates' })
+    const expected = ['Expand navigation', 'Main scorecard', 'Enter data', ...ADMIN_LINKS]
+    // Start from the skip link, the first stop on the page.
+    await user.tab()
+    expect(document.activeElement).toBe(screen.getByRole('link', { name: 'Skip to main content' }))
+    const reached: string[] = []
+    for (let i = 0; i < 20 && reached.length < expected.length; i++) {
+      await user.tab()
+      const el = document.activeElement as HTMLElement
+      if (nav.contains(el)) reached.push(el.getAttribute('aria-label') ?? el.textContent ?? '')
+    }
+    expect(reached).toEqual(expected)
+  })
+
+  it('shows a tooltip with the link name on keyboard focus of a rail link', async () => {
+    localStorage.setItem(KEY, 'true')
+    shell()
+    const user = userEvent.setup()
+    const nav = await screen.findByRole('navigation', { name: 'Main' })
+    const link = await within(nav).findByRole('link', { name: 'Enter data' })
+    await user.tab() // skip link
+    for (let i = 0; i < 6 && document.activeElement !== link; i++) await user.tab()
+    expect(document.activeElement).toBe(link)
+    const tip = await screen.findByRole('tooltip')
+    expect(tip.textContent).toBe('Enter data')
+  })
+
+  it('has no accessibility violations when collapsed', async () => {
+    localStorage.setItem(KEY, 'true')
+    const { container } = shell()
+    await screen.findByRole('link', { name: 'Org' })
+    expect((await axe(container)).violations).toEqual([])
+  })
+
+  it('has no accessibility violations when expanded', async () => {
     const { container } = shell()
     await screen.findByRole('link', { name: 'Org' })
     expect((await axe(container)).violations).toEqual([])

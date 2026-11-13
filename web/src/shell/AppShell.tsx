@@ -1,4 +1,5 @@
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
+import * as Tooltip from '@radix-ui/react-tooltip'
 import clsx from 'clsx'
 import { ShellDockProvider, useShellDock } from './ShellDock'
 import type { LucideIcon } from 'lucide-react'
@@ -11,11 +12,13 @@ import {
   FileText,
   List,
   LogOut,
+  PanelLeftClose,
+  PanelLeftOpen,
   Tags,
   Upload,
   Users,
 } from 'lucide-react'
-import { useEffect } from 'react'
+import { useEffect, type ReactElement } from 'react'
 import { NavLink, Outlet, useLocation, useSearchParams } from 'react-router'
 import { useMe, useScorecards } from '../api/queries'
 import { useAuth } from '../auth/context'
@@ -23,6 +26,7 @@ import { focusOnDark, menuItemHighlight } from '../ui/focus'
 import { Sam } from '../ui/Sam'
 import { PeriodPicker } from './PeriodPicker'
 import { TenantSwitcher } from './TenantSwitcher'
+import { useNavCollapsed } from './useNavCollapsed'
 import { VIEW_PARAMS } from './usePeriodState'
 
 const ADMIN_LINKS: { to: string; label: string; icon: LucideIcon }[] = [
@@ -35,12 +39,37 @@ const ADMIN_LINKS: { to: string; label: string; icon: LucideIcon }[] = [
   { to: '/admin/templates', label: 'Templates', icon: FileText },
 ]
 
-const navLabelClass = 'max-[1439px]:sr-only'
+const NAV_LINKS_ID = 'main-nav-links'
 
-function navClass({ isActive }: { isActive: boolean }) {
+function itemClass(collapsed: boolean) {
   return clsx(
-    'flex items-center gap-2 rounded-md px-2 py-2 text-sm font-medium max-[1439px]:justify-center min-[1440px]:px-3',
-    isActive ? 'bg-accent text-white' : 'text-ink hover:bg-white',
+    'flex items-center rounded-md text-sm font-medium',
+    collapsed ? 'size-10 justify-center' : 'gap-2 px-3 py-2',
+  )
+}
+
+function navClass(collapsed: boolean) {
+  return ({ isActive }: { isActive: boolean }) =>
+    clsx(itemClass(collapsed), isActive ? 'bg-accent text-white' : 'text-ink hover:bg-white')
+}
+
+/** A tooltip that only shows while the nav is a rail; it opens on keyboard focus as well as hover. */
+function RailTip({ label, collapsed, children }: { label: string; collapsed: boolean; children: ReactElement }) {
+  return (
+    <Tooltip.Root>
+      <Tooltip.Trigger asChild>{children}</Tooltip.Trigger>
+      {collapsed && (
+        <Tooltip.Portal>
+          <Tooltip.Content
+            side="right"
+            sideOffset={8}
+            className="z-50 rounded-md bg-ink px-2 py-1 text-xs font-medium text-white shadow-lg"
+          >
+            {label}
+          </Tooltip.Content>
+        </Tooltip.Portal>
+      )}
+    </Tooltip.Root>
   )
 }
 
@@ -48,16 +77,20 @@ function ShellNavLink({
   to,
   label,
   icon: Icon,
+  collapsed,
 }: {
   to: { pathname: string; search?: string } | string
   label: string
   icon: LucideIcon
+  collapsed: boolean
 }) {
   return (
-    <NavLink to={to} className={navClass}>
-      <Icon aria-hidden="true" className="size-5 shrink-0" />
-      <span className={navLabelClass}>{label}</span>
-    </NavLink>
+    <RailTip label={label} collapsed={collapsed}>
+      <NavLink to={to} className={navClass(collapsed)} aria-label={collapsed ? label : undefined}>
+        <Icon aria-hidden="true" className="size-5 shrink-0" />
+        {!collapsed && <span>{label}</span>}
+      </NavLink>
+    </RailTip>
   )
 }
 
@@ -68,6 +101,7 @@ function AppShellBody() {
   const scorecards = useScorecards()
   const { pathname } = useLocation()
   const [params] = useSearchParams()
+  const [collapsed, toggleNav] = useNavCollapsed()
 
   const isAdmin = me.data?.role === 'admin'
   const showFilters = pathname === '/entry'
@@ -151,39 +185,73 @@ function AppShellBody() {
       <div className="grid flex-1 grid-cols-[auto_minmax(0,1fr)_auto]">
         <nav
           aria-label="Main"
-          className="w-16 shrink-0 border-r border-ink/15 bg-cream/60 p-3 min-[1440px]:w-60"
+          className={clsx(
+            'shrink-0 border-r border-ink/15 bg-cream/60 motion-safe:transition-[width]',
+            collapsed ? 'w-14 p-2' : 'w-60 p-3',
+          )}
         >
-          <ul className="space-y-1">
-            {(scorecards.data?.scorecards ?? []).map((sc) => (
-              <li key={sc.id}>
+          <RailTip label={collapsed ? 'Expand navigation' : 'Collapse navigation'} collapsed={collapsed}>
+            <button
+              type="button"
+              aria-expanded={!collapsed}
+              aria-controls={NAV_LINKS_ID}
+              aria-label={collapsed ? 'Expand navigation' : undefined}
+              onClick={toggleNav}
+              className={clsx(itemClass(collapsed), 'mb-2 text-ink hover:bg-white', !collapsed && 'w-full')}
+            >
+              {collapsed ? (
+                <PanelLeftOpen aria-hidden="true" className="size-5 shrink-0" />
+              ) : (
+                <PanelLeftClose aria-hidden="true" className="size-5 shrink-0" />
+              )}
+              {!collapsed && <span>Collapse navigation</span>}
+            </button>
+          </RailTip>
+          <div id={NAV_LINKS_ID}>
+            <ul className="space-y-1">
+              {(scorecards.data?.scorecards ?? []).map((sc) => (
+                <li key={sc.id}>
+                  <ShellNavLink
+                    to={{ pathname: `/scorecards/${sc.id}/overview`, search }}
+                    label={sc.name}
+                    icon={BarChart3}
+                    collapsed={collapsed}
+                  />
+                </li>
+              ))}
+              <li>
                 <ShellNavLink
-                  to={{ pathname: `/scorecards/${sc.id}/overview`, search }}
-                  label={sc.name}
-                  icon={BarChart3}
+                  to={{ pathname: '/entry', search }}
+                  label="Enter data"
+                  icon={ClipboardPen}
+                  collapsed={collapsed}
                 />
               </li>
-            ))}
-            <li>
-              <ShellNavLink to={{ pathname: '/entry', search }} label="Enter data" icon={ClipboardPen} />
-            </li>
-          </ul>
-          {isAdmin && (
-            <>
-              <p
-                id="admin-nav"
-                className="mt-6 px-3 text-xs font-semibold uppercase tracking-wide text-ink/80 max-[1439px]:sr-only"
-              >
-                Admin
-              </p>
-              <ul aria-labelledby="admin-nav" className="mt-1 space-y-1 max-[1439px]:mt-6">
-                {ADMIN_LINKS.map((l) => (
-                  <li key={l.to}>
-                    <ShellNavLink to={l.to} label={l.label} icon={l.icon} />
-                  </li>
-                ))}
-              </ul>
-            </>
-          )}
+            </ul>
+            {isAdmin && (
+              <>
+                <p
+                  id="admin-nav"
+                  className={clsx(
+                    'mt-6 px-3 text-xs font-semibold uppercase tracking-wide text-ink/80',
+                    collapsed && 'sr-only',
+                  )}
+                >
+                  Admin
+                </p>
+                <ul
+                  aria-labelledby="admin-nav"
+                  className={clsx('space-y-1', collapsed ? 'mt-3 border-t border-ink/15 pt-3' : 'mt-1')}
+                >
+                  {ADMIN_LINKS.map((l) => (
+                    <li key={l.to}>
+                      <ShellNavLink to={l.to} label={l.label} icon={l.icon} collapsed={collapsed} />
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+          </div>
         </nav>
 
         <div className="min-w-0 flex-1">
@@ -215,8 +283,10 @@ function AppShellBody() {
 
 export function AppShell() {
   return (
-    <ShellDockProvider>
-      <AppShellBody />
-    </ShellDockProvider>
+    <Tooltip.Provider delayDuration={300}>
+      <ShellDockProvider>
+        <AppShellBody />
+      </ShellDockProvider>
+    </Tooltip.Provider>
   )
 }

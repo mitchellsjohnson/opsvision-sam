@@ -1,12 +1,15 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
 
 	"opsvision/internal/domain"
+	"opsvision/internal/period"
+	"opsvision/internal/store"
 )
 
 // versionJSON is the wire form of a methodology version.
@@ -662,5 +665,78 @@ func TestDerivedMeasureWithoutRuleFailsPublish(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("details = %+v, want measures[1].derive", got.Error.Details)
+	}
+}
+
+// putMonthPoint stores one value in sc for the given month.
+func putMonthPoint(t *testing.T, e *testEnv, sc string, p period.Period) {
+	t.Helper()
+	v := 1.0
+	_, err := e.store.PutDataPoints(context.Background(), "t1", sc, []store.DataWrite{{
+		Point: domain.DataPoint{
+			MeasureKey: "closed", SubjectID: "team-a", Period: p, Value: &v,
+			Source: "test", EnteredBy: "u-t1-admin", EnteredAt: testNow,
+		},
+		ExpectedRevision: store.Unconditional,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+type scorecardSummaryJSON struct {
+	ID              string  `json:"id"`
+	Name            string  `json:"name"`
+	LatestDataMonth *string `json:"latestDataMonth"`
+}
+
+func listSummaries(t *testing.T, e *testEnv) map[string]scorecardSummaryJSON {
+	t.Helper()
+	var list struct {
+		Scorecards []scorecardSummaryJSON `json:"scorecards"`
+	}
+	e.expect(t, 200, e.tokens["t1-viewer"], "GET", "/scorecards", nil, &list)
+	out := map[string]scorecardSummaryJSON{}
+	for _, sc := range list.Scorecards {
+		out[sc.ID] = sc
+	}
+	return out
+}
+
+func TestScorecardsListLatestDataMonth(t *testing.T) {
+	e := newTestEnv(t) // testNow is 2026-M10, so FY2026 and FY2025 are in range
+	for _, id := range []string{"empty", "current", "previous", "old", "mixed"} {
+		seedScorecard(t, e, id)
+	}
+	month := func(fy, idx int) period.Period { return period.Period{Grain: period.Month, FY: fy, Index: idx} }
+	putMonthPoint(t, e, "current", month(2026, 3))
+	putMonthPoint(t, e, "current", month(2026, 8))
+	putMonthPoint(t, e, "current", month(2025, 12))
+	putMonthPoint(t, e, "previous", month(2025, 4))
+	putMonthPoint(t, e, "previous", month(2025, 11))
+	putMonthPoint(t, e, "old", month(2024, 12)) // two fiscal years back: out of range
+	putMonthPoint(t, e, "mixed", month(2025, 6))
+	putMonthPoint(t, e, "mixed", period.Period{Grain: period.Year, FY: 2026}) // not month grain
+
+	got := listSummaries(t, e)
+	want := map[string]string{"current": "2026-M08", "previous": "2025-M11", "mixed": "2025-M06"}
+	for id, w := range want {
+		if got[id].LatestDataMonth == nil || *got[id].LatestDataMonth != w {
+			t.Errorf("%s latestDataMonth = %v, want %s", id, got[id].LatestDataMonth, w)
+		}
+	}
+	for _, id := range []string{"empty", "old"} {
+		if got[id].LatestDataMonth != nil {
+			t.Errorf("%s latestDataMonth = %s, want null", id, *got[id].LatestDataMonth)
+		}
+	}
+}
+
+func TestScorecardsListNullLatestDataMonthOnTheWire(t *testing.T) {
+	e := newTestEnv(t)
+	seedScorecard(t, e, "empty")
+	_, raw := e.call(t, e.tokens["t1-viewer"], "GET", "/scorecards", nil)
+	if !strings.Contains(string(raw), `"latestDataMonth":null`) {
+		t.Fatalf("response %s must carry an explicit null latestDataMonth", raw)
 	}
 }

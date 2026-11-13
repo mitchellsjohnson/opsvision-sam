@@ -471,7 +471,7 @@ paths:
                 properties:
                   scorecards:
                     type: array
-                    items: { $ref: '#/components/schemas/Scorecard' }
+                    items: { $ref: '#/components/schemas/ScorecardSummary' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
     post:
@@ -1839,6 +1839,22 @@ components:
       properties:
         id: { $ref: '#/components/schemas/Id' }
         name: { type: string, minLength: 1 }
+    ScorecardSummary:
+      type: object
+      required: [id, name, latestDataMonth]
+      properties:
+        id: { $ref: '#/components/schemas/Id' }
+        name: { type: string, minLength: 1 }
+        latestDataMonth:
+          type: string
+          nullable: true
+          pattern: '^\d{4}-M(0[1-9]|1[0-2])$'
+          example: 2026-M08
+          description: |
+            The newest month with any stored data point for this scorecard,
+            looking at the tenant's current and previous fiscal years. Null
+            when there is none. Clients open on this month when no period is
+            chosen.
     VersionStatus:
       type: string
       enum: [draft, in_review, published, superseded]
