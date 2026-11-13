@@ -9,11 +9,10 @@ import {
   periodLabel,
   type Grain,
   type Period,
-  type ViewRequest,
 } from '../../lib/period'
 import { StatusBadge } from '../../ui/StatusBadge'
 import { usePeriodState } from '../../shell/usePeriodState'
-import { buildTrendColumns, columnRequest, type Column } from './columns'
+import { buildTrendColumns, type Column } from './columns'
 import { changeText } from './format'
 import { needsAttention, type NeedsAttentionItem } from './logic/needsAttention'
 import { defaultStatusScale } from './charts/chartTheme'
@@ -22,6 +21,7 @@ import { focusReturnRef } from './focusTrigger'
 import { LayoutGrid } from './LayoutGrid'
 import { cellReported, statusAtScope, type StatusScaleEntry } from './logic/statusAtScope'
 import { cellKey, groupRows } from './viewHelpers'
+import { useScorecardViewRequest } from './viewRequest'
 
 type Schemas = components['schemas']
 type ViewRow = Schemas['ViewRow']
@@ -110,21 +110,8 @@ export function OverviewPage() {
 
   const trendColumns = useMemo(() => buildTrendColumns(period.period, fy), [period.period, fy])
   const selectedColumn = trendColumns[trendColumns.length - 1]
-  const trendRequest: ViewRequest = { ...columnRequest(trendColumns) }
-  if (period.subjects.length > 0) trendRequest.subjects = period.subjects
-
-  const view = useView(period.ready ? scorecardId : undefined, trendRequest)
-  const ytdRequest: ViewRequest | null =
-    period.ytd && selectedColumn
-      ? {
-          ytd: [selectedColumn.period],
-          ...(period.subjects.length > 0 ? { subjects: period.subjects } : {}),
-        }
-      : null
-  const ytdView = useView(
-    period.ready && ytdRequest ? scorecardId : undefined,
-    ytdRequest ?? { periods: [] },
-  )
+  const { request, ready } = useScorecardViewRequest()
+  const view = useView(ready ? scorecardId : undefined, request)
 
   const parsed = parsePeriod(period.period)
   const headerParts = [
@@ -141,12 +128,9 @@ export function OverviewPage() {
     return { pathname: '../table', search, hash: `#metric-${metricKey}` }
   }
 
-  const ytdCellFor = (row: ViewRow): Cell | undefined =>
-    ytdView.data?.rows
-      .find((r) => r.metricKey === row.metricKey && r.subjectId === row.subjectId)
-      ?.cells.find((c) => c.ytd && c.display !== '')
+  const ytdCellFor = (row: ViewRow): Cell | undefined => row.cells.find((c) => c.ytd && c.display !== '')
 
-  if (view.isPending || (ytdRequest && ytdView.isPending)) return <Skeleton />
+  if (view.isPending) return <Skeleton />
   if (view.isError) {
     return (
       <div role="alert" className="rounded-md border border-status-r bg-status-r-bg p-4 text-sm">

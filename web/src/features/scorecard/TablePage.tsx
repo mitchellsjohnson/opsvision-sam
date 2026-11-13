@@ -12,9 +12,8 @@ import {
   type MouseEvent,
 } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router'
-import { useMe, useOrgUnits, useScorecards, useView } from '../../api/queries'
+import { useMe, useScorecards, useView } from '../../api/queries'
 import type { components } from '../../api/schema'
-import type { ViewRequest } from '../../lib/period'
 import { useShellDock } from '../../shell/ShellDock'
 import { usePeriodState } from '../../shell/usePeriodState'
 import { focusReturnRef } from './focusTrigger'
@@ -22,7 +21,6 @@ import { StatusBadge } from '../../ui/StatusBadge'
 import { CellDrawer, type DrawerTarget } from './CellDrawer'
 import {
   buildColumns,
-  columnRequest,
   groupedOverrideLabel,
   periodColumns,
   selectedColumnIndex,
@@ -32,6 +30,7 @@ import {
 import { overrideSentence, shortDate } from './format'
 import { periodWindowSize, windowStart } from './logic/window'
 import { cellKey, groupRows } from './viewHelpers'
+import { useScorecardViewRequest } from './viewRequest'
 
 type Schemas = components['schemas']
 type Cell = Schemas['Cell']
@@ -43,7 +42,6 @@ const HEAT: Record<string, string> = {
   R: 'bg-status-r-bg',
 }
 
-const MAX_SUBJECTS = 200
 export interface TablePageProps {
   scorecardId: string
   scorecardName: string
@@ -89,24 +87,6 @@ function rowStates(
     stack.push(state)
   }
   return { states, baseDepth }
-}
-
-function withDescendants(selected: string[], units: { id: string; parentId: string }[]): string[] {
-  const children = new Map<string, string[]>()
-  for (const u of units) {
-    const list = children.get(u.parentId) ?? []
-    list.push(u.id)
-    children.set(u.parentId, list)
-  }
-  const out = new Set<string>()
-  const queue = [...selected]
-  while (queue.length > 0) {
-    const id = queue.shift() as string
-    if (out.has(id)) continue
-    out.add(id)
-    queue.push(...(children.get(id) ?? []))
-  }
-  return [...out]
 }
 
 /** Rows in `rows` that sit directly under `parent` in the metric hierarchy. */
@@ -319,7 +299,6 @@ export function TablePage({
   const [period] = usePeriodState()
   const [, setParams] = useSearchParams()
   const me = useMe()
-  const orgUnits = useOrgUnits()
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
   const [onlyOffTrack, setOnlyOffTrack] = useState(false)
   const [selected, setSelected] = useState<DrawerTarget | null>(null)
@@ -359,19 +338,7 @@ export function TablePage({
   const displayColumns = useMemo(() => sliceTableWindow(allColumns, start, visible), [allColumns, start, visible])
   const windowKeys = useMemo(() => new Set(displayColumns.map((c) => c.key)), [displayColumns])
 
-  const picked = period.subjects.length > 0 ? period.subjects : period.scope ? [period.scope] : []
-  const unitList = orgUnits.data?.units
-  const subjects = useMemo(() => {
-    if (picked.length === 0) return []
-    return withDescendants(picked, unitList ?? []).slice(0, MAX_SUBJECTS)
-  }, [picked, unitList])
-
-  const request: ViewRequest = { ...columnRequest(allColumns) }
-  if (subjects.length > 0) request.subjects = subjects
-  if (period.restate !== '') request.restate = period.restate
-  if (period.structure === 'current') request.structure = 'current'
-
-  const ready = period.ready && (picked.length === 0 || !orgUnits.isPending)
+  const { request, ready } = useScorecardViewRequest()
   const view = useView(ready ? scorecardId : undefined, request)
 
   const scale = me.data?.tenant?.statusScale ?? []

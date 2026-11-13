@@ -1,5 +1,6 @@
-import { screen, within } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { HttpResponse } from 'msw'
 import { describe, expect, it } from 'vitest'
 import { App } from '../../App'
 import { server } from '../../test/server'
@@ -59,6 +60,43 @@ describe('FocusDialog', () => {
     expect(screen.queryByRole('dialog', { name: /On-time delivery/i })).toBeNull()
     await user.click(card)
     expect(await screen.findByRole('dialog', { name: /On-time delivery/i })).toBeTruthy()
+  })
+
+  it('24 asks for this metric only and keeps focus on the toggle while it loads', async () => {
+    const seen: URL[] = []
+    server.use(...viewHandlers({ onView: (u) => seen.push(u) }))
+    renderApp(<App />, { route: `${OVERVIEW}&focus=on_time_pct` })
+    const dialog = await screen.findByRole('dialog', { name: /On-time delivery/i })
+    await within(dialog).findByRole('region', { name: 'Org breakdown' })
+    const user = userEvent.setup()
+    const toggle = within(dialog).getByRole('button', { name: '24' })
+    await user.click(toggle)
+    expect(document.activeElement).toBe(toggle)
+    await waitFor(() => expect(toggle.getAttribute('aria-pressed')).toBe('true'))
+    await waitFor(() => expect(within(dialog).getAllByRole('button', { name: /^Sep: / })).toHaveLength(2))
+    const req = seen.find((u) => u.searchParams.has('metrics'))
+    expect(req?.searchParams.getAll('metrics')).toEqual(['on_time_pct'])
+    expect(req?.searchParams.getAll('periods')).toHaveLength(24)
+    expect(document.activeElement).toBe(toggle)
+  })
+
+  it('a failed 24-month request says so and offers Try again', async () => {
+    server.use(
+      ...viewHandlers({
+        respond: (u) =>
+          u.searchParams.has('metrics')
+            ? HttpResponse.json({ code: 'internal', message: 'The server had a problem.' }, { status: 500 })
+            : undefined,
+      }),
+    )
+    renderApp(<App />, { route: `${OVERVIEW}&focus=on_time_pct` })
+    const dialog = await screen.findByRole('dialog', { name: /On-time delivery/i })
+    await within(dialog).findByRole('region', { name: 'Org breakdown' })
+    await userEvent.setup().click(within(dialog).getByRole('button', { name: '24' }))
+    const alert = await within(dialog).findByRole('alert', {}, { timeout: 4000 })
+    expect(alert.textContent).toMatch(/couldn’t load this chart/)
+    expect(within(alert).getByRole('button', { name: 'Try again' })).toBeTruthy()
+    expect(within(dialog).getByRole('button', { name: '24' })).toBeTruthy()
   })
 
   it('closing after a card background click returns focus to that card’s Expand button', async () => {

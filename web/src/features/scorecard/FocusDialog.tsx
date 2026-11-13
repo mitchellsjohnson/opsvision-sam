@@ -4,16 +4,16 @@ import { useCallback, useMemo, useRef, useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router'
 import { useMe, useScorecards, useView } from '../../api/queries'
 import type { components } from '../../api/schema'
-import type { ViewRequest } from '../../lib/period'
 import { usePeriodState } from '../../shell/usePeriodState'
 import { defaultStatusScale } from './charts/chartTheme'
 import { MetricChart } from './charts/MetricChart'
-import { buildMonthTrendColumns, buildTrendColumns, columnRequest, type Column } from './columns'
+import { buildMonthTrendColumns, buildTrendColumns, type Column } from './columns'
 import { focusReturnRef } from './focusTrigger'
 import { defaultLayout } from './logic/layout'
 import { cellReported, statusAtScope, type StatusScaleEntry } from './logic/statusAtScope'
 import { TablePage } from './TablePage'
 import { cellKey, groupRows } from './viewHelpers'
+import { useScorecardViewRequest } from './viewRequest'
 
 type ViewRow = components['schemas']['ViewRow']
 
@@ -151,17 +151,21 @@ function MetricFocusBody({
   const statusColors = me.data?.tenant?.statusScale ?? defaultStatusScale()
   const statusLabel = (key: string) => statusColors.find((s) => s.key === key)?.label
 
+  // 24 months asks for this metric's rows only, which keeps the request well
+  // inside the API's limits; 12 shares the Overview's request and cache.
+  const { request, ready } = useScorecardViewRequest(
+    windowMonths === 24 ? { months: 24, metrics: [metricKey] } : {},
+  )
+  const view = useView(ready ? scorecardId : undefined, request, { keepPrevious: true })
+  // While the other window loads, the chart keeps the window it has data for.
+  const shownMonths = view.isPlaceholderData && view.data ? (view.data.periods.length > 12 ? 24 : 12) : windowMonths
   const trendColumns = useMemo(
     () =>
-      windowMonths === 24
+      shownMonths === 24
         ? buildMonthTrendColumns(period.period, 24, fy)
         : buildTrendColumns(period.period, fy),
-    [period.period, fy, windowMonths],
+    [period.period, fy, shownMonths],
   )
-  const trendRequest: ViewRequest = { ...columnRequest(trendColumns) }
-  if (period.subjects.length > 0) trendRequest.subjects = period.subjects
-
-  const view = useView(period.ready ? scorecardId : undefined, trendRequest)
   const selectedColumn = trendColumns[trendColumns.length - 1]
   const columnKey = selectedColumn?.key ?? ''
 
@@ -246,9 +250,71 @@ function MetricFocusBody({
     if (el?.requestFullscreen) void el.requestFullscreen()
   }
 
-  if (view.isPending) return <p role="status">Loading…</p>
-  if (!scope || !metricGroup) {
-    return <p role="alert">Could not load this metric.</p>
+  const waiting = view.isPending || (view.isPlaceholderData && !metricGroup)
+  let chartArea
+  if (view.isError) {
+    chartArea = (
+      <div role="alert" className="rounded-md border border-status-r bg-status-r-bg p-4 text-sm">
+        <p>We couldn’t load this chart: {view.error.message}</p>
+        <button
+          type="button"
+          className="mt-2 rounded border border-ink/40 bg-white px-2 py-1 text-sm font-medium"
+          onClick={() => void view.refetch()}
+        >
+          Try again
+        </button>
+      </div>
+    )
+  } else if (waiting) {
+    chartArea = <div className="mt-4" style={{ minHeight: 280 }} aria-busy="true" />
+  } else if (!scope) {
+    chartArea = <p role="alert">This metric has no rows for this selection.</p>
+  } else {
+    chartArea = (
+      <>
+        <div className="mt-4" style={{ minHeight: 280 }} aria-busy={view.isPlaceholderData || undefined}>
+          <MetricChart
+            row={scope}
+            chartRows={chartRows}
+            childRows={children}
+            columns={trendColumns}
+            currentColumnKey={columnKey}
+            currentDisplay={cell?.display ?? ''}
+            currentStatus={atScope?.status ?? ''}
+            statusLabel={statusLabel}
+            scale={statusColors}
+            tableTo={tableLink}
+          />
+        </div>
+
+        {rankedChildren.length > 0 && (
+          <section aria-label="Org breakdown" className="mt-6">
+            <h3 className="text-sm font-semibold text-accent-deep">Breakdown</h3>
+            <ul className="mt-2 space-y-1">
+              {rankedChildren.map(({ row: ch, cell: c }) => (
+                <li key={ch.subjectId}>
+                  <button
+                    type="button"
+                    className="w-full rounded border border-ink/20 px-3 py-2 text-left text-sm hover:bg-cream"
+                    onClick={() => updatePeriod({ scope: ch.subjectId })}
+                  >
+                    <span className="font-medium">{ch.subjectName}</span>
+                    <span className="ml-2 tabular-nums">{c?.display || '—'}</span>
+                    {c?.status && <span className="ml-2">{c.status}</span>}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+
+        <p className="mt-4">
+          <Link to={tableLink} className="text-sm font-medium text-accent-deep hover:underline" onClick={onClose}>
+            View as table
+          </Link>
+        </p>
+      </>
+    )
   }
 
   return (
@@ -301,48 +367,11 @@ function MetricFocusBody({
           </button>
         </div>
       </div>
-
-      <div className="mt-4" style={{ minHeight: 280 }}>
-        <MetricChart
-          row={scope}
-          chartRows={chartRows}
-          childRows={children}
-          columns={trendColumns}
-          currentColumnKey={columnKey}
-          currentDisplay={cell?.display ?? ''}
-          currentStatus={atScope?.status ?? ''}
-          statusLabel={statusLabel}
-          scale={statusColors}
-          tableTo={tableLink}
-        />
-      </div>
-
-      {rankedChildren.length > 0 && (
-        <section aria-label="Org breakdown" className="mt-6">
-          <h3 className="text-sm font-semibold text-accent-deep">Breakdown</h3>
-          <ul className="mt-2 space-y-1">
-            {rankedChildren.map(({ row: ch, cell: c }) => (
-              <li key={ch.subjectId}>
-                <button
-                  type="button"
-                  className="w-full rounded border border-ink/20 px-3 py-2 text-left text-sm hover:bg-cream"
-                  onClick={() => updatePeriod({ scope: ch.subjectId })}
-                >
-                  <span className="font-medium">{ch.subjectName}</span>
-                  <span className="ml-2 tabular-nums">{c?.display || '—'}</span>
-                  {c?.status && <span className="ml-2">{c.status}</span>}
-                </button>
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
-
-      <p className="mt-4">
-        <Link to={tableLink} className="text-sm font-medium text-accent-deep hover:underline" onClick={onClose}>
-          View as table
-        </Link>
+      <p role="status" className="mt-1 min-h-5 text-sm text-ink/80">
+        {waiting || view.isPlaceholderData ? 'Loading chart…' : ''}
       </p>
+
+      {chartArea}
     </div>
   )
 }
@@ -352,19 +381,13 @@ export function FocusDialog() {
   const { sc } = useParams()
   const scorecardId = sc ?? ''
   const [params, setParams] = useSearchParams()
-  const [period] = usePeriodState()
   const scorecards = useScorecards()
   const scorecardName = scorecards.data?.scorecards.find((s) => s.id === scorecardId)?.name ?? 'Scorecard'
   const focusId = params.get('focus') ?? ''
   const open = focusId !== ''
 
-  const layoutRequest: ViewRequest = useMemo(() => {
-    const cols = buildTrendColumns(period.period, period.fiscalYearStartMonth)
-    const req: ViewRequest = { ...columnRequest(cols) }
-    if (period.subjects.length > 0) req.subjects = period.subjects
-    return req
-  }, [period])
-  const layoutView = useView(period.ready && open && focusId !== 'table' ? scorecardId : undefined, layoutRequest)
+  const { request: layoutRequest, ready } = useScorecardViewRequest()
+  const layoutView = useView(ready && open && focusId !== 'table' ? scorecardId : undefined, layoutRequest)
   const metricIds = layoutView.data ? metricKeysInLayout(layoutView.data) : []
 
   const contentRef = useRef<HTMLDivElement>(null)

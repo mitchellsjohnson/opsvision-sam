@@ -144,7 +144,6 @@ describe('OverviewPage', () => {
 
   it('omits YTD on the card when the scope row has no YTD value', async () => {
     renderOverview(`${ROUTE}&ytd=1`, (view) => {
-      if (view.periods.length > 0) return
       const row = view.rows.find((r) => r.metricKey === 'on_time_pct' && r.subjectId === 'root')
       const ytd = row?.cells.find((c) => c.ytd)
       if (ytd) Object.assign(ytd, { value: null, display: '', status: '' })

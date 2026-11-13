@@ -107,12 +107,17 @@ export function useOrgUnits() {
   return useQuery({ queryKey: keys.orgUnits, queryFn: () => unwrap(api.GET('/org/units')) })
 }
 
-/** The computed scorecard table for the requested columns. */
-export function useView(sc: string | undefined, req: ViewRequest) {
+/**
+ * The computed scorecard table for the requested columns. With
+ * `keepPrevious`, the last result stays (as placeholder data) while a new
+ * request loads.
+ */
+export function useView(sc: string | undefined, req: ViewRequest, options: { keepPrevious?: boolean } = {}) {
   const api = useApi()
   return useQuery({
     queryKey: keys.view(sc ?? '', req),
     enabled: sc !== undefined,
+    placeholderData: options.keepPrevious ? keepPreviousData : undefined,
     queryFn: () =>
       unwrap(
         api.GET('/scorecards/{sc}/view', {
