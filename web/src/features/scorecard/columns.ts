@@ -94,7 +94,7 @@ export function buildTrendColumns(period: string, fiscalYearStartMonth: number):
   const selected = parsePeriod(period)
   if (!selected) return []
   const count = TREND_SPAN[selected.grain]
-  let periods: Period[] = [selected]
+  const periods: Period[] = [selected]
   for (let i = 1; i < count; i++) periods.unshift(prev(periods[0] as Period))
   return periods.map((p) => periodColumn(p, fiscalYearStartMonth))
 }
@@ -108,7 +108,7 @@ export function buildMonthTrendColumns(
   const selected = parsePeriod(period)
   if (!selected) return []
   if (selected.grain !== 'month') return buildTrendColumns(period, fiscalYearStartMonth)
-  let periods: Period[] = [selected]
+  const periods: Period[] = [selected]
   for (let i = 1; i < monthCount; i++) periods.unshift(prev(periods[0] as Period))
   return periods.map((p) => periodColumn(p, fiscalYearStartMonth))
 }

@@ -249,13 +249,15 @@ export function OverviewPage() {
     const ytdCell = ytdCellFor(scope)
     const ytdDisplay = ytdCell?.display ? `YTD ${ytdCell.display}` : null
     return (
+      // A pointer shortcut only: the Expand button is the keyboard and screen reader path.
+      // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions
       <article
         aria-label={scope.metricName}
         className="h-full cursor-pointer rounded-lg border border-ink/20 bg-white p-4 pt-10"
         onClick={(e) => {
           const target = e.target as HTMLElement
           if (target.closest('button, a, [role="button"]')) return
-          focusReturnRef.current = e.currentTarget
+          focusReturnRef.current = e.currentTarget.querySelector<HTMLElement>('[data-card-expand]')
           const next = new URLSearchParams(params)
           next.set('focus', metric.key)
           setParams(next)
@@ -265,6 +267,7 @@ export function OverviewPage() {
           <h3 className="text-base font-semibold">{scope.metricName}</h3>
           <button
             type="button"
+            data-card-expand=""
             className="rounded border border-ink/20 px-2 py-0.5 text-xs hover:bg-cream"
             onClick={(e) => {
               focusReturnRef.current = e.currentTarget

@@ -60,4 +60,15 @@ describe('FocusDialog', () => {
     await user.click(card)
     expect(await screen.findByRole('dialog', { name: /On-time delivery/i })).toBeTruthy()
   })
+
+  it('closing after a card background click returns focus to that card’s Expand button', async () => {
+    renderOverview()
+    await screen.findByRole('heading', { name: 'Overview', level: 1 })
+    const user = userEvent.setup()
+    await user.click(metricCard('On-time delivery'))
+    await screen.findByRole('dialog', { name: /On-time delivery/i })
+    await user.keyboard('{Escape}')
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(document.activeElement).toBe(within(metricCard('On-time delivery')).getByRole('button', { name: 'Expand' }))
+  })
 })

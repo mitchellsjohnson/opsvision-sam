@@ -329,7 +329,7 @@ export function TablePage({
   const shouldFocusCell = useRef(false)
   const [contentWidth, setContentWidth] = useState(0)
   const [focus, setFocus] = useState({ row: 0, col: 0 })
-  const { setOpen: setDockOpen, dockRef } = useShellDock()
+  const { setOpen: setDockOpen, dockElement } = useShellDock()
   const useShellDockColumn = !embeddedInFocus
 
   useLayoutEffect(() => {
@@ -350,11 +350,11 @@ export function TablePage({
   const selectedIdx = selectedColumnIndex(allColumns, period.period)
   const maxStart = Math.max(0, Math.min(periodCols.length - visible, selectedIdx - visible + 1))
   const defaultStart = windowStart(periodCols.length, visible, selectedIdx)
-  const [start, setStart] = useState(defaultStart)
-
-  useEffect(() => {
-    setStart(defaultStart)
-  }, [defaultStart])
+  // The window snaps back to its default whenever the default moves (a new
+  // period or width); Earlier and Later shift it from there.
+  const [windowOffset, setWindowOffset] = useState({ base: defaultStart, start: defaultStart })
+  const start = windowOffset.base === defaultStart ? windowOffset.start : defaultStart
+  const setStart = (next: (s: number) => number) => setWindowOffset({ base: defaultStart, start: next(start) })
 
   const displayColumns = useMemo(() => sliceTableWindow(allColumns, start, visible), [allColumns, start, visible])
   const windowKeys = useMemo(() => new Set(displayColumns.map((c) => c.key)), [displayColumns])
@@ -835,7 +835,7 @@ export function TablePage({
         target={selected}
         onClose={() => setSelected(null)}
         returnFocusTo={opener}
-        dockContainer={useShellDockColumn ? dockRef.current : null}
+        dockContainer={useShellDockColumn ? dockElement : null}
         elevatedOverlay={embeddedInFocus}
       />
     </div>
