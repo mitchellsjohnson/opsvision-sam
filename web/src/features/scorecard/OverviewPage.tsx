@@ -10,10 +10,11 @@ import {
   type Grain,
   type Period,
 } from '../../lib/period'
+import { Sparkline } from '../../ui/Sparkline'
 import { StatusBadge } from '../../ui/StatusBadge'
 import { usePeriodState } from '../../shell/usePeriodState'
 import { buildTrendColumns, type Column } from './columns'
-import { changeText } from './format'
+import { changeText, withDirection } from './format'
 import { needsAttention, type NeedsAttentionItem } from './logic/needsAttention'
 import { defaultStatusScale } from './charts/chartTheme'
 import { MetricChart } from './charts/MetricChart'
@@ -155,6 +156,8 @@ export function OverviewPage() {
     }),
   )
 
+  const rankOf = (status: string) => scale.find((s) => s.key === status)?.rank ?? 0
+  const worstRank = Math.max(...scale.map((s) => s.rank))
   const healthLabelsMap = healthLabels(scale)
   const healthCounts = new Map<string, number>()
   let notReported = 0
@@ -382,19 +385,70 @@ export function OverviewPage() {
           <ul className="mt-3 grid gap-4 lg:grid-cols-3">
             {attention.map((item) => {
               const meta = metrics.find((m) => m.metric.key === item.metricKey)
-              const driver = meta?.children
+              if (!meta) return null
+              const { scope, head, children, atScope } = meta
+              const cell = scopeCell(scope, columnKey)
+              const driver = children
                 .map((ch) => {
-                  const cell = ch.cells.find((c) => cellKey(c) === columnKey)
-                  return cell?.status ? { name: ch.subjectName, status: cell.status, rank: scale.find((s) => s.key === cell.status)?.rank ?? 0 } : null
+                  const c = scopeCell(ch, columnKey)
+                  return cellReported(c) && c?.status ? { name: ch.subjectName, rank: rankOf(c.status) } : null
                 })
-                .filter(Boolean)
-                .sort((a, b) => (b?.rank ?? 0) - (a?.rank ?? 0))[0]
+                .filter((d): d is { name: string; rank: number } => d !== null)
+                .sort((a, b) => b.rank - a.rank)[0]
+              const change =
+                cell && cell.changeKind
+                  ? changeText({
+                      period: cell.period,
+                      ytd: cell.ytd,
+                      format: head.format,
+                      change: cell.change,
+                      changeKind: cell.changeKind,
+                      compare: item.rule.type === 'change' ? item.rule.compare : undefined,
+                      fyStart: fy,
+                    })
+                  : null
+              const trend = scope
+                ? trendColumns.map((col) => {
+                    const c = scopeCell(scope, col.key)
+                    return { label: col.label, value: c && c.naReason === '' ? (c.value ?? null) : null, display: c?.display ?? '' }
+                  })
+                : []
+              const shown = trend.filter((p) => p.value !== null)
               return (
                 <li key={item.metricKey} className="rounded-lg border border-ink/20 bg-white p-4">
-                  <h3 className="font-semibold">{item.name}</h3>
-                  <p className="mt-1 text-sm text-ink/80">
-                    {driver ? `Driver: ${driver.name}` : 'No child breakdown'}
+                  <div className="flex items-start justify-between gap-2">
+                    <h3 className="font-semibold">{item.name}</h3>
+                    <button
+                      type="button"
+                      aria-label={`Expand ${item.name}`}
+                      className="rounded border border-ink/20 px-2 py-0.5 text-xs hover:bg-cream"
+                      onClick={(e) => {
+                        focusReturnRef.current = e.currentTarget
+                        const next = new URLSearchParams(params)
+                        next.set('focus', item.metricKey)
+                        setParams(next)
+                      }}
+                    >
+                      Expand
+                    </button>
+                  </div>
+                  <p className="mt-1 flex flex-wrap items-center gap-2">
+                    <StatusBadge status={atScope.status} label={statusLabel(atScope.status)} />
+                    <span className="text-lg font-semibold tabular-nums">{cell?.display || '—'}</span>
+                    {atScope.caption && <span className="text-xs text-ink/80">{atScope.caption}</span>}
                   </p>
+                  {change && <p className="mt-1 text-xs text-ink/80">{withDirection(change, head.direction)}</p>}
+                  {shown.length > 1 && (
+                    <div className="mt-2">
+                      <Sparkline
+                        points={trend}
+                        target={cell?.target ?? null}
+                        height={40}
+                        summary={`Trend over ${trend.length} periods: from ${shown[0]!.display} to ${shown[shown.length - 1]!.display}`}
+                      />
+                    </div>
+                  )}
+                  {driver && driver.rank >= worstRank && <p className="mt-1 text-sm text-ink/80">Driver: {driver.name}</p>}
                 </li>
               )
             })}

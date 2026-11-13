@@ -65,7 +65,10 @@ describe('OverviewPage', () => {
       })
     })
     await screen.findByRole('heading', { name: 'Overview', level: 1 })
-    expect(screen.getByText('worst of 2 segments')).toBeTruthy()
+    expect(within(screen.getByTestId('ribbon-on_time_pct').parentElement!).getByText('worst of 2 segments')).toBeTruthy()
+    expect(
+      within(within(screen.getByRole('region', { name: 'Needs attention' })).getByRole('listitem')).getByText('worst of 2 segments'),
+    ).toBeTruthy()
     const card = metricCard('On-time delivery')
     expect(within(card).getByText('Company total not reported; 2 segments reported')).toBeTruthy()
     expect(within(card).getByText('R')).toBeTruthy()
@@ -163,6 +166,30 @@ describe('OverviewPage', () => {
     const card = metricCard('On-time delivery')
     const strip = within(card).getByTestId('uptime-strip-unit-a')
     expect(strip.children.length).toBe(12)
+  })
+
+  it('needs-attention cards show status, value, change, a trend and Expand; Driver names an off-track child', async () => {
+    renderOverview()
+    await screen.findByRole('heading', { name: 'Overview', level: 1 })
+    const needs = screen.getByRole('region', { name: 'Needs attention' })
+    const item = within(needs).getByRole('listitem')
+    expect(within(item).getByRole('img', { name: /Status: / }).textContent).toBe('Y')
+    expect(within(item).getByText('84.3%')).toBeTruthy()
+    expect(within(item).getByText(/\+2\.1 pts vs Sep/)).toBeTruthy()
+    expect(within(item).getByTestId('sparkline-graphic')).toBeTruthy()
+    expect(within(item).getByText('Driver: Unit A')).toBeTruthy()
+    const user = userEvent.setup()
+    await user.click(within(item).getByRole('button', { name: 'Expand On-time delivery' }))
+    expect(await screen.findByRole('dialog', { name: /On-time delivery/i })).toBeTruthy()
+  })
+
+  it('a needs-attention card names no driver when no child is off track', async () => {
+    renderOverview(ROUTE, (view) => {
+      Object.assign(cellOf(view, 'on_time_pct', 'unit-a', '2026-M10'), { status: 'Y' })
+    })
+    await screen.findByRole('heading', { name: 'Overview', level: 1 })
+    const item = within(screen.getByRole('region', { name: 'Needs attention' })).getByRole('listitem')
+    expect(within(item).queryByText(/Driver/)).toBeNull()
   })
 
   it('the 12-month status widget uses the shared rule for each column', async () => {
