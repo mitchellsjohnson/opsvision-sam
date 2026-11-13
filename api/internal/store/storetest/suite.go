@@ -57,6 +57,7 @@ func Run(t *testing.T, newStore func(t *testing.T) store.Store) {
 		{"DataAllOrNothing", dataAllOrNothing},
 		{"UnconditionalWrite", unconditionalWrite},
 		{"ListDataByFiscalYear", listDataByFiscalYear},
+		{"LatestDataMonth", latestDataMonth},
 		{"OverridesRoundTrip", overridesRoundTrip},
 		{"ImportsAndTemplates", importsAndTemplates},
 		{"TenantIsolation", tenantIsolation},
@@ -719,6 +720,44 @@ func unconditionalWrite(t *testing.T, s store.Store) {
 	if len(hist) != 3 || hist[0].Revision != 3 || hist[2].Revision != 1 {
 		t.Fatalf("history = %+v, want revisions 3,2,1", hist)
 	}
+}
+
+func latestDataMonth(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	tn := newTenant(t, s)
+	check := func(what string, notAfter period.Period, want period.Period, wantOK bool) {
+		t.Helper()
+		got, ok, err := s.LatestDataMonth(ctx, tn, "sc", notAfter)
+		must(t, err)
+		if ok != wantOK || (ok && got != want) {
+			t.Fatalf("%s: LatestDataMonth = %v, %v; want %v, %v", what, got, ok, want, wantOK)
+		}
+	}
+	check("no data", month(2026, 5), period.Period{}, false)
+
+	_, err := s.PutDataPoints(ctx, tn, "sc", []store.DataWrite{
+		{Point: point("m1", "u1", month(2025, 11), 1), ExpectedRevision: 0},
+		{Point: point("m1", "u1", month(2026, 3), 1), ExpectedRevision: 0},
+		{Point: point("m2", "u2", month(2026, 9), 1), ExpectedRevision: 0},
+		{Point: point("m1", "u1", period.Period{Grain: period.Quarter, FY: 2026, Index: 4}, 1), ExpectedRevision: 0},
+		{Point: point("m1", "u1", month(2026, 10), 1), ExpectedRevision: 0},
+	})
+	must(t, err)
+	_, err = s.PutDataPoints(ctx, tn, "sc-other", []store.DataWrite{
+		{Point: point("m1", "u1", month(2026, 8), 1), ExpectedRevision: 0},
+	})
+	must(t, err)
+	// A deleted point leaves a tombstone that must not count.
+	_, err = s.PutDataPoints(ctx, tn, "sc", []store.DataWrite{
+		{Point: point("m1", "u1", month(2026, 10), 0), ExpectedRevision: 1, Delete: true},
+	})
+	must(t, err)
+
+	check("newest month", month(2026, 12), month(2026, 9), true)
+	check("never after notAfter", month(2026, 5), month(2026, 3), true)
+	check("same month counts", month(2026, 3), month(2026, 3), true)
+	check("falls back to the prior fiscal year", month(2026, 2), month(2025, 11), true)
+	check("nothing in range", month(2025, 10), period.Period{}, false)
 }
 
 func listDataByFiscalYear(t *testing.T, s store.Store) {

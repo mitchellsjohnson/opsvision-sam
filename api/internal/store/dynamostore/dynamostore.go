@@ -1041,6 +1041,54 @@ func (s *Store) ListData(ctx context.Context, tenantID, scorecardID string, fisc
 	return pts, ovs, nil
 }
 
+// LatestDataMonth implements store.DataStore. It reads each fiscal year's
+// data partition newest first, one item per page, over the month points no
+// later than notAfter, and stops at the first point that is not a tombstone.
+func (s *Store) LatestDataMonth(ctx context.Context, tenantID, scorecardID string, notAfter period.Period) (period.Period, bool, error) {
+	if notAfter.Grain != period.Month {
+		return period.Period{}, false, nil
+	}
+	for fy := notAfter.FY; fy >= notAfter.FY-1; fy-- {
+		lo, hi := monthPointBounds(fy, notAfter)
+		in := &dynamodb.QueryInput{
+			TableName:              &s.table,
+			ConsistentRead:         ptrTo(true),
+			ScanIndexForward:       ptrTo(false),
+			Limit:                  ptrTo(int32(1)),
+			KeyConditionExpression: ptrTo("PK = :pk AND SK BETWEEN :lo AND :hi"),
+			ExpressionAttributeValues: avMap{
+				":pk": str(dataPK(tenantID, scorecardID, fy)),
+				":lo": str(lo),
+				":hi": str(hi),
+			},
+		}
+		for {
+			res, err := s.client.Query(ctx, in)
+			if err != nil {
+				return period.Period{}, false, fmt.Errorf("dynamostore: query: %w", err)
+			}
+			for _, m := range res.Items {
+				it, err := unmarshal[pointItem](m)
+				if err != nil {
+					return period.Period{}, false, err
+				}
+				p, err := it.domain()
+				if err != nil {
+					return period.Period{}, false, err
+				}
+				if !p.Deleted {
+					return p.Period, true, nil
+				}
+			}
+			if len(res.LastEvaluatedKey) == 0 {
+				break
+			}
+			in.ExclusiveStartKey = res.LastEvaluatedKey
+		}
+	}
+	return period.Period{}, false, nil
+}
+
 // History implements store.DataStore.
 func (s *Store) History(ctx context.Context, tenantID, scorecardID, measureKey, subjectID string, p period.Period) ([]domain.DataPoint, error) {
 	raw, err := s.queryPK(ctx, histPK(tenantID, scorecardID), histPrefix(p, measureKey, subjectID), false)

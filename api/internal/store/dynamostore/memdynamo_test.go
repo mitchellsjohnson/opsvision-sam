@@ -188,14 +188,17 @@ func (d *memDynamo) Query(_ context.Context, in *dynamodb.QueryInput, _ ...func(
 	if in.IndexName != nil {
 		pkAttr, skAttr = "GSI1PK", "GSI1SK"
 	}
-	var wantPK, prefix string
-	var hasPrefix bool
+	var wantPK, prefix, lo, hi string
+	var hasPrefix, hasRange bool
 	switch *in.KeyConditionExpression {
 	case "PK = :pk", "GSI1PK = :pk":
 		wantPK = strAttr(in.ExpressionAttributeValues, ":pk")
 	case "PK = :pk AND begins_with(SK, :p)":
 		wantPK = strAttr(in.ExpressionAttributeValues, ":pk")
 		prefix, hasPrefix = strAttr(in.ExpressionAttributeValues, ":p"), true
+	case "PK = :pk AND SK BETWEEN :lo AND :hi":
+		wantPK = strAttr(in.ExpressionAttributeValues, ":pk")
+		lo, hi, hasRange = strAttr(in.ExpressionAttributeValues, ":lo"), strAttr(in.ExpressionAttributeValues, ":hi"), true
 	default:
 		return nil, fmt.Errorf("memDynamo: unsupported key condition %q", *in.KeyConditionExpression)
 	}
@@ -205,7 +208,11 @@ func (d *memDynamo) Query(_ context.Context, in *dynamodb.QueryInput, _ ...func(
 		if strAttr(it, pkAttr) != wantPK {
 			continue
 		}
-		if hasPrefix && !strings.HasPrefix(strAttr(it, skAttr), prefix) {
+		sk := strAttr(it, skAttr)
+		if hasPrefix && !strings.HasPrefix(sk, prefix) {
+			continue
+		}
+		if hasRange && (sk < lo || sk > hi) {
 			continue
 		}
 		matched = append(matched, it)
@@ -230,7 +237,11 @@ func (d *memDynamo) Query(_ context.Context, in *dynamodb.QueryInput, _ ...func(
 			}
 		}
 	}
-	end := min(start+memPageSize, len(matched))
+	pageSize := memPageSize
+	if in.Limit != nil && int(*in.Limit) < pageSize {
+		pageSize = int(*in.Limit)
+	}
+	end := min(start+pageSize, len(matched))
 	out := &dynamodb.QueryOutput{Items: matched[start:end]}
 	if end < len(matched) {
 		out.LastEvaluatedKey = avMap{"PK": matched[end-1]["PK"], "SK": matched[end-1]["SK"]}

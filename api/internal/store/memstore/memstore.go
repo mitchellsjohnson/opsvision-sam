@@ -706,6 +706,31 @@ func (s *Store) ListData(_ context.Context, tenantID, scorecardID string, fiscal
 	return pts, ovs, nil
 }
 
+// LatestDataMonth implements store.DataStore.
+func (s *Store) LatestDataMonth(_ context.Context, tenantID, scorecardID string, notAfter period.Period) (period.Period, bool, error) {
+	if notAfter.Grain != period.Month {
+		return period.Period{}, false, nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	sd := s.read(tenantID).scData[scorecardID]
+	if sd == nil {
+		return period.Period{}, false, nil
+	}
+	var latest period.Period
+	found := false
+	for key, hist := range sd.history {
+		p := key.period
+		if p.Grain != period.Month || p.FY < notAfter.FY-1 || store.ComparePeriod(p, notAfter) > 0 || live(hist) == nil {
+			continue
+		}
+		if !found || store.ComparePeriod(p, latest) > 0 {
+			latest, found = p, true
+		}
+	}
+	return latest, found, nil
+}
+
 // History implements store.DataStore.
 func (s *Store) History(_ context.Context, tenantID, scorecardID, measureKey, subjectID string, p period.Period) ([]domain.DataPoint, error) {
 	s.mu.RLock()

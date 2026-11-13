@@ -109,6 +109,18 @@ func pointSK(p period.Period, measure, subject string) string {
 	return prefixPoint + p.String() + "#" + measure + "#" + subject
 }
 
+// monthPointBounds are inclusive SK bounds for the month points of fiscal
+// year fy, ending at notAfter when it falls in fy. Month periods are
+// zero-padded, so SKs sort chronologically; '$' sorts just after the '#'
+// that follows the period, and '~' after every month index.
+func monthPointBounds(fy int, notAfter period.Period) (lo, hi string) {
+	lo = prefixPoint + strconv.Itoa(fy) + "-M"
+	if fy == notAfter.FY {
+		return lo, prefixPoint + notAfter.String() + "$"
+	}
+	return lo, lo + "~"
+}
+
 // histPrefix is the SK prefix shared by all revisions of one data point.
 func histPrefix(p period.Period, measure, subject string) string {
 	return pointSK(p, measure, subject) + "#R"

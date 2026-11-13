@@ -705,7 +705,7 @@ func listSummaries(t *testing.T, e *testEnv) map[string]scorecardSummaryJSON {
 
 func TestScorecardsListLatestDataMonth(t *testing.T) {
 	e := newTestEnv(t) // testNow is 2026-M10, so FY2026 and FY2025 are in range
-	for _, id := range []string{"empty", "current", "previous", "old", "mixed"} {
+	for _, id := range []string{"empty", "current", "previous", "old", "mixed", "future"} {
 		seedScorecard(t, e, id)
 	}
 	month := func(fy, idx int) period.Period { return period.Period{Grain: period.Month, FY: fy, Index: idx} }
@@ -717,9 +717,11 @@ func TestScorecardsListLatestDataMonth(t *testing.T) {
 	putMonthPoint(t, e, "old", month(2024, 12)) // two fiscal years back: out of range
 	putMonthPoint(t, e, "mixed", month(2025, 6))
 	putMonthPoint(t, e, "mixed", period.Period{Grain: period.Year, FY: 2026}) // not month grain
+	putMonthPoint(t, e, "future", month(2026, 7))
+	putMonthPoint(t, e, "future", month(2026, 12)) // after the current month: ignored
 
 	got := listSummaries(t, e)
-	want := map[string]string{"current": "2026-M08", "previous": "2025-M11", "mixed": "2025-M06"}
+	want := map[string]string{"current": "2026-M08", "previous": "2025-M11", "mixed": "2025-M06", "future": "2026-M07"}
 	for id, w := range want {
 		if got[id].LatestDataMonth == nil || *got[id].LatestDataMonth != w {
 			t.Errorf("%s latestDataMonth = %v, want %s", id, got[id].LatestDataMonth, w)

@@ -160,6 +160,11 @@ type DataStore interface {
 	// ListData returns current points and overrides whose Period.FY is in
 	// fiscalYears. Deleted points are not listed. Both slices are non-nil.
 	ListData(ctx context.Context, tenantID, scorecardID string, fiscalYears []int) ([]domain.DataPoint, []domain.Override, error)
+	// LatestDataMonth returns the newest month-grain period, no later than
+	// the month notAfter, with a current (not deleted) data point, searching
+	// notAfter's fiscal year and the one before it. The bool is false when
+	// there is none or notAfter is not a month.
+	LatestDataMonth(ctx context.Context, tenantID, scorecardID string, notAfter period.Period) (period.Period, bool, error)
 	// History returns every revision (including the current one) of a point,
 	// newest first. A deleted point's history ends with its tombstone.
 	History(ctx context.Context, tenantID, scorecardID, measureKey, subjectID string, p period.Period) ([]domain.DataPoint, error)

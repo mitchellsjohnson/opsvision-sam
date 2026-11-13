@@ -149,41 +149,21 @@ func (s *Server) ListScorecards(ctx context.Context, _ ListScorecardsRequestObje
 	if err != nil {
 		return nil, err
 	}
-	cal := s.calendar(*p.Tenant)
-	fy := cal.MonthOf(s.now()).FY
+	thisMonth := s.calendar(*p.Tenant).MonthOf(s.now())
 	out := make([]ScorecardSummary, 0, len(scs))
 	for _, sc := range scs {
-		latest, err := s.latestDataMonth(ctx, p.Tenant.ID, sc.ID, []int{fy, fy - 1})
+		summary := ScorecardSummary{Id: sc.ID, Name: sc.Name}
+		latest, ok, err := s.store.LatestDataMonth(ctx, p.Tenant.ID, sc.ID, thisMonth)
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, ScorecardSummary{Id: sc.ID, Name: sc.Name, LatestDataMonth: latest})
+		if ok {
+			m := latest.String()
+			summary.LatestDataMonth = &m
+		}
+		out = append(out, summary)
 	}
 	return ListScorecards200JSONResponse{Scorecards: out}, nil
-}
-
-// latestDataMonth is the newest month-grain period with a stored data point
-// for the scorecard in the given fiscal years, or nil when there is none.
-func (s *Server) latestDataMonth(ctx context.Context, tenantID, scorecardID string, fiscalYears []int) (*MonthPeriod, error) {
-	pts, _, err := s.store.ListData(ctx, tenantID, scorecardID, fiscalYears)
-	if err != nil {
-		return nil, err
-	}
-	var latest period.Period
-	found := false
-	for _, pt := range pts {
-		if pt.Period.Grain != period.Month {
-			continue
-		}
-		if !found || store.ComparePeriod(pt.Period, latest) > 0 {
-			latest, found = pt.Period, true
-		}
-	}
-	if !found {
-		return nil, nil
-	}
-	m := latest.String()
-	return &m, nil
 }
 
 // CreateScorecard adds a scorecard. Admins only.
