@@ -11,8 +11,8 @@ import {
   SortableContext,
   arrayMove,
   sortableKeyboardCoordinates,
+  rectSortingStrategy,
   useSortable,
-  verticalListSortingStrategy,
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
@@ -185,6 +185,7 @@ export function LayoutGrid({
   const putLayout = usePutLayout(scorecardId)
   const putDefault = usePutDefaultLayout(scorecardId)
   const [announcement, setAnnouncement] = useState('')
+  const [saveError, setSaveError] = useState('')
 
   const fallback = useMemo(
     () => defaultLayout(categories, metricsByCategory),
@@ -220,14 +221,16 @@ export function LayoutGrid({
   const persist = useCallback(
     async (items: LayoutItem[]) => {
       const revision = layout.data?.revision ?? 0
+      setSaveError('')
       try {
         await putLayout.mutateAsync({ items, expectedRevision: revision })
       } catch (err) {
         if (err instanceof ApiError && err.status === 409) {
+          setSaveError('Someone else changed this layout. We reloaded it.')
           await layout.refetch()
           return
         }
-        throw err
+        setSaveError(`We couldn’t save your layout, so we put it back. ${err instanceof Error ? err.message : ''}`.trim())
       }
     },
     [layout, putLayout],
@@ -257,6 +260,7 @@ export function LayoutGrid({
   }
 
   const saveAsDefault = useCallback(async () => {
+    setSaveError('')
     try {
       await putDefault.mutateAsync({
         items: merged,
@@ -264,10 +268,11 @@ export function LayoutGrid({
       })
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) {
+        setSaveError('Someone else changed the default layout. We reloaded it; try again.')
         await layout.refetch()
         return
       }
-      throw err
+      setSaveError(`We couldn’t save the default layout. ${err instanceof Error ? err.message : ''}`.trim())
     }
   }, [putDefault, merged, layout])
 
@@ -289,6 +294,11 @@ export function LayoutGrid({
       <div className="sr-only" aria-live="polite">
         {announcement}
       </div>
+      {saveError && (
+        <p role="alert" className="mb-3 rounded-md border border-status-r bg-status-r-bg px-3 py-2 text-sm">
+          {saveError}
+        </p>
+      )}
       <div className="mb-4 flex flex-wrap gap-2">
         <button
           type="button"
@@ -317,7 +327,7 @@ export function LayoutGrid({
         )}
       </div>
       <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
-        <SortableContext items={visible.map((i) => i.id)} strategy={verticalListSortingStrategy}>
+        <SortableContext items={visible.map((i) => i.id)} strategy={rectSortingStrategy}>
           <div className="grid gap-4 sm:grid-cols-2">
             {visible.map((item) => {
               const label = labelFor(item.id, itemLabels)

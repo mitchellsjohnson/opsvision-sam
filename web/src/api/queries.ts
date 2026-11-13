@@ -675,13 +675,27 @@ export function useLayout(sc: string | undefined) {
   })
 }
 
-/** Persists overview tile order; callers handle 409 by refetching. */
+/**
+ * Persists overview tile order. The new order shows at once and is put back
+ * if the save fails; callers handle 409 by refetching.
+ */
 export function usePutLayout(sc: string) {
   const api = useApi()
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: (body: Schemas['PutLayoutRequest']) =>
       unwrap(api.PUT('/me/layouts/{sc}', { params: { path: { sc } }, body })),
+    onMutate: async (body) => {
+      await queryClient.cancelQueries({ queryKey: keys.layout(sc) })
+      const previous = queryClient.getQueryData<Schemas['LayoutResponse']>(keys.layout(sc))
+      queryClient.setQueryData<Schemas['LayoutResponse']>(keys.layout(sc), (prev) =>
+        prev ? { ...prev, items: body.items } : prev,
+      )
+      return { previous }
+    },
+    onError: (_err, _body, context) => {
+      if (context?.previous) queryClient.setQueryData(keys.layout(sc), context.previous)
+    },
     onSuccess: (data) => {
       queryClient.setQueryData(keys.layout(sc), data)
     },

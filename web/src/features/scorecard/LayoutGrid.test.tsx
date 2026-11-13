@@ -167,6 +167,81 @@ describe('LayoutGrid', () => {
     expect(defect?.hidden).toBe(false)
   })
 
+  const saved: LayoutItem[] = [
+    { id: 'widget:health', size: 'wide', hidden: false },
+    { id: 'section:delivery', size: 'wide', hidden: false },
+    { id: 'metric:on_time_pct', size: 'small', hidden: false },
+    { id: 'section:quality', size: 'wide', hidden: false },
+    { id: 'metric:defect_rate', size: 'small', hidden: false },
+  ]
+
+  function sectionOrder(): string[] {
+    return screen
+      .getAllByRole('heading', { level: 2 })
+      .map((h) => h.textContent ?? '')
+      .filter((t) => /Delivery|Quality/.test(t))
+      .map((t) => (t.includes('Delivery') ? 'Delivery' : 'Quality'))
+  }
+
+  async function moveDeliveryDown(put: Parameters<typeof http.put>[1], get?: Parameters<typeof http.get>[1]) {
+    mockDesktopPointer()
+    server.use(...viewHandlers())
+    server.use(
+      http.get(
+        `${API}/v1/me/layouts/:sc`,
+        get ?? (() => HttpResponse.json({ items: saved, revision: 1, source: 'user', defaultRevision: 0 })),
+      ),
+      http.put(`${API}/v1/me/layouts/:sc`, put),
+    )
+    renderApp(<App />, { route: ROUTE })
+    await screen.findByRole('heading', { name: 'Overview', level: 1 })
+    await waitFor(() => expect(sectionOrder()).toEqual(['Delivery', 'Quality']))
+    const user = userEvent.setup()
+    await user.click(openCardMenu('Delivery'))
+    await user.click(await screen.findByRole('menuitem', { name: 'Move down' }))
+  }
+
+  it('reorders at once, before the save finishes', async () => {
+    let release: () => void = () => {}
+    const pending = new Promise<void>((r) => (release = r))
+    await moveDeliveryDown(async ({ request }) => {
+      const body = (await request.json()) as { items: LayoutItem[] }
+      await pending
+      return HttpResponse.json({ items: body.items, revision: 2, source: 'user', defaultRevision: 0 })
+    })
+    await waitFor(() => expect(sectionOrder()).toEqual(['Quality', 'Delivery']))
+    release()
+  })
+
+  it('a failed save puts the layout back and says so', async () => {
+    await moveDeliveryDown(() =>
+      HttpResponse.json({ error: { code: 'internal', message: 'The server had a problem.', details: [] } }, { status: 500 }),
+    )
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toMatch(/couldn’t save your layout/i)
+    await waitFor(() => expect(sectionOrder()).toEqual(['Delivery', 'Quality']))
+  })
+
+  it('a 409 reloads the layout and explains why', async () => {
+    let gets = 0
+    const theirs: LayoutItem[] = [saved[0]!, saved[3]!, saved[4]!, saved[1]!, saved[2]!]
+    await moveDeliveryDown(
+      () => HttpResponse.json({ error: { code: 'conflict', message: 'stale', details: [] } }, { status: 409 }),
+      () => {
+        gets += 1
+        return HttpResponse.json(
+          gets === 1
+            ? { items: saved, revision: 1, source: 'user', defaultRevision: 0 }
+            : { items: theirs, revision: 2, source: 'user', defaultRevision: 0 },
+        )
+      },
+    )
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toBe('Someone else changed this layout. We reloaded it.')
+    await waitFor(() => expect(gets).toBeGreaterThan(1))
+    await waitFor(() => expect(sectionOrder()).toEqual(['Quality', 'Delivery']))
+  })
+
   it('drops an unknown saved id and still renders a metric missing from the save', async () => {
     const saved: LayoutItem[] = [
       { id: 'widget:health', size: 'wide', hidden: false },
