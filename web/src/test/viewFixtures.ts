@@ -224,6 +224,7 @@ export function buildView(query: URLSearchParams): ScorecardView {
         categoryId: m.categoryId,
         subjectId: s.id,
         subjectName: s.name,
+        subjectKind: 'unit',
         format: m.format,
         depth: s.depth,
         direction: m.direction,
@@ -241,6 +242,42 @@ export function buildView(query: URLSearchParams): ScorecardView {
   for (const p of periods) versionByPeriod[p] = 'ver-1'
   for (const p of ytd) versionByPeriod[`YTD:${p}`] = 'ver-1'
   return { periods, ytd, categories, rows, versionByPeriod }
+}
+
+/** Services in the item-only uptime metric: one unattached, one under Unit A. */
+export const UPTIME_SERVICES = [
+  { id: 'svc-api', name: 'API service', depth: 0, oct: { value: 99.95, display: '99.95%', status: 'G' } },
+  { id: 'svc-web', name: 'Web service', depth: 2, oct: { value: 99.2, display: '99.20%', status: 'R' } },
+] as const
+
+/**
+ * Appends `svc_uptime`, a metric reported only for tracked items (no org-unit
+ * row), to a view built by `buildView`. Each service is 99.90% / G except in
+ * 2026-M10, where it has the `oct` values above.
+ */
+export function addServiceUptime(view: ScorecardView): ScorecardView {
+  for (const s of UPTIME_SERVICES) {
+    const cellFor = (period: string, ytd: boolean): Cell => {
+      const values = period === '2026-M10' && !ytd ? s.oct : { value: 99.9, display: '99.90%', status: 'G' }
+      return { metricKey: 'svc_uptime', subjectId: s.id, period, ytd, ...blank, ...values, coverage: [1, 1] }
+    }
+    view.rows.push({
+      metricKey: 'svc_uptime',
+      metricName: 'Service uptime',
+      categoryId: 'delivery',
+      subjectId: s.id,
+      subjectName: s.name,
+      subjectKind: 'item',
+      format: 'percent2',
+      depth: s.depth,
+      direction: 'higher_better',
+      frequency: 'monthly',
+      chartKind: 'uptime',
+      definition: '',
+      cells: [...view.periods.map((p) => cellFor(p, false)), ...view.ytd.map((p) => cellFor(p, true))],
+    })
+  }
+  return view
 }
 
 export interface ViewHandlerOptions {

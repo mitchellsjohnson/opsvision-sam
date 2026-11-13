@@ -1468,6 +1468,11 @@ export interface components {
             categoryId: components["schemas"]["Id"];
             subjectId: components["schemas"]["Id"];
             subjectName: string;
+            /**
+             * @description Whether the subject is an org unit or a tracked item.
+             * @enum {string}
+             */
+            subjectKind: "unit" | "item";
             format: components["schemas"]["MetricFormat"];
             depth: number;
             direction: components["schemas"]["Direction"];

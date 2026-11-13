@@ -2256,13 +2256,17 @@ components:
     ViewRow:
       type: object
       description: One metric for one subject. `cells` has one entry per `periods` column, then one per `ytd` column.
-      required: [metricKey, metricName, categoryId, subjectId, subjectName, format, depth, direction, frequency, chartKind, cells]
+      required: [metricKey, metricName, categoryId, subjectId, subjectName, subjectKind, format, depth, direction, frequency, chartKind, cells]
       properties:
         metricKey: { $ref: '#/components/schemas/Key' }
         metricName: { type: string }
         categoryId: { $ref: '#/components/schemas/Id' }
         subjectId: { $ref: '#/components/schemas/Id' }
         subjectName: { type: string }
+        subjectKind:
+          type: string
+          enum: [unit, item]
+          description: Whether the subject is an org unit or a tracked item.
         format: { $ref: '#/components/schemas/MetricFormat' }
         depth: { type: integer, minimum: 0 }
         direction: { $ref: '#/components/schemas/Direction' }

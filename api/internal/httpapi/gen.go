@@ -652,6 +652,24 @@ func (e VersionStatus) Valid() bool {
 	}
 }
 
+// Defines values for ViewRowSubjectKind.
+const (
+	Item ViewRowSubjectKind = "item"
+	Unit ViewRowSubjectKind = "unit"
+)
+
+// Valid indicates whether the value is a known member of the ViewRowSubjectKind enum.
+func (e ViewRowSubjectKind) Valid() bool {
+	switch e {
+	case Item:
+		return true
+	case Unit:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for GetScorecardViewParamsStructure.
 const (
 	AsOf    GetScorecardViewParamsStructure = "as_of"
@@ -2394,9 +2412,15 @@ type ViewRow struct {
 	// SubjectId Client-supplied identifier.
 	//
 	// Example: team-alpha
-	SubjectId   Id     `json:"subjectId"`
-	SubjectName string `json:"subjectName"`
+	SubjectId Id `json:"subjectId"`
+
+	// SubjectKind Whether the subject is an org unit or a tracked item.
+	SubjectKind ViewRowSubjectKind `json:"subjectKind"`
+	SubjectName string             `json:"subjectName"`
 }
+
+// ViewRowSubjectKind Whether the subject is an org unit or a tracked item.
+type ViewRowSubjectKind string
 
 // RecordTypeId Measure or metric key.
 //

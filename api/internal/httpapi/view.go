@@ -160,6 +160,7 @@ func apiView(v engine.View, keep func(engine.Row) bool, cutoffs map[cutoffKey]ti
 			CategoryId:  r.CategoryID,
 			SubjectId:   r.SubjectID,
 			SubjectName: r.SubjectName,
+			SubjectKind: ViewRowSubjectKind(r.SubjectKind),
 			Format:      MetricFormat(r.Format),
 			Depth:       r.Depth,
 			Direction:   Direction(r.Direction),

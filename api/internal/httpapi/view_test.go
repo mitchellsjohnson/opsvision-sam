@@ -44,6 +44,7 @@ type viewRowJSON struct {
 	MetricKey   string     `json:"metricKey"`
 	SubjectID   string     `json:"subjectId"`
 	SubjectName string     `json:"subjectName"`
+	SubjectKind string     `json:"subjectKind"`
 	Depth       int        `json:"depth"`
 	Cells       []cellJSON `json:"cells"`
 }
@@ -230,6 +231,21 @@ func TestViewerSeesOnlyScopedRows(t *testing.T) {
 	for _, r := range v.Rows {
 		if r.SubjectID != "seg-a" {
 			t.Errorf("subjects filter leaked row %s", r.SubjectID)
+		}
+	}
+}
+
+// Rows say whether their subject is an org unit or a tracked item, so a
+// client can tell an item-only metric from one with a company row.
+func TestViewSubjectKind(t *testing.T) {
+	e := newTestEnv(t)
+	seedDelivery(t, e)
+	var v viewJSON
+	e.expect(t, 200, e.tokens["t1-admin"], "GET", "/scorecards/delivery/view?periods=2026-M10", nil, &v)
+	want := map[string]string{"acme": "unit", "seg-a": "unit", "prod-1": "unit", "pay": "item", "shop": "item"}
+	for _, r := range v.Rows {
+		if w, ok := want[r.SubjectID]; ok && r.SubjectKind != w {
+			t.Errorf("%s/%s subjectKind = %q, want %q", r.MetricKey, r.SubjectID, r.SubjectKind, w)
 		}
 	}
 }

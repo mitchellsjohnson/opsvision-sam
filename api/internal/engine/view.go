@@ -42,6 +42,12 @@ type ViewRequest struct {
 	Structure string
 }
 
+// Row subject kinds.
+const (
+	SubjectUnit = "unit"
+	SubjectItem = "item"
+)
+
 // Row is one metric for one subject across all columns. Cells holds one cell
 // per ViewRequest.Periods entry, then one per ViewRequest.YTD entry.
 type Row struct {
@@ -50,6 +56,8 @@ type Row struct {
 	CategoryID  string
 	SubjectID   string
 	SubjectName string
+	// SubjectKind is SubjectUnit or SubjectItem.
+	SubjectKind string
 	Format      string
 	// Depth is indentation: distance from the root for org units; for
 	// tracked items one more than the unit they are attached to, or 0 when
@@ -344,9 +352,13 @@ func Compute(in *Input, req ViewRequest) (View, error) {
 	cells := make([]Cell, len(specs)*len(cols))
 	for i, sp := range specs {
 		ref := refs[sp.key]
+		kind := SubjectUnit
+		if sp.s.item {
+			kind = SubjectItem
+		}
 		row := Row{
 			MetricKey: sp.key, MetricName: ref.m.Name, CategoryID: ref.m.CategoryID,
-			SubjectID: sp.s.id, SubjectName: sp.s.name, Format: ref.m.Format,
+			SubjectID: sp.s.id, SubjectName: sp.s.name, SubjectKind: kind, Format: ref.m.Format,
 			Depth: sp.s.depth, Direction: ref.m.Direction,
 			Frequency: ref.m.Frequency, ChartKind: ChartKind(ref.m), Definition: ref.m.Definition,
 			Cells: cells[i*len(cols) : (i+1)*len(cols) : (i+1)*len(cols)],
@@ -391,6 +403,7 @@ func cellFor(ix *Index, c column, used []domain.MethodologyVersion, metricsBy []
 type subject struct {
 	id, name string
 	depth    int
+	item     bool
 }
 
 // orgListing is the org tree flattened in pre-order as of one month.
@@ -473,7 +486,7 @@ func subjectsFor(m domain.Metric, org orgListing, items []domain.TrackedItem) []
 		if d, ok := org.depth[it.OrgUnitID]; ok && it.OrgUnitID != "" {
 			depth = d + 1
 		}
-		out = append(out, subject{id: it.ID, name: it.Name, depth: depth})
+		out = append(out, subject{id: it.ID, name: it.Name, depth: depth, item: true})
 	}
 	return out
 }
