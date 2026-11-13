@@ -1,5 +1,6 @@
 # Scorecard Polish Implementation Plan
 
+> **Superseded (2026-11-13):** the 2026-11-10 scorecard UX plan already delivers these features. Only Task U1 (manual navigation toggle and latest-month default, commit 695dcee) was implemented from this plan.
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development. Steps use checkbox (`- [ ]`) syntax.
 
 **Goal:** Make the scorecard presentation-ready for executives and program managers. This plan adds:
