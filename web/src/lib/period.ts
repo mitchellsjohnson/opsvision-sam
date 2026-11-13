@@ -207,6 +207,7 @@ export interface ViewRequest {
   subjects?: string[]
   restate?: string
   structure?: 'as_of' | 'current'
+  metrics?: string[]
 }
 
 /** The scorecard view request for the shell's period state. */

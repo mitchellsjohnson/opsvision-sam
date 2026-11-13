@@ -852,6 +852,16 @@ paths:
             type: array
             maxItems: 200
             items: { $ref: '#/components/schemas/Id' }
+        - name: metrics
+          in: query
+          required: false
+          description: Keep only rows for these metric keys. At most 200.
+          style: form
+          explode: true
+          schema:
+            type: array
+            maxItems: 200
+            items: { $ref: '#/components/schemas/Key' }
         - name: restate
           in: query
           required: false

@@ -234,6 +234,26 @@ func TestViewerSeesOnlyScopedRows(t *testing.T) {
 	}
 }
 
+func TestViewMetricsFilter(t *testing.T) {
+	e := newTestEnv(t)
+	seedDelivery(t, e)
+	saveSplit(t, e)
+	admin := e.tokens["t1-admin"]
+	var v viewJSON
+	e.expect(t, 200, admin, "GET", "/scorecards/delivery/view?periods=2026-M10&metrics=on_time_pct&metrics=reviews_score", nil, &v)
+	seen := map[string]bool{}
+	for _, r := range v.Rows {
+		seen[r.MetricKey] = true
+	}
+	if !seen["on_time_pct"] || !seen["reviews_score"] || len(seen) != 2 {
+		t.Fatalf("metrics = %v, want on_time_pct and reviews_score only", seen)
+	}
+	if got := v.cell(t, "on_time_pct", "seg-a", 0).Display; got != "84.3%" {
+		t.Fatalf("filtered on-time = %q, want the unfiltered 84.3%%", got)
+	}
+	e.expectError(t, 400, "invalid", admin, "GET", "/scorecards/delivery/view?periods=2026-M10&metrics=Bad-Key", nil)
+}
+
 func TestRestateQueryParam(t *testing.T) {
 	e := newTestEnv(t)
 	seedDelivery(t, e)

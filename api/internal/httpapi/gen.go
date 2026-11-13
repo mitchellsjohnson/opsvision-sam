@@ -2535,6 +2535,9 @@ type GetScorecardViewParams struct {
 	// Subjects Keep only rows for these subject IDs. At most 200.
 	Subjects *[]Id `form:"subjects,omitempty" json:"subjects,omitempty"`
 
+	// Metrics Keep only rows for these metric keys. At most 200.
+	Metrics *[]Key `form:"metrics,omitempty" json:"metrics,omitempty"`
+
 	// Restate Methodology version ID (any status) to compute every column
 	// under. Omit for the version in force in each column.
 	Restate *ServerId `form:"restate,omitempty" json:"restate,omitempty"`
@@ -4401,6 +4404,19 @@ func (siw *ServerInterfaceWrapper) GetScorecardView(w http.ResponseWriter, r *ht
 			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "subjects"})
 		} else {
 			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "subjects", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "metrics" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "metrics", r.URL.Query(), &params.Metrics, runtime.BindQueryParameterOptions{Type: "array", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "metrics"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "metrics", Err: err})
 		}
 		return
 	}

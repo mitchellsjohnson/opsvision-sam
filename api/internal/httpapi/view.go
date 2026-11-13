@@ -14,6 +14,7 @@ const (
 	maxViewPeriods  = 24
 	maxViewYTD      = 2
 	maxViewSubjects = 200
+	maxViewMetrics  = 200
 )
 
 // apiOverride converts a stored override.
@@ -235,6 +236,18 @@ func (s *Server) GetScorecardView(ctx context.Context, req GetScorecardViewReque
 				continue
 			}
 			vr.SubjectIDs = append(vr.SubjectIDs, id)
+		}
+	}
+	if params.Metrics != nil {
+		if len(*params.Metrics) > maxViewMetrics {
+			pr.add("metrics", "at most %d metrics", maxViewMetrics)
+		}
+		for i, k := range *params.Metrics {
+			if !validKey(k) {
+				pr.add(indexPath("metrics", i), "%s", keyRule)
+				continue
+			}
+			vr.MetricKeys = append(vr.MetricKeys, k)
 		}
 	}
 	if params.Structure != nil {

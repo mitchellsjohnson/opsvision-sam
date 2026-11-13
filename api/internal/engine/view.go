@@ -33,6 +33,8 @@ type ViewRequest struct {
 	YTD []period.Period
 	// SubjectIDs, when non-empty, keeps only rows for the listed subjects.
 	SubjectIDs []string
+	// MetricKeys, when non-empty, keeps only rows for the listed metrics.
+	MetricKeys []string
 	// Restate is a methodology version ID (any status) used for every
 	// column; "" selects the version in force for each column.
 	Restate string
@@ -315,6 +317,10 @@ func Compute(in *Input, req ViewRequest) (View, error) {
 	for _, id := range req.SubjectIDs {
 		keep[id] = true
 	}
+	keepMetric := map[string]bool{}
+	for _, k := range req.MetricKeys {
+		keepMetric[k] = true
+	}
 
 	type rowSpec struct {
 		key string
@@ -322,6 +328,9 @@ func Compute(in *Input, req ViewRequest) (View, error) {
 	}
 	var specs []rowSpec
 	for _, k := range keys {
+		if len(keepMetric) > 0 && !keepMetric[k] {
+			continue
+		}
 		for _, s := range subjectsFor(refs[k].m, org, in.Items) {
 			if len(keep) > 0 && !keep[s.id] {
 				continue

@@ -3176,6 +3176,8 @@ export interface operations {
                 ytd?: components["schemas"]["MonthPeriod"][];
                 /** @description Keep only rows for these subject IDs. At most 200. */
                 subjects?: components["schemas"]["Id"][];
+                /** @description Keep only rows for these metric keys. At most 200. */
+                metrics?: components["schemas"]["Key"][];
                 /**
                  * @description Methodology version ID (any status) to compute every column
                  *     under. Omit for the version in force in each column.
