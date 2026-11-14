@@ -70,6 +70,7 @@ function SummaryEditor({ scorecardId, period, summary, reload, onDirtyChange }: 
         onSuccess: (data) => {
           setDraft((d) => ({ ...d, baseRevision: data.revision, savedText: data.text }))
           setSaved(true)
+          setConflict(false)
         },
         onError: (e) => setConflict(e instanceof ApiError && e.status === 409),
       },
@@ -537,7 +538,7 @@ export function ReportPage() {
                 {!doc.data?.live && (
                   <p className="mt-3 text-sm text-ink/80">Edits apply to the live report and the next publish.</p>
                 )}
-                {summary.isError ? (
+                {summary.isError && !summary.data ? (
                   <p role="alert" className="mt-3 text-sm text-status-r">
                     Could not load the summary: {summary.error.message}
                   </p>

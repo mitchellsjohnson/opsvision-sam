@@ -243,7 +243,7 @@ function drawChart(ctx: Ctx, page: PDFPage, metric: ReportMetric, kind: 'line' |
       if (a == null || b == null) continue
       page.drawLine({ start: { x: xAt(i - 1), y: yAt(a) }, end: { x: xAt(i), y: yAt(b) }, thickness: 1, color: color(ctx, INK), dashArray: [6, 4] })
     }
-    const first = goal.findIndex((v) => v !== null)
+    const first = goal.findIndex((v, i) => v !== null && goal[i + 1] != null)
     text(ctx, page, xAt(first) - slot / 2 + 4, yAt(goal[first]!) + 4, 'Goal', { size: 9, font: ctx.bold })
   }
 

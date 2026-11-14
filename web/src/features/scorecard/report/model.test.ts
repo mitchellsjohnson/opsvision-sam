@@ -141,6 +141,15 @@ describe('sparse metrics and goals', () => {
     expect(goalSeries(model.needsAttention[0]!)).toBeNull()
   })
 
+  it('has no goal series when no two adjacent months carry targets', () => {
+    const doc = reportDocument({ view: reportView() })
+    const root = doc.view.rows.find((r) => r.metricKey === 'on_time_pct' && r.subjectId === 'root')!
+    root.cells.forEach((c, i) => {
+      if (!c.ytd) c.target = i % 2 === 1 ? 90 : null
+    })
+    expect(goalSeries(buildReportModel(input({ doc })).needsAttention[0]!)).toBeNull()
+  })
+
   it('plots the goal per month where months carry targets, and never on a bar chart', () => {
     const doc = reportDocument({ view: reportView() })
     const root = doc.view.rows.find((r) => r.metricKey === 'on_time_pct' && r.subjectId === 'root')!

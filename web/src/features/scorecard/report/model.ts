@@ -148,13 +148,14 @@ export function exportChart(metric: ReportMetric): 'line' | 'bar' | 'table' {
 
 /**
  * The goal to plot beside a single-line chart: each month's own target (null
- * where it has none), when at least two months carry one. Otherwise null and
- * the goal is only stated as text; bar charts never plot it.
+ * where it has none), when two adjacent months carry one, so there is a
+ * segment to draw. Otherwise null and the goal is only stated as text; bar
+ * charts never plot it.
  */
 export function goalSeries(metric: ReportMetric): (number | null)[] | null {
   if (exportChart(metric) !== 'line' || metric.series.length !== 1) return null
   const targets = metric.series[0]!.points.map((p) => p.target)
-  return targets.filter((t) => t !== null).length >= 2 ? targets : null
+  return targets.some((t, i) => i > 0 && t !== null && targets[i - 1] !== null) ? targets : null
 }
 
 /** A point's value for a table: its display, `n/a`, or a dash when missing. */

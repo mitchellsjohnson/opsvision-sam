@@ -173,6 +173,46 @@ describe('ReportPage', () => {
     expect(await screen.findByText('Summary saved.')).toBeTruthy()
   })
 
+  it('keeps the editor and the draft when Reload fails, and says the reload failed', async () => {
+    let failGet = false
+    renderReport(ROUTE, {
+      summary: () =>
+        failGet
+          ? HttpResponse.json({ error: { code: 'internal', message: 'store unavailable' } }, { status: 500 })
+          : { text: REPORT_SUMMARY, revision: 3 },
+      putSummary: () => HttpResponse.json({ error: { code: 'conflict', message: 'stale' } }, { status: 409 }),
+    })
+    const box = (await screen.findByRole('textbox', { name: 'Summary' })) as HTMLTextAreaElement
+    await waitFor(() => expect(box.value).toBe(REPORT_SUMMARY))
+    const user = userEvent.setup()
+    await user.clear(box)
+    await user.type(box, 'My draft.')
+    await user.click(screen.getByRole('button', { name: 'Save summary' }))
+    const alert = await screen.findByRole('alert')
+    failGet = true
+    await user.click(within(alert).getByRole('button', { name: 'Reload' }))
+    expect(await screen.findByText('Could not reload the summary; try again.')).toBeTruthy()
+    expect((screen.getByRole('textbox', { name: 'Summary' }) as HTMLTextAreaElement).value).toBe('My draft.')
+    expect(screen.queryByText(/Could not load the summary/)).toBeNull()
+  })
+
+  it('clears the conflict once a later save succeeds', async () => {
+    let puts = 0
+    renderReport(ROUTE, {
+      putSummary: () =>
+        ++puts === 1 ? HttpResponse.json({ error: { code: 'conflict', message: 'stale' } }, { status: 409 }) : undefined,
+    })
+    const box = (await screen.findByRole('textbox', { name: 'Summary' })) as HTMLTextAreaElement
+    await waitFor(() => expect(box.value).toBe(REPORT_SUMMARY))
+    const user = userEvent.setup()
+    await user.type(box, ' More.')
+    await user.click(screen.getByRole('button', { name: 'Save summary' }))
+    expect(await screen.findByText('This summary changed since you opened it.')).toBeTruthy()
+    await user.click(screen.getByRole('button', { name: 'Save summary' }))
+    expect(await screen.findByText('Summary saved.')).toBeTruthy()
+    expect(screen.queryByText('This summary changed since you opened it.')).toBeNull()
+  })
+
   it('says so when the summary cannot be loaded', async () => {
     renderReport(ROUTE, {
       summary: () => HttpResponse.json({ error: { code: 'internal', message: 'store unavailable' } }, { status: 500 }),
