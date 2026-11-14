@@ -43,6 +43,12 @@ describe('statusAtScope', () => {
       caption: 'worst of 2 segments',
     })
   })
+
+  it('says "worst of 1 service" for a single reported child', () => {
+    const scope = { cells: [] }
+    const children = [{ cells: [cell({ period: '2026-M10', value: 99.2, status: 'R' })] }]
+    expect(statusAtScope({ scope, children, columnKey: '2026-M10', scale, noun: 'services' }).caption).toBe('worst of 1 service')
+  })
 })
 
 describe('applyLayout', () => {

@@ -66,6 +66,6 @@ export function statusAtScope({
 
   return {
     status: worstStatus,
-    caption: `worst of ${reported.length} ${noun}`,
+    caption: `worst of ${reported.length} ${reported.length === 1 ? noun.slice(0, -1) : noun}`,
   }
 }

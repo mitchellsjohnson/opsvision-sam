@@ -160,7 +160,13 @@ export function OverviewPage() {
   const worstRank = Math.max(...scale.map((s) => s.rank))
   const healthLabelsMap = healthLabels(scale)
   const healthCounts = new Map<string, number>()
-  let notReported = 0
+  // A metric reported only for tracked items has no rows when no item is in
+  // view (a scope with no services): it is not reported, not gone.
+  const shownKeys = new Set(metrics.map((m) => m.metric.key))
+  const absentItemMetrics = (
+    versions.data?.versions.find((v) => v.id === view.data.versionByPeriod[columnKey])?.content.metrics ?? []
+  ).filter((m) => !shownKeys.has(m.key) && m.reportedAt.length > 0 && m.reportedAt.every((s) => s.kind === 'item_kind'))
+  let notReported = absentItemMetrics.length
   for (const { atScope } of metrics) {
     if (!atScope.status) notReported++
     else healthCounts.set(atScope.status, (healthCounts.get(atScope.status) ?? 0) + 1)
@@ -197,7 +203,10 @@ export function OverviewPage() {
           ? '3-year status'
           : '12-month status'
 
-  const unreported = metrics.filter(({ atScope }) => !atScope.status)
+  const unreported = [
+    ...metrics.filter(({ atScope }) => !atScope.status).map(({ head }) => ({ name: head.metricName, frequency: head.frequency })),
+    ...absentItemMetrics.map((m) => ({ name: m.name, frequency: m.frequency })),
+  ]
 
   const metricsByCategory: Record<string, { key: string }[]> = {}
   const metricCategories: Record<string, string> = {}
@@ -484,8 +493,8 @@ export function OverviewPage() {
               Not reported:{' '}
               {unreported
                 .map((m) => {
-                  const due = nextDuePeriodLabel(m.head.frequency, period.period, fy)
-                  return due ? `${m.head.metricName} (next due ${due})` : m.head.metricName
+                  const due = nextDuePeriodLabel(m.frequency, period.period, fy)
+                  return due ? `${m.name} (next due ${due})` : m.name
                 })
                 .join(', ')}
               {canEnter && (

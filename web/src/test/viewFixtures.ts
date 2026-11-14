@@ -250,13 +250,21 @@ export const UPTIME_SERVICES = [
   { id: 'svc-web', name: 'Web service', depth: 2, oct: { value: 99.2, display: '99.20%', status: 'R' } },
 ] as const
 
+/** The services as tracked items: Web service sits in Team A1, under Unit A; API service is unattached. */
+export const UPTIME_ITEMS: Schemas['TrackedItem'][] = [
+  { id: 'svc-api', kindId: 'service', name: 'API service', orgUnitId: '', sourceKeys: [] },
+  { id: 'svc-web', kindId: 'service', name: 'Web service', orgUnitId: 'team-a1', sourceKeys: [] },
+]
+
 /**
  * Appends `svc_uptime`, a metric reported only for tracked items (no org-unit
  * row), to a view built by `buildView`. Each service is 99.90% / G except in
- * 2026-M10, where it has the `oct` values above.
+ * 2026-M10, where it has the `oct` values above. With `subjects`, only the
+ * services listed, as the API does.
  */
-export function addServiceUptime(view: ScorecardView): ScorecardView {
+export function addServiceUptime(view: ScorecardView, subjects: string[] = []): ScorecardView {
   for (const s of UPTIME_SERVICES) {
+    if (subjects.length > 0 && !subjects.includes(s.id)) continue
     const cellFor = (period: string, ytd: boolean): Cell => {
       const values = period === '2026-M10' && !ytd ? s.oct : { value: 99.9, display: '99.90%', status: 'G' }
       return { metricKey: 'svc_uptime', subjectId: s.id, period, ytd, ...blank, ...values, coverage: [1, 1] }

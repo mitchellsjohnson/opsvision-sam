@@ -1,13 +1,14 @@
 import { screen, within, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { HttpResponse } from 'msw'
+import { http, HttpResponse } from 'msw'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { components } from '../../api/schema'
 import { App } from '../../App'
 import { monthLabel, parsePeriod } from '../../lib/period'
-import { server } from '../../test/server'
+import { orgUnits } from '../../test/fixtures'
+import { API, server } from '../../test/server'
 import { renderApp } from '../../test/utils'
-import { addServiceUptime, buildView, viewHandlers } from '../../test/viewFixtures'
+import { addServiceUptime, buildView, UPTIME_ITEMS, versions, viewHandlers } from '../../test/viewFixtures'
 
 type ScorecardView = components['schemas']['ScorecardView']
 type Cell = components['schemas']['Cell']
@@ -222,6 +223,67 @@ describe('OverviewPage', () => {
     expect(within(card).queryByText(/^Company total not reported/)).toBeNull()
     expect(within(card).getByTestId('uptime-strip-svc-api')).toBeTruthy()
     expect(within(card).getByTestId('uptime-strip-svc-web')).toBeTruthy()
+  })
+
+  describe('under a scope', () => {
+    // Team A1 sits under Unit A and has the Web service; Unit B has no services.
+    function scoped(scope: string, seen: URL[] = []) {
+      const uptime = versions.map((v) =>
+        v.id !== 'ver-1'
+          ? v
+          : {
+              ...v,
+              content: {
+                ...v.content,
+                metrics: [
+                  ...v.content.metrics,
+                  {
+                    ...v.content.metrics[0]!,
+                    key: 'svc_uptime',
+                    name: 'Service uptime',
+                    format: 'percent2' as const,
+                    reportedAt: [{ kind: 'item_kind' as const, id: 'service' }],
+                  },
+                ],
+              },
+            },
+      )
+      server.use(
+        // Before viewHandlers: the first matching handler answers.
+        http.get(`${API}/v1/scorecards/sc-main/versions`, () => HttpResponse.json({ versions: uptime })),
+        ...viewHandlers({
+          onView: (u) => seen.push(u),
+          respond: (u) => HttpResponse.json(addServiceUptime(buildView(u.searchParams), u.searchParams.getAll('subjects'))),
+        }),
+        http.get(`${API}/v1/org/units`, () =>
+          HttpResponse.json({
+            units: [...orgUnits, { id: 'team-a1', name: 'Team A1', levelId: 'l2', parentId: 'unit-a', sourceKeys: [] }],
+          }),
+        ),
+        http.get(`${API}/v1/items`, () => HttpResponse.json({ items: UPTIME_ITEMS })),
+      )
+      renderApp(<App />, { route: `${ROUTE}&scope=${scope}` })
+    }
+
+    it("an item-only metric shows the worst of the subtree's services, which the request asks for", async () => {
+      const seen: URL[] = []
+      scoped('unit-a', seen)
+      await screen.findByRole('heading', { name: 'Overview', level: 1 })
+      const card = metricCard('Service uptime')
+      expect(within(card).getByText('worst of 1 service')).toBeTruthy()
+      expect(within(card).getByTestId('uptime-strip-svc-web')).toBeTruthy()
+      expect(within(card).queryByTestId('uptime-strip-svc-api')).toBeNull()
+      expect(seen).toHaveLength(1)
+      expect(seen[0]!.searchParams.getAll('subjects')).toEqual(['unit-a', 'team-a1', 'svc-web'])
+    })
+
+    it('an item-only metric is Not reported when the subtree has no services', async () => {
+      scoped('unit-b')
+      await screen.findByRole('heading', { name: 'Overview', level: 1 })
+      await waitFor(() => expect(screen.getByText(/^Not reported:/).textContent).toMatch(/Service uptime/))
+      expect(screen.queryByRole('article', { name: /Service uptime/ })).toBeNull()
+      expect(within(screen.getByRole('region', { name: 'Health this month' })).getByText(/Not reported \d/)).toBeTruthy()
+    })
   })
 
   it('each uptime square has a per-period accessible name', async () => {

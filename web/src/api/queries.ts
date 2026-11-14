@@ -332,10 +332,11 @@ export function useCreateItemKind() {
 }
 
 /** Every tracked item, of all kinds. */
-export function useItems() {
+export function useItems(options: { enabled?: boolean } = {}) {
   const api = useApi()
   return useQuery({
     queryKey: keys.items,
+    enabled: options.enabled,
     queryFn: async () => (await unwrap(api.GET('/items', { params: { query: {} } }))).items,
   })
 }

@@ -1,4 +1,4 @@
-import { useOrgUnits } from '../../api/queries'
+import { useItems, useOrgUnits } from '../../api/queries'
 import { formatPeriod, lastMonth, parsePeriod, type ViewRequest } from '../../lib/period'
 import { usePeriodState, type PeriodView } from '../../shell/usePeriodState'
 import { buildMonthTrendColumns, buildTrendColumns, columnRequest } from './columns'
@@ -9,6 +9,18 @@ export const MAX_VIEW_SUBJECTS = 200
 interface Unit {
   id: string
   parentId: string
+}
+
+interface Item {
+  id: string
+  /** '' when the item is not attached to a unit. */
+  orgUnitId: string
+}
+
+/** The org units and tracked items a scope expands over; either may still be loading. */
+export interface SubjectTree {
+  units?: Unit[]
+  items?: Item[]
 }
 
 type ViewState = Pick<
@@ -41,11 +53,19 @@ function withDescendants(selected: string[], units: Unit[]): string[] {
   return [...out]
 }
 
-/** The subjects the URL picks, else its scope, with every unit below them; [] for all. */
-export function viewSubjects(state: Pick<ViewState, 'subjects' | 'scope'>, units: Unit[] | undefined): string[] {
+/**
+ * The subjects the URL picks, else its scope, with every unit below them and
+ * the tracked items attached to any of those units (the API keeps only the
+ * rows of listed subjects, so item-only metrics need their items named); []
+ * for all. Units come first when the list is cut to the API's cap.
+ */
+export function viewSubjects(state: Pick<ViewState, 'subjects' | 'scope'>, tree: SubjectTree): string[] {
   const picked = state.subjects.length > 0 ? state.subjects : state.scope ? [state.scope] : []
   if (picked.length === 0) return []
-  return withDescendants(picked, units ?? []).slice(0, MAX_VIEW_SUBJECTS)
+  const units = withDescendants(picked, tree.units ?? [])
+  const inTree = new Set(units)
+  const items = (tree.items ?? []).filter((i) => i.orgUnitId !== '' && inTree.has(i.orgUnitId)).map((i) => i.id)
+  return [...units, ...items.filter((id) => !inTree.has(id))].slice(0, MAX_VIEW_SUBJECTS)
 }
 
 /**
@@ -57,7 +77,7 @@ export function viewSubjects(state: Pick<ViewState, 'subjects' | 'scope'>, units
  */
 export function scorecardViewRequest(
   state: ViewState,
-  units: Unit[] | undefined,
+  tree: SubjectTree,
   options: ViewRequestOptions = {},
 ): ViewRequest {
   const fy = state.fiscalYearStartMonth
@@ -68,7 +88,7 @@ export function scorecardViewRequest(
   const req: ViewRequest = { ...columnRequest(columns) }
   const selected = parsePeriod(state.period)
   if (state.ytd && selected && selected.grain !== 'year') req.ytd = [formatPeriod(lastMonth(selected))]
-  const subjects = viewSubjects(state, units)
+  const subjects = viewSubjects(state, tree)
   if (subjects.length > 0) req.subjects = subjects
   if (state.restate !== '') req.restate = state.restate
   if (state.structure === 'current') req.structure = 'current'
@@ -79,7 +99,8 @@ export function scorecardViewRequest(
 /**
  * The view request for the current URL. `ready` is false until the period
  * default is known and, when a scope or subjects need their descendants, the
- * org units have loaded.
+ * org units and tracked items have loaded (or failed: the request then goes
+ * without them).
  */
 export function useScorecardViewRequest(options: ViewRequestOptions = {}): {
   request: ViewRequest
@@ -88,10 +109,11 @@ export function useScorecardViewRequest(options: ViewRequestOptions = {}): {
 } {
   const [period] = usePeriodState()
   const orgUnits = useOrgUnits()
-  const needsUnits = period.subjects.length > 0 || period.scope !== ''
+  const needsTree = period.subjects.length > 0 || period.scope !== ''
+  const items = useItems({ enabled: needsTree })
   return {
-    request: scorecardViewRequest(period, orgUnits.data?.units, options),
-    ready: period.ready && (!needsUnits || !orgUnits.isPending),
+    request: scorecardViewRequest(period, { units: orgUnits.data?.units, items: items.data }, options),
+    ready: period.ready && (!needsTree || (!orgUnits.isPending && !items.isPending)),
     period,
   }
 }
