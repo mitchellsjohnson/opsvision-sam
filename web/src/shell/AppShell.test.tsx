@@ -99,6 +99,35 @@ describe('AppShell', () => {
     }
   })
 
+  it('lays out each expanded link and the collapse button as one row: icon, then label', async () => {
+    shell('/admin/org?period=2026-M10')
+    const nav = await screen.findByRole('navigation', { name: 'Main' })
+    const controls = [
+      await within(nav).findByRole('link', { name: 'Main scorecard' }),
+      within(nav).getByRole('link', { name: 'Enter data' }),
+      ...ADMIN_LINKS.map((name) => within(nav).getByRole('link', { name })),
+      within(nav).getByRole('button', { name: 'Collapse navigation' }),
+    ]
+    for (const el of controls) {
+      const name = el.textContent
+      for (const cls of ['inline-flex', 'items-center', 'gap-2', 'px-3', 'py-2']) {
+        expect(el.classList.contains(cls), `${cls} on ${name}`).toBe(true)
+      }
+      const [icon, label, ...rest] = [...el.children]
+      expect(rest, `${name} has only an icon and a label`).toHaveLength(0)
+      expect(icon!.tagName.toLowerCase()).toBe('svg')
+      expect(icon!.getAttribute('class')).toMatch(/(^|\s)size-4(\s|$)/)
+      expect(icon!.getAttribute('class')).toMatch(/(^|\s)shrink-0(\s|$)/)
+      expect(label!.tagName.toLowerCase()).toBe('span')
+      expect(label!.textContent).toBe(name)
+    }
+    // The current page keeps its highlight.
+    const org = within(nav).getByRole('link', { name: 'Org' })
+    expect(org.getAttribute('aria-current')).toBe('page')
+    expect(org.classList.contains('bg-accent')).toBe(true)
+    expect(within(nav).getByRole('link', { name: 'Items' }).classList.contains('bg-accent')).toBe(false)
+  })
+
   it("remembers the active tenant's organization", async () => {
     const rememberTenant = vi.fn()
     shell(undefined, testAuth({ rememberTenant }))
@@ -160,6 +189,7 @@ describe('AppShell collapsible navigation', () => {
       expect(link.getAttribute('aria-label')).toBe(name)
       expect(link.querySelector('svg')).toBeTruthy()
       expect(link.textContent).toBe('')
+      for (const cls of ['size-10', 'justify-center']) expect(link.classList.contains(cls), `${cls} on ${name}`).toBe(true)
     }
 
     await user.click(toggle)

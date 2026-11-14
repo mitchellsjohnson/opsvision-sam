@@ -19,7 +19,7 @@ import {
   Users,
 } from 'lucide-react'
 import { useEffect, type ReactElement } from 'react'
-import { NavLink, Outlet, useLocation, useSearchParams } from 'react-router'
+import { NavLink, Outlet, useLocation, useMatch, useResolvedPath, useSearchParams } from 'react-router'
 import { useMe, useScorecards } from '../api/queries'
 import { useAuth } from '../auth/context'
 import { focusOnDark, menuItemHighlight } from '../ui/focus'
@@ -43,14 +43,13 @@ const NAV_LINKS_ID = 'main-nav-links'
 
 function itemClass(collapsed: boolean) {
   return clsx(
-    'flex items-center rounded-md text-sm font-medium',
-    collapsed ? 'size-10 justify-center' : 'gap-2 px-3 py-2',
+    'rounded-md text-sm font-medium',
+    collapsed ? 'flex size-10 items-center justify-center' : 'inline-flex w-full items-center gap-2 px-3 py-2',
   )
 }
 
-function navClass(collapsed: boolean) {
-  return ({ isActive }: { isActive: boolean }) =>
-    clsx(itemClass(collapsed), isActive ? 'bg-accent text-white' : 'text-ink hover:bg-white')
+function navIconClass(collapsed: boolean) {
+  return collapsed ? 'size-5 shrink-0' : 'size-4 shrink-0'
 }
 
 /** A tooltip that only shows while the nav is a rail; it opens on keyboard focus as well as hover. */
@@ -84,10 +83,18 @@ function ShellNavLink({
   icon: LucideIcon
   collapsed: boolean
 }) {
+  // The tooltip trigger's Slot joins class names as strings, so NavLink's
+  // className callback would arrive as its source text: match here instead.
+  const { pathname } = useResolvedPath(to)
+  const isActive = useMatch({ path: pathname, end: false }) !== null
   return (
     <RailTip label={label} collapsed={collapsed}>
-      <NavLink to={to} className={navClass(collapsed)} aria-label={collapsed ? label : undefined}>
-        <Icon aria-hidden="true" className="size-5 shrink-0" />
+      <NavLink
+        to={to}
+        className={clsx(itemClass(collapsed), isActive ? 'bg-accent text-white' : 'text-ink hover:bg-white')}
+        aria-label={collapsed ? label : undefined}
+      >
+        <Icon aria-hidden="true" className={navIconClass(collapsed)} />
         {!collapsed && <span>{label}</span>}
       </NavLink>
     </RailTip>
@@ -207,12 +214,12 @@ function AppShellBody() {
               aria-controls={NAV_LINKS_ID}
               aria-label={collapsed ? 'Expand navigation' : undefined}
               onClick={toggleNav}
-              className={clsx(itemClass(collapsed), 'mb-2 text-ink hover:bg-white', !collapsed && 'w-full')}
+              className={clsx(itemClass(collapsed), 'mb-2 text-ink hover:bg-white')}
             >
               {collapsed ? (
-                <PanelLeftOpen aria-hidden="true" className="size-5 shrink-0" />
+                <PanelLeftOpen aria-hidden="true" className={navIconClass(collapsed)} />
               ) : (
-                <PanelLeftClose aria-hidden="true" className="size-5 shrink-0" />
+                <PanelLeftClose aria-hidden="true" className={navIconClass(collapsed)} />
               )}
               {!collapsed && <span>Collapse navigation</span>}
             </button>
