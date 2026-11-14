@@ -53,6 +53,14 @@ function withDescendants(selected: string[], units: Unit[]): string[] {
   return [...out]
 }
 
+/** The picked units, every unit below them, then the tracked items attached to any of those units. */
+export function subtreeSubjects(picked: string[], tree: SubjectTree): string[] {
+  const units = withDescendants(picked, tree.units ?? [])
+  const inTree = new Set(units)
+  const items = (tree.items ?? []).filter((i) => i.orgUnitId !== '' && inTree.has(i.orgUnitId)).map((i) => i.id)
+  return [...units, ...items.filter((id) => !inTree.has(id))]
+}
+
 /**
  * The subjects the URL picks, else its scope, with every unit below them and
  * the tracked items attached to any of those units (the API keeps only the
@@ -62,10 +70,7 @@ function withDescendants(selected: string[], units: Unit[]): string[] {
 export function viewSubjects(state: Pick<ViewState, 'subjects' | 'scope'>, tree: SubjectTree): string[] {
   const picked = state.subjects.length > 0 ? state.subjects : state.scope ? [state.scope] : []
   if (picked.length === 0) return []
-  const units = withDescendants(picked, tree.units ?? [])
-  const inTree = new Set(units)
-  const items = (tree.items ?? []).filter((i) => i.orgUnitId !== '' && inTree.has(i.orgUnitId)).map((i) => i.id)
-  return [...units, ...items.filter((id) => !inTree.has(id))].slice(0, MAX_VIEW_SUBJECTS)
+  return subtreeSubjects(picked, tree).slice(0, MAX_VIEW_SUBJECTS)
 }
 
 /**

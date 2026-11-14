@@ -8,9 +8,10 @@ import { HomeRedirect } from './pages/HomeRedirect'
 import { NotFoundPage } from './pages/NotFoundPage'
 import { RequireAdmin } from './pages/RequireAdmin'
 import { OverviewPage } from './features/scorecard/OverviewPage'
+import { ReportPage } from './features/scorecard/ReportPage'
 import { TablePageRoute } from './features/scorecard/TablePage'
 import { ScorecardFrame } from './features/scorecard/ScorecardFrame'
-import { ReportRedirect, ScorecardRedirect } from './features/scorecard/ScorecardPage'
+import { ScorecardRedirect } from './features/scorecard/ScorecardPage'
 import { ImportPage } from './features/admin/ImportPage'
 import { MethodologyPage } from './features/admin/MethodologyPage'
 import { RecordTypesPage } from './features/admin/RecordTypesPage'
@@ -27,7 +28,7 @@ export function App() {
           <Route index element={<ScorecardRedirect />} />
           <Route path="overview" element={<OverviewPage />} />
           <Route path="table" element={<TablePageRoute />} />
-          <Route path="report" element={<ReportRedirect />} />
+          <Route path="report" element={<ReportPage />} />
         </Route>
         <Route path="entry" element={<EntryPage />} />
         <Route path="admin" element={<RequireAdmin />}>

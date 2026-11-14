@@ -74,6 +74,9 @@ export const keys = {
   contributions: (sc: string, metric: string, subject: string, period: string) =>
     ['contributions', sc, metric, subject, period] as const,
   layout: (sc: string) => ['layout', sc] as const,
+  reportMonths: (sc: string) => ['reportMonths', sc] as const,
+  report: (sc: string, period: string, revision: string) => ['report', sc, period, revision] as const,
+  reportSummary: (sc: string, period: string) => ['reportSummary', sc, period] as const,
 }
 
 type Result<T> = { data?: T; error?: unknown; response: Response }
@@ -361,10 +364,11 @@ export function useUpdateItem() {
 }
 
 /** The tenant's members, pending invitations included (admins only). */
-export function useMembers() {
+export function useMembers(options: { enabled?: boolean } = {}) {
   const api = useApi()
   return useQuery({
     queryKey: keys.members,
+    enabled: options.enabled,
     queryFn: async () => (await unwrap(api.GET('/members'))).members,
   })
 }
@@ -699,6 +703,75 @@ export function usePutLayout(sc: string) {
     },
     onSuccess: (data) => {
       queryClient.setQueryData(keys.layout(sc), data)
+    },
+  })
+}
+
+/** The report history window: each month, live or published (by whom and when). */
+export function useReportMonths(sc: string | undefined) {
+  const api = useApi()
+  return useQuery({
+    queryKey: keys.reportMonths(sc ?? ''),
+    enabled: sc !== undefined,
+    queryFn: () => unwrap(api.GET('/scorecards/{sc}/reports', { params: { path: { sc: sc ?? '' } } })),
+  })
+}
+
+/**
+ * A month's report: the latest published snapshot, else live. `revision`
+ * `live` forces live; '' lets the API choose.
+ */
+export function useReportDocument(sc: string | undefined, period: string, revision: string) {
+  const api = useApi()
+  return useQuery({
+    queryKey: keys.report(sc ?? '', period, revision),
+    enabled: sc !== undefined,
+    queryFn: () =>
+      unwrap(
+        api.GET('/scorecards/{sc}/reports/{period}', {
+          params: { path: { sc: sc ?? '', period }, query: revision === '' ? {} : { revision } },
+        }),
+      ),
+  })
+}
+
+/** The stored company-scope summary for a month, with the revision to save against. */
+export function useReportSummary(sc: string | undefined, period: string, enabled = true) {
+  const api = useApi()
+  return useQuery({
+    queryKey: keys.reportSummary(sc ?? '', period),
+    enabled: sc !== undefined && enabled,
+    queryFn: () =>
+      unwrap(api.GET('/scorecards/{sc}/reports/{period}/summary', { params: { path: { sc: sc ?? '', period } } })),
+  })
+}
+
+/** Saves the month's summary against the revision loaded (409 when stale); refreshes the report. */
+export function usePutReportSummary(sc: string, period: string) {
+  const api = useApi()
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (body: Schemas['PutReportSummaryRequest']) =>
+      unwrap(api.PUT('/scorecards/{sc}/reports/{period}/summary', { params: { path: { sc, period } }, body })),
+    onSuccess: async (data) => {
+      queryClient.setQueryData(keys.reportSummary(sc, period), data)
+      await queryClient.invalidateQueries({ queryKey: ['report', sc, period] })
+    },
+  })
+}
+
+/** Publishes the month's company-scope report (admin), then refreshes the report and the month list. */
+export function usePublishReport(sc: string, period: string) {
+  const api = useApi()
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: () =>
+      unwrap(api.POST('/scorecards/{sc}/reports/{period}/publish', { params: { path: { sc, period } } })),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['report', sc, period] }),
+        queryClient.invalidateQueries({ queryKey: keys.reportMonths(sc) }),
+      ])
     },
   })
 }

@@ -4,6 +4,7 @@ import { useLocation } from 'react-router'
 import { describe, expect, it, vi } from 'vitest'
 import { App } from '../../App'
 import { server } from '../../test/server'
+import { reportHandlers } from '../../test/reportFixtures'
 import { renderApp } from '../../test/utils'
 import { viewHandlers } from '../../test/viewFixtures'
 
@@ -65,17 +66,15 @@ describe('ControlBar', () => {
     expect(within(bar).queryByRole('button', { name: 'As reported' })).toBeNull()
   })
 
-  it('shows Report as coming soon, not as a link to a placeholder', async () => {
+  it('Report is a view link like Overview and Table, keeping the query', async () => {
+    server.use(...reportHandlers())
     renderScorecard('/scorecards/sc-main/overview?period=2026-M10')
     await screen.findByRole('heading', { name: 'Overview', level: 1 })
     const views = screen.getByRole('navigation', { name: 'Scorecard views' })
-    expect(within(views).queryByRole('link', { name: /Report/ })).toBeNull()
-    expect(within(views).getByText('Report').closest('[aria-disabled="true"]')?.textContent).toMatch(/Coming soon/)
-  })
-
-  it('an old report link opens the overview', async () => {
-    renderScorecard('/scorecards/sc-main/report?period=2026-M10')
-    await waitFor(() => expect(location()).toBe('/scorecards/sc-main/overview?period=2026-M10'))
+    expect(within(views).queryByText(/Coming soon/)).toBeNull()
+    await userEvent.setup().click(within(views).getByRole('link', { name: 'Report' }))
+    await waitFor(() => expect(location()).toBe('/scorecards/sc-main/report?period=2026-M10'))
+    expect(await screen.findByRole('heading', { name: 'Report', level: 1 })).toBeTruthy()
   })
 
   it('sets the sticky offset from the measured bar height', async () => {
