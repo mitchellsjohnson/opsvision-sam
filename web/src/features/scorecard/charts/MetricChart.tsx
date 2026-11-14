@@ -1,3 +1,4 @@
+import clsx from 'clsx'
 import { Fragment, useMemo, useState } from 'react'
 import { Link, type To } from 'react-router'
 import {
@@ -26,6 +27,31 @@ type Schemas = components['schemas']
 type ViewRow = Schemas['ViewRow']
 type CellT = Schemas['Cell']
 
+/**
+ * The plot height in the full-screen dialog: at least half the viewport, and
+ * the viewport less room for the dialog's title and controls (64vh at 1080px).
+ */
+export const FOCUS_CHART_HEIGHT = 'h-[max(50vh,calc(100vh_-_24rem))]'
+
+/** `tile` is the Overview card; `focus` fills the full-screen dialog. */
+export type ChartSize = 'tile' | 'focus'
+
+interface SizeSpec {
+  className: string
+  style: { height: number } | undefined
+  height: number | '100%'
+  initial: { width: number; height: number }
+  tick: number
+  letter: number
+  dot: number
+}
+
+function sizeSpec(size: ChartSize, tileHeight: number): SizeSpec {
+  return size === 'focus'
+    ? { className: FOCUS_CHART_HEIGHT, style: undefined, height: '100%', initial: { width: 960, height: 480 }, tick: 13, letter: 12, dot: 5 }
+    : { className: '', style: { height: tileHeight }, height: tileHeight, initial: { width: 300, height: tileHeight }, tick: 10, letter: 9, dot: 3.5 }
+}
+
 export interface MetricChartProps {
   row: ViewRow
   /** When the scope cell is missing, one trend line per child row. */
@@ -40,6 +66,7 @@ export interface MetricChartProps {
   tableTo: To
   scopeNote?: string
   ytdDisplay?: string | null
+  size?: ChartSize
 }
 
 interface PointRow {
@@ -132,14 +159,23 @@ interface DotProps {
 }
 
 /** A line point drawn as a ring with its status letter above it, so status never rests on color. */
-function StatusDot({ cx, cy, index, payload, statusKey, scale }: DotProps & { statusKey: string; scale: components['schemas']['StatusLevel'][] }) {
+function StatusDot({
+  cx,
+  cy,
+  index,
+  payload,
+  statusKey,
+  scale,
+  r = 3.5,
+  fontSize = 9,
+}: DotProps & { statusKey: string; scale: components['schemas']['StatusLevel'][]; r?: number; fontSize?: number }) {
   const status = typeof payload?.[statusKey] === 'string' ? (payload[statusKey] as string) : ''
   if (cx == null || cy == null || !status) return <g key={`dot-${statusKey}-${index}`} />
   const theme = chartTheme(scale, status)
   return (
     <g key={`dot-${statusKey}-${index}`} data-status-dot={status}>
-      <circle cx={cx} cy={cy} r={3.5} fill="#FFFFFF" stroke={theme.color} strokeWidth={1.5} />
-      <text x={cx} y={cy - 7} textAnchor="middle" fontSize={9} fontWeight={600} fill="var(--color-ink)">
+      <circle cx={cx} cy={cy} r={r} fill="#FFFFFF" stroke={theme.color} strokeWidth={1.5} />
+      <text x={cx} y={cy - r - 3.5} textAnchor="middle" fontSize={fontSize} fontWeight={600} fill="var(--color-ink)">
         {status}
       </text>
     </g>
@@ -196,6 +232,7 @@ function RatioChart({
   scale,
   target,
   animated,
+  size,
 }: {
   row: ViewRow
   chartRows: ViewRow[]
@@ -203,7 +240,9 @@ function RatioChart({
   scale: components['schemas']['StatusLevel'][]
   target: number | null
   animated: boolean
+  size: ChartSize
 }) {
+  const spec = sizeSpec(size, 120)
   const [tip, setTip] = useState<PointRow | null>(null)
   const series = useMemo(
     () => chartRows.map((r) => ({ row: r, points: buildPoints(r, columns) })),
@@ -236,16 +275,29 @@ function RatioChart({
     <div>
       <div
         data-testid="metric-chart"
+        data-size={size}
         data-bands={rects.map((r) => `${r.status}:${r.y0}-${r.y1}`).join(' ')}
         aria-hidden="true"
-        className="text-accent-deep"
-        style={{ height: 120 }}
+        className={clsx('text-accent-deep', spec.className)}
+        style={spec.style}
       >
-        <ResponsiveContainer width="100%" height={120} initialDimension={{ width: 300, height: 120 }}>
-          <ComposedChart data={data} margin={{ top: 16, right: 8, bottom: 4, left: 8 }}>
+        <ResponsiveContainer width="100%" height={spec.height} initialDimension={spec.initial}>
+          <ComposedChart
+            data={data}
+            margin={size === 'focus' ? { top: 24, right: 16, bottom: 8, left: 8 } : { top: 16, right: 8, bottom: 4, left: 8 }}
+          >
             <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--color-ink)" strokeOpacity={0.08} />
-            <XAxis dataKey="label" tick={{ fontSize: 10 }} />
-            <YAxis hide domain={domain} />
+            <XAxis dataKey="label" tick={{ fontSize: spec.tick }} />
+            {size === 'focus' ? (
+              <YAxis
+                domain={domain}
+                tick={{ fontSize: spec.tick }}
+                tickFormatter={(v: number) => formatMetricValue(row.format, v)}
+                width={72}
+              />
+            ) : (
+              <YAxis hide domain={domain} />
+            )}
             {rects.map((r, i) => {
               const theme = chartTheme(scale, r.status)
               return (
@@ -257,7 +309,7 @@ function RatioChart({
                   fillOpacity={0.15}
                   stroke={theme.color}
                   strokeWidth={1}
-                  label={{ value: r.status, position: 'insideLeft', fontSize: 9, fontWeight: 600, fill: 'var(--color-ink)', className: 'band-label' }}
+                  label={{ value: r.status, position: 'insideLeft', fontSize: spec.letter, fontWeight: 600, fill: 'var(--color-ink)', className: 'band-label' }}
                 />
               )
             })}
@@ -270,7 +322,7 @@ function RatioChart({
                 label={{
                   value: `Goal ${formatMetricValue(row.format, target)}`,
                   position: 'insideTopRight',
-                  fontSize: 10,
+                  fontSize: spec.tick,
                   fill: 'var(--color-ink)',
                 }}
               />
@@ -288,9 +340,11 @@ function RatioChart({
                     key={`dot-${r.subjectId}-${props.index}`}
                     statusKey={series.length === 1 ? 'status' : `status_${r.subjectId}`}
                     scale={scale}
+                    r={spec.dot}
+                    fontSize={spec.letter}
                   />
                 )}
-                activeDot={{ r: 5 }}
+                activeDot={{ r: spec.dot + 1.5 }}
                 isAnimationActive={animated}
                 connectNulls={false}
               />
@@ -321,21 +375,29 @@ function RatioChart({
   )
 }
 
-function DiscreteChart({ points, scale, animated }: { points: PointRow[]; scale: components['schemas']['StatusLevel'][]; animated: boolean }) {
+interface BarChartProps {
+  points: PointRow[]
+  scale: components['schemas']['StatusLevel'][]
+  animated: boolean
+  size: ChartSize
+}
+
+function DiscreteChart({ points, scale, animated, size }: BarChartProps) {
+  const spec = sizeSpec(size, 100)
   const [tip, setTip] = useState<PointRow | null>(null)
   const data = points.map((p) => ({ ...p, h: p.kind === 'value' ? p.value ?? 0 : 0, letter: p.kind === 'value' ? p.status : '' }))
   return (
     <div>
-      <div aria-hidden="true" style={{ height: 100 }}>
-        <ResponsiveContainer width="100%" height={100} initialDimension={{ width: 300, height: 100 }}>
+      <div data-testid="metric-chart" data-size={size} aria-hidden="true" className={spec.className} style={spec.style}>
+        <ResponsiveContainer width="100%" height={spec.height} initialDimension={spec.initial}>
           <BarChart data={data} margin={{ top: 14, right: 4, bottom: 4, left: 4 }}>
-            <XAxis dataKey="label" tick={{ fontSize: 10 }} />
+            <XAxis dataKey="label" tick={{ fontSize: spec.tick }} />
             <YAxis hide />
             <Bar dataKey="h" isAnimationActive={animated}>
               {data.map((p) => (
                 <Cell key={p.key} fill={p.kind === 'value' ? chartTheme(scale, p.status).color : 'var(--color-ink)'} fillOpacity={p.kind === 'value' ? 1 : 0.1} />
               ))}
-              <LabelList dataKey="letter" position="top" fontSize={10} fontWeight={600} fill="var(--color-ink)" />
+              <LabelList dataKey="letter" position="top" fontSize={spec.tick} fontWeight={600} fill="var(--color-ink)" />
             </Bar>
           </BarChart>
         </ResponsiveContainer>
@@ -346,23 +408,24 @@ function DiscreteChart({ points, scale, animated }: { points: PointRow[]; scale:
   )
 }
 
-function MoneyPlanChart({ points, scale, animated }: { points: PointRow[]; scale: components['schemas']['StatusLevel'][]; animated: boolean }) {
+function MoneyPlanChart({ points, scale, animated, size }: BarChartProps) {
+  const spec = sizeSpec(size, 100)
   const [tip, setTip] = useState<PointRow | null>(null)
   const data = points.map((p) => ({ ...p, h: p.kind === 'value' ? p.value ?? 0 : null, letter: p.kind === 'value' ? p.status : '' }))
   const domain = moneyDomain(points)
   return (
     <div>
-      <div data-testid="metric-chart" aria-hidden="true" style={{ height: 100 }}>
-        <ResponsiveContainer width="100%" height={100} initialDimension={{ width: 300, height: 100 }}>
+      <div data-testid="metric-chart" data-size={size} aria-hidden="true" className={spec.className} style={spec.style}>
+        <ResponsiveContainer width="100%" height={spec.height} initialDimension={spec.initial}>
           <BarChart data={data} margin={{ top: 14, right: 4, bottom: 4, left: 4 }}>
-            <XAxis dataKey="label" tick={{ fontSize: 10 }} />
+            <XAxis dataKey="label" tick={{ fontSize: spec.tick }} />
             <YAxis hide domain={domain} />
-            <ReferenceLine y={100} stroke="var(--color-ink)" strokeWidth={1} ifOverflow="extendDomain" label={{ value: '100%', fontSize: 10 }} />
+            <ReferenceLine y={100} stroke="var(--color-ink)" strokeWidth={1} ifOverflow="extendDomain" label={{ value: '100%', fontSize: spec.tick }} />
             <Bar dataKey="h" isAnimationActive={animated}>
               {data.map((p) => (
                 <Cell key={p.key} fill={p.kind === 'value' ? chartTheme(scale, p.status).color : 'transparent'} />
               ))}
-              <LabelList dataKey="letter" position="top" fontSize={10} fontWeight={600} fill="var(--color-ink)" />
+              <LabelList dataKey="letter" position="top" fontSize={spec.tick} fontWeight={600} fill="var(--color-ink)" />
             </Bar>
           </BarChart>
         </ResponsiveContainer>
@@ -461,6 +524,7 @@ export function MetricChart({
   tableTo,
   scopeNote,
   ytdDisplay,
+  size = 'tile',
 }: MetricChartProps) {
   const reduced = usePrefersReducedMotion()
   const animated = !reduced
@@ -486,11 +550,11 @@ export function MetricChart({
       ) : kind === 'sparse' ? (
         <LetteredChips points={points} scale={scale} />
       ) : kind === 'discrete' ? (
-        <DiscreteChart points={points} scale={scale} animated={animated} />
+        <DiscreteChart points={points} scale={scale} animated={animated} size={size} />
       ) : kind === 'money_plan' ? (
-        <MoneyPlanChart points={points} scale={scale} animated={animated} />
+        <MoneyPlanChart points={points} scale={scale} animated={animated} size={size} />
       ) : (
-        <RatioChart row={row} chartRows={lines} columns={columns} scale={scale} target={target} animated={animated} />
+        <RatioChart row={row} chartRows={lines} columns={columns} scale={scale} target={target} animated={animated} size={size} />
       )}
       <p className="mt-2">
         <Link to={tableTo} className="text-sm font-medium text-accent-deep hover:underline">

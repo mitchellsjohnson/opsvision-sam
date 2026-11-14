@@ -6,7 +6,7 @@ import { useMe, useScorecards, useView } from '../../api/queries'
 import type { components } from '../../api/schema'
 import { usePeriodState } from '../../shell/usePeriodState'
 import { defaultStatusScale } from './charts/chartTheme'
-import { MetricChart } from './charts/MetricChart'
+import { FOCUS_CHART_HEIGHT, MetricChart } from './charts/MetricChart'
 import { buildMonthTrendColumns, buildTrendColumns } from './columns'
 import { focusReturnRef } from './focusTrigger'
 import { defaultLayout } from './logic/layout'
@@ -172,14 +172,15 @@ function MetricFocusBody({
       </div>
     )
   } else if (waiting) {
-    chartArea = <div className="mt-4" style={{ minHeight: 280 }} aria-busy="true" />
+    chartArea = <div className={`mt-4 ${FOCUS_CHART_HEIGHT}`} aria-busy="true" />
   } else if (!chartRow) {
     chartArea = <p role="alert">This metric has no rows for this selection.</p>
   } else {
     chartArea = (
       <>
-        <div className="mt-4" style={{ minHeight: 280 }} aria-busy={view.isPlaceholderData || undefined}>
+        <div className="mt-4" aria-busy={view.isPlaceholderData || undefined}>
           <MetricChart
+            size="focus"
             row={chartRow}
             chartRows={chartRows}
             childRows={children}

@@ -6,6 +6,7 @@ import { App } from '../../App'
 import { server } from '../../test/server'
 import { renderApp } from '../../test/utils'
 import { addServiceUptime, buildView, viewHandlers } from '../../test/viewFixtures'
+import { FOCUS_CHART_HEIGHT } from './charts/MetricChart'
 
 const OVERVIEW = '/scorecards/sc-main/overview?period=2026-M10'
 
@@ -39,6 +40,22 @@ describe('FocusDialog', () => {
     const user = userEvent.setup()
     await user.click(screen.getByRole('button', { name: 'Next metric' }))
     expect(await screen.findByRole('dialog', { name: /Defect rate/i })).toBeTruthy()
+  })
+
+  it('the chart fills the dialog height, ahead of the breakdown; tile charts keep their size', async () => {
+    renderOverview(`${OVERVIEW}&focus=on_time_pct`)
+    const dialog = await screen.findByRole('dialog', { name: /On-time delivery/i })
+    const breakdown = await within(dialog).findByRole('region', { name: 'Org breakdown' })
+    const chart = within(dialog).getByTestId('metric-chart')
+    expect(chart.dataset.size).toBe('focus')
+    expect(chart.className).toContain(FOCUS_CHART_HEIGHT)
+    expect(chart.style.height).toBe('')
+    expect(chart.compareDocumentPosition(breakdown) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    // The Overview behind the dialog is hidden from the accessibility tree.
+    const tile = document.querySelector<HTMLElement>('article[aria-label="On-time delivery"] [data-testid="metric-chart"]')!
+    expect(tile.dataset.size).toBe('tile')
+    expect(tile.style.height).toBe('120px')
+    expect(tile.className).not.toContain(FOCUS_CHART_HEIGHT)
   })
 
   it('View as table links to /table without focus in the query', async () => {
