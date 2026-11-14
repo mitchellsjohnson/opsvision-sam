@@ -13,13 +13,18 @@ const DECIMALS: Record<string, number> = {
   days0: 0,
 }
 
+/** The decimal places a metric format shows. */
+export function metricDecimals(format: string): number {
+  return DECIMALS[format] ?? 2
+}
+
 function fixed(n: number, decimals: number): string {
   return n.toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals })
 }
 
 /** A metric value the way the API displays it (mirrors the API's format codes). */
 export function formatMetricValue(format: string, value: number): string {
-  const decimals = DECIMALS[format] ?? 2
+  const decimals = metricDecimals(format)
   const text = fixed(value, decimals)
   if (format.startsWith('percent')) return `${text}%`
   if (format === 'money_k') return `$${text}k`

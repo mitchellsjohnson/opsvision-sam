@@ -2,7 +2,7 @@ import * as Dialog from '@radix-ui/react-dialog'
 import { X } from 'lucide-react'
 import { useCallback, useMemo, useRef, useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router'
-import { useMe, useScorecards, useView } from '../../api/queries'
+import { useMe, useOrgUnits, useScorecards, useVersions, useView } from '../../api/queries'
 import type { components } from '../../api/schema'
 import { usePeriodState } from '../../shell/usePeriodState'
 import { defaultStatusScale } from './charts/chartTheme'
@@ -45,6 +45,8 @@ function MetricFocusBody({
   const [windowMonths, setWindowMonths] = useState<12 | 24>(12)
   const [exportError, setExportError] = useState('')
   const me = useMe()
+  const orgUnits = useOrgUnits()
+  const versions = useVersions(scorecardId)
   const fy = period.fiscalYearStartMonth
   const scale: StatusScaleEntry[] = useMemo(
     () =>
@@ -128,16 +130,39 @@ function MetricFocusBody({
     downloadBlob(`${head.metricKey}.csv`, 'text/csv', chartCsv(trendColumns, chartRows))
   }
 
+  const unitName = (id: string) => orgUnits.data?.units.find((u) => u.id === id)?.name
+  const exportScope = (() => {
+    if (period.subjects.length > 0) {
+      const names = period.subjects.map((id) => unitName(id) ?? id)
+      return names.length > 3 ? `${names.slice(0, 3).join(', ')} and ${names.length - 3} more` : names.join(', ')
+    }
+    if (period.scope) return unitName(period.scope) ?? 'Selected unit'
+    return `All of ${me.data?.tenant?.name ?? 'the company'}`
+  })()
+  const restatedName = period.restate
+    ? (versions.data?.versions.find((v) => v.id === period.restate)?.name ?? 'the selected methodology version')
+    : ''
+  const exportedChart = (metric: NonNullable<typeof head>) =>
+    chartSvg({
+      title: metric.metricName,
+      scope: exportScope,
+      restatedUnder: restatedName,
+      format: metric.format,
+      columns: trendColumns,
+      rows: chartRows,
+      scale: statusColors,
+    })
+
   const exportSvg = () => {
     if (!head || chartRows.length === 0) return
-    downloadBlob(`${head.metricKey}.svg`, 'image/svg+xml', chartSvg(head.metricName, trendColumns, chartRows))
+    downloadBlob(`${head.metricKey}.svg`, 'image/svg+xml', exportedChart(head))
   }
 
   const exportPng = async () => {
     if (!head || chartRows.length === 0) return
     setExportError('')
     try {
-      await metricPng(chartSvg(head.metricName, trendColumns, chartRows), `${head.metricKey}.png`)
+      await metricPng(exportedChart(head), `${head.metricKey}.png`)
     } catch {
       setExportError('We couldn’t make the image. Try SVG or CSV.')
     }

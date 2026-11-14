@@ -126,6 +126,33 @@ describe('FocusDialog', () => {
     expect(within(breakdown).queryByRole('button')).toBeNull()
   })
 
+  it('exports a slide-ready SVG that names the metric, scope, period range and version', async () => {
+    const blobs: Blob[] = []
+    vi.spyOn(URL, 'createObjectURL').mockImplementation((b) => {
+      blobs.push(b as Blob)
+      return 'blob:svg'
+    })
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {})
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    try {
+      renderOverview(`${OVERVIEW}&scope=unit-a&restate=ver-2&focus=on_time_pct`)
+      const dialog = await screen.findByRole('dialog', { name: /On-time delivery/i })
+      await within(dialog).findByTestId('metric-chart')
+      // The control bar names the restated version once the versions have loaded.
+      await screen.findByText('Restated under FY27 proposal')
+      await userEvent.setup().click(within(dialog).getByRole('button', { name: 'Export SVG' }))
+      await waitFor(() => expect(blobs).toHaveLength(1))
+      const doc = new DOMParser().parseFromString(await blobs[0]!.text(), 'image/svg+xml')
+      expect(doc.querySelector('[data-role="title"]')?.textContent).toBe('On-time delivery')
+      expect(doc.querySelector('[data-role="subtitle"]')?.textContent).toBe(
+        'Unit A · Nov 2025 – Oct 2026 · restated under FY27 proposal',
+      )
+      expect(doc.querySelectorAll('[data-role="x-label"]')).toHaveLength(12)
+    } finally {
+      vi.restoreAllMocks()
+    }
+  })
+
   it('says so in plain words when the PNG cannot be made', async () => {
     class FailingImage {
       onload: (() => void) | null = null

@@ -72,13 +72,161 @@ describe('CSV', () => {
 })
 
 describe('SVG', () => {
+  const months: Column[] = ['07', '08', '09', '10'].map((m, i) => ({
+    key: `2026-M${m}`,
+    label: ['Jul', 'Aug', 'Sep', 'Oct'][i]!,
+    fullLabel: `${['Jul', 'Aug', 'Sep', 'Oct'][i]!} 2026`,
+    period: `2026-M${m}`,
+    ytd: false,
+  }))
+  const bands = [
+    { status: 'G', op: '>=', value: 90 },
+    { status: 'Y', op: '>=', value: 80 },
+    { status: 'R', op: '', value: 0 },
+  ]
+  const scale = [
+    { key: 'G', label: 'Green', color: '#137A3A', rank: 1 },
+    { key: 'Y', label: 'Yellow', color: '#8A5A00', rank: 2 },
+    { key: 'R', label: 'Red', color: '#B42318', rank: 3 },
+  ]
+
+  function onTime(subjectName = 'Unit A'): ViewRow {
+    const values = [78, 84, 88.5, 92.5]
+    const status = (v: number) => (v >= 90 ? 'G' : v >= 80 ? 'Y' : 'R')
+    const base = row(subjectName, [0])
+    return {
+      ...base,
+      format: 'percent1',
+      cells: values.map((value, i) => ({
+        ...base.cells[0]!,
+        period: months[i]!.period,
+        value,
+        display: `${value.toFixed(1)}%`,
+        status: status(value),
+        target: 90,
+        rule: { type: 'bands' as const, bands },
+      })),
+    }
+  }
+
+  function render(overrides: Partial<Parameters<typeof chartSvg>[0]> = {}) {
+    const svg = chartSvg({
+      title: 'On-time delivery',
+      scope: 'Unit A',
+      restatedUnder: '',
+      format: 'percent1',
+      columns: months,
+      rows: [onTime()],
+      scale,
+      exportedAt: new Date(2026, 10, 13),
+      ...overrides,
+    })
+    const doc = new DOMParser().parseFromString(svg, 'image/svg+xml')
+    expect(doc.querySelector('parsererror')).toBeNull()
+    const texts = (role: string) => [...doc.querySelectorAll(`[data-role="${role}"]`)].map((e) => e.textContent)
+    const num = (el: Element | null, attr: string) => Number(el?.getAttribute(attr))
+    return { svg, doc, texts, num }
+  }
+
+  it('is a 16:9 canvas on white in a system sans-serif font', () => {
+    const { doc } = render()
+    const root = doc.documentElement
+    expect(root.getAttribute('viewBox')).toBe('0 0 1600 900')
+    expect(root.getAttribute('font-family')).toBe('-apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif')
+    expect(doc.querySelector('[data-role="background"]')?.getAttribute('fill')).toBe('#FFFFFF')
+  })
+
+  it('has a title and a subtitle with scope, period range and version, in a header above the plot', () => {
+    const { doc, texts, num } = render()
+    expect(texts('title')).toEqual(['On-time delivery'])
+    expect(texts('subtitle')).toEqual(['Unit A · Jul 2026 – Oct 2026 · as reported'])
+    expect(render({ restatedUnder: 'FY27 proposal' }).texts('subtitle')[0]).toMatch(/· restated under FY27 proposal$/)
+    const header = doc.querySelector('[data-role="header"]')
+    const plot = doc.querySelector('[data-role="plot"]')
+    const headerBottom = num(header, 'y') + num(header, 'height')
+    expect(headerBottom).toBeLessThanOrEqual(num(plot, 'y'))
+    for (const role of ['title', 'subtitle']) {
+      expect(num(doc.querySelector(`[data-role="${role}"]`), 'y')).toBeLessThan(headerBottom)
+    }
+    // Nothing in the plot rises into the header.
+    for (const el of doc.querySelectorAll('[data-role="value-label"], [data-role="point-letter"], [data-role="goal-label"]')) {
+      expect(num(el, 'y')).toBeGreaterThan(headerBottom)
+    }
+  })
+
+  it('formats y-axis ticks with the metric format and labels the months', () => {
+    const { texts, doc } = render()
+    const ticks = texts('y-tick')
+    expect(ticks.length).toBeGreaterThanOrEqual(3)
+    for (const t of ticks) expect(t).toMatch(/^\d+\.\d%$/)
+    expect(doc.querySelectorAll('[data-role="gridline"]')).toHaveLength(ticks.length)
+    expect(texts('x-label')).toEqual(['Jul', 'Aug', 'Sep', 'Oct'])
+    expect(render({ format: 'money_k', rows: [{ ...onTime(), format: 'money_k' }] }).texts('y-tick')[0]).toMatch(/^\$[\d,]+k$/)
+  })
+
+  it('draws the status bands from the band rule, each lettered on the right edge', () => {
+    const { doc, num } = render()
+    const rects = [...doc.querySelectorAll('rect[data-band]')]
+    expect(rects.map((r) => r.getAttribute('data-band'))).toEqual(['R', 'Y', 'G'])
+    for (const r of rects) expect(Number(r.getAttribute('fill-opacity'))).toBeLessThan(0.2)
+    const letters = [...doc.querySelectorAll('[data-role="band-letter"]')]
+    expect(letters.map((l) => l.textContent)).toEqual(['R', 'Y', 'G'])
+    const plot = doc.querySelector('[data-role="plot"]')
+    const plotRight = num(plot, 'x') + num(plot, 'width')
+    for (const l of letters) expect(num(l, 'x')).toBeGreaterThan(plotRight)
+  })
+
+  it('labels every point with its status letter and value, emphasizes the current one, and draws the goal', () => {
+    const { doc, texts } = render()
+    expect(texts('point-letter')).toEqual(['R', 'Y', 'Y', 'G'])
+    expect(texts('value-label')).toEqual(['78.0%', '84.0%', '88.5%', '92.5%'])
+    const current = doc.querySelectorAll('[data-current="true"]')
+    expect(current).toHaveLength(1)
+    expect(current[0]!.querySelector('[data-role="value-label"]')?.textContent).toBe('92.5%')
+    const goal = doc.querySelector('[data-role="goal"]')
+    expect(goal?.getAttribute('stroke-dasharray')).toBeTruthy()
+    expect(texts('goal-label')).toEqual(['Goal 90.0%'])
+  })
+
+  it('has a legend for the value, the goal and the bands, and a dated footer', () => {
+    const { texts } = render()
+    expect(texts('legend-item')).toEqual(['Value', 'Goal 90.0%', 'G Green', 'Y Yellow', 'R Red'])
+    expect(texts('footer')).toEqual(['OpsVision · exported 2026-11-13'])
+    expect(render({ rows: [onTime()].map((r) => ({ ...r, cells: r.cells.map((c) => ({ ...c, target: null })) })) }).texts('legend-item')).not.toContain(
+      'Goal 90.0%',
+    )
+  })
+
+  it('names each line in the legend when there is more than one', () => {
+    const { texts } = render({ rows: [onTime('Unit A'), { ...onTime('Unit B'), subjectId: 'b' }] })
+    expect(texts('legend-item').slice(0, 2)).toEqual(['Unit A', 'Unit B'])
+  })
+
   it('XML-escapes every piece of text', () => {
     expect(xmlEscape(`<a href="x">&'`)).toBe('&lt;a href=&quot;x&quot;&gt;&amp;&apos;')
-    const svg = chartSvg('Cost <& "plan">', columns, [row('R&D <east>', [1, 2]), row('Ops', [3, 4])])
+    const { svg, texts } = render({
+      title: 'Cost <& "plan">',
+      scope: 'R&D <east>',
+      restatedUnder: `"Q3" <draft>`,
+      rows: [onTime('R&D <east>'), { ...onTime('Ops'), subjectId: 'ops' }],
+      scale: scale.map((s) => (s.key === 'G' ? { ...s, label: 'On <track>' } : s)),
+    })
     expect(svg).toContain('<title>Cost &lt;&amp; &quot;plan&quot;&gt;</title>')
     expect(svg).toContain('>R&amp;D &lt;east&gt;</text>')
     expect(svg).not.toContain('R&D <east>')
-    expect(new DOMParser().parseFromString(svg, 'image/svg+xml').querySelector('parsererror')).toBeNull()
+    expect(svg).not.toContain('<track>')
+    expect(texts('subtitle')[0]).toBe('R&D <east> · Jul 2026 – Oct 2026 · restated under "Q3" <draft>')
+  })
+
+  it('leaves gaps where a month has no value', () => {
+    const r = onTime()
+    r.cells[1] = { ...r.cells[1]!, value: null, display: '', status: '' }
+    const { doc, texts } = render({ rows: [r] })
+    expect(texts('value-label')).toEqual(['78.0%', '88.5%', '92.5%'])
+    const lines = [...doc.querySelectorAll('[data-role="series"] polyline')]
+    // Jul stands alone (a marker, no line); Sep–Oct is one segment.
+    expect(lines).toHaveLength(1)
+    expect(lines[0]!.getAttribute('points')!.trim().split(/\s+/)).toHaveLength(2)
   })
 
   it('is loaded as a data: URL, which the CSP allows for images', () => {
@@ -116,10 +264,10 @@ describe('metricPng', () => {
     vi.stubGlobal('Image', FakeImage)
   }
 
-  it('draws the SVG from a data: URL at the device pixel ratio', async () => {
+  it('draws the SVG from a data: URL at 2x, 3200 by 1800, whatever the screen', async () => {
     const sources: string[] = []
     stubImage('load', sources)
-    vi.stubGlobal('devicePixelRatio', 2)
+    vi.stubGlobal('devicePixelRatio', 1)
     const ctx = { scale: vi.fn(), drawImage: vi.fn() }
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(ctx as unknown as CanvasRenderingContext2D)
     let size = [0, 0]
@@ -132,7 +280,7 @@ describe('metricPng', () => {
     vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
     await metricPng('<svg/>', 'm.png')
     expect(sources[0]!.startsWith('data:image/svg+xml')).toBe(true)
-    expect(size).toEqual([1200, 480])
+    expect(size).toEqual([3200, 1800])
     expect(ctx.scale).toHaveBeenCalledWith(2, 2)
   })
 
