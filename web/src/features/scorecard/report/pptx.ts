@@ -2,6 +2,7 @@ import type PptxGenJS from 'pptxgenjs'
 import { letterUsesInkOnWhite } from '../../../ui/contrast'
 import {
   exportChart,
+  goalSeries,
   metricFacts,
   metricNotes,
   noteSections,
@@ -23,8 +24,9 @@ const RULE = 'E5E7EB'
 const CREAM = 'FFF6E5'
 const FONT = 'Arial'
 const SERIES_COLORS = ['5B4BDB', '0E7490', '475569', 'A21CAF', '1D4ED8']
-/** Notes lines per slide before the notes continue on another. */
+/** Wrapped notes lines per slide before the notes continue on another. */
 const NOTES_LINES = 16
+const NOTES_FONT = 12
 /** Slide width and margin, inches (16:9 is 10 by 5.625). */
 const W = 10
 const M = 0.5
@@ -43,9 +45,39 @@ function versionsNote(model: ReportModel): string {
   return `Methodology version: ${model.notes.versionIds.join(', ') || 'none'}`
 }
 
+/** About how many inches a line of Arial runs: a character averages a bit over half the font size. */
+function textInches(text: string, fontSize: number): number {
+  return (text.length * fontSize * 0.55) / 72
+}
+
+/**
+ * The largest size, from `size` down to `min`, at which `text` fits on one
+ * line `width` inches wide. pptxgenjs cannot measure text, and PowerPoint
+ * applies "shrink on overflow" only once the box is edited.
+ */
+function fitSize(text: string, size: number, min: number, width: number): number {
+  const fits = textInches(text, size) <= width ? size : Math.floor((size * width) / textInches(text, size))
+  return Math.max(min, Math.min(size, fits))
+}
+
+/** About how many lines `text` wraps to in a box `width` inches wide. */
+function wrappedLines(text: string, fontSize: number, width: number): number {
+  return Math.max(1, Math.ceil(textInches(text, fontSize) / width))
+}
+
 function header(slide: Slide, model: ReportModel, eyebrow: string, title: string) {
-  slide.addText(eyebrow, { x: M, y: 0.25, w: W - 2 * M, h: 0.3, fontFace: FONT, fontSize: 12, bold: true, color: ACCENT })
-  slide.addText(title, { x: M, y: 0.55, w: W - 2 * M, h: 0.6, fontFace: FONT, fontSize: 26, bold: true, color: INK })
+  slide.addText(eyebrow, { x: M, y: 0.25, w: W - 2 * M, h: 0.3, fontFace: FONT, fontSize: 12, bold: true, color: ACCENT, fit: 'shrink' })
+  slide.addText(title, {
+    x: M,
+    y: 0.55,
+    w: W - 2 * M,
+    h: 0.6,
+    fontFace: FONT,
+    fontSize: fitSize(title, 26, 14, W - 2 * M - 0.2),
+    bold: true,
+    color: INK,
+    fit: 'shrink',
+  })
   slide.addShape('line', { x: M, y: 5.15, w: W - 2 * M, h: 0, line: { color: RULE, width: 1 } })
   slide.addText(`OpsVision · ${model.title} · ${model.scopeLabel}`, {
     x: M,
@@ -160,11 +192,11 @@ function metricSlide(pres: PptxGenJS, model: ReportModel, metric: ReportMetric, 
   } else {
     const series = metric.series.slice(0, SERIES_COLORS.length)
     const labels = series[0]!.points.map((p) => p.label)
-    const goal = series.length === 1 ? metric.goalValue : null
+    const goal = goalSeries(metric)
     const data = [
       // pptxgenjs writes a null value as a blank point; `displayBlanksAs: 'gap'` leaves it unjoined.
       ...series.map((s) => ({ name: series.length === 1 ? 'Value' : s.subject, labels, values: s.points.map((p) => p.value) as number[] })),
-      ...(goal !== null ? [{ name: `Goal ${metric.goal}`, labels, values: labels.map(() => goal) }] : []),
+      ...(goal ? [{ name: 'Goal', labels, values: goal as number[] }] : []),
     ]
     slide.addChart(kind === 'bar' ? pres.ChartType.bar : pres.ChartType.line, data, {
       ...left,
@@ -236,11 +268,11 @@ function tableSlides(pres: PptxGenJS, model: ReportModel) {
       { text: 'Metric', options: { bold: true, fill: { color: CREAM }, color: INK } },
       ...model.columns.map((c) => ({ text: c.label, options: { bold: true, fill: { color: CREAM }, color: INK, align: 'right' as const } })),
     ]
+    const metricW = 2.6
     const body: TableRow[] = rows.map((r) => [
-      { text: r.name, options: { color: INK } },
+      { text: r.name, options: { color: INK, fontSize: fitSize(r.name, 10, 7, metricW - 0.15) } },
       ...r.cells.map((c) => ({ text: tableCellText(c), options: { color: INK, align: 'right' as const } })),
     ])
-    const metricW = 2.6
     slide.addTable([head, ...body], {
       x: M,
       y: 1.3,
@@ -262,18 +294,31 @@ function notesSlides(pres: PptxGenJS, model: ReportModel) {
     lines.push({ text: s.heading, heading: true })
     for (const l of s.lines) lines.push({ text: l, heading: false })
   }
-  for (let i = 0; i < lines.length; i += NOTES_LINES) {
+  // A bullet's text starts about a third of an inch in.
+  const width = W - 2 * M - 0.4
+  const pages: (typeof lines)[] = []
+  let used = NOTES_LINES
+  for (const l of lines) {
+    const rows = wrappedLines(l.text, NOTES_FONT, width)
+    if (used + rows > NOTES_LINES) {
+      pages.push([])
+      used = 0
+    }
+    pages[pages.length - 1]!.push(l)
+    used += rows
+  }
+  pages.forEach((page, i) => {
     const slide = pres.addSlide()
     header(slide, model, model.monthLabel, i === 0 ? 'Notes' : 'Notes (continued)')
     slide.addText(
-      lines.slice(i, i + NOTES_LINES).map((l) => ({
+      page.map((l) => ({
         text: l.text,
         options: l.heading ? { bold: true, color: INK, breakLine: true } : { color: MUTED, bullet: true, breakLine: true },
       })),
-      { x: M, y: 1.3, w: W - 2 * M, h: 3.8, fontFace: FONT, fontSize: 12, valign: 'top' },
+      { x: M, y: 1.3, w: W - 2 * M, h: 3.8, fontFace: FONT, fontSize: NOTES_FONT, valign: 'top', fit: 'shrink' },
     )
     slide.addNotes(versionsNote(model))
-  }
+  })
 }
 
 /**

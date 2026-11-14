@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { tenant } from '../../../test/fixtures'
 import { REPORT_SUMMARY, reportDocument, reportView } from '../../../test/reportFixtures'
-import { buildReportModel, reportStatusLine, type ReportModelInput } from './model'
+import { buildReportModel, exportChart, goalSeries, reportStatusLine, type ReportModelInput } from './model'
 
 function input(over: Partial<ReportModelInput> = {}): ReportModelInput {
   return {
@@ -108,6 +108,51 @@ describe('buildReportModel', () => {
     expect(model.needsAttention[0]!.definition).toBe('Closed on time / total closed')
     expect(model.categories[1]!.metrics[0]!.definition).toBe('Defect rate')
     expect(model.needsAttention[0]!.versionId).toBe('ver-1')
+  })
+})
+
+describe('sparse metrics and goals', () => {
+  /** Defect rate as a line metric, not applicable in four of its six months and valued in one. */
+  function sparseDoc() {
+    const doc = reportDocument({ view: reportView() })
+    for (const row of doc.view.rows.filter((r) => r.metricKey === 'defect_rate')) {
+      row.chartKind = 'line'
+      for (const c of row.cells) {
+        if (!c.ytd && ['2026-M05', '2026-M06', '2026-M07'].includes(c.period)) {
+          Object.assign(c, { value: null, display: '', status: '', naReason: 'No releases' })
+        }
+      }
+    }
+    return doc
+  }
+
+  it('marks a mostly n/a metric sparse, as the app does, and exports it as a table', () => {
+    const model = buildReportModel(input({ doc: sparseDoc() }))
+    const defect = model.categories[1]!.metrics[0]!
+    expect(defect.sparse).toBe(true)
+    expect(exportChart(defect)).toBe('table')
+    expect(model.needsAttention[0]!.sparse).toBe(false)
+    expect(exportChart(model.needsAttention[0]!)).toBe('line')
+  })
+
+  it('has no goal series when only the current month has a target', () => {
+    const model = buildReportModel(input())
+    expect(model.needsAttention[0]!.goal).toBe('90.0%')
+    expect(goalSeries(model.needsAttention[0]!)).toBeNull()
+  })
+
+  it('plots the goal per month where months carry targets, and never on a bar chart', () => {
+    const doc = reportDocument({ view: reportView() })
+    const root = doc.view.rows.find((r) => r.metricKey === 'on_time_pct' && r.subjectId === 'root')!
+    root.cells.forEach((c, i) => {
+      if (!c.ytd && i >= 2) c.target = 85 + i
+    })
+    const onTime = buildReportModel(input({ doc })).needsAttention[0]!
+    expect(goalSeries(onTime)).toEqual([null, null, 87, 88, 89, 90])
+    for (const row of doc.view.rows.filter((r) => r.metricKey === 'on_time_pct')) row.chartKind = 'money_plan'
+    const money = buildReportModel(input({ doc })).needsAttention[0]!
+    expect(exportChart(money)).toBe('bar')
+    expect(goalSeries(money)).toBeNull()
   })
 })
 

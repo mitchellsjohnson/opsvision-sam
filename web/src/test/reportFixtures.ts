@@ -66,7 +66,10 @@ export interface ReportHandlerOptions {
   /** The document to answer `GET .../reports/{period}` with. */
   document?: (url: URL) => ReportDocument
   months?: ReportMonth[]
-  summary?: ReportSummary
+  /** The stored summary, or a function answering each GET (a Response for a failure). */
+  summary?: ReportSummary | (() => ReportSummary | Response)
+  /** Answers a summary PUT instead of the default success, e.g. with a 409. */
+  putSummary?: (body: { text: string; expectedRevision: number }) => Response | undefined
   members?: Membership[]
   /** Records each request so tests can assert what was asked for. */
   seen?: { documents: URL[]; publishes: URL[]; summaryPuts: unknown[]; members: number }
@@ -82,13 +85,15 @@ export function reportHandlers(options: ReportHandlerOptions = {}) {
       options.seen?.documents.push(url)
       return HttpResponse.json(options.document?.(url) ?? reportDocument())
     }),
-    http.get(`${base}/:period/summary`, () =>
-      HttpResponse.json(options.summary ?? { text: REPORT_SUMMARY, revision: 3 }),
-    ),
+    http.get(`${base}/:period/summary`, () => {
+      const out = typeof options.summary === 'function' ? options.summary() : options.summary
+      if (out instanceof Response) return out
+      return HttpResponse.json(out ?? { text: REPORT_SUMMARY, revision: 3 })
+    }),
     http.put(`${base}/:period/summary`, async ({ request }) => {
       const body = (await request.json()) as { text: string; expectedRevision: number }
       options.seen?.summaryPuts.push(body)
-      return HttpResponse.json({ text: body.text, revision: body.expectedRevision + 1 })
+      return options.putSummary?.(body) ?? HttpResponse.json({ text: body.text, revision: body.expectedRevision + 1 })
     }),
     http.post(`${base}/:period/publish`, ({ request }) => {
       options.seen?.publishes.push(new URL(request.url))

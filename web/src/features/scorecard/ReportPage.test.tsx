@@ -140,6 +140,79 @@ describe('ReportPage', () => {
     expect(await screen.findByText('Summary saved.')).toBeTruthy()
   })
 
+  it('a stale summary save says so and Reload loads the newer summary and its revision', async () => {
+    const seen = newSeen()
+    let stored = { text: REPORT_SUMMARY, revision: 3 }
+    renderReport(ROUTE, {
+      seen,
+      summary: () => stored,
+      putSummary: (body) =>
+        body.expectedRevision === stored.revision
+          ? undefined
+          : HttpResponse.json(
+              { error: { code: 'conflict', message: 'the summary changed since it was loaded; reload it and try again' } },
+              { status: 409 },
+            ),
+    })
+    const box = (await screen.findByRole('textbox', { name: 'Summary' })) as HTMLTextAreaElement
+    await waitFor(() => expect(box.value).toBe(REPORT_SUMMARY))
+    stored = { text: 'Written by another admin.', revision: 4 }
+    const user = userEvent.setup()
+    await user.clear(box)
+    await user.type(box, 'Mine.')
+    await user.click(screen.getByRole('button', { name: 'Save summary' }))
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toContain('This summary changed since you opened it.')
+    expect(seen.summaryPuts).toEqual([{ text: 'Mine.', expectedRevision: 3 }])
+    await user.click(within(alert).getByRole('button', { name: 'Reload' }))
+    await waitFor(() => expect(box.value).toBe('Written by another admin.'))
+    expect(screen.queryByText('This summary changed since you opened it.')).toBeNull()
+    await user.type(box, ' Agreed.')
+    await user.click(screen.getByRole('button', { name: 'Save summary' }))
+    await waitFor(() => expect(seen.summaryPuts.at(-1)).toEqual({ text: 'Written by another admin. Agreed.', expectedRevision: 4 }))
+    expect(await screen.findByText('Summary saved.')).toBeTruthy()
+  })
+
+  it('says so when the summary cannot be loaded', async () => {
+    renderReport(ROUTE, {
+      summary: () => HttpResponse.json({ error: { code: 'internal', message: 'store unavailable' } }, { status: 500 }),
+    })
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toMatch(/Could not load the summary/)
+    expect(screen.queryByRole('textbox', { name: 'Summary' })).toBeNull()
+  })
+
+  it('keeps Publish disabled with a warning while the summary has unsaved changes', async () => {
+    renderReport()
+    const box = (await screen.findByRole('textbox', { name: 'Summary' })) as HTMLTextAreaElement
+    await waitFor(() => expect(box.value).toBe(REPORT_SUMMARY))
+    const publish = screen.getByRole('button', { name: 'Publish' }) as HTMLButtonElement
+    expect(publish.disabled).toBe(false)
+    const user = userEvent.setup()
+    await user.type(box, ' More.')
+    expect(publish.disabled).toBe(true)
+    expect(screen.getByText('You have unsaved summary changes. Save before publishing.')).toBeTruthy()
+    await user.click(screen.getByRole('button', { name: 'Save summary' }))
+    await waitFor(() => expect(publish.disabled).toBe(false))
+    expect(screen.queryByText('You have unsaved summary changes. Save before publishing.')).toBeNull()
+  })
+
+  it('at a unit scope, disables downloads and publish and says so when the scope tree fails to load', async () => {
+    server.use(http.get(`${API}/v1/items`, () => HttpResponse.json({ error: { code: 'internal', message: 'down' } }, { status: 500 })))
+    renderReport(`${ROUTE}&scope=unit-a`)
+    expect(await screen.findByText(/Could not load the units and items in this scope/)).toBeTruthy()
+    const controls = screen.getByRole('toolbar', { name: 'Report controls' })
+    expect((within(controls).getByRole('button', { name: 'Download PPTX' }) as HTMLButtonElement).disabled).toBe(true)
+    expect((within(controls).getByRole('button', { name: 'Download PDF' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(((await within(controls).findByRole('button', { name: 'Publish' })) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('names a not-applicable table cell n/a with its reason', async () => {
+    renderReport()
+    const table = await screen.findByRole('table', { name: /Main scorecard/ })
+    expect(within(table).getByRole('img', { name: 'n/a: Not measured this month' })).toBeTruthy()
+  })
+
   it('a viewer reads the summary text without a text box', async () => {
     state.role = 'viewer'
     renderReport()

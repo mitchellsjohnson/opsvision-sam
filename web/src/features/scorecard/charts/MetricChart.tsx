@@ -22,6 +22,7 @@ import { formatMetricValue, overrideSentence } from '../format'
 import { cellKey } from '../viewHelpers'
 import { statusIntervals } from './bands'
 import { chartTheme, type StatusTheme } from './chartTheme'
+import { isSparse, pointKind, type PointKind } from './sparse'
 
 type Schemas = components['schemas']
 type ViewRow = Schemas['ViewRow']
@@ -77,18 +78,11 @@ interface PointRow {
   status: string
   naReason: string
   overrideReason: string
-  kind: 'value' | 'na' | 'missing'
+  kind: PointKind
 }
 
 function cellsByKey(row: ViewRow): Map<string, CellT> {
   return new Map(row.cells.map((c) => [cellKey(c), c]))
-}
-
-function pointKind(cell: CellT | undefined): PointRow['kind'] {
-  if (!cell) return 'missing'
-  if (cell.naReason !== '') return 'na'
-  if (cell.value == null && cell.status === '') return 'missing'
-  return 'value'
 }
 
 function buildPoints(row: ViewRow, columns: Column[]): PointRow[] {
@@ -107,18 +101,6 @@ function buildPoints(row: ViewRow, columns: Column[]): PointRow[] {
       kind,
     }
   })
-}
-
-function sparseOverride(kind: string, columns: Column[], points: PointRow[]): boolean {
-  if (kind === 'discrete') return false
-  if (columns.length < 4) return false
-  let na = 0
-  let valued = 0
-  for (const p of points) {
-    if (p.kind === 'na') na++
-    else if (p.kind === 'value') valued++
-  }
-  return na > valued
 }
 
 function yDomain(points: PointRow[], target: number | null, extra: number[] = []): [number, number] {
@@ -530,7 +512,7 @@ export function MetricChart({
   const animated = !reduced
   const lines = chartRows ?? [row]
   const points = useMemo(() => buildPoints(row, columns), [row, columns])
-  const kind = sparseOverride(row.chartKind, columns, points) ? 'sparse' : row.chartKind
+  const kind = isSparse(row.chartKind, points.map((p) => p.kind)) ? 'sparse' : row.chartKind
   const currentCell = row.cells.find((c) => cellKey(c) === currentColumnKey)
   const target = currentCell?.target ?? null
   const theme = chartTheme(scale, currentStatus)

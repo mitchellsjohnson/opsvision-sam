@@ -2,6 +2,7 @@ import type { components } from '../../../api/schema'
 import { currentMonth, monthLabel, parsePeriod, periodLabel } from '../../../lib/period'
 import { groupedOverrideLabel, shortLabel, type Column } from '../columns'
 import { changeText, formatMetricValue } from '../format'
+import { isSparse, pointKind, type PointKind } from '../charts/sparse'
 import { applyLayout, defaultLayout, type LayoutItem } from '../logic/layout'
 import { needsAttention, type NeedsAttentionItem } from '../logic/needsAttention'
 import { cellReported, statusAtScope, type StatusScaleEntry } from '../logic/statusAtScope'
@@ -41,6 +42,9 @@ export interface ReportPoint {
   display: string
   status: string
   naReason: string
+  kind: PointKind
+  /** The month's own target, when its methodology sets one. */
+  target: number | null
 }
 
 export interface ReportSeries {
@@ -67,8 +71,10 @@ export interface ReportMetric {
   caption: string
   change: string | null
   ytd: string | null
+  /** The month's target, as text. */
   goal: string | null
-  goalValue: number | null
+  /** Mostly not applicable, by the app's rule (`isSparse`): exports show a table, not a chart. */
+  sparse: boolean
   /** The worst off-track child unit or item, if any. */
   driver: string | null
   /** The scope row's six months, or its reported children when it has no value. */
@@ -128,15 +134,27 @@ export const TABLE_ROWS_PER_PAGE = 12
 
 /**
  * How an export draws a metric: a line or bar chart where the kind is one,
- * else (uptime, discrete, or nothing to plot) a table of period, value, and
- * status letter.
+ * else (uptime, discrete, sparse, or nothing to plot) a table of period,
+ * value, and status letter.
  */
 export function exportChart(metric: ReportMetric): 'line' | 'bar' | 'table' {
+  if (metric.sparse) return 'table'
   const plotted = metric.series.some((s) => s.points.some((p) => p.value !== null))
   if (!plotted) return 'table'
   if (metric.chartKind === 'money_plan') return 'bar'
   if (metric.chartKind === 'uptime' || metric.chartKind === 'discrete') return 'table'
   return 'line'
+}
+
+/**
+ * The goal to plot beside a single-line chart: each month's own target (null
+ * where it has none), when at least two months carry one. Otherwise null and
+ * the goal is only stated as text; bar charts never plot it.
+ */
+export function goalSeries(metric: ReportMetric): (number | null)[] | null {
+  if (exportChart(metric) !== 'line' || metric.series.length !== 1) return null
+  const targets = metric.series[0]!.points.map((p) => p.target)
+  return targets.filter((t) => t !== null).length >= 2 ? targets : null
 }
 
 /** A point's value for a table: its display, `n/a`, or a dash when missing. */
@@ -434,7 +452,10 @@ export function buildReportModel(input: ReportModelInput): ReportModel {
         : null,
       ytd: ytdCell?.display || null,
       goal: cell?.target != null ? formatMetricValue(head.format, cell.target) : null,
-      goalValue: cell?.target ?? null,
+      sparse: isSparse(
+        head.chartKind,
+        monthColumns.map((col) => pointKind(cellAt(scope, col.key))),
+      ),
       driver: driver && driver.rank >= worstRank ? driver.name : null,
       series: seriesRows.map((row) => ({
         subject: row.subjectName,
@@ -448,6 +469,8 @@ export function buildReportModel(input: ReportModelInput): ReportModel {
             display: c && na === '' ? c.display : '',
             status: na === '' ? (c?.status ?? '') : '',
             naReason: na,
+            kind: pointKind(c),
+            target: c?.target ?? null,
           }
         }),
       })),

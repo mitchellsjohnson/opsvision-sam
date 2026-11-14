@@ -1,4 +1,4 @@
-import { useId, useMemo, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router'
 import {
   useItems,
@@ -13,6 +13,7 @@ import {
   useReportSummary,
   useScorecards,
 } from '../../api/queries'
+import { ApiError } from '../../api/errors'
 import type { components } from '../../api/schema'
 import { parsePeriod, periodLabel } from '../../lib/period'
 import { usePeriodState } from '../../shell/usePeriodState'
@@ -39,11 +40,55 @@ const MIME = {
   pdf: 'application/pdf',
 } as const
 
-function SummaryEditor({ scorecardId, period, summary }: { scorecardId: string; period: string; summary: ReportSummary }) {
+interface SummaryEditorProps {
+  scorecardId: string
+  period: string
+  /** The summary as loaded when the editor opened; later refetches do not change what it saves against. */
+  summary: ReportSummary
+  /** Refetches the stored summary; undefined when that fails. */
+  reload: () => Promise<ReportSummary | undefined>
+  onDirtyChange: (dirty: boolean) => void
+}
+
+function SummaryEditor({ scorecardId, period, summary, reload, onDirtyChange }: SummaryEditorProps) {
   const id = useId()
-  const [text, setText] = useState(summary.text)
+  const [draft, setDraft] = useState({ text: summary.text, baseRevision: summary.revision, savedText: summary.text })
   const [saved, setSaved] = useState(false)
+  const [conflict, setConflict] = useState(false)
+  const [reloadFailed, setReloadFailed] = useState(false)
   const put = usePutReportSummary(scorecardId, period)
+  const dirty = draft.text !== draft.savedText
+
+  useEffect(() => onDirtyChange(dirty), [dirty, onDirtyChange])
+  useEffect(() => () => onDirtyChange(false), [onDirtyChange])
+
+  const save = () => {
+    const text = draft.text
+    put.mutate(
+      { text, expectedRevision: draft.baseRevision },
+      {
+        onSuccess: (data) => {
+          setDraft((d) => ({ ...d, baseRevision: data.revision, savedText: data.text }))
+          setSaved(true)
+        },
+        onError: (e) => setConflict(e instanceof ApiError && e.status === 409),
+      },
+    )
+  }
+
+  const reloadSummary = async () => {
+    const fresh = await reload()
+    if (!fresh) {
+      setReloadFailed(true)
+      return
+    }
+    setDraft({ text: fresh.text, baseRevision: fresh.revision, savedText: fresh.text })
+    setConflict(false)
+    setReloadFailed(false)
+    setSaved(false)
+    put.reset()
+  }
+
   return (
     <div className="mt-3">
       <label htmlFor={id} className="block text-sm font-medium">
@@ -54,30 +99,36 @@ function SummaryEditor({ scorecardId, period, summary }: { scorecardId: string; 
         rows={4}
         maxLength={8000}
         className={inputClass}
-        value={text}
+        value={draft.text}
         onChange={(e) => {
-          setText(e.target.value)
+          const text = e.target.value
+          setDraft((d) => ({ ...d, text }))
           setSaved(false)
         }}
       />
       <div className="mt-2 flex flex-wrap items-center gap-3">
-        <button
-          type="button"
-          className={secondaryButton}
-          disabled={put.isPending}
-          onClick={() => put.mutate({ text, expectedRevision: summary.revision }, { onSuccess: () => setSaved(true) })}
-        >
+        <button type="button" className={secondaryButton} disabled={put.isPending} onClick={save}>
           Save summary
         </button>
-        {saved && (
+        {saved && !dirty && (
           <p role="status" className="text-sm text-ink/80">
             Summary saved.
           </p>
         )}
-        {put.isError && (
-          <p role="alert" className="text-sm text-status-r">
-            Could not save the summary: {put.error.message}
-          </p>
+        {conflict ? (
+          <div role="alert" className="flex flex-wrap items-center gap-2 text-sm text-status-r">
+            <span>This summary changed since you opened it.</span>
+            <button type="button" className={secondaryButton} onClick={() => void reloadSummary()}>
+              Reload
+            </button>
+            {reloadFailed && <span>Could not reload the summary; try again.</span>}
+          </div>
+        ) : (
+          put.isError && (
+            <p role="alert" className="text-sm text-status-r">
+              Could not save the summary: {put.error.message}
+            </p>
+          )
         )}
       </div>
     </div>
@@ -187,7 +238,7 @@ function ReportBody({ model, scorecardName }: { model: ReportModel; scorecardNam
                   >
                     <span className="inline-flex items-center justify-end gap-1 whitespace-nowrap">
                       {cell.naReason ? (
-                        <span role="img" aria-label={cell.naReason} className="rounded bg-status-na-bg px-1.5 text-xs text-ink">
+                        <span role="img" aria-label={`n/a: ${cell.naReason}`} className="rounded bg-status-na-bg px-1.5 text-xs text-ink">
                           n/a
                         </span>
                       ) : (
@@ -247,7 +298,18 @@ export function ReportPage() {
   const [useMyLayout, setUseMyLayout] = useState(false)
   const [exporting, setExporting] = useState<'' | 'pptx' | 'pdf'>('')
   const [exportError, setExportError] = useState('')
+  const [summaryDirty, setSummaryDirty] = useState(false)
   const warningId = useId()
+  const unsavedId = useId()
+  const refetchSummary = summary.refetch
+  const reloadSummary = useCallback(async () => {
+    const result = await refetchSummary()
+    return result.isError ? undefined : result.data
+  }, [refetchSummary])
+
+  // The scope's subtree is needed to filter the report; without it the report would show the wrong rows.
+  const scopeLoading = !companyScope && (orgUnits.isPending || items.isPending)
+  const scopeError = companyScope ? null : (orgUnits.error ?? items.error)
 
   const scale = me.data?.tenant?.statusScale?.length ? me.data.tenant.statusScale : defaultStatusScale()
   const companyName = me.data?.tenant?.name ?? 'Company'
@@ -277,7 +339,7 @@ export function ReportPage() {
   const layoutItems = useMemo(() => (useMyLayout ? (layout.data?.items ?? []) : null), [useMyLayout, layout.data?.items])
   const model = useMemo(
     () =>
-      doc.data
+      doc.data && !scopeLoading && !scopeError
         ? buildReportModel({
             doc: doc.data,
             scorecardName,
@@ -292,7 +354,7 @@ export function ReportPage() {
             statusLine,
           })
         : null,
-    [doc.data, scorecardName, companyName, period.scope, scopeName, scopeSubjects, period.period, fy, scale, layoutItems, statusLine],
+    [doc.data, scopeLoading, scopeError, scorecardName, companyName, period.scope, scopeName, scopeSubjects, period.period, fy, scale, layoutItems, statusLine],
   )
 
   const search = (patch: (next: URLSearchParams) => void) => {
@@ -369,8 +431,8 @@ export function ReportPage() {
             <button
               type="button"
               className={primaryButton}
-              disabled={!isMonth || !doc.data || publish.isPending}
-              aria-describedby={isMonth ? warningId : undefined}
+              disabled={!isMonth || !model || publish.isPending || summaryDirty}
+              aria-describedby={isMonth ? [warningId, summaryDirty ? unsavedId : ''].join(' ').trim() : undefined}
               onClick={() => publish.mutate(undefined, { onSuccess: () => setRevision(false) })}
             >
               Publish
@@ -380,11 +442,21 @@ export function ReportPage() {
                 This month is not locked.
               </span>
             )}
+            {isMonth && summaryDirty && (
+              <span id={unsavedId} className="rounded-md border border-amber bg-cream px-2 py-1 text-sm">
+                You have unsaved summary changes. Save before publishing.
+              </span>
+            )}
           </>
         )}
       </div>
 
       {!isMonth && <p className="mt-3 text-sm">The monthly report is available on a month.</p>}
+      {isMonth && scopeError && (
+        <p role="alert" className="mt-2 text-sm text-status-r">
+          Could not load the units and items in this scope: {scopeError.message}
+        </p>
+      )}
       {exporting && (
         <p role="status" className="mt-2 text-sm text-ink/80">
           Building the {exporting.toUpperCase()}…
@@ -426,7 +498,7 @@ export function ReportPage() {
         </section>
       )}
 
-      {isMonth && doc.isPending && (
+      {isMonth && (doc.isPending || (scopeLoading && !scopeError)) && (
         <p role="status" aria-busy="true" className="mt-4">
           Loading report…
         </p>
@@ -465,7 +537,22 @@ export function ReportPage() {
                 {!doc.data?.live && (
                   <p className="mt-3 text-sm text-ink/80">Edits apply to the live report and the next publish.</p>
                 )}
-                {summary.data && <SummaryEditor key={period.period} scorecardId={scorecardId} period={period.period} summary={summary.data} />}
+                {summary.isError ? (
+                  <p role="alert" className="mt-3 text-sm text-status-r">
+                    Could not load the summary: {summary.error.message}
+                  </p>
+                ) : (
+                  summary.data && (
+                    <SummaryEditor
+                      key={period.period}
+                      scorecardId={scorecardId}
+                      period={period.period}
+                      summary={summary.data}
+                      reload={reloadSummary}
+                      onDirtyChange={setSummaryDirty}
+                    />
+                  )
+                )}
               </>
             ) : (
               <p className="mt-3 whitespace-pre-wrap text-sm">{model.summary || 'No summary written for this month.'}</p>

@@ -3,6 +3,7 @@ import { letterUsesInkOnWhite } from '../../../ui/contrast'
 import { formatMetricValue } from '../format'
 import {
   exportChart,
+  goalSeries,
   metricFacts,
   noteSections,
   statusTable,
@@ -218,8 +219,8 @@ function drawChart(ctx: Ctx, page: PDFPage, metric: ReportMetric, kind: 'line' |
   const series = metric.series.slice(0, SERIES_COLORS.length)
   const points = series[0]!.points
   const values = series.flatMap((s) => s.points.map((p) => p.value).filter((v): v is number => v !== null))
-  const goal = series.length === 1 ? metric.goalValue : null
-  const { lo, hi, ticks } = axis(goal === null ? values : [...values, goal])
+  const goal = goalSeries(metric)
+  const { lo, hi, ticks } = axis([...values, ...(goal ?? []).filter((v): v is number => v !== null)])
   const plotLeft = box.x + 52
   const plotRight = box.x + box.w
   const plotBottom = box.y + 30
@@ -235,10 +236,15 @@ function drawChart(ctx: Ctx, page: PDFPage, metric: ReportMetric, kind: 'line' |
   }
   points.forEach((p, i) => text(ctx, page, xAt(i), plotBottom - 16, p.label, { size: 9, color: MUTED, align: 'center' }))
 
-  if (goal !== null) {
-    const y = yAt(goal)
-    page.drawLine({ start: { x: plotLeft, y }, end: { x: plotRight, y }, thickness: 1, color: color(ctx, INK), dashArray: [6, 4] })
-    text(ctx, page, plotLeft + 4, y + 4, `Goal ${metric.goal}`, { size: 9, font: ctx.bold })
+  if (goal) {
+    for (let i = 1; i < goal.length; i++) {
+      const a = goal[i - 1]
+      const b = goal[i]
+      if (a == null || b == null) continue
+      page.drawLine({ start: { x: xAt(i - 1), y: yAt(a) }, end: { x: xAt(i), y: yAt(b) }, thickness: 1, color: color(ctx, INK), dashArray: [6, 4] })
+    }
+    const first = goal.findIndex((v) => v !== null)
+    text(ctx, page, xAt(first) - slot / 2 + 4, yAt(goal[first]!) + 4, 'Goal', { size: 9, font: ctx.bold })
   }
 
   series.forEach((s, si) => {
