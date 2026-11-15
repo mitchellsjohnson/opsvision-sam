@@ -17,6 +17,8 @@ export const handlers = [
   http.get(`${API}/v1/scorecards`, () => HttpResponse.json({ scorecards })),
   http.get(`${API}/v1/org/units`, () => HttpResponse.json({ units: orgUnits })),
   http.get(`${API}/v1/items`, () => HttpResponse.json({ items: [] })),
+  http.get(`${API}/v1/org/levels`, () => HttpResponse.json({ levels: [] })),
+  http.get(`${API}/v1/me/preferences`, () => HttpResponse.json({ defaultScope: '' })),
   http.get(`${API}/v1/me/layouts/:sc`, () =>
     HttpResponse.json({ items: [], revision: 0, source: 'empty', defaultRevision: 0 }),
   ),

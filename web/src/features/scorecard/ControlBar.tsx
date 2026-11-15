@@ -1,9 +1,9 @@
 import * as Popover from '@radix-ui/react-popover'
 import clsx from 'clsx'
 import { ChevronDown, ChevronLeft, ChevronRight } from 'lucide-react'
-import { useId, useMemo, useState } from 'react'
+import { useId, useMemo } from 'react'
 import { NavLink, useLocation, useParams } from 'react-router'
-import { useMe, useOrgUnits, useVersions } from '../../api/queries'
+import { useVersions } from '../../api/queries'
 import {
   GRAINS,
   convertGrain,
@@ -16,6 +16,7 @@ import {
 } from '../../lib/period'
 import { Sam } from '../../ui/Sam'
 import { usePeriodState } from '../../shell/usePeriodState'
+import { GlobalFilters } from './GlobalFilters'
 
 const fieldClass = 'rounded-md border border-ink/30 bg-white px-2 py-1 text-sm'
 const buttonClass = 'rounded-md border border-ink/30 bg-white p-1 hover:bg-cream disabled:opacity-50'
@@ -49,20 +50,16 @@ function viewLinkClass({ isActive }: { isActive: boolean }) {
   )
 }
 
-/** Shared sticky bar: view links, period, scope, view options, and Ask SAM. */
+/** Shared sticky bar: global filters, view links, period, view options, and Ask SAM. */
 export function ControlBar({ scorecardId, barRef }: { scorecardId: string; barRef?: (el: HTMLElement | null) => void }) {
   const { sc } = useParams()
   const { search } = useLocation()
   const id = useId()
-  const me = useMe()
-  const orgUnits = useOrgUnits()
   const versions = useVersions(scorecardId)
   const [view, update] = usePeriodState()
-  const [scopeFilter, setScopeFilter] = useState('')
 
   const parsed = parsePeriod(view.period)
   const start = view.fiscalYearStartMonth
-  const companyName = me.data?.tenant?.name ?? 'Company'
 
   const periodSummary = useMemo(() => {
     if (!parsed) return view.period
@@ -70,19 +67,7 @@ export function ControlBar({ scorecardId, barRef }: { scorecardId: string; barRe
     return `${periodLabel(parsed, start)} · ${grain}`
   }, [parsed, start, view.period])
 
-  const scopeName = useMemo(() => {
-    if (!view.scope) return companyName
-    return orgUnits.data?.units.find((u) => u.id === view.scope)?.name ?? 'Selected unit'
-  }, [companyName, orgUnits.data?.units, view.scope])
-
   const restated = versions.data?.versions.find((v) => v.id === view.restate)
-
-  const filteredUnits = useMemo(() => {
-    const q = scopeFilter.trim().toLowerCase()
-    const units = orgUnits.data?.units ?? []
-    if (!q) return units
-    return units.filter((u) => u.name.toLowerCase().includes(q))
-  }, [orgUnits.data?.units, scopeFilter])
 
   if (!parsed) return null
 
@@ -101,6 +86,8 @@ export function ControlBar({ scorecardId, barRef }: { scorecardId: string; barRe
       aria-label="Scorecard controls"
       className="flex flex-wrap items-center gap-2"
     >
+      <GlobalFilters />
+
       <nav aria-label="Scorecard views" className="flex flex-wrap gap-1">
         {VIEWS.map((v) => (
           <NavLink
@@ -208,59 +195,6 @@ export function ControlBar({ scorecardId, barRef }: { scorecardId: string; barRe
                 Year to date
               </label>
             </fieldset>
-          </Popover.Content>
-        </Popover.Portal>
-      </Popover.Root>
-
-      <Popover.Root>
-        <Popover.Trigger className={triggerClass} disabled={!orgUnits.data?.units.length}>
-          Scope: {scopeName}
-          <ChevronDown aria-hidden="true" size={16} />
-        </Popover.Trigger>
-        <Popover.Portal>
-          <Popover.Content
-            aria-label="Filter by scope"
-            align="start"
-            sideOffset={4}
-            className="z-50 max-h-80 min-w-56 overflow-auto rounded-md border border-ink/20 bg-white p-3 shadow-lg"
-          >
-            <label className="block text-xs font-medium">
-              Filter
-              <input
-                type="search"
-                value={scopeFilter}
-                onChange={(e) => setScopeFilter(e.target.value)}
-                className={clsx(fieldClass, 'mt-1 w-full')}
-              />
-            </label>
-            <ul className="mt-3 space-y-1">
-              <li>
-                <label className="flex items-center gap-2 text-sm">
-                  <input
-                    type="radio"
-                    name={`${id}-scope`}
-                    className="size-4 accent-accent"
-                    checked={view.scope === ''}
-                    onChange={() => update({ scope: null })}
-                  />
-                  {companyName}
-                </label>
-              </li>
-              {filteredUnits.map((u) => (
-                <li key={u.id}>
-                  <label className="flex items-center gap-2 text-sm">
-                    <input
-                      type="radio"
-                      name={`${id}-scope`}
-                      className="size-4 accent-accent"
-                      checked={view.scope === u.id}
-                      onChange={() => update({ scope: u.id })}
-                    />
-                    {u.name}
-                  </label>
-                </li>
-              ))}
-            </ul>
           </Popover.Content>
         </Popover.Portal>
       </Popover.Root>

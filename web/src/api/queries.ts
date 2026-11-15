@@ -74,6 +74,7 @@ export const keys = {
   contributions: (sc: string, metric: string, subject: string, period: string) =>
     ['contributions', sc, metric, subject, period] as const,
   layout: (sc: string) => ['layout', sc] as const,
+  preferences: ['preferences'] as const,
   reportMonths: (sc: string) => ['reportMonths', sc] as const,
   report: (sc: string, period: string, revision: string) => ['report', sc, period, revision] as const,
   reportSummary: (sc: string, period: string) => ['reportSummary', sc, period] as const,
@@ -703,6 +704,24 @@ export function usePutLayout(sc: string) {
     },
     onSuccess: (data) => {
       queryClient.setQueryData(keys.layout(sc), data)
+    },
+  })
+}
+
+/** The caller's preferences; `defaultScope` is '' for the company. */
+export function useMyPreferences() {
+  const api = useApi()
+  return useQuery({ queryKey: keys.preferences, queryFn: () => unwrap(api.GET('/me/preferences')) })
+}
+
+/** Saves the caller's preferences. */
+export function usePutMyPreferences() {
+  const api = useApi()
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (body: Schemas['UserPreferences']) => unwrap(api.PUT('/me/preferences', { body })),
+    onSuccess: (data) => {
+      queryClient.setQueryData(keys.preferences, data)
     },
   })
 }

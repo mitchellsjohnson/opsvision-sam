@@ -1,4 +1,4 @@
-import { screen, within } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { Route, Routes } from 'react-router'
@@ -99,14 +99,13 @@ describe('AppShell', () => {
     }
   })
 
-  it('lays out each expanded link and the collapse button as one row: icon, then label', async () => {
+  it('lays out each expanded link as one row: icon, then label', async () => {
     shell('/admin/org?period=2026-M10')
     const nav = await screen.findByRole('navigation', { name: 'Main' })
     const controls = [
       await within(nav).findByRole('link', { name: 'Main scorecard' }),
       within(nav).getByRole('link', { name: 'Enter data' }),
       ...ADMIN_LINKS.map((name) => within(nav).getByRole('link', { name })),
-      within(nav).getByRole('button', { name: 'Collapse navigation' }),
     ]
     for (const el of controls) {
       const name = el.textContent
@@ -162,14 +161,63 @@ describe('AppShell collapsible navigation', () => {
   it('starts expanded with a toggle that names its action and controls the links', async () => {
     shell()
     const nav = await screen.findByRole('navigation', { name: 'Main' })
+    await within(nav).findByRole('link', { name: 'Templates' })
     const toggle = within(nav).getByRole('button', { name: 'Collapse navigation' })
     expect(toggle.getAttribute('aria-expanded')).toBe('true')
     const controlled = document.getElementById(toggle.getAttribute('aria-controls') ?? '')
     expect(controlled).toBeTruthy()
     expect(nav.contains(controlled)).toBe(true)
     expect(within(controlled as HTMLElement).getByRole('link', { name: 'Enter data' })).toBeTruthy()
-    // The toggle is the first thing in the nav.
-    expect(nav.querySelector('button, a')).toBe(toggle)
+  })
+
+  it('pins an icon-only toggle to the bottom of the panel, right-aligned when expanded', async () => {
+    shell()
+    const nav = await screen.findByRole('navigation', { name: 'Main' })
+    await within(nav).findByRole('link', { name: 'Templates' })
+    const toggle = within(nav).getByRole('button', { name: 'Collapse navigation' })
+    // The toggle comes after every link, in a bar that sticks to the bottom.
+    const focusables = [...nav.querySelectorAll('button, a')]
+    expect(focusables[focusables.length - 1]).toBe(toggle)
+    expect(toggle.textContent).toBe('')
+    expect(toggle.querySelector('svg')).toBeTruthy()
+    const bar = toggle.closest('[data-nav-footer]') as HTMLElement
+    expect(bar).toBeTruthy()
+    for (const cls of ['sticky', 'bottom-0', 'justify-end']) expect(bar.classList.contains(cls), cls).toBe(true)
+    expect(bar.contains(document.getElementById(toggle.getAttribute('aria-controls') ?? ''))).toBe(false)
+    // No nested scroll container in the panel.
+    for (const el of [nav, ...nav.querySelectorAll('*')]) {
+      expect(el.className.toString()).not.toMatch(/overflow-(y-)?(auto|scroll)/)
+    }
+  })
+
+  it('centers the toggle on the collapsed rail and shows its name as a tooltip on focus', async () => {
+    localStorage.setItem(KEY, 'true')
+    shell()
+    const user = userEvent.setup()
+    const nav = await screen.findByRole('navigation', { name: 'Main' })
+    await within(nav).findByRole('link', { name: 'Templates' })
+    const toggle = within(nav).getByRole('button', { name: 'Expand navigation' })
+    const bar = toggle.closest('[data-nav-footer]') as HTMLElement
+    expect(bar.classList.contains('justify-center')).toBe(true)
+    expect(bar.classList.contains('justify-end')).toBe(false)
+    await user.tab()
+    for (let i = 0; i < 20 && document.activeElement !== toggle; i++) await user.tab()
+    expect(document.activeElement).toBe(toggle)
+    const tip = await screen.findByRole('tooltip')
+    expect(tip.textContent).toBe('Expand navigation')
+  })
+
+  it('shows the toggle tooltip when expanded too', async () => {
+    shell()
+    const user = userEvent.setup()
+    const nav = await screen.findByRole('navigation', { name: 'Main' })
+    await within(nav).findByRole('link', { name: 'Templates' })
+    const toggle = within(nav).getByRole('button', { name: 'Collapse navigation' })
+    await user.tab()
+    for (let i = 0; i < 20 && document.activeElement !== toggle; i++) await user.tab()
+    expect(document.activeElement).toBe(toggle)
+    const tip = await screen.findByRole('tooltip')
+    expect(tip.textContent).toBe('Collapse navigation')
   })
 
   it('collapses to a 64px rail, keeps link names, and persists the choice', async () => {
@@ -243,7 +291,7 @@ describe('AppShell collapsible navigation', () => {
     const user = userEvent.setup()
     const nav = await screen.findByRole('navigation', { name: 'Main' })
     await within(nav).findByRole('link', { name: 'Templates' })
-    const expected = ['Expand navigation', 'Main scorecard', 'Enter data', ...ADMIN_LINKS]
+    const expected = ['Main scorecard', 'Enter data', ...ADMIN_LINKS, 'Expand navigation']
     // Start from the skip link, the first stop on the page.
     await user.tab()
     expect(document.activeElement).toBe(screen.getByRole('link', { name: 'Skip to main content' }))
@@ -376,5 +424,51 @@ describe('AppShell focus indicators', () => {
     await screen.findByText('Drawer open')
     expect(nav.classList.contains('w-16')).toBe(true)
     expect(within(nav).getByRole('button', { name: 'Expand navigation' }).getAttribute('aria-expanded')).toBe('false')
+  })
+})
+
+describe('AppShell default scope', () => {
+  const scorecardHref = async () => {
+    const nav = await screen.findByRole('navigation', { name: 'Main' })
+    return within(nav).findByRole('link', { name: 'Main scorecard' })
+  }
+  const scopeOf = (link: HTMLElement) => new URL(link.getAttribute('href')!, 'http://x').searchParams.get('scope')
+
+  it('enters a scorecard at my saved default scope from a page without one', async () => {
+    server.use(http.get(`${API}/v1/me/preferences`, () => HttpResponse.json({ defaultScope: 'unit-b' })))
+    shell('/entry?period=2026-M10')
+    const link = await scorecardHref()
+    await waitFor(() => expect(scopeOf(link)).toBe('unit-b'))
+    expect(new URL(link.getAttribute('href')!, 'http://x').searchParams.get('period')).toBe('2026-M10')
+  })
+
+  it('keeps an explicit scope on the page over the default', async () => {
+    server.use(http.get(`${API}/v1/me/preferences`, () => HttpResponse.json({ defaultScope: 'unit-b' })))
+    shell('/entry?period=2026-M10&scope=unit-a')
+    const link = await scorecardHref()
+    await screen.findByRole('button', { name: /Test admin/ })
+    expect(scopeOf(link)).toBe('unit-a')
+  })
+
+  it('keeps the company on a scorecard page with no scope', async () => {
+    let served = false
+    server.use(
+      http.get(`${API}/v1/me/preferences`, () => {
+        served = true
+        return HttpResponse.json({ defaultScope: 'unit-b' })
+      }),
+    )
+    shell('/scorecards/sc-main/overview?period=2026-M10')
+    const link = await scorecardHref()
+    await waitFor(() => expect(served).toBe(true))
+    await screen.findByRole('button', { name: /Test admin/ })
+    expect(scopeOf(link)).toBeNull()
+  })
+
+  it('adds no scope when the default is the company', async () => {
+    shell('/entry?period=2026-M10')
+    const link = await scorecardHref()
+    await screen.findByRole('button', { name: /Test admin/ })
+    expect(scopeOf(link)).toBeNull()
   })
 })

@@ -20,7 +20,7 @@ import {
 } from 'lucide-react'
 import { useEffect, type ReactElement } from 'react'
 import { NavLink, Outlet, useLocation, useMatch, useResolvedPath, useSearchParams } from 'react-router'
-import { useMe, useScorecards } from '../api/queries'
+import { useMe, useMyPreferences, useScorecards } from '../api/queries'
 import { useAuth } from '../auth/context'
 import { focusOnDark, menuItemHighlight } from '../ui/focus'
 import { Sam } from '../ui/Sam'
@@ -106,25 +106,31 @@ function AppShellBody() {
   const auth = useAuth()
   const me = useMe()
   const scorecards = useScorecards()
+  const preferences = useMyPreferences()
   const { pathname } = useLocation()
   const [params] = useSearchParams()
   const [navCollapsed, toggleNav] = useNavCollapsed()
   // The open dock needs the room: the nav shows as the rail meanwhile.
   const collapsed = navCollapsed || dockOpen
+  const toggleLabel = collapsed ? 'Expand navigation' : 'Collapse navigation'
 
   const isAdmin = me.data?.role === 'admin'
   const showFilters = pathname === '/entry'
 
   // Carry the period/YTD/subject selection between report pages. A
   // restatement names one scorecard's methodology version, so it stays behind
-  // on links to anywhere else.
+  // on links to anywhere else. Entering a scorecard from a page with no scope
+  // opens it at the saved default scope; between scorecards the page's scope
+  // (including the company) carries as it is.
   const currentScorecard = /^\/scorecards\/([^/]+)/.exec(pathname)?.[1]
+  const defaultScope = preferences.data?.defaultScope ?? ''
   const searchFor = (scorecardId?: string) => {
     const carried = new URLSearchParams()
     for (const key of VIEW_PARAMS) {
       if (key === 'restate' && scorecardId !== currentScorecard) continue
       for (const v of params.getAll(key)) carried.append(key, v)
     }
+    if (scorecardId && !currentScorecard && !carried.has('scope') && defaultScope) carried.set('scope', defaultScope)
     return carried.size > 0 ? `?${carried.toString()}` : ''
   }
 
@@ -203,28 +209,11 @@ function AppShellBody() {
         <nav
           aria-label="Main"
           className={clsx(
-            'shrink-0 border-r border-ink/15 bg-cream/60 motion-safe:transition-[width]',
+            'flex shrink-0 flex-col border-r border-ink/15 bg-cream/60 motion-safe:transition-[width]',
             collapsed ? 'w-16 p-3' : 'w-60 p-3',
           )}
         >
-          <RailTip label={collapsed ? 'Expand navigation' : 'Collapse navigation'} collapsed={collapsed}>
-            <button
-              type="button"
-              aria-expanded={!collapsed}
-              aria-controls={NAV_LINKS_ID}
-              aria-label={collapsed ? 'Expand navigation' : undefined}
-              onClick={toggleNav}
-              className={clsx(itemClass(collapsed), 'mb-2 text-ink hover:bg-white')}
-            >
-              {collapsed ? (
-                <PanelLeftOpen aria-hidden="true" className={navIconClass(collapsed)} />
-              ) : (
-                <PanelLeftClose aria-hidden="true" className={navIconClass(collapsed)} />
-              )}
-              {!collapsed && <span>Collapse navigation</span>}
-            </button>
-          </RailTip>
-          <div id={NAV_LINKS_ID}>
+          <div id={NAV_LINKS_ID} className="flex-1">
             <ul className="space-y-1">
               {(scorecards.data?.scorecards ?? []).map((sc) => (
                 <li key={sc.id}>
@@ -268,6 +257,41 @@ function AppShellBody() {
                 </ul>
               </>
             )}
+          </div>
+          <div
+            data-nav-footer
+            className={clsx(
+              'sticky bottom-0 -mx-3 -mb-3 mt-3 flex border-t border-ink/15 bg-cream p-3',
+              collapsed ? 'justify-center' : 'justify-end',
+            )}
+          >
+            <Tooltip.Root>
+              <Tooltip.Trigger asChild>
+                <button
+                  type="button"
+                  aria-expanded={!collapsed}
+                  aria-controls={NAV_LINKS_ID}
+                  aria-label={toggleLabel}
+                  onClick={toggleNav}
+                  className="flex size-8 items-center justify-center rounded-md text-ink hover:bg-white"
+                >
+                  {collapsed ? (
+                    <PanelLeftOpen aria-hidden="true" className="size-4 shrink-0" />
+                  ) : (
+                    <PanelLeftClose aria-hidden="true" className="size-4 shrink-0" />
+                  )}
+                </button>
+              </Tooltip.Trigger>
+              <Tooltip.Portal>
+                <Tooltip.Content
+                  side="right"
+                  sideOffset={8}
+                  className="z-50 rounded-md bg-ink px-2 py-1 text-xs font-medium text-white shadow-lg"
+                >
+                  {toggleLabel}
+                </Tooltip.Content>
+              </Tooltip.Portal>
+            </Tooltip.Root>
           </div>
         </nav>
 
