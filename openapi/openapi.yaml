@@ -84,6 +84,38 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
 
+  /me/preferences:
+    get:
+      operationId: getMyPreferences
+      tags: [Identity]
+      summary: The current user's preferences in the active tenant
+      responses:
+        '200':
+          description: The caller's preferences (defaults when none are saved)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserPreferences' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    put:
+      operationId: putMyPreferences
+      tags: [Identity]
+      summary: Save the current user's preferences in the active tenant
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UserPreferences' }
+      responses:
+        '200':
+          description: The stored preferences
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserPreferences' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
   /operator/tenants:
     get:
       operationId: listOperatorTenants
@@ -1699,6 +1731,16 @@ components:
         tenants:
           type: array
           items: { $ref: '#/components/schemas/TenantSummary' }
+    UserPreferences:
+      type: object
+      required: [defaultScope]
+      properties:
+        defaultScope:
+          type: string
+          description: |
+            The org unit the caller's scorecards open at when a link names no
+            scope. Empty means the whole company. A saved value must be an
+            existing org unit of the tenant that is not retired.
     CreateTenantRequest:
       type: object
       required: [name, auth0OrgId, fiscalYearStartMonth, adminEmail]

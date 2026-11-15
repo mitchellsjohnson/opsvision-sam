@@ -45,6 +45,7 @@ func TestKeys(t *testing.T) {
 		{"scorecard SK", scorecardSK("sc1"), "SC#sc1"},
 		{"layout SK", layoutSK("user-1", "delivery"), "LAYOUT#user-1#delivery"},
 		{"layout default SK", layoutDefaultSK("delivery"), "LAYOUTDEFAULT#delivery"},
+		{"preferences SK", preferencesSK("user-1"), "PREFS#user-1"},
 		{"version SK", versionSK("sc1", "v1"), "SC#sc1#VER#v1"},
 
 		{"data current PK", dataPK("acme", "sc1", 2026), "T#acme#SC#sc1#FY#2026"},
@@ -81,21 +82,22 @@ func TestKeys(t *testing.T) {
 
 func TestSKPrefixes(t *testing.T) {
 	cases := map[string]string{
-		prefixMember:    "MEMBER#",
-		prefixLevel:     "LEVEL#",
-		prefixUnit:      "UNIT#",
-		prefixMove:      "MOVE#",
-		prefixKind:      "KIND#",
-		prefixItem:      "ITEM#",
-		prefixScorecard: "SC#",
-		prefixTemplate:  "TEMPLATE#",
-		prefixPoint:     "DP#",
-		prefixOverride:  "OV#",
-		prefixRecType:   "RTYPE#",
-		prefixSnapshot:  "SNAP#",
-		prefixRecordRev: "R#",
-		prefixLayout:    "LAYOUT#",
-		prefixLayoutDef: "LAYOUTDEFAULT#",
+		prefixMember:      "MEMBER#",
+		prefixLevel:       "LEVEL#",
+		prefixUnit:        "UNIT#",
+		prefixMove:        "MOVE#",
+		prefixKind:        "KIND#",
+		prefixItem:        "ITEM#",
+		prefixScorecard:   "SC#",
+		prefixTemplate:    "TEMPLATE#",
+		prefixPoint:       "DP#",
+		prefixOverride:    "OV#",
+		prefixRecType:     "RTYPE#",
+		prefixSnapshot:    "SNAP#",
+		prefixRecordRev:   "R#",
+		prefixLayout:      "LAYOUT#",
+		prefixLayoutDef:   "LAYOUTDEFAULT#",
+		prefixPreferences: "PREFS#",
 	}
 	for got, want := range cases {
 		if got != want {

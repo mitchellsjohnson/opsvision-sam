@@ -48,6 +48,7 @@ const (
 	prefixRecordRev     = "R#"
 	prefixLayout        = "LAYOUT#"
 	prefixLayoutDef     = "LAYOUTDEFAULT#"
+	prefixPreferences   = "PREFS#"
 	prefixReportSummary = "REPORTSUMMARY#"
 	prefixReportRev     = "REPORT#"
 
@@ -68,6 +69,7 @@ func layoutSK(userID, scorecardID string) string {
 	return prefixLayout + userID + "#" + scorecardID
 }
 func layoutDefaultSK(scorecardID string) string { return prefixLayoutDef + scorecardID }
+func preferencesSK(userID string) string        { return prefixPreferences + userID }
 func importSK(id string) string                 { return prefixImport + id }
 func templateSK(id string) string               { return prefixTemplate + id }
 func recordTypeSK(id string) string             { return prefixRecType + id }

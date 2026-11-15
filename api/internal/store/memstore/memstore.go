@@ -82,6 +82,7 @@ type tenantData struct {
 	records         map[string]map[recordKey]*domain.Record // by record type
 	layouts         map[layoutKey]domain.Layout
 	defaultLayouts  map[string]domain.Layout
+	preferences     map[string]domain.UserPreferences // by user ID
 	reportSummaries map[reportSummaryKey]domain.ReportSummary
 	reportRevisions map[reportRevisionKey]domain.ReportRevision
 }
@@ -113,6 +114,7 @@ func (s *Store) tenant(id string) *tenantData {
 			records:        map[string]map[recordKey]*domain.Record{},
 			layouts:        map[layoutKey]domain.Layout{},
 			defaultLayouts: map[string]domain.Layout{},
+			preferences:    map[string]domain.UserPreferences{},
 		}
 		s.data[id] = td
 	}
@@ -936,6 +938,27 @@ func (s *Store) PutDefaultLayout(_ context.Context, tenantID, scorecardID string
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return putDefaultLayoutRevision(s.tenant(tenantID), scorecardID, items, expectedRevision)
+}
+
+// --- PreferenceStore -------------------------------------------------------
+
+// GetPreferences implements store.PreferenceStore.
+func (s *Store) GetPreferences(_ context.Context, tenantID, userID string) (domain.UserPreferences, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	p, ok := s.read(tenantID).preferences[userID]
+	if !ok {
+		return domain.UserPreferences{}, store.ErrNotFound
+	}
+	return p, nil
+}
+
+// PutPreferences implements store.PreferenceStore.
+func (s *Store) PutPreferences(_ context.Context, tenantID, userID string, p domain.UserPreferences) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.tenant(tenantID).preferences[userID] = p
+	return nil
 }
 
 // --- RecordStore -----------------------------------------------------------

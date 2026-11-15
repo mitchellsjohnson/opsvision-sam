@@ -283,6 +283,15 @@ type LayoutStore interface {
 	PutDefaultLayout(ctx context.Context, tenantID, scorecardID string, items []domain.LayoutItem, expectedRevision int) (domain.Layout, error)
 }
 
+// PreferenceStore holds per-user preferences within a tenant.
+type PreferenceStore interface {
+	// GetPreferences returns a user's preferences. ErrNotFound when none
+	// were saved.
+	GetPreferences(ctx context.Context, tenantID, userID string) (domain.UserPreferences, error)
+	// PutPreferences replaces a user's preferences (last write wins).
+	PutPreferences(ctx context.Context, tenantID, userID string, p domain.UserPreferences) error
+}
+
 // RecordStore holds record types, records (one stored item per revision),
 // and upload snapshots.
 type RecordStore interface {
@@ -323,6 +332,7 @@ type Store interface {
 	ImportStore
 	ReportStore
 	LayoutStore
+	PreferenceStore
 	RecordStore
 }
 

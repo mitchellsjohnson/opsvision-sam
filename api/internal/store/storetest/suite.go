@@ -69,6 +69,7 @@ func Run(t *testing.T, newStore func(t *testing.T) store.Store) {
 		{"TemplateRevisionIncrements", templateRevisionIncrements},
 		{"TemplateLastUsedKeepsRevision", templateLastUsedKeepsRevision},
 		{"LayoutRevision", layoutRevision},
+		{"PreferencesRoundTrip", preferencesRoundTrip},
 		{"ReportSummaryRevision", reportSummaryRevision},
 		{"RecordTypeRevision", recordTypeRevision},
 		{"ApplySnapshotGroupsRevisions", applySnapshotGroupsRevisions},
@@ -1596,6 +1597,40 @@ func layoutRevision(t *testing.T, s store.Store) {
 	wantErr(t, err, store.ErrNotFound)
 	_, err = s.GetDefaultLayout(ctx, other, "delivery")
 	wantErr(t, err, store.ErrNotFound)
+}
+
+func preferencesRoundTrip(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	tn := newTenant(t, s)
+	userA, userB := "user-a", "user-b"
+
+	_, err := s.GetPreferences(ctx, tn, userA)
+	wantErr(t, err, store.ErrNotFound)
+
+	must(t, s.PutPreferences(ctx, tn, userA, domain.UserPreferences{DefaultScope: "unit-a"}))
+	got, err := s.GetPreferences(ctx, tn, userA)
+	must(t, err)
+	wantEq(t, "user A preferences", got, domain.UserPreferences{DefaultScope: "unit-a"})
+
+	must(t, s.PutPreferences(ctx, tn, userA, domain.UserPreferences{DefaultScope: ""}))
+	got, err = s.GetPreferences(ctx, tn, userA)
+	must(t, err)
+	wantEq(t, "user A cleared", got, domain.UserPreferences{DefaultScope: ""})
+
+	_, err = s.GetPreferences(ctx, tn, userB)
+	wantErr(t, err, store.ErrNotFound)
+	must(t, s.PutPreferences(ctx, tn, userB, domain.UserPreferences{DefaultScope: "unit-b"}))
+	got, err = s.GetPreferences(ctx, tn, userA)
+	must(t, err)
+	wantEq(t, "user A unchanged by user B", got, domain.UserPreferences{DefaultScope: ""})
+
+	other := newTenant(t, s)
+	_, err = s.GetPreferences(ctx, other, userB)
+	wantErr(t, err, store.ErrNotFound)
+	must(t, s.PutPreferences(ctx, other, userB, domain.UserPreferences{DefaultScope: "theirs"}))
+	got, err = s.GetPreferences(ctx, tn, userB)
+	must(t, err)
+	wantEq(t, "user B unchanged by other tenant", got, domain.UserPreferences{DefaultScope: "unit-b"})
 }
 
 func recordType(id, name string) domain.RecordType {

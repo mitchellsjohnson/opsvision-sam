@@ -2348,6 +2348,14 @@ type UpdateOrgUnitRequest struct {
 // Example: auth0|abc123
 type UserId = string
 
+// UserPreferences defines model for UserPreferences.
+type UserPreferences struct {
+	// DefaultScope The org unit the caller's scorecards open at when a link names no
+	// scope. Empty means the whole company. A saved value must be an
+	// existing org unit of the tenant that is not retired.
+	DefaultScope string `json:"defaultScope"`
+}
+
 // ValueCount One distinct raw value, its row count, and its suggested meaning (empty for none).
 type ValueCount struct {
 	Count     int    `json:"count"`
@@ -2605,6 +2613,9 @@ type UpdateItemJSONRequestBody = UpdateItemRequest
 // PutMyLayoutJSONRequestBody defines body for PutMyLayout for application/json ContentType.
 type PutMyLayoutJSONRequestBody = PutLayoutRequest
 
+// PutMyPreferencesJSONRequestBody defines body for PutMyPreferences for application/json ContentType.
+type PutMyPreferencesJSONRequestBody = UserPreferences
+
 // InviteMemberJSONRequestBody defines body for InviteMember for application/json ContentType.
 type InviteMemberJSONRequestBody = InviteMemberRequest
 
@@ -2715,6 +2726,12 @@ type ServerInterface interface {
 	// PutMyLayout Save the current user's layout for a scorecard
 	// (PUT /me/layouts/{sc})
 	PutMyLayout(w http.ResponseWriter, r *http.Request, sc ScorecardId)
+	// GetMyPreferences The current user's preferences in the active tenant
+	// (GET /me/preferences)
+	GetMyPreferences(w http.ResponseWriter, r *http.Request)
+	// PutMyPreferences Save the current user's preferences in the active tenant
+	// (PUT /me/preferences)
+	PutMyPreferences(w http.ResponseWriter, r *http.Request)
 	// ListMembers List the tenant's members
 	// (GET /members)
 	ListMembers(w http.ResponseWriter, r *http.Request)
@@ -3219,6 +3236,34 @@ func (siw *ServerInterfaceWrapper) PutMyLayout(w http.ResponseWriter, r *http.Re
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.PutMyLayout(w, r, sc)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetMyPreferences operation middleware
+func (siw *ServerInterfaceWrapper) GetMyPreferences(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetMyPreferences(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PutMyPreferences operation middleware
+func (siw *ServerInterfaceWrapper) PutMyPreferences(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PutMyPreferences(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -4605,6 +4650,8 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/me", wrapper.GetMe)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/me/layouts/{sc}", wrapper.GetMyLayout)
 	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/me/layouts/{sc}", wrapper.PutMyLayout)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/me/preferences", wrapper.GetMyPreferences)
+	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/me/preferences", wrapper.PutMyPreferences)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/operator/tenants", wrapper.ListOperatorTenants)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/operator/tenants", wrapper.CreateOperatorTenant)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/members", wrapper.ListMembers)
@@ -5939,6 +5986,119 @@ func (response PutMyLayout409JSONResponse) VisitPutMyLayoutResponse(w http.Respo
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetMyPreferencesRequestObject struct {
+}
+
+type GetMyPreferencesResponseObject interface {
+	VisitGetMyPreferencesResponse(w http.ResponseWriter) error
+}
+
+type GetMyPreferences200JSONResponse UserPreferences
+
+func (response GetMyPreferences200JSONResponse) VisitGetMyPreferencesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetMyPreferences401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response GetMyPreferences401JSONResponse) VisitGetMyPreferencesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetMyPreferences403JSONResponse struct{ ForbiddenJSONResponse }
+
+func (response GetMyPreferences403JSONResponse) VisitGetMyPreferencesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PutMyPreferencesRequestObject struct {
+	Body *PutMyPreferencesJSONRequestBody
+}
+
+type PutMyPreferencesResponseObject interface {
+	VisitPutMyPreferencesResponse(w http.ResponseWriter) error
+}
+
+type PutMyPreferences200JSONResponse UserPreferences
+
+func (response PutMyPreferences200JSONResponse) VisitPutMyPreferencesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PutMyPreferences400JSONResponse struct{ BadRequestJSONResponse }
+
+func (response PutMyPreferences400JSONResponse) VisitPutMyPreferencesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PutMyPreferences401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response PutMyPreferences401JSONResponse) VisitPutMyPreferencesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PutMyPreferences403JSONResponse struct{ ForbiddenJSONResponse }
+
+func (response PutMyPreferences403JSONResponse) VisitPutMyPreferencesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
 	_, err := buf.WriteTo(w)
 	return err
 }
@@ -8958,6 +9118,12 @@ type StrictServerInterface interface {
 	// PutMyLayout Save the current user's layout for a scorecard
 	// (PUT /me/layouts/{sc})
 	PutMyLayout(ctx context.Context, request PutMyLayoutRequestObject) (PutMyLayoutResponseObject, error)
+	// GetMyPreferences The current user's preferences in the active tenant
+	// (GET /me/preferences)
+	GetMyPreferences(ctx context.Context, request GetMyPreferencesRequestObject) (GetMyPreferencesResponseObject, error)
+	// PutMyPreferences Save the current user's preferences in the active tenant
+	// (PUT /me/preferences)
+	PutMyPreferences(ctx context.Context, request PutMyPreferencesRequestObject) (PutMyPreferencesResponseObject, error)
 	// ListMembers List the tenant's members
 	// (GET /members)
 	ListMembers(ctx context.Context, request ListMembersRequestObject) (ListMembersResponseObject, error)
@@ -9613,6 +9779,61 @@ func (sh *strictHandler) PutMyLayout(w http.ResponseWriter, r *http.Request, sc 
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(PutMyLayoutResponseObject); ok {
 		if err := validResponse.VisitPutMyLayoutResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetMyPreferences operation middleware
+func (sh *strictHandler) GetMyPreferences(w http.ResponseWriter, r *http.Request) {
+	var request GetMyPreferencesRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetMyPreferences(ctx, request.(GetMyPreferencesRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetMyPreferences")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetMyPreferencesResponseObject); ok {
+		if err := validResponse.VisitGetMyPreferencesResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// PutMyPreferences operation middleware
+func (sh *strictHandler) PutMyPreferences(w http.ResponseWriter, r *http.Request) {
+	var request PutMyPreferencesRequestObject
+
+	var body PutMyPreferencesJSONRequestBody
+	if err := runtime.BindJSONBody(r, &body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.PutMyPreferences(ctx, request.(PutMyPreferencesRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "PutMyPreferences")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(PutMyPreferencesResponseObject); ok {
+		if err := validResponse.VisitPutMyPreferencesResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
