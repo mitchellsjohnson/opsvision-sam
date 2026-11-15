@@ -286,6 +286,7 @@ export function OverviewPage() {
           tableTo={tableLink(metric.key)}
           scopeNote={scopeNote}
           ytdDisplay={ytdDisplay}
+          fiscalYearStartMonth={fy}
         />
         {cell && cell.changeKind && (
           <p className="mt-1 text-xs text-ink/70">

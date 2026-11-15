@@ -1,6 +1,7 @@
 import type { components } from '../../api/schema'
 import { letterUsesInkOnWhite } from '../../ui/contrast'
 import { statusIntervals } from './charts/bands'
+import { LINE_COLORS } from './charts/chartTheme'
 import type { Column } from './columns'
 import { formatMetricValue, metricDecimals } from './format'
 import { cellKey } from './viewHelpers'
@@ -62,7 +63,6 @@ const MUTED = '#4B5563'
 const FAINT = '#6B7280'
 const GRID = '#E5E7EB'
 const AXIS = '#9CA3AF'
-const LINE_COLORS = ['#3F33A8', '#0E7490', '#475569', '#A21CAF', '#1D4ED8']
 
 const PAD = 64
 const HEADER_HEIGHT = 148

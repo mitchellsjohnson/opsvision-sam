@@ -5,12 +5,19 @@ type StatusLevel = components['schemas']['StatusLevel']
 
 const SHAPES: Record<string, string> = { G: '●', Y: '▲', R: '◆' }
 
+/** One color per series, in order; the first is accent-deep. Shared with the slide export. */
+export const LINE_COLORS = ['#3F33A8', '#0E7490', '#475569', '#A21CAF', '#1D4ED8']
+
 export interface StatusTheme {
   letter: string
   shape: string
   color: string
+  /** The scale's name for the status, e.g. `Yellow`; '' when unknown. */
+  label: string
   /** Ink when tenant color fails contrast on white. */
   letterClass: string
+  /** The letter's color on a shape filled with `color`: white, or ink when white fails contrast. */
+  onColor: string
 }
 
 const DEFAULT_SCALE: StatusLevel[] = [
@@ -31,7 +38,9 @@ export function chartTheme(scale: StatusLevel[] | undefined, status: string): St
     letter,
     shape,
     color,
+    label: entry?.label ?? '',
     letterClass: ink ? 'text-ink' : '',
+    onColor: ink ? 'var(--color-ink)' : '#FFFFFF',
   }
 }
 

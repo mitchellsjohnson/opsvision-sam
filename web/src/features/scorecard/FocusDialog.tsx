@@ -217,6 +217,7 @@ function MetricFocusBody({
             scale={statusColors}
             tableTo={tableLink}
             scopeNote={atScope?.caption || undefined}
+            fiscalYearStartMonth={fy}
           />
         </div>
 
