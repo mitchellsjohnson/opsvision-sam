@@ -188,9 +188,19 @@ describe('MetricChart 24 months', () => {
     expect(labels.every((l) => /^[A-Z][a-z]{2}$/.test(l ?? ''))).toBe(true)
   })
 
-  it.each(['discrete', 'money_plan'])('%s: 24 bars, one per column', (kind) => {
+  it.each(['discrete', 'money_plan'])('%s: 24 bars, each in its own column over its ribbon cell', (kind) => {
+    hover.index = 23
     const { container } = draw24(kind)
-    expect(container.querySelectorAll('.recharts-bar-rectangle path')).toHaveLength(24)
+    const bars = [...container.querySelectorAll('.recharts-bar-rectangle path')]
+    expect(bars).toHaveLength(24)
+    const lefts = bars.map((b) => Number(/^M\s*([\d.]+)/.exec(b.getAttribute('d') ?? '')?.[1]))
+    expect(new Set(lefts).size).toBe(24)
+    const ribbon = screen.getByTestId('status-ribbon')
+    const left = parseFloat(ribbon.style.marginLeft)
+    const band = (CHART_WIDTH - left - parseFloat(ribbon.style.marginRight)) / 24
+    expect(Number(container.querySelector('[data-role="hairline"]')!.getAttribute('x1'))).toBeCloseTo(left + 23.5 * band)
+    const labels = [...container.querySelectorAll('.recharts-xAxis-tick-labels .recharts-cartesian-axis-tick-value')].map((t) => t.textContent)
+    expect(labels.every((l) => /^[A-Z][a-z]{2}$/.test(l ?? ''))).toBe(true)
   })
 })
 
@@ -264,6 +274,22 @@ describe('MetricChart line', () => {
     const tile = draw(rowOf('on_time_pct'))
     expect(tile.container.querySelector('[data-role="current-pill"], [data-role="goal-pill"]')).toBeNull()
     expect(tile.container.querySelector('.goal-line .recharts-reference-line-line')).toBeTruthy()
+  })
+
+  it('the goal pill sits on its line, and moves off the current-value pill when the two are close', () => {
+    const center = (g: Element) => Number(g.querySelector('rect')!.getAttribute('y')) + Number(g.querySelector('rect')!.getAttribute('height')) / 2
+    const far = draw(rowOf('on_time_pct'), { size: 'focus' })
+    const goalY = Number(far.container.querySelector('.goal-line .recharts-reference-line-line')!.getAttribute('y1'))
+    expect(center(far.container.querySelector('[data-role="goal-pill"]')!)).toBeCloseTo(goalY)
+    far.unmount()
+
+    const near = draw(
+      rowOf('on_time_pct', (r) => Object.assign(r.cells.at(-1)!, { value: 90.5, display: '90.5%' })),
+      { size: 'focus' },
+    )
+    const goal = center(near.container.querySelector('[data-role="goal-pill"]')!)
+    const current = center(near.container.querySelector('[data-role="current-pill"]')!)
+    expect(Math.abs(goal - current)).toBeGreaterThanOrEqual(16)
   })
 
   it('bands are faint and borderless, lettered at the right edge in focus only', () => {

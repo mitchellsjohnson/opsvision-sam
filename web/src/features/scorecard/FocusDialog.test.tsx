@@ -1,9 +1,11 @@
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { HttpResponse } from 'msw'
+import { http, HttpResponse } from 'msw'
 import { describe, expect, it, vi } from 'vitest'
 import { App } from '../../App'
-import { server } from '../../test/server'
+import type { components } from '../../api/schema'
+import { meFor, tenant } from '../../test/fixtures'
+import { API, server } from '../../test/server'
 import { renderApp } from '../../test/utils'
 import { addServiceUptime, buildView, viewHandlers } from '../../test/viewFixtures'
 import { FOCUS_CHART_HEIGHT } from './charts/MetricChart'
@@ -12,6 +14,23 @@ const OVERVIEW = '/scorecards/sc-main/overview?period=2026-M10'
 
 function renderOverview(route = OVERVIEW) {
   server.use(...viewHandlers())
+  renderApp(<App />, { route })
+}
+
+/** On-time delivery at the top level rises one point a fiscal month, from 50.0% in 2024-M11. */
+function ramp(view: components['schemas']['ScorecardView']) {
+  for (const row of view.rows.filter((r) => r.metricKey === 'on_time_pct' && r.subjectId === 'root')) {
+    for (const c of row.cells) {
+      const [y, m] = c.period.split('-M').map(Number)
+      const v = 50 + (y! * 12 + m!) - (2024 * 12 + 11)
+      Object.assign(c, { value: v, display: `${v.toFixed(1)}%` })
+    }
+  }
+  return view
+}
+
+function renderRamp(route: string) {
+  server.use(...viewHandlers({ respond: (u) => HttpResponse.json(ramp(buildView(u.searchParams))) }))
   renderApp(<App />, { route })
 }
 
@@ -79,8 +98,8 @@ describe('FocusDialog', () => {
     expect(await screen.findByRole('dialog', { name: /On-time delivery/i })).toBeTruthy()
   })
 
-  it('a range strip under the chart offers 3M, 6M, 12M, YTD and 24M, each with its change; 12M is selected', async () => {
-    renderOverview(`${OVERVIEW}&focus=on_time_pct`)
+  it('a range strip under the chart offers 3M, 6M, 12M, YTD and 24M, each with its own change; 12M is selected', async () => {
+    renderRamp(`${OVERVIEW}&focus=on_time_pct`)
     const dialog = await screen.findByRole('dialog', { name: /On-time delivery/i })
     await within(dialog).findByRole('region', { name: 'Org breakdown' })
     const strip = within(dialog).getByRole('group', { name: 'Range' })
@@ -92,24 +111,44 @@ describe('FocusDialog', () => {
     expect(strip.compareDocumentPosition(links[0]!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(strip.compareDocumentPosition(within(dialog).getByRole('region', { name: 'Org breakdown' })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     const tabs = within(strip).getAllByRole('button')
-    // Every month is 95.0% but October, 84.3%. 24 months are not loaded yet.
-    expect(tabs.map((t) => t.textContent)).toEqual(['3M▼-10.7 pts', '6M▼-10.7 pts', '12M▼-10.7 pts', 'YTD▼-10.7 pts', '24M—'])
+    // One point a month up to October's 73.0%: Aug 71, May 68, Nov 62, Jan 64. 24 months are not loaded yet.
+    expect(tabs.map((t) => t.textContent)).toEqual(['3M▲+2.0 pts', '6M▲+5.0 pts', '12M▲+11.0 pts', 'YTD▲+9.0 pts', '24M—'])
     // The arrow is decoration; the name carries the change in words.
     expect(tabs.map((t) => t.getAttribute('aria-label'))).toEqual([
-      '3M, change -10.7 pts',
-      '6M, change -10.7 pts',
-      '12M, change -10.7 pts',
-      'YTD, change -10.7 pts',
+      '3M, change +2.0 pts',
+      '6M, change +5.0 pts',
+      '12M, change +11.0 pts',
+      'YTD, change +9.0 pts',
       '24M, change not available',
     ])
     expect(tabs.map((t) => t.getAttribute('aria-pressed'))).toEqual(['false', 'false', 'true', 'false', 'false'])
-    // Higher is better, so the fall reads as bad.
-    expect(tabs[0]!.querySelector('[data-tone]')!.getAttribute('data-tone')).toBe('bad')
+    // Higher is better, so the rise reads as good.
+    expect(tabs.slice(0, 4).map((t) => t.querySelector('[data-tone]')!.getAttribute('data-tone'))).toEqual(['good', 'good', 'good', 'good'])
     expect(within(dialog).queryByText('Period window')).toBeNull()
   })
 
+  it('a range whose ends match says no change', async () => {
+    server.use(
+      ...viewHandlers({
+        respond: (u) => {
+          const view = buildView(u.searchParams)
+          const oct = view.rows.find((r) => r.metricKey === 'on_time_pct' && r.subjectId === 'root')!.cells.find((c) => c.period === '2026-M10')!
+          Object.assign(oct, { value: 95, display: '95.0%' })
+          return HttpResponse.json(view)
+        },
+      }),
+    )
+    renderApp(<App />, { route: `${OVERVIEW}&focus=on_time_pct` })
+    const dialog = await screen.findByRole('dialog', { name: /On-time delivery/i })
+    await within(dialog).findByRole('region', { name: 'Org breakdown' })
+    const tab = within(dialog).getByRole('button', { name: /^3M/ })
+    expect(tab.getAttribute('aria-label')).toBe('3M, no change')
+    expect(tab.textContent).toBe('3MNo change')
+    expect(tab.querySelector('[data-tone]')!.getAttribute('data-tone')).toBe('neutral')
+  })
+
   it('selecting 3M or YTD sets the chart to that range', async () => {
-    renderOverview(`${OVERVIEW}&focus=on_time_pct`)
+    renderRamp(`${OVERVIEW}&focus=on_time_pct`)
     const dialog = await screen.findByRole('dialog', { name: /On-time delivery/i })
     await within(dialog).findByRole('region', { name: 'Org breakdown' })
     const user = userEvent.setup()
@@ -117,17 +156,42 @@ describe('FocusDialog', () => {
     expect(pointButtons()).toHaveLength(12)
     await user.click(within(dialog).getByRole('button', { name: /^3M/ }))
     expect(within(dialog).getByRole('button', { name: /^3M/ }).getAttribute('aria-pressed')).toBe('true')
-    expect(pointButtons().map((b) => b.getAttribute('aria-label'))).toEqual(['Aug: 95.0%', 'Sep: 95.0%', 'Oct: 84.3%'])
+    expect(pointButtons().map((b) => b.getAttribute('aria-label'))).toEqual(['Aug: 71.0%', 'Sep: 72.0%', 'Oct: 73.0%'])
     expect(within(dialog).getByTestId('status-ribbon').children).toHaveLength(3)
     // The fiscal year starts in January: YTD is Jan through Oct.
     await user.click(within(dialog).getByRole('button', { name: /^YTD/ }))
     expect(pointButtons()).toHaveLength(10)
-    expect(pointButtons()[0]!.getAttribute('aria-label')).toBe('Jan: 95.0%')
+    expect(pointButtons()[0]!.getAttribute('aria-label')).toBe('Jan: 64.0%')
   })
 
-  it('24M asks for this metric only and keeps focus on the tab while it loads', async () => {
+  it('YTD starts at the fiscal year start: with a July start, Jul through Oct', async () => {
+    server.use(
+      http.get(`${API}/v1/me`, () => HttpResponse.json({ ...meFor('admin'), tenant: { ...tenant, fiscalYearStartMonth: 7 } })),
+    )
+    // Fiscal 2027-M04 is October 2026 with a July start.
+    renderRamp('/scorecards/sc-main/overview?period=2027-M04&focus=on_time_pct')
+    const dialog = await screen.findByRole('dialog', { name: /On-time delivery/i })
+    await within(dialog).findByRole('region', { name: 'Org breakdown' })
+    const ytd = within(dialog).getByRole('button', { name: /^YTD/ })
+    // Fiscal 2027-M01 (Jul) is 76.0%, M04 (Oct) 79.0%; 12M runs from 2026-M05, 68.0%.
+    expect(ytd.getAttribute('aria-label')).toBe('YTD, change +3.0 pts')
+    expect(within(dialog).getByRole('button', { name: /^12M/ }).getAttribute('aria-label')).toBe('12M, change +11.0 pts')
+    await userEvent.setup().click(ytd)
+    const buttons = within(within(dialog).getByTestId('point-controls')).getAllByRole('button')
+    expect(buttons.map((b) => b.getAttribute('aria-label'))).toEqual(['Jul: 76.0%', 'Aug: 77.0%', 'Sep: 78.0%', 'Oct: 79.0%'])
+  })
+
+  it.each(['2026-Q3', '2026-H2', '2026-FY'])('%s: no range strip outside month periods', async (p) => {
+    renderOverview(`/scorecards/sc-main/overview?period=${p}&focus=on_time_pct`)
+    const dialog = await screen.findByRole('dialog', { name: /On-time delivery/i })
+    await within(dialog).findByTestId('metric-chart')
+    expect(within(dialog).queryByRole('group', { name: 'Range' })).toBeNull()
+    expect(within(dialog).queryByRole('button', { name: /^24M/ })).toBeNull()
+  })
+
+  it('24M asks for this metric only and keeps focus on the tab while it loads; its change stays known', async () => {
     const seen: URL[] = []
-    server.use(...viewHandlers({ onView: (u) => seen.push(u) }))
+    server.use(...viewHandlers({ onView: (u) => seen.push(u), respond: (u) => HttpResponse.json(ramp(buildView(u.searchParams))) }))
     renderApp(<App />, { route: `${OVERVIEW}&focus=on_time_pct` })
     const dialog = await screen.findByRole('dialog', { name: /On-time delivery/i })
     await within(dialog).findByRole('region', { name: 'Org breakdown' })
@@ -142,8 +206,13 @@ describe('FocusDialog', () => {
     expect(req?.searchParams.getAll('metrics')).toEqual(['on_time_pct'])
     expect(req?.searchParams.getAll('periods')).toHaveLength(24)
     expect(document.activeElement).toBe(toggle)
-    // With 24 months loaded, the 24M change is known.
-    expect(toggle.getAttribute('aria-label')).toBe('24M, change -10.7 pts')
+    // With 24 months loaded, the 24M change is known: Nov 2024 was 50.0%.
+    expect(toggle.getAttribute('aria-label')).toBe('24M, change +23.0 pts')
+    // It stays known after picking a shorter range.
+    await user.click(within(dialog).getByRole('button', { name: /^3M/ }))
+    await waitFor(() => expect(within(within(dialog).getByTestId('point-controls')).getAllByRole('button')).toHaveLength(3))
+    expect(within(dialog).getByRole('button', { name: /^24M/ }).getAttribute('aria-label')).toBe('24M, change +23.0 pts')
+    expect(within(dialog).getByRole('button', { name: /^3M/ }).getAttribute('aria-label')).toBe('3M, change +2.0 pts')
   })
 
   it('a failed 24-month request says so and offers Try again', async () => {

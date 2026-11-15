@@ -29,6 +29,12 @@ function metricKeysInLayout(view: components['schemas']['ScorecardView']): strin
     .map((i) => i.id.slice('metric:'.length))
 }
 
+/** A metric's scope row in a view; null while loading or when it has none. */
+function scopeRowOf(view: components['schemas']['ScorecardView'] | undefined, metricKey: string) {
+  const group = view ? groupRows(view).flatMap((g) => g.metrics).find((m) => m.key === metricKey) : undefined
+  return group ? (metricScope(group.rows).scope ?? null) : null
+}
+
 function MetricFocusBody({
   metricKey,
   metricIds,
@@ -69,6 +75,16 @@ function MetricFocusBody({
     windowMonths === 24 ? { months: 24, metrics: [metricKey] } : {},
   )
   const view = useView(ready ? scorecardId : undefined, request, { keepPrevious: true })
+  // After 24 months have been asked for this metric, read them from the cache so the 24M change stays shown.
+  const [longFor, setLongFor] = useState('')
+  const long = useScorecardViewRequest({ months: 24, metrics: [metricKey] })
+  const longView = useView(long.ready && (windowMonths === 24 || longFor === metricKey) ? scorecardId : undefined, long.request)
+  const longColumns = useMemo(() => buildMonthTrendColumns(period.period, 24, fy), [period.period, fy])
+  const longScope = scopeRowOf(longView.data, metricKey)
+  const selectRange = (key: RangeKey) => {
+    if (windowMonths === 24 || rangeMonths(key, period.period) > 12) setLongFor(metricKey)
+    setRange(key)
+  }
   // While the other window loads, the chart keeps the window it has data for.
   const shownMonths = view.isPlaceholderData && view.data ? (view.data.periods.length > 12 ? 24 : 12) : windowMonths
   const windowColumns = useMemo(
@@ -318,11 +334,12 @@ function MetricFocusBody({
       {monthGrain && (
         <RangeStrip
           selected={range}
-          onSelect={setRange}
+          onSelect={selectRange}
           changeFor={(key) => {
             const span = rangeMonths(key, period.period)
-            // A range longer than the loaded window has no change to show yet.
-            return scope && span <= windowColumns.length ? rangeChange(scope, windowColumns.slice(-span)) : null
+            if (span <= windowColumns.length) return scope ? rangeChange(scope, windowColumns.slice(-span)) : null
+            // Longer than the window shown: known once 24 months have loaded.
+            return longScope ? rangeChange(longScope, longColumns.slice(-span)) : null
           }}
         />
       )}
@@ -351,7 +368,7 @@ function RangeStrip({
             key={key}
             type="button"
             aria-pressed={pressed}
-            aria-label={`${label}, change ${change?.text ?? 'not available'}`}
+            aria-label={!change ? `${label}, change not available` : change.move.arrow ? `${label}, change ${change.text}` : `${label}, no change`}
             className={`rounded-md px-2 py-1.5 text-center text-sm ${pressed ? 'bg-ink/[0.07] font-semibold' : 'hover:bg-ink/5'}`}
             onClick={() => onSelect(key)}
           >

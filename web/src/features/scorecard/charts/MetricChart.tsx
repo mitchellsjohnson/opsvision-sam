@@ -13,6 +13,7 @@ import {
   Tooltip,
   XAxis,
   YAxis,
+  useYAxisScale,
 } from 'recharts'
 import type { components } from '../../../api/schema'
 import { usePrefersReducedMotion } from '../../../ui/Sparkline'
@@ -446,9 +447,24 @@ function BandPill({ viewBox, theme }: LabelViewBox & { theme: StatusTheme }) {
   )
 }
 
-/** A reference line's label, right-aligned inside the plot, `gap` px in from the edge. */
-function GuidePill({ viewBox, text, gap }: LabelViewBox & { text: string; gap: number }) {
-  const { x = 0, y = 0, width = 0 } = viewBox ?? {}
+/** Center-to-center room between the goal pill and the current-value pill. */
+const PILL_CLEARANCE = 18
+
+/**
+ * A reference line's label, right-aligned inside the plot, `gap` px in from
+ * the edge. When `avoid` (the current value) sits close, the pill moves off
+ * it, above or below as the line lies.
+ */
+function GuidePill({ viewBox, text, gap, avoid = null }: LabelViewBox & { text: string; gap: number; avoid?: number | null }) {
+  const yScale = useYAxisScale()
+  const { x = 0, y: lineY = 0, width = 0 } = viewBox ?? {}
+  const avoidY = avoid !== null ? yScale?.(avoid) : undefined
+  const y =
+    avoidY != null && Math.abs(avoidY - lineY) < PILL_CLEARANCE
+      ? lineY <= avoidY
+        ? avoidY - PILL_CLEARANCE
+        : avoidY + PILL_CLEARANCE
+      : lineY
   const h = 16
   const w = Math.ceil(text.length * 6.2) + 10
   const left = x + width - gap - 4 - w
@@ -707,6 +723,7 @@ function RatioChart({
                           viewBox={props.viewBox}
                           text={`Goal ${formatMetricValue(row.format, target)}`}
                           gap={rects.length > 0 ? BAND_PILL.width + 6 : 0}
+                          avoid={currentValue}
                         />
                       )
                     : undefined
@@ -809,13 +826,22 @@ function BarsChart({ points, columns, format, scale, animated, size, plan }: Bar
   const axis = focus ? valueAxis(format, padded) : null
   const domain = axis?.domain ?? padded
   const inset = { left: spec.margin.left, right: spec.margin.right + (axis?.width ?? 0) }
+  const labels = new Map(columns.map((c) => [c.key, c.label]))
   return (
     <div>
       <div data-testid="metric-chart" data-size={size} aria-hidden="true" className={spec.className} style={spec.style}>
         <ResponsiveContainer width="100%" height={spec.height} initialDimension={spec.initial}>
           <BarChart data={data} accessibilityLayer={false} margin={spec.margin}>
             {focus && <CartesianGrid vertical={false} stroke="var(--color-ink)" strokeOpacity={0.05} />}
-            <XAxis dataKey="label" axisLine={false} tickLine={false} tick={tickStyle(spec)} height={spec.xAxisHeight} />
+            <XAxis
+              // Keyed by period, as in the line chart, so repeated labels stay separate columns.
+              dataKey="key"
+              tickFormatter={(key: string) => labels.get(key) ?? ''}
+              axisLine={false}
+              tickLine={false}
+              tick={tickStyle(spec)}
+              height={spec.xAxisHeight}
+            />
             {axis ? (
               <YAxis
                 orientation="right"
