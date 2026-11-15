@@ -218,6 +218,17 @@ describe('Global filters', () => {
     await waitFor(() => expect(document.activeElement).toBe(within(group).getByText('My default')))
   })
 
+  it.each([
+    ['retired for the period', 'prod-b9'],
+    ['no longer exists', 'unit-gone'],
+  ])('treats a saved default that is %s as the company', async (_case, defaultScope) => {
+    renderFilters('/scorecards/sc-main/overview?period=2026-M10', { defaultScope })
+    const group = await filters()
+    expect(await within(group).findByText('My default')).toBeTruthy()
+    expect(within(group).queryByRole('button', { name: 'Reset to my default' })).toBeNull()
+    expect(within(group).queryByRole('button', { name: 'Set as my default' })).toBeNull()
+  })
+
   it('does not offer a reset when the saved default is the company', async () => {
     renderFilters('/scorecards/sc-main/overview?period=2026-M10&scope=seg-a')
     const group = await filters()

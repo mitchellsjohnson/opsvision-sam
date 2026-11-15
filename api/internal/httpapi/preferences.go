@@ -23,7 +23,8 @@ func (s *Server) GetMyPreferences(ctx context.Context, _ GetMyPreferencesRequest
 }
 
 // PutMyPreferences saves the caller's preferences. The default scope must be
-// empty (company) or an org unit of the tenant that is active this month.
+// empty (company) or an org unit of the tenant that is active this month; a
+// unit at the top level is the company and is stored as empty.
 func (s *Server) PutMyPreferences(ctx context.Context, req PutMyPreferencesRequestObject) (PutMyPreferencesResponseObject, error) {
 	p, err := member(ctx)
 	if err != nil {
@@ -34,13 +35,13 @@ func (s *Server) PutMyPreferences(ctx context.Context, req PutMyPreferencesReque
 	}
 	scope := req.Body.DefaultScope
 	if scope != "" {
-		units, err := s.store.ListOrgUnits(ctx, p.Tenant.ID)
+		st, err := s.loadOrg(ctx, p.Tenant.ID)
 		if err != nil {
 			return nil, err
 		}
 		thisMonth := s.calendar(*p.Tenant).MonthOf(s.now())
 		var pr problems
-		u, ok := orgState{units: units}.unit(scope)
+		u, ok := st.unit(scope)
 		switch {
 		case !ok:
 			pr.add("defaultScope", "unknown org unit %q", scope)
@@ -49,6 +50,10 @@ func (s *Server) PutMyPreferences(ctx context.Context, req PutMyPreferencesReque
 		}
 		if err := pr.err(); err != nil {
 			return nil, err
+		}
+		// ListLevels is sorted by depth, so the first level is the top one.
+		if len(st.levels) > 0 && u.LevelID == st.levels[0].ID {
+			scope = ""
 		}
 	}
 	prefs := domain.UserPreferences{DefaultScope: scope}

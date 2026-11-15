@@ -1,6 +1,7 @@
 import { Check } from 'lucide-react'
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
-import { useMyPreferences, useOrgLevels, useOrgUnits, usePutMyPreferences } from '../../api/queries'
+import { useOrgLevels, useOrgUnits, usePutMyPreferences } from '../../api/queries'
+import { useDefaultScope } from '../../shell/useDefaultScope'
 import { usePeriodState } from '../../shell/usePeriodState'
 import { allLabel, chosenUnits, filterLevels, levelOptions, scopeAfterChange } from './scopeFilters'
 
@@ -20,7 +21,7 @@ export function GlobalFilters() {
   const [view, update] = usePeriodState()
   const levels = useOrgLevels()
   const orgUnits = useOrgUnits()
-  const prefs = useMyPreferences()
+  const myDefault = useDefaultScope(view.period)
   const save = usePutMyPreferences()
   const [message, setMessage] = useState('')
   const firstSelect = useRef<HTMLSelectElement>(null)
@@ -31,7 +32,8 @@ export function GlobalFilters() {
   const units = useMemo(() => orgUnits.data?.units ?? [], [orgUnits.data?.units])
   const chosen = useMemo(() => chosenUnits(view.scope, levelList, units), [view.scope, levelList, units])
 
-  const savedDefault = prefs.data?.defaultScope
+  // A saved unit that is gone or retired for the period counts as the company.
+  const savedDefault = myDefault.ready && myDefault.loaded ? myDefault.scope : undefined
   const isDefault = savedDefault !== undefined && view.scope === savedDefault
 
   useEffect(() => {

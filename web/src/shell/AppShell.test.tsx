@@ -1,12 +1,13 @@
-import { screen, waitFor, within } from '@testing-library/react'
+import { screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { Route, Routes } from 'react-router'
 import { axe } from 'vitest-axe'
 import { describe, expect, it, vi } from 'vitest'
 import { renderApp, testAuth } from '../test/utils'
-import { meFor, tenant } from '../test/fixtures'
+import { meFor, orgUnits, tenant } from '../test/fixtures'
 import { API, server, state } from '../test/server'
+import { useMyPreferences, useOrgUnits } from '../api/queries'
 import { AppShell } from './AppShell'
 import { useShellDock } from './ShellDock'
 import { useEffect } from 'react'
@@ -427,48 +428,76 @@ describe('AppShell focus indicators', () => {
   })
 })
 
+/** Renders once the shell's preferences and org units are in the shared cache. */
+function DefaultsProbe() {
+  const prefs = useMyPreferences()
+  const units = useOrgUnits()
+  if (!prefs.data || !units.data) return null
+  return <p>Defaults loaded: {prefs.data.defaultScope || 'company'}</p>
+}
+
 describe('AppShell default scope', () => {
-  const scorecardHref = async () => {
-    const nav = await screen.findByRole('navigation', { name: 'Main' })
-    return within(nav).findByRole('link', { name: 'Main scorecard' })
+  function shellWithProbe(route: string) {
+    return renderApp(
+      <Routes>
+        <Route element={<AppShell />}>
+          <Route path="*" element={<DefaultsProbe />} />
+        </Route>
+      </Routes>,
+      { route },
+    )
   }
+  const savedDefault = (defaultScope: string) =>
+    server.use(http.get(`${API}/v1/me/preferences`, () => HttpResponse.json({ defaultScope })))
+  const scorecardLink = () =>
+    within(screen.getByRole('navigation', { name: 'Main' })).getByRole('link', { name: 'Main scorecard' })
   const scopeOf = (link: HTMLElement) => new URL(link.getAttribute('href')!, 'http://x').searchParams.get('scope')
 
   it('enters a scorecard at my saved default scope from a page without one', async () => {
-    server.use(http.get(`${API}/v1/me/preferences`, () => HttpResponse.json({ defaultScope: 'unit-b' })))
-    shell('/entry?period=2026-M10')
-    const link = await scorecardHref()
-    await waitFor(() => expect(scopeOf(link)).toBe('unit-b'))
+    savedDefault('unit-b')
+    shellWithProbe('/entry?period=2026-M10')
+    await screen.findByText('Defaults loaded: unit-b')
+    const link = scorecardLink()
+    expect(scopeOf(link)).toBe('unit-b')
     expect(new URL(link.getAttribute('href')!, 'http://x').searchParams.get('period')).toBe('2026-M10')
   })
 
   it('keeps an explicit scope on the page over the default', async () => {
-    server.use(http.get(`${API}/v1/me/preferences`, () => HttpResponse.json({ defaultScope: 'unit-b' })))
-    shell('/entry?period=2026-M10&scope=unit-a')
-    const link = await scorecardHref()
-    await screen.findByRole('button', { name: /Test admin/ })
-    expect(scopeOf(link)).toBe('unit-a')
+    savedDefault('unit-b')
+    shellWithProbe('/entry?period=2026-M10&scope=unit-a')
+    await screen.findByText('Defaults loaded: unit-b')
+    expect(scopeOf(scorecardLink())).toBe('unit-a')
   })
 
   it('keeps the company on a scorecard page with no scope', async () => {
-    let served = false
-    server.use(
-      http.get(`${API}/v1/me/preferences`, () => {
-        served = true
-        return HttpResponse.json({ defaultScope: 'unit-b' })
-      }),
-    )
-    shell('/scorecards/sc-main/overview?period=2026-M10')
-    const link = await scorecardHref()
-    await waitFor(() => expect(served).toBe(true))
-    await screen.findByRole('button', { name: /Test admin/ })
-    expect(scopeOf(link)).toBeNull()
+    savedDefault('unit-b')
+    shellWithProbe('/scorecards/sc-main/overview?period=2026-M10')
+    await screen.findByText('Defaults loaded: unit-b')
+    expect(scopeOf(scorecardLink())).toBeNull()
   })
 
   it('adds no scope when the default is the company', async () => {
-    shell('/entry?period=2026-M10')
-    const link = await scorecardHref()
-    await screen.findByRole('button', { name: /Test admin/ })
-    expect(scopeOf(link)).toBeNull()
+    shellWithProbe('/entry?period=2026-M10')
+    await screen.findByText('Defaults loaded: company')
+    expect(scopeOf(scorecardLink())).toBeNull()
+  })
+
+  it('ignores a saved default that names a unit that no longer exists', async () => {
+    savedDefault('unit-gone')
+    shellWithProbe('/entry?period=2026-M10')
+    await screen.findByText('Defaults loaded: unit-gone')
+    expect(scopeOf(scorecardLink())).toBeNull()
+  })
+
+  it('ignores a saved default whose unit is retired for the period', async () => {
+    savedDefault('unit-b')
+    server.use(
+      http.get(`${API}/v1/org/units`, () =>
+        HttpResponse.json({ units: orgUnits.map((u) => (u.id === 'unit-b' ? { ...u, retiredFrom: '2026-M08' } : u)) }),
+      ),
+    )
+    shellWithProbe('/entry?period=2026-M10')
+    await screen.findByText('Defaults loaded: unit-b')
+    expect(scopeOf(scorecardLink())).toBeNull()
   })
 })

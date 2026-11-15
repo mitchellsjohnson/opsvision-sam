@@ -1090,7 +1090,8 @@ export interface components {
             /**
              * @description The org unit the caller's scorecards open at when a link names no
              *     scope. Empty means the whole company. A saved value must be an
-             *     existing org unit of the tenant that is not retired.
+             *     existing org unit of the tenant that is not retired; a unit at
+             *     the top level is the company and is stored as empty.
              */
             defaultScope: string;
         };

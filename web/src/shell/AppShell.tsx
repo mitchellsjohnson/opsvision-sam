@@ -20,12 +20,13 @@ import {
 } from 'lucide-react'
 import { useEffect, type ReactElement } from 'react'
 import { NavLink, Outlet, useLocation, useMatch, useResolvedPath, useSearchParams } from 'react-router'
-import { useMe, useMyPreferences, useScorecards } from '../api/queries'
+import { useMe, useScorecards } from '../api/queries'
 import { useAuth } from '../auth/context'
 import { focusOnDark, menuItemHighlight } from '../ui/focus'
 import { Sam } from '../ui/Sam'
 import { PeriodPicker } from './PeriodPicker'
 import { TenantSwitcher } from './TenantSwitcher'
+import { useDefaultScope } from './useDefaultScope'
 import { useNavCollapsed } from './useNavCollapsed'
 import { VIEW_PARAMS } from './usePeriodState'
 
@@ -106,7 +107,6 @@ function AppShellBody() {
   const auth = useAuth()
   const me = useMe()
   const scorecards = useScorecards()
-  const preferences = useMyPreferences()
   const { pathname } = useLocation()
   const [params] = useSearchParams()
   const [navCollapsed, toggleNav] = useNavCollapsed()
@@ -123,7 +123,7 @@ function AppShellBody() {
   // opens it at the saved default scope; between scorecards the page's scope
   // (including the company) carries as it is.
   const currentScorecard = /^\/scorecards\/([^/]+)/.exec(pathname)?.[1]
-  const defaultScope = preferences.data?.defaultScope ?? ''
+  const defaultScope = useDefaultScope(params.get('period')).scope
   const searchFor = (scorecardId?: string) => {
     const carried = new URLSearchParams()
     for (const key of VIEW_PARAMS) {

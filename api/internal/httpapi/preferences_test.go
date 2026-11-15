@@ -61,6 +61,24 @@ func TestPreferencesRoundTrip(t *testing.T) {
 	}
 }
 
+func TestPreferencesCompanyRootIsCompany(t *testing.T) {
+	e := newTestEnv(t)
+	seedOrg(t, e)
+	viewer := e.tokens["t1-viewer"]
+
+	e.expect(t, 200, viewer, "PUT", "/me/preferences", map[string]any{"defaultScope": "seg-a"}, nil)
+	var saved preferencesJSON
+	e.expect(t, 200, viewer, "PUT", "/me/preferences", map[string]any{"defaultScope": "acme"}, &saved)
+	if s := scopeOf(t, saved); s != "" {
+		t.Fatalf("put root = %q, want empty", s)
+	}
+	var got preferencesJSON
+	e.expect(t, 200, viewer, "GET", "/me/preferences", nil, &got)
+	if s := scopeOf(t, got); s != "" {
+		t.Fatalf("get after root = %q, want empty", s)
+	}
+}
+
 func TestPreferencesValidation(t *testing.T) {
 	e := newTestEnv(t)
 	seedOrg(t, e)

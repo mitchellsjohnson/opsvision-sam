@@ -96,6 +96,18 @@ export function levelOptions<U extends FilterUnit>(
     .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id))
 }
 
+/**
+ * The saved default scope as it applies in a period: '' (the company) when
+ * its unit no longer exists or is retired at or before the period's start.
+ */
+export function effectiveDefaultScope(saved: string, units: FilterUnit[], period: string): string {
+  if (!saved) return ''
+  const u = units.find((x) => x.id === saved)
+  if (!u) return ''
+  const start = firstMonth(period)
+  return u.retiredFrom && start !== null && u.retiredFrom <= start ? '' : saved
+}
+
 /** The scope after the select at `index` changes to `value` ('' is its All choice). */
 export function scopeAfterChange(index: number, value: string, levels: FilterLevel[], chosen: Chosen): string {
   return value || deepestChoiceAbove(index, levels, chosen)

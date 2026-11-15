@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { allLabel, chosenUnits, filterLevels, levelOptions, scopeAfterChange } from './scopeFilters'
+import {
+  allLabel,
+  chosenUnits,
+  effectiveDefaultScope,
+  filterLevels,
+  levelOptions,
+  scopeAfterChange,
+} from './scopeFilters'
 
 const levels = [
   { id: 'product', name: 'Product', depth: 2 },
@@ -68,6 +75,15 @@ describe('scope filters', () => {
     expect(ids(levelOptions(1, fl, { segment: 'b' }, units, '2026-Q4'))).toEqual(['b1'])
     expect(ids(levelOptions(0, fl, {}, units, '2026-M02'))).toEqual(['a', 'b', 'old'])
     expect(ids(levelOptions(1, fl, { segment: 'b', product: 'b9' }, units, '2026-M10'))).toEqual(['b1', 'b9'])
+  })
+
+  it('uses a saved default only while its unit exists and is not retired for the period', () => {
+    expect(effectiveDefaultScope('', units, '2026-M10')).toBe('')
+    expect(effectiveDefaultScope('a1', units, '2026-M10')).toBe('a1')
+    expect(effectiveDefaultScope('gone', units, '2026-M10')).toBe('')
+    expect(effectiveDefaultScope('b9', units, '2026-M07')).toBe('b9')
+    expect(effectiveDefaultScope('b9', units, '2026-M08')).toBe('')
+    expect(effectiveDefaultScope('b9', units, '2026-Q4')).toBe('')
   })
 
   it('scopes to the chosen unit, or to the deepest shallower choice when cleared', () => {
