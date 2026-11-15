@@ -163,6 +163,7 @@ export function buildPoints(row: ViewRow, columns: Column[], fyStart: number): C
             format: row.format,
             change: cell.change,
             changeKind: cell.changeKind,
+            compare: cell.rule?.type === 'change' ? cell.rule.compare : undefined,
             fyStart,
           })
         : null,
@@ -294,7 +295,8 @@ function hoverTooltip(columns: Column[], series: ChartSeries[], scale: StatusLev
       }
       // It may run below a small tile, but flips sideways rather than leave the plot's width.
       allowEscapeViewBox={{ x: false, y: true }}
-      wrapperStyle={{ zIndex: 30, outline: 'none' }}
+      // Above neighboring tiles, below the sticky control bar (z-10).
+      wrapperStyle={{ zIndex: 5, outline: 'none' }}
       isAnimationActive={animated}
     />
   )

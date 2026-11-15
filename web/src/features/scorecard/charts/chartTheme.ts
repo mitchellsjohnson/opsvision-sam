@@ -1,12 +1,20 @@
 import type { components } from '../../../api/schema'
-import { letterUsesInkOnWhite } from '../../../ui/contrast'
+import { contrastRatio, letterUsesInkOnWhite } from '../../../ui/contrast'
 
 type StatusLevel = components['schemas']['StatusLevel']
 
 const SHAPES: Record<string, string> = { G: '●', Y: '▲', R: '◆' }
+const WHITE = '#FFFFFF'
+const INK = '#1D2433'
 
 /** One color per series, in order; the first is accent-deep. Shared with the slide export. */
-export const LINE_COLORS = ['#3F33A8', '#0E7490', '#475569', '#A21CAF', '#1D4ED8']
+export const LINE_COLORS: readonly string[] = ['#3F33A8', '#0E7490', '#475569', '#A21CAF', '#1D4ED8']
+
+/** White or ink, whichever reads better on `fill`; white on a non-hex fill (the ink fallback). */
+function letterOn(fill: string): string {
+  if (!/^#[0-9a-f]{6}$/i.test(fill)) return WHITE
+  return contrastRatio(WHITE, fill) >= contrastRatio(INK, fill) ? WHITE : 'var(--color-ink)'
+}
 
 export interface StatusTheme {
   letter: string
@@ -16,7 +24,7 @@ export interface StatusTheme {
   label: string
   /** Ink when tenant color fails contrast on white. */
   letterClass: string
-  /** The letter's color on a shape filled with `color`: white, or ink when white fails contrast. */
+  /** The letter's color on a shape filled with `color`: white or ink, whichever has more contrast. */
   onColor: string
 }
 
@@ -40,7 +48,7 @@ export function chartTheme(scale: StatusLevel[] | undefined, status: string): St
     color,
     label: entry?.label ?? '',
     letterClass: ink ? 'text-ink' : '',
-    onColor: ink ? 'var(--color-ink)' : '#FFFFFF',
+    onColor: letterOn(color),
   }
 }
 

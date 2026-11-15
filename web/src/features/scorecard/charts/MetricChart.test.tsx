@@ -10,6 +10,9 @@ import { buildPoints, ChartHoverCard, MetricChart, type ChartSize } from './Metr
 
 type ViewRow = components['schemas']['ViewRow']
 
+// A test sets `index` to open the tooltip at that column, as a hover would.
+const hover = vi.hoisted(() => ({ index: undefined as number | undefined }))
+
 // jsdom measures every element as 0 wide, so ResponsiveContainer draws
 // nothing; give the chart a fixed size instead.
 vi.mock('recharts', async (importOriginal) => {
@@ -18,6 +21,7 @@ vi.mock('recharts', async (importOriginal) => {
     ...mod,
     ResponsiveContainer: ({ children }: { children: ReactNode }) =>
       isValidElement(children) ? cloneElement(children as React.ReactElement<{ width: number; height: number }>, { width: 300, height: 120 }) : null,
+    Tooltip: (props: React.ComponentProps<typeof mod.Tooltip>) => <mod.Tooltip {...props} defaultIndex={hover.index} />,
   }
 })
 
@@ -36,6 +40,7 @@ beforeEach(() => {
 afterEach(() => {
   // @ts-expect-error matchMedia is absent in jsdom.
   delete window.matchMedia
+  hover.index = undefined
 })
 
 function rowOf(metric: string, edit?: (row: ViewRow) => void, subjectId = 'root'): ViewRow {
@@ -142,6 +147,15 @@ describe('ChartHoverCard', () => {
     expect(screen.getByTestId('hover-status').textContent).toBe('◆ R Red')
   })
 
+  it("names the change's basis from the cell's rule, as the cell drawer does", () => {
+    const row = rowOf('defect_rate', (r) => {
+      r.cells[9]!.rule = { type: 'change', compare: 'baseline' }
+    })
+    const series = [{ name: row.subjectName, color: LINE_COLORS[0]!, points: buildPoints(row, columns, 1) }]
+    render(<ChartHoverCard active payload={at(9)} columns={columns} series={series} scale={scale} />)
+    expect(screen.getByText('17% worse vs baseline')).toBeTruthy()
+  })
+
   it('names each series with its color when there are several', () => {
     const a = rowOf('on_time_pct', undefined, 'unit-a')
     const b = rowOf('on_time_pct', undefined, 'unit-b')
@@ -205,6 +219,40 @@ describe('MetricChart look', () => {
     const legend = screen.getByTestId('chart-legend')
     expect([...legend.querySelectorAll('li')].map((li) => li.textContent)).toEqual(['Unit A', 'Unit B'])
     expect(container.querySelectorAll('[data-status-dot] .point-letter').length).toBeGreaterThan(0)
+  })
+
+  it.each(['ratio', 'discrete', 'money_plan'])('%s: hovering a column opens the card for that period', (kind) => {
+    hover.index = 11
+    const { container } = draw(rowOf('on_time_pct', (r) => (r.chartKind = kind)))
+    const card = within(container.querySelector<HTMLElement>('[data-testid="metric-chart"]')!).getByTestId('chart-hover')
+    expect(within(card).getByText(columns[11]!.fullLabel)).toBeTruthy()
+    expect(within(card).getByText('84.3%')).toBeTruthy()
+  })
+
+  it('each chart has its own area gradient', () => {
+    const row = rowOf('on_time_pct')
+    const { container } = render(
+      <MemoryRouter>
+        {[0, 1].map((k) => (
+          <MetricChart
+            key={k}
+            row={row}
+            columns={columns}
+            currentColumnKey="2026-M10"
+            currentDisplay="84.3%"
+            currentStatus="Y"
+            statusLabel={() => undefined}
+            scale={scale}
+            tableTo="/table"
+          />
+        ))}
+      </MemoryRouter>,
+    )
+    const ids = [...container.querySelectorAll('linearGradient')].map((g) => g.id)
+    expect(ids).toHaveLength(2)
+    expect(new Set(ids).size).toBe(2)
+    const fills = [...container.querySelectorAll('.recharts-area-area')].map((p) => p.getAttribute('fill'))
+    expect(fills).toEqual(ids.map((id) => `url(#${id})`))
   })
 
   it('bars have rounded tops', () => {
