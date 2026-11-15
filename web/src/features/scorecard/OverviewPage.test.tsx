@@ -108,7 +108,8 @@ describe('OverviewPage', () => {
     })
     await screen.findByRole('heading', { name: 'Overview', level: 1 })
     const defect = metricCard('Defect rate')
-    expect(within(defect).getByText('n/a')).toBeTruthy()
+    // The point button and the status ribbon both say so.
+    expect(within(defect).getAllByText('n/a')).toHaveLength(2)
     expect(within(defect).getByRole('button', { name: 'Sep: no data' })).toBeTruthy()
   })
 
@@ -144,6 +145,14 @@ describe('OverviewPage', () => {
     expect(bands[1]!.y0).toBe(90)
     expect(within(metricCard('On-time delivery')).getByTestId('current-point-label').textContent).toMatch(/84\.3%/)
     expect(within(metricCard('On-time delivery')).getByTestId('current-point-label').textContent).toContain('Y')
+  })
+
+  it('a metric card shows its change once, beside the value', async () => {
+    renderOverview()
+    await screen.findByRole('heading', { name: 'Overview', level: 1 })
+    const card = metricCard('On-time delivery')
+    expect(within(card).getAllByText(/\+2\.1 pts vs Sep/)).toHaveLength(1)
+    expect(within(card).getByTestId('header-change').textContent).toBe('▲ +2.1 pts vs Sep')
   })
 
   it('omits YTD on the card when the scope row has no YTD value', async () => {

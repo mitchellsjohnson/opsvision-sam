@@ -288,19 +288,6 @@ export function OverviewPage() {
           ytdDisplay={ytdDisplay}
           fiscalYearStartMonth={fy}
         />
-        {cell && cell.changeKind && (
-          <p className="mt-1 text-xs text-ink/70">
-            {changeText({
-              period: cell.period,
-              ytd: cell.ytd,
-              format: head.format,
-              change: cell.change,
-              changeKind: cell.changeKind,
-              compare: undefined,
-              fyStart: fy,
-            })}
-          </p>
-        )}
       </article>
     )
   }

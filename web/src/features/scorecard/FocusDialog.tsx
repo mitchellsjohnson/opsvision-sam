@@ -4,9 +4,11 @@ import { useCallback, useMemo, useRef, useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router'
 import { useMe, useOrgUnits, useScorecards, useVersions, useView } from '../../api/queries'
 import type { components } from '../../api/schema'
+import { parsePeriod } from '../../lib/period'
 import { usePeriodState } from '../../shell/usePeriodState'
-import { defaultStatusScale } from './charts/chartTheme'
+import { defaultStatusScale, MOVE_CLASS } from './charts/chartTheme'
 import { FOCUS_CHART_HEIGHT, MetricChart } from './charts/MetricChart'
+import { RANGES, rangeChange, rangeMonths, type RangeChange, type RangeKey } from './charts/ranges'
 import { buildMonthTrendColumns, buildTrendColumns } from './columns'
 import { focusReturnRef } from './focusTrigger'
 import { defaultLayout } from './logic/layout'
@@ -42,7 +44,7 @@ function MetricFocusBody({
   const scorecardId = sc ?? ''
   const [period, updatePeriod] = usePeriodState()
   const [params, setParams] = useSearchParams()
-  const [windowMonths, setWindowMonths] = useState<12 | 24>(12)
+  const [range, setRange] = useState<RangeKey>('12M')
   const [exportError, setExportError] = useState('')
   const me = useMe()
   const orgUnits = useOrgUnits()
@@ -57,6 +59,10 @@ function MetricFocusBody({
   const statusColors = me.data?.tenant?.statusScale ?? defaultStatusScale()
   const statusLabel = (key: string) => statusColors.find((s) => s.key === key)?.label
 
+  // Ranges are months; other grains keep their usual trend window.
+  const monthGrain = parsePeriod(period.period)?.grain === 'month'
+  const rangeSpan = rangeMonths(range, period.period)
+  const windowMonths = monthGrain && rangeSpan > 12 ? 24 : 12
   // 24 months asks for this metric's rows only, which keeps the request well
   // inside the API's limits; 12 shares the Overview's request and cache.
   const { request, ready } = useScorecardViewRequest(
@@ -65,12 +71,16 @@ function MetricFocusBody({
   const view = useView(ready ? scorecardId : undefined, request, { keepPrevious: true })
   // While the other window loads, the chart keeps the window it has data for.
   const shownMonths = view.isPlaceholderData && view.data ? (view.data.periods.length > 12 ? 24 : 12) : windowMonths
-  const trendColumns = useMemo(
+  const windowColumns = useMemo(
     () =>
       shownMonths === 24
         ? buildMonthTrendColumns(period.period, 24, fy)
         : buildTrendColumns(period.period, fy),
     [period.period, fy, shownMonths],
+  )
+  const trendColumns = useMemo(
+    () => (monthGrain ? windowColumns.slice(-rangeSpan) : windowColumns),
+    [monthGrain, windowColumns, rangeSpan],
   )
   const selectedColumn = trendColumns[trendColumns.length - 1]
   const columnKey = selectedColumn?.key ?? ''
@@ -183,6 +193,7 @@ function MetricFocusBody({
 
   const waiting = view.isPending || (view.isPlaceholderData && !metricGroup)
   let chartArea
+  let details = null
   if (view.isError) {
     chartArea = (
       <div role="alert" className="rounded-md border border-status-r bg-status-r-bg p-4 text-sm">
@@ -202,25 +213,26 @@ function MetricFocusBody({
     chartArea = <p role="alert">This metric has no rows for this selection.</p>
   } else {
     chartArea = (
+      <div className="mt-4" aria-busy={view.isPlaceholderData || undefined}>
+        <MetricChart
+          size="focus"
+          row={chartRow}
+          chartRows={chartRows}
+          childRows={children}
+          columns={trendColumns}
+          currentColumnKey={columnKey}
+          currentDisplay={cell?.display ?? ''}
+          currentStatus={atScope?.status ?? ''}
+          statusLabel={statusLabel}
+          scale={statusColors}
+          tableTo={tableLink}
+          scopeNote={atScope?.caption || undefined}
+          fiscalYearStartMonth={fy}
+        />
+      </div>
+    )
+    details = (
       <>
-        <div className="mt-4" aria-busy={view.isPlaceholderData || undefined}>
-          <MetricChart
-            size="focus"
-            row={chartRow}
-            chartRows={chartRows}
-            childRows={children}
-            columns={trendColumns}
-            currentColumnKey={columnKey}
-            currentDisplay={cell?.display ?? ''}
-            currentStatus={atScope?.status ?? ''}
-            statusLabel={statusLabel}
-            scale={statusColors}
-            tableTo={tableLink}
-            scopeNote={atScope?.caption || undefined}
-            fiscalYearStartMonth={fy}
-          />
-        </div>
-
         {rankedChildren.length > 0 && (
           <section aria-label="Org breakdown" className="mt-6">
             <h3 className="text-sm font-semibold text-accent-deep">Breakdown</h3>
@@ -290,38 +302,71 @@ function MetricFocusBody({
         </p>
       )}
 
-      <div className="mt-3 flex flex-wrap items-center gap-2">
-        <span className="text-sm text-ink/80">Period window</span>
-        <button
-          type="button"
-          aria-pressed={windowMonths === 12}
-          className="rounded border border-ink/20 px-2 py-0.5 text-sm hover:bg-cream"
-          onClick={() => setWindowMonths(12)}
-        >
-          12
+      <div className="mt-3 flex flex-wrap justify-end gap-2">
+        <button type="button" className="rounded border border-ink/20 px-2 py-1 text-sm hover:bg-cream" onClick={() => setFocus(prevId!)}>
+          Previous metric
         </button>
-        <button
-          type="button"
-          aria-pressed={windowMonths === 24}
-          className="rounded border border-ink/20 px-2 py-0.5 text-sm hover:bg-cream"
-          onClick={() => setWindowMonths(24)}
-        >
-          24
+        <button type="button" className="rounded border border-ink/20 px-2 py-1 text-sm hover:bg-cream" onClick={() => setFocus(nextId!)}>
+          Next metric
         </button>
-        <div className="ml-auto flex gap-2">
-          <button type="button" className="rounded border border-ink/20 px-2 py-1 text-sm hover:bg-cream" onClick={() => setFocus(prevId!)}>
-            Previous metric
-          </button>
-          <button type="button" className="rounded border border-ink/20 px-2 py-1 text-sm hover:bg-cream" onClick={() => setFocus(nextId!)}>
-            Next metric
-          </button>
-        </div>
       </div>
       <p role="status" className="mt-1 min-h-5 text-sm text-ink/80">
         {waiting || view.isPlaceholderData ? 'Loading chart…' : ''}
       </p>
 
       {chartArea}
+      {monthGrain && (
+        <RangeStrip
+          selected={range}
+          onSelect={setRange}
+          changeFor={(key) => {
+            const span = rangeMonths(key, period.period)
+            // A range longer than the loaded window has no change to show yet.
+            return scope && span <= windowColumns.length ? rangeChange(scope, windowColumns.slice(-span)) : null
+          }}
+        />
+      )}
+      {details}
+    </div>
+  )
+}
+
+/** Range tabs under the chart, each with the change over its range. */
+function RangeStrip({
+  selected,
+  onSelect,
+  changeFor,
+}: {
+  selected: RangeKey
+  onSelect: (key: RangeKey) => void
+  changeFor: (key: RangeKey) => RangeChange | null
+}) {
+  return (
+    <div role="group" aria-label="Range" className="mt-4 grid grid-cols-5 gap-1">
+      {RANGES.map(({ key, label }) => {
+        const change = changeFor(key)
+        const pressed = selected === key
+        return (
+          <button
+            key={key}
+            type="button"
+            aria-pressed={pressed}
+            aria-label={`${label}, change ${change?.text ?? 'not available'}`}
+            className={`rounded-md px-2 py-1.5 text-center text-sm ${pressed ? 'bg-ink/[0.07] font-semibold' : 'hover:bg-ink/5'}`}
+            onClick={() => onSelect(key)}
+          >
+            <span className="block">{label}</span>
+            {change ? (
+              <span data-tone={change.move.tone} className={`block text-xs font-medium tabular-nums ${MOVE_CLASS[change.move.tone]}`}>
+                {change.move.arrow && <span className="mr-0.5">{change.move.arrow}</span>}
+                {change.text}
+              </span>
+            ) : (
+              <span className="block text-xs font-medium text-ink/70">—</span>
+            )}
+          </button>
+        )
+      })}
     </div>
   )
 }

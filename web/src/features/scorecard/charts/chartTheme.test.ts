@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { chartTheme } from './chartTheme'
+import { chartTheme, MOVE_CLASS, valueMove } from './chartTheme'
 
 const level = (color: string) => [{ key: 'X', label: 'Custom', color, rank: 1 }]
 
@@ -19,5 +19,25 @@ describe('chartTheme onColor', () => {
 
   it('letters an unknown status (ink fill) in white', () => {
     expect(chartTheme(undefined, 'Q').onColor).toBe('#FFFFFF')
+  })
+})
+
+describe('valueMove', () => {
+  it('a rise is good when higher is better and bad when lower is better', () => {
+    expect(valueMove(2, 'higher_better')).toEqual({ arrow: '▲', tone: 'good' })
+    expect(valueMove(2, 'lower_better')).toEqual({ arrow: '▲', tone: 'bad' })
+  })
+
+  it('a fall is bad when higher is better and good when lower is better', () => {
+    expect(valueMove(-2, 'higher_better')).toEqual({ arrow: '▼', tone: 'bad' })
+    expect(valueMove(-2, 'lower_better')).toEqual({ arrow: '▼', tone: 'good' })
+  })
+
+  it('no move is neutral, with no arrow', () => {
+    expect(valueMove(0, 'higher_better')).toEqual({ arrow: '', tone: 'neutral' })
+  })
+
+  it('colors good, bad and neutral with status tokens and ink', () => {
+    expect(MOVE_CLASS).toEqual({ good: 'text-status-g', bad: 'text-status-r', neutral: 'text-ink/70' })
   })
 })

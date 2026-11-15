@@ -5,9 +5,7 @@ import {
   Bar,
   BarChart,
   CartesianGrid,
-  Cell,
   ComposedChart,
-  LabelList,
   Line,
   ReferenceArea,
   ReferenceLine,
@@ -19,10 +17,10 @@ import {
 import type { components } from '../../../api/schema'
 import { usePrefersReducedMotion } from '../../../ui/Sparkline'
 import type { Column } from '../columns'
-import { changeText, formatMetricValue, overrideSentence } from '../format'
+import { changeText, formatMetricValue, metricDecimals, overrideSentence } from '../format'
 import { cellKey } from '../viewHelpers'
 import { statusIntervals } from './bands'
-import { chartTheme, LINE_COLORS, type StatusTheme } from './chartTheme'
+import { chartTheme, LINE_COLORS, MOVE_CLASS, valueMove, type Move, type StatusTheme } from './chartTheme'
 import { isSparse, pointKind, type PointKind } from './sparse'
 
 type Schemas = components['schemas']
@@ -32,12 +30,20 @@ type StatusLevel = Schemas['StatusLevel']
 
 /**
  * The plot height in the full-screen dialog: at least half the viewport, and
- * the viewport less room for the dialog's title and controls (64vh at 1080px).
+ * the viewport less room for the dialog's title and controls above and the
+ * status ribbon and range strip below (60vh at 1080px).
  */
-export const FOCUS_CHART_HEIGHT = 'h-[max(50vh,calc(100vh_-_24rem))]'
+export const FOCUS_CHART_HEIGHT = 'h-[max(50vh,calc(100vh_-_27rem))]'
 
 /** `tile` is the Overview card; `focus` fills the full-screen dialog. */
 export type ChartSize = 'tile' | 'focus'
+
+interface Margin {
+  top: number
+  right: number
+  bottom: number
+  left: number
+}
 
 interface SizeSpec {
   className: string
@@ -45,15 +51,12 @@ interface SizeSpec {
   height: number | '100%'
   initial: { width: number; height: number }
   tick: number
-  /** Point radius; the current point's is `current`, ringed by `halo`. */
+  stroke: number
+  /** Radius of the current point's dot, and of the hovered point's. */
   dot: number
-  current: number
-  halo: number
-  letter: number
-  currentLetter: number
-  /** Value labels above points; 0 for none. */
-  value: number
-  band: { width: number; height: number; font: number }
+  activeDot: number
+  margin: Margin
+  xAxisHeight: number
   maxBar: number
 }
 
@@ -64,14 +67,12 @@ function sizeSpec(size: ChartSize, tileHeight: number): SizeSpec {
         style: undefined,
         height: '100%',
         initial: { width: 960, height: 480 },
-        tick: 13,
-        dot: 9,
-        current: 12,
-        halo: 6,
-        letter: 11,
-        currentLetter: 14,
-        value: 12,
-        band: { width: 24, height: 20, font: 12 },
+        tick: 12,
+        stroke: 2.25,
+        dot: 4,
+        activeDot: 4.5,
+        margin: { top: 16, right: 4, bottom: 0, left: 8 },
+        xAxisHeight: 24,
         maxBar: 44,
       }
     : {
@@ -80,26 +81,27 @@ function sizeSpec(size: ChartSize, tileHeight: number): SizeSpec {
         height: tileHeight,
         initial: { width: 300, height: tileHeight },
         tick: 10,
-        dot: 6,
-        current: 8,
-        halo: 4,
-        letter: 8,
-        currentLetter: 10,
-        value: 0,
-        band: { width: 16, height: 14, font: 9 },
+        stroke: 2,
+        dot: 3,
+        activeDot: 3.5,
+        margin: { top: 8, right: 8, bottom: 0, left: 8 },
+        xAxisHeight: 18,
         maxBar: 18,
       }
 }
 
-const TICK_OPACITY = 0.6
+const ACCENT = 'var(--color-accent)'
+const TICK_OPACITY = 0.55
 const ANIMATION = { animationDuration: 600, animationEasing: 'ease-out' } as const
+/** The goal and 100% lines: dotted, ink at 40%. */
+const GUIDE = { stroke: 'var(--color-ink)', strokeOpacity: 0.4, strokeDasharray: '2 3', strokeWidth: 1 } as const
 
 function tickStyle(spec: SizeSpec) {
   return { fontSize: spec.tick, fill: 'var(--color-ink)', fillOpacity: TICK_OPACITY }
 }
 
-function seriesColor(index: number): string {
-  return LINE_COLORS[index % LINE_COLORS.length]!
+function seriesColor(index: number, single: boolean): string {
+  return single ? ACCENT : LINE_COLORS[index % LINE_COLORS.length]!
 }
 
 export interface MetricChartProps {
@@ -117,7 +119,7 @@ export interface MetricChartProps {
   scopeNote?: string
   ytdDisplay?: string | null
   size?: ChartSize
-  /** Names the prior period in the hover card's change text. */
+  /** Names the prior period in the change text. */
   fiscalYearStartMonth?: number
 }
 
@@ -132,8 +134,6 @@ export interface ChartPoint {
   overrideReason: string
   /** The change as a phrase, e.g. `+2.1 pts vs Sep`; null when the cell has none. */
   change: string | null
-  /** `Goal 90.0%`; null when the cell has no target. */
-  goal: string | null
   kind: PointKind
 }
 
@@ -141,7 +141,19 @@ function cellsByKey(row: ViewRow): Map<string, CellT> {
   return new Map(row.cells.map((c) => [cellKey(c), c]))
 }
 
-/** One point per column for a row, with everything the hover card and point buttons show. */
+function cellChange(row: ViewRow, cell: CellT, fyStart: number): string | null {
+  return changeText({
+    period: cell.period,
+    ytd: cell.ytd,
+    format: row.format,
+    change: cell.change,
+    changeKind: cell.changeKind,
+    compare: cell.rule?.type === 'change' ? cell.rule.compare : undefined,
+    fyStart,
+  })
+}
+
+/** One point per column for a row, with everything the hover label and point buttons show. */
 export function buildPoints(row: ViewRow, columns: Column[], fyStart: number): ChartPoint[] {
   const byKey = cellsByKey(row)
   return columns.map((col) => {
@@ -156,27 +168,28 @@ export function buildPoints(row: ViewRow, columns: Column[], fyStart: number): C
       status: cell?.status ?? '',
       naReason: cell?.naReason ?? '',
       overrideReason: cell?.override ? overrideSentence(cell.override) : '',
-      change: cell
-        ? changeText({
-            period: cell.period,
-            ytd: cell.ytd,
-            format: row.format,
-            change: cell.change,
-            changeKind: cell.changeKind,
-            compare: cell.rule?.type === 'change' ? cell.rule.compare : undefined,
-            fyStart,
-          })
-        : null,
-      goal: cell?.target != null ? `Goal ${formatMetricValue(row.format, cell.target)}` : null,
+      change: cell ? cellChange(row, cell, fyStart) : null,
       kind,
     }
   })
 }
 
-function yDomain(points: ChartPoint[], target: number | null, extra: number[] = []): [number, number] {
+/** The current period's change and which way it moved the value, judged by the metric's direction. */
+function headerChange(row: ViewRow, cell: CellT | undefined, fyStart: number): { text: string; move: Move } | null {
+  if (!cell || cell.change === null) return null
+  const text = cellChange(row, cell, fyStart)
+  if (!text) return null
+  const improvement = cell.changeKind === 'improvement_pct'
+  // changeText's rounding: tenths for an improvement, the format's decimals for a delta.
+  const shown = improvement ? Math.round(cell.change * 10) / 10 : Number(cell.change.toFixed(metricDecimals(row.format)))
+  // An improvement counts a move in the good direction as positive, whichever way the value went.
+  const delta = improvement && row.direction === 'lower_better' ? -shown : shown
+  return { text, move: valueMove(delta || 0, row.direction) }
+}
+
+function yDomain(points: ChartPoint[], target: number | null): [number, number] {
   const values = points.map((p) => p.value).filter((v): v is number => v !== null)
   if (target !== null) values.push(target)
-  for (const v of extra) values.push(v)
   if (values.length === 0) return [0, 100]
   const min = Math.min(...values)
   const max = Math.max(...values)
@@ -184,10 +197,42 @@ function yDomain(points: ChartPoint[], target: number | null, extra: number[] = 
   return [min - pad, max + pad]
 }
 
-function moneyDomain(points: ChartPoint[]): [number, number] {
+function barDomain(points: ChartPoint[], plan: boolean): [number, number] {
   const values = points.map((p) => p.value).filter((v): v is number => v !== null)
-  const max = Math.max(100, ...(values.length ? values : [0]))
+  const max = Math.max(plan ? 100 : 1, ...values)
   return [0, max * 1.05]
+}
+
+interface ValueAxis {
+  domain: [number, number]
+  ticks: number[]
+  format: (v: number) => string
+  width: number
+}
+
+function niceStep(raw: number): number {
+  const mag = 10 ** Math.floor(Math.log10(raw))
+  const f = raw / mag
+  return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * mag
+}
+
+/**
+ * The focus value axis: about five ticks on an even step, the domain widened
+ * to the outer ticks, and a width that fits the longest label (and `extra`,
+ * e.g. the current-value pill).
+ */
+function valueAxis(format: string, [lo, hi]: [number, number], extra: string[] = []): ValueAxis {
+  const decimals = metricDecimals(format)
+  const step = niceStep(Math.max((hi - lo) / 4, 10 ** -decimals))
+  const start = Math.floor(lo / step) * step
+  const end = Math.max(Math.ceil(hi / step) * step, start + step)
+  const ticks: number[] = []
+  for (let v = start; v <= end + step / 2; v += step) ticks.push(Number(v.toFixed(10)))
+  // Whole steps need no decimals: 80%, not 80.0%.
+  const tickFormat = Number.isInteger(step) && /^(percent|number)[1-9]$/.test(format) ? format.replace(/\d$/, '0') : format
+  const fmt = (v: number) => formatMetricValue(tickFormat, v)
+  const chars = Math.max(...ticks.map((t) => fmt(t).length), ...extra.map((s) => s.length))
+  return { domain: [start, end], ticks, format: fmt, width: Math.max(44, Math.ceil(chars * 7.2) + 14) }
 }
 
 function StatusMarker({ theme, title }: { theme: StatusTheme; title?: string }) {
@@ -203,15 +248,16 @@ function StatusMarker({ theme, title }: { theme: StatusTheme; title?: string }) 
   )
 }
 
-/** A filled status pill: shape, letter and the scale's name, so status never rests on color. */
-function StatusPill({ theme }: { theme: StatusTheme }) {
+/** The change with an arrow for its direction, colored good or bad, so color is never the only signal. */
+function ChangeLabel({ change, size }: { change: { text: string; move: Move }; size: ChartSize }) {
   return (
     <span
-      data-testid="hover-status"
-      className="inline-flex items-center rounded-full px-1.5 py-0.5 text-xs font-semibold leading-none"
-      style={{ backgroundColor: theme.color, color: theme.onColor }}
+      data-testid="header-change"
+      data-tone={change.move.tone}
+      className={`${size === 'focus' ? 'text-base' : 'text-xs'} font-medium tabular-nums ${MOVE_CLASS[change.move.tone]}`}
     >
-      {[theme.shape, theme.letter, theme.label].filter(Boolean).join(' ')}
+      {change.move.arrow && <span aria-hidden="true">{change.move.arrow} </span>}
+      {change.text}
     </span>
   )
 }
@@ -231,73 +277,107 @@ export interface ChartHoverCardProps {
   scale: StatusLevel[]
 }
 
-function HoverPoint({ point, theme }: { point: ChartPoint; theme: StatusTheme }) {
-  return (
-    <>
-      {point.kind === 'na' ? (
-        <p>{`n/a: ${point.naReason || 'Not applicable'}`}</p>
-      ) : point.kind === 'missing' ? (
-        <p className="text-ink/70">No data</p>
-      ) : (
-        <p className="flex flex-wrap items-center gap-1.5">
-          <span className="text-sm font-semibold tabular-nums">{point.display || '—'}</span>
-          {point.status && <StatusPill theme={theme} />}
-        </p>
-      )}
-      {point.overrideReason && <p>{`† ${point.overrideReason}`}</p>}
-      {point.change && <p className="text-ink/70">{point.change}</p>}
-      {point.goal && <p className="text-ink/70">{point.goal}</p>}
-    </>
-  )
+function valueText(point: ChartPoint): string {
+  if (point.kind === 'na') return 'n/a'
+  if (point.kind === 'missing') return 'No data'
+  return point.display || '—'
 }
 
-/** The hover card for one period: its full label, then each series' value, status, change and goal. */
+function statusText(theme: StatusTheme, withLabel: boolean): string {
+  return [theme.shape, theme.letter, withLabel ? theme.label : ''].filter(Boolean).join(' ')
+}
+
+/**
+ * The hover label for one period, pinned at the top of the plot: the bold
+ * value, the full period, the status and the change; one line per series
+ * when there are several.
+ */
 export function ChartHoverCard({ active, payload, columns, series, scale }: ChartHoverCardProps) {
   const datum = payload?.[0]?.payload as { i?: unknown } | undefined
   const i = typeof datum?.i === 'number' ? datum.i : -1
   const column = columns[i]
   if (!active || !column) return null
-  const multi = series.length > 1
+  const single = series.length === 1 ? series[0]!.points[i] : undefined
   return (
-    <div data-testid="chart-hover" className="w-max max-w-64 rounded-lg bg-white px-3 py-2 text-xs text-ink shadow-md ring-1 ring-ink/10">
-      <p className="font-semibold">{column.fullLabel}</p>
-      <ul className="mt-1 space-y-1.5">
-        {series.map((s, idx) => {
-          const point = s.points[i]
-          if (!point) return null
-          return (
-            <li key={idx} className="space-y-0.5">
-              {multi && (
-                <p className="flex items-center gap-1.5 font-medium">
-                  <span data-swatch="" className="inline-block h-2 w-3 rounded-sm" style={{ backgroundColor: s.color }} />
-                  {s.name}
-                </p>
-              )}
-              <HoverPoint point={point} theme={chartTheme(scale, point.status)} />
-            </li>
-          )
-        })}
-      </ul>
+    <div data-testid="chart-hover" className="w-max max-w-64 rounded-md bg-ink px-2 py-1.5 text-[11px] leading-4 text-white shadow-md">
+      {single ? (
+        <>
+          <p className="text-[13px] font-semibold tabular-nums">{valueText(single)}</p>
+          <p className="text-white/75">{column.fullLabel}</p>
+          {single.kind === 'na' && <p>{single.naReason || 'Not applicable'}</p>}
+          {single.kind === 'value' && single.status && (
+            <p data-testid="hover-status">{statusText(chartTheme(scale, single.status), true)}</p>
+          )}
+          {single.change && <p className="text-white/75">{single.change}</p>}
+          {single.overrideReason && <p>{`† ${single.overrideReason}`}</p>}
+        </>
+      ) : (
+        <>
+          <p className="text-white/75">{column.fullLabel}</p>
+          <ul className="mt-0.5 space-y-0.5">
+            {series.map((s, idx) => {
+              const point = s.points[i]
+              if (!point) return null
+              return (
+                <li key={idx} className="flex items-center gap-1.5">
+                  <span data-swatch="" className="inline-block size-2 shrink-0 rounded-full ring-1 ring-white/60" style={{ backgroundColor: s.color }} />
+                  <span className="text-white/75">{s.name}</span>
+                  <span className="font-semibold tabular-nums">{valueText(point)}</span>
+                  {point.kind === 'value' && point.status && <span>{statusText(chartTheme(scale, point.status), false)}</span>}
+                  {point.overrideReason && <span>†</span>}
+                </li>
+              )
+            })}
+          </ul>
+        </>
+      )}
     </div>
   )
 }
 
-function hoverTooltip(columns: Column[], series: ChartSeries[], scale: StatusLevel[], animated: boolean, bars: boolean) {
+interface CursorProps {
+  /** Line charts: the cursor's top and bottom points. */
+  points?: { x: number; y: number }[]
+  /** Bar charts: the hovered column's band. */
+  x?: number
+  y?: number
+  width?: number
+  height?: number
+}
+
+/** A single vertical hairline through the hovered column. */
+function Hairline({ points, x = 0, y = 0, width = 0, height = 0 }: CursorProps) {
+  const cx = points?.[0]?.x ?? x + width / 2
+  return (
+    <line
+      data-role="hairline"
+      x1={cx}
+      x2={cx}
+      y1={points?.[0]?.y ?? y}
+      y2={points?.[1]?.y ?? y + height}
+      stroke="var(--color-ink)"
+      strokeOpacity={0.35}
+      strokeWidth={1}
+      pointerEvents="none"
+    />
+  )
+}
+
+function hoverTooltip(columns: Column[], series: ChartSeries[], scale: StatusLevel[], animated: boolean, top: number) {
   return (
     <Tooltip
       content={(props) => <ChartHoverCard active={props.active} payload={props.payload} columns={columns} series={series} scale={scale} />}
       // Keep n/a and missing periods, so they still say why there is no value.
       filterNull={false}
-      cursor={
-        bars
-          ? { fill: 'var(--color-ink)', fillOpacity: 0.06 }
-          : { stroke: 'var(--color-ink)', strokeOpacity: 0.3, strokeWidth: 1 }
-      }
-      // It may run below a small tile, but flips sideways rather than leave the plot's width.
+      cursor={<Hairline />}
+      // Pinned to the top of the plot; it follows the column and flips left near the right edge.
+      position={{ y: top }}
+      offset={8}
       allowEscapeViewBox={{ x: false, y: true }}
       // Above neighboring tiles, below the sticky control bar (z-10).
       wrapperStyle={{ zIndex: 5, outline: 'none' }}
       isAnimationActive={animated}
+      animationDuration={150}
     />
   )
 }
@@ -309,86 +389,19 @@ interface DotProps {
   payload?: Record<string, unknown>
 }
 
-/**
- * A line point filled with its status color and lettered inside, so status
- * never rests on color. The current point is larger and haloed; value labels
- * sit above when `valueSize` is set.
- */
-function StatusDot({
-  cx,
-  cy,
-  index,
-  payload,
-  statusKey,
-  displayKey,
-  scale,
-  color,
-  spec,
-  current,
-  valueSize,
-}: DotProps & {
-  statusKey: string
-  displayKey: string
-  scale: StatusLevel[]
-  color: string
-  spec: SizeSpec
-  current: boolean
-  valueSize: number
-}) {
-  const key = `dot-${statusKey}-${index}`
-  const status = typeof payload?.[statusKey] === 'string' ? (payload[statusKey] as string) : ''
-  const display = typeof payload?.[displayKey] === 'string' ? (payload[displayKey] as string) : ''
-  if (cx == null || cy == null || (!status && !display)) return <g key={key} />
-  const theme = chartTheme(scale, status)
-  const fill = status ? theme.color : color
-  const r = current ? spec.current : status ? spec.dot : spec.dot * 0.6
-  const top = cy - r - (current ? spec.halo : 0)
-  return (
-    <g key={key} data-status-dot={status || undefined} data-current={current}>
-      {current && <circle className="point-halo" cx={cx} cy={cy} r={r + spec.halo} fill={fill} fillOpacity={0.18} />}
-      <circle cx={cx} cy={cy} r={r} fill={fill} stroke="#FFFFFF" strokeWidth={1.5} />
-      {status && (
-        <text
-          className="point-letter"
-          x={cx}
-          y={cy}
-          dy="0.35em"
-          textAnchor="middle"
-          fontSize={current ? spec.currentLetter : spec.letter}
-          fontWeight={700}
-          fill={theme.onColor}
-        >
-          {status}
-        </text>
-      )}
-      {valueSize > 0 && display && (
-        <text
-          data-role="value-label"
-          x={cx}
-          y={top - 6}
-          textAnchor="middle"
-          fontSize={valueSize}
-          fontWeight={current ? 700 : 600}
-          fill="var(--color-ink)"
-          fillOpacity={current ? 1 : 0.75}
-          stroke="#FFFFFF"
-          strokeWidth={4}
-          strokeLinejoin="round"
-          paintOrder="stroke"
-        >
-          {display}
-        </text>
-      )}
-    </g>
-  )
+/** The line's only resting dot: on the current (last) point. */
+function CurrentDot({ cx, cy, index, payload, dataKey, last, r, color }: DotProps & { dataKey: string; last: number; r: number; color: string }) {
+  const key = `dot-${dataKey}-${index}`
+  if (index !== last || cx == null || cy == null || payload?.[dataKey] == null) return <g key={key} />
+  return <circle key={key} data-current-dot="" cx={cx} cy={cy} r={r} fill={color} stroke="#FFFFFF" strokeWidth={2} />
 }
 
-function ActiveRing({ cx, cy, r, color }: { cx?: number; cy?: number; r: number; color: string }) {
+function ActiveDot({ cx, cy, r, color }: { cx?: number; cy?: number; r: number; color: string }) {
   if (cx == null || cy == null) return null
-  return <circle cx={cx} cy={cy} r={r} fill="none" stroke={color} strokeWidth={2} />
+  return <circle data-role="active-dot" cx={cx} cy={cy} r={r} fill={color} stroke="#FFFFFF" strokeWidth={2} />
 }
 
-interface BandLabelProps {
+interface LabelViewBox {
   viewBox?: { x?: number; y?: number; width?: number; height?: number }
 }
 
@@ -399,28 +412,20 @@ interface BandShapeProps {
   height?: number
 }
 
-/** A band's tint, widened by `inset` each side to cover the x-axis padding the points sit inside. */
-function BandRect({ x = 0, y = 0, width = 0, height = 0, inset, color }: BandShapeProps & { inset: number; color: string }) {
+/** A band's faint tint, without a border. */
+function BandRect({ x = 0, y = 0, width = 0, height = 0, color }: BandShapeProps & { color: string }) {
   return (
-    <rect
-      x={x - inset}
-      y={y}
-      width={Math.max(width + 2 * inset, 0)}
-      height={Math.max(height, 0)}
-      fill={color}
-      fillOpacity={0.12}
-      stroke={color}
-      strokeOpacity={0.35}
-      strokeWidth={1}
-    />
+    <rect data-role="band" x={x} y={y} width={Math.max(width, 0)} height={Math.max(height, 0)} fill={color} fillOpacity={0.06} stroke="none" />
   )
 }
 
-/** A band's letter as a small pill in the gutter right of the plot. */
-function BandPill({ viewBox, theme, spec, inset }: BandLabelProps & { theme: StatusTheme; spec: SizeSpec; inset: number }) {
+const BAND_PILL = { width: 16, height: 14, font: 9 }
+
+/** A band's letter as a tiny pill at the plot's right edge. */
+function BandPill({ viewBox, theme }: LabelViewBox & { theme: StatusTheme }) {
   const { x = 0, y = 0, width = 0, height = 0 } = viewBox ?? {}
-  const { width: w, height: h, font } = spec.band
-  const left = x + width + inset + 4
+  const { width: w, height: h, font } = BAND_PILL
+  const left = x + width - w - 4
   const mid = y + height / 2
   return (
     <g className="band-pill">
@@ -438,6 +443,80 @@ function BandPill({ viewBox, theme, spec, inset }: BandLabelProps & { theme: Sta
         {theme.letter}
       </text>
     </g>
+  )
+}
+
+/** A reference line's label, right-aligned inside the plot, `gap` px in from the edge. */
+function GuidePill({ viewBox, text, gap }: LabelViewBox & { text: string; gap: number }) {
+  const { x = 0, y = 0, width = 0 } = viewBox ?? {}
+  const h = 16
+  const w = Math.ceil(text.length * 6.2) + 10
+  const left = x + width - gap - 4 - w
+  return (
+    <g data-role="goal-pill">
+      <rect x={left} y={y - h / 2} width={w} height={h} rx={3} fill="var(--color-ink)" fillOpacity={0.72} />
+      <text x={left + w / 2} y={y} dy="0.35em" textAnchor="middle" fontSize={11} fontWeight={600} fill="#FFFFFF">
+        {text}
+      </text>
+    </g>
+  )
+}
+
+/** The current value in an accent pill on the right axis, at the line's last point. */
+function AxisPill({ viewBox, text, axisWidth }: LabelViewBox & { text: string; axisWidth: number }) {
+  const { x = 0, y = 0, width = 0 } = viewBox ?? {}
+  const h = 18
+  const left = x + width + 2
+  const w = axisWidth - 4
+  return (
+    <g data-role="current-pill">
+      <rect x={left} y={y - h / 2} width={w} height={h} rx={3} fill={ACCENT} />
+      <text x={left + w / 2} y={y} dy="0.35em" textAnchor="middle" fontSize={12} fontWeight={600} fill="#FFFFFF">
+        {text}
+      </text>
+    </g>
+  )
+}
+
+/**
+ * Each period's status under the plot, one cell per column with the plot's
+ * left and right offsets so cells sit under their columns. Lettered, so status
+ * never rests on color; the point buttons give the same to assistive technology.
+ */
+function StatusRibbon({ points, scale, size, inset }: { points: ChartPoint[]; scale: StatusLevel[]; size: ChartSize; inset: { left: number; right: number } }) {
+  const focus = size === 'focus'
+  const cell = 'flex min-w-0 flex-1 items-center justify-center gap-0.5 rounded-sm'
+  return (
+    <div
+      data-testid="status-ribbon"
+      aria-hidden="true"
+      className={`mt-1 flex gap-px font-semibold leading-none ${focus ? 'h-[22px] text-xs' : 'h-[14px] text-[9px]'}`}
+      style={{ marginLeft: inset.left, marginRight: inset.right }}
+    >
+      {points.map((p) => {
+        if (p.kind === 'na') {
+          return (
+            <span key={p.key} data-status="na" className={`${cell} bg-status-na-bg font-medium text-ink/70`}>
+              n/a
+            </span>
+          )
+        }
+        if (p.kind === 'missing' || !p.status) {
+          return (
+            <span key={p.key} data-status={p.kind === 'missing' ? 'missing' : 'none'} className={`${cell} bg-ink/5 text-ink/70`}>
+              —
+            </span>
+          )
+        }
+        const theme = chartTheme(scale, p.status)
+        return (
+          <span key={p.key} data-status={p.status} className={cell} style={{ backgroundColor: theme.color, color: theme.onColor }}>
+            {focus && <span>{theme.shape}</span>}
+            {theme.letter}
+          </span>
+        )
+      })}
+    </div>
   )
 }
 
@@ -484,7 +563,7 @@ function PointSummary({ point, scale }: { point: ChartPoint | null; scale: Statu
 
 /**
  * The keyboard and screen reader path to each point's value. Mouse users have
- * the hover card, so the row stays visually hidden until a button has focus.
+ * the hover label, so the row stays visually hidden until a button has focus.
  */
 function PointControls({ tip, scale, children }: { tip: ChartPoint | null; scale: StatusLevel[]; children: ReactNode }) {
   return (
@@ -500,6 +579,7 @@ function PointControls({ tip, scale, children }: { tip: ChartPoint | null; scale
 function RatioChart({
   row,
   chartRows,
+  points,
   columns,
   scale,
   target,
@@ -509,6 +589,8 @@ function RatioChart({
 }: {
   row: ViewRow
   chartRows: ViewRow[]
+  /** The scope row's points, for the status ribbon. */
+  points: ChartPoint[]
   columns: Column[]
   scale: StatusLevel[]
   target: number | null
@@ -517,7 +599,7 @@ function RatioChart({
   fyStart: number
 }) {
   const spec = sizeSpec(size, 120)
-  const xPad = spec.current + spec.halo
+  const focus = size === 'focus'
   const gradientId = `area-${useId().replace(/[^\w-]/g, '')}`
   const [tip, setTip] = useState<ChartPoint | null>(null)
   const series = useMemo(
@@ -526,31 +608,28 @@ function RatioChart({
   )
   const single = series.length === 1
   const hoverSeries = useMemo(
-    () => series.map(({ row: r, points }, s) => ({ name: r.subjectName, color: seriesColor(s), points })),
-    [series],
+    () => series.map(({ row: r, points: p }, s) => ({ name: r.subjectName, color: seriesColor(s, single), points: p })),
+    [series, single],
   )
-  const flatPoints = series.flatMap((s) => s.points)
-  const domain = yDomain(flatPoints, target)
-  const currentCell = row.cells.find((c) => cellKey(c) === columns[columns.length - 1]?.key)
-  const bands = currentCell?.rule?.type === 'bands' ? currentCell.rule.bands : undefined
-  const rects = statusIntervals(bands, domain)
   const lastIndex = columns.length - 1
   const currentPoint = single ? series[0]!.points[lastIndex] : undefined
+  const currentValue = currentPoint?.kind === 'value' ? currentPoint.value : null
+  const padded = yDomain(series.flatMap((s) => s.points), target)
+  const axis = focus ? valueAxis(row.format, padded, currentValue !== null ? [currentPoint!.display] : []) : null
+  const domain = axis?.domain ?? padded
+  const currentCell = row.cells.find((c) => cellKey(c) === columns[lastIndex]?.key)
+  const bands = currentCell?.rule?.type === 'bands' ? currentCell.rule.bands : undefined
+  const rects = statusIntervals(bands, domain)
+  const inset = { left: spec.margin.left, right: spec.margin.right + (axis?.width ?? 0) }
+  const showRibbon = single || points.some((p) => p.kind !== 'missing')
+  const labels = new Map(columns.map((c) => [c.key, c.label]))
 
   const data = columns.map((col, i) => {
     const entry: Record<string, string | number | null> = { i, label: col.label, key: col.key }
-    for (const { row: r, points } of series) {
-      const p = points[i]!
-      entry[`plot_${r.subjectId}`] = p.kind === 'value' ? p.value : null
-      entry[`status_${r.subjectId}`] = p.kind === 'value' ? p.status : ''
-      entry[`display_${r.subjectId}`] = p.kind === 'value' && p.value !== null ? p.display : ''
+    for (const { row: r, points: p } of series) {
+      entry[`plot_${r.subjectId}`] = p[i]!.kind === 'value' ? p[i]!.value : null
     }
-    if (single) {
-      const r = series[0]!.row
-      entry.plot = entry[`plot_${r.subjectId}`]!
-      entry.status = entry[`status_${r.subjectId}`]!
-      entry.display = entry[`display_${r.subjectId}`]!
-    }
+    if (single) entry.plot = entry[`plot_${series[0]!.row.subjectId}`]!
     return entry
   })
 
@@ -569,30 +648,37 @@ function RatioChart({
             data={data}
             // The plot is hidden from assistive technology; the point buttons are the keyboard path.
             accessibilityLayer={false}
-            margin={size === 'focus' ? { top: 32, right: 40, bottom: 8, left: 8 } : { top: 16, right: 24, bottom: 4, left: 8 }}
+            margin={spec.margin}
           >
             <defs>
               <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="var(--color-accent)" stopOpacity={0.22} />
-                <stop offset="100%" stopColor="var(--color-accent)" stopOpacity={0} />
+                <stop offset="0%" stopColor={ACCENT} stopOpacity={0.18} />
+                <stop offset="100%" stopColor={ACCENT} stopOpacity={0} />
               </linearGradient>
             </defs>
-            <CartesianGrid vertical={false} stroke="var(--color-ink)" strokeOpacity={0.06} />
+            {focus && <CartesianGrid vertical={false} stroke="var(--color-ink)" strokeOpacity={0.05} />}
             <XAxis
-              dataKey="label"
+              // Keyed by period: a band scale merges repeated labels, such as two Novembers in 24 months.
+              dataKey="key"
+              tickFormatter={(key: string) => labels.get(key) ?? ''}
+              // One band per column, so points sit mid-band over their ribbon cells.
+              scale="band"
               axisLine={false}
               tickLine={false}
               tick={tickStyle(spec)}
-              padding={{ left: xPad, right: xPad }}
+              height={spec.xAxisHeight}
             />
-            {size === 'focus' ? (
+            {axis ? (
               <YAxis
-                domain={domain}
+                orientation="right"
+                domain={axis.domain}
+                ticks={axis.ticks}
+                interval={0}
                 axisLine={false}
                 tickLine={false}
                 tick={tickStyle(spec)}
-                tickFormatter={(v: number) => formatMetricValue(row.format, v)}
-                width={72}
+                tickFormatter={axis.format}
+                width={axis.width}
               />
             ) : (
               <YAxis hide domain={domain} />
@@ -604,26 +690,37 @@ function RatioChart({
                   key={`band-${i}`}
                   y1={r.y0}
                   y2={r.y1}
-                  shape={(props: BandShapeProps) => <BandRect {...props} inset={xPad} color={theme.color} />}
-                  label={(props: BandLabelProps) => <BandPill viewBox={props.viewBox} theme={theme} spec={spec} inset={xPad} />}
+                  shape={(props: BandShapeProps) => <BandRect {...props} color={theme.color} />}
+                  label={focus ? (props: LabelViewBox) => <BandPill viewBox={props.viewBox} theme={theme} /> : undefined}
                 />
               )
             })}
             {target !== null && (
               <ReferenceLine
+                className="goal-line"
                 y={target}
-                stroke="var(--color-ink)"
-                strokeDasharray="4 3"
-                strokeWidth={1}
-                label={{
-                  value: `Goal ${formatMetricValue(row.format, target)}`,
-                  position: 'insideTopRight',
-                  fontSize: spec.tick,
-                  fill: 'var(--color-ink)',
-                }}
+                {...GUIDE}
+                label={
+                  focus
+                    ? (props: LabelViewBox) => (
+                        <GuidePill
+                          viewBox={props.viewBox}
+                          text={`Goal ${formatMetricValue(row.format, target)}`}
+                          gap={rects.length > 0 ? BAND_PILL.width + 6 : 0}
+                        />
+                      )
+                    : undefined
+                }
               />
             )}
-            {hoverTooltip(columns, hoverSeries, scale, animated, false)}
+            {axis && currentValue !== null && (
+              <ReferenceLine
+                y={currentValue}
+                stroke="none"
+                label={(props: LabelViewBox) => <AxisPill viewBox={props.viewBox} text={currentPoint!.display} axisWidth={axis.width} />}
+              />
+            )}
+            {hoverTooltip(columns, hoverSeries, scale, animated, spec.margin.top)}
             {single && (
               <Area
                 type="monotoneX"
@@ -639,31 +736,19 @@ function RatioChart({
               />
             )}
             {series.map(({ row: r }, s) => {
-              const color = seriesColor(s)
-              const suffix = single ? '' : `_${r.subjectId}`
+              const color = seriesColor(s, single)
+              const dataKey = single ? 'plot' : `plot_${r.subjectId}`
               return (
                 <Line
                   key={r.subjectId}
                   type="monotoneX"
-                  dataKey={`plot${suffix}`}
+                  dataKey={dataKey}
                   stroke={color}
-                  strokeWidth={single ? 2.5 : 2}
+                  strokeWidth={spec.stroke}
                   dot={(props: DotProps) => (
-                    <StatusDot
-                      {...props}
-                      key={`dot-${r.subjectId}-${props.index}`}
-                      statusKey={`status${suffix}`}
-                      displayKey={`display${suffix}`}
-                      scale={scale}
-                      color={color}
-                      spec={spec}
-                      current={props.index === lastIndex}
-                      valueSize={single || props.index === lastIndex ? spec.value : 0}
-                    />
+                    <CurrentDot {...props} key={`dot-${r.subjectId}-${props.index}`} dataKey={dataKey} last={lastIndex} r={spec.dot} color={color} />
                   )}
-                  activeDot={(props: DotProps) => (
-                    <ActiveRing cx={props.cx} cy={props.cy} color={color} r={(props.index === lastIndex ? spec.current + spec.halo : spec.dot) + 3} />
-                  )}
+                  activeDot={(props: DotProps) => <ActiveDot cx={props.cx} cy={props.cy} r={spec.activeDot} color={color} />}
                   isAnimationActive={animated}
                   {...ANIMATION}
                   connectNulls={false}
@@ -673,27 +758,28 @@ function RatioChart({
           </ComposedChart>
         </ResponsiveContainer>
       </div>
+      {showRibbon && <StatusRibbon points={points} scale={scale} size={size} inset={inset} />}
       {!single && (
         <ul data-testid="chart-legend" aria-hidden="true" className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-ink/80">
           {series.map(({ row: r }, s) => (
             <li key={r.subjectId} className="inline-flex items-center gap-1.5">
-              <span className="inline-block h-0.5 w-4 rounded-full" style={{ backgroundColor: seriesColor(s) }} />
+              <span className="inline-block h-0.5 w-4 rounded-full" style={{ backgroundColor: seriesColor(s, single) }} />
               {r.subjectName}
             </li>
           ))}
         </ul>
       )}
-      {currentPoint?.kind === 'value' && (
-        <p data-testid="current-point-label" className="text-xs text-ink/80">
+      {!focus && currentPoint?.kind === 'value' && (
+        <p data-testid="current-point-label" className="mt-1 text-xs text-ink/80">
           Current: {currentPoint.display}{' '}
           <StatusMarker theme={chartTheme(scale, currentPoint.status)} />
         </p>
       )}
       <PointControls tip={tip} scale={scale}>
-        {series.map(({ row: r, points }) => (
+        {series.map(({ row: r, points: p }) => (
           <Fragment key={r.subjectId}>
             {!single && <p className="mt-2 text-xs font-medium text-ink/80">{r.subjectName}</p>}
-            <PointButtons points={points} onSelect={setTip} prefix={single ? undefined : `${r.subjectName} `} />
+            <PointButtons points={p} onSelect={setTip} prefix={single ? undefined : `${r.subjectName} `} />
           </Fragment>
         ))}
       </PointControls>
@@ -701,69 +787,73 @@ function RatioChart({
   )
 }
 
-interface BarChartProps {
+interface BarsProps {
   points: ChartPoint[]
   columns: Column[]
+  format: string
   scale: StatusLevel[]
   animated: boolean
   size: ChartSize
+  /** Money plan: percent of plan, with a 100% line; n/a and missing periods have no bar. */
+  plan: boolean
 }
 
-function DiscreteChart({ points, columns, scale, animated, size }: BarChartProps) {
+/** Discrete and money-plan bars: one accent color, status in the ribbon below. */
+function BarsChart({ points, columns, format, scale, animated, size, plan }: BarsProps) {
   const spec = sizeSpec(size, 100)
+  const focus = size === 'focus'
   const [tip, setTip] = useState<ChartPoint | null>(null)
-  const hoverSeries = useMemo(() => [{ name: '', color: seriesColor(0), points }], [points])
-  const data = points.map((p, i) => ({ ...p, i, h: p.kind === 'value' ? p.value ?? 0 : 0, letter: p.kind === 'value' ? p.status : '' }))
+  const hoverSeries = useMemo(() => [{ name: '', color: ACCENT, points }], [points])
+  const data = points.map((p, i) => ({ ...p, i, h: p.kind === 'value' ? (p.value ?? 0) : plan ? null : 0 }))
+  const padded = barDomain(points, plan)
+  const axis = focus ? valueAxis(format, padded) : null
+  const domain = axis?.domain ?? padded
+  const inset = { left: spec.margin.left, right: spec.margin.right + (axis?.width ?? 0) }
   return (
     <div>
       <div data-testid="metric-chart" data-size={size} aria-hidden="true" className={spec.className} style={spec.style}>
         <ResponsiveContainer width="100%" height={spec.height} initialDimension={spec.initial}>
-          <BarChart data={data} accessibilityLayer={false} margin={{ top: 14, right: 4, bottom: 4, left: 4 }}>
-            <CartesianGrid vertical={false} stroke="var(--color-ink)" strokeOpacity={0.06} />
-            <XAxis dataKey="label" axisLine={false} tickLine={false} tick={tickStyle(spec)} />
-            <YAxis hide />
-            {hoverTooltip(columns, hoverSeries, scale, animated, true)}
-            <Bar dataKey="h" radius={[4, 4, 0, 0]} maxBarSize={spec.maxBar} isAnimationActive={animated} {...ANIMATION}>
-              {data.map((p) => (
-                <Cell key={p.key} fill={p.kind === 'value' ? chartTheme(scale, p.status).color : 'var(--color-ink)'} fillOpacity={p.kind === 'value' ? 1 : 0.1} />
-              ))}
-              <LabelList dataKey="letter" position="top" fontSize={spec.tick} fontWeight={600} fill="var(--color-ink)" />
-            </Bar>
+          <BarChart data={data} accessibilityLayer={false} margin={spec.margin}>
+            {focus && <CartesianGrid vertical={false} stroke="var(--color-ink)" strokeOpacity={0.05} />}
+            <XAxis dataKey="label" axisLine={false} tickLine={false} tick={tickStyle(spec)} height={spec.xAxisHeight} />
+            {axis ? (
+              <YAxis
+                orientation="right"
+                domain={axis.domain}
+                ticks={axis.ticks}
+                interval={0}
+                axisLine={false}
+                tickLine={false}
+                tick={tickStyle(spec)}
+                tickFormatter={axis.format}
+                width={axis.width}
+              />
+            ) : (
+              <YAxis hide domain={domain} />
+            )}
+            {plan && (
+              <ReferenceLine
+                className="goal-line"
+                y={100}
+                {...GUIDE}
+                ifOverflow="extendDomain"
+                label={focus ? (props: LabelViewBox) => <GuidePill viewBox={props.viewBox} text="100%" gap={0} /> : undefined}
+              />
+            )}
+            {hoverTooltip(columns, hoverSeries, scale, animated, spec.margin.top)}
+            <Bar
+              dataKey="h"
+              fill={ACCENT}
+              fillOpacity={0.85}
+              radius={[3, 3, 0, 0]}
+              maxBarSize={spec.maxBar}
+              isAnimationActive={animated}
+              {...ANIMATION}
+            />
           </BarChart>
         </ResponsiveContainer>
       </div>
-      <PointControls tip={tip} scale={scale}>
-        <PointButtons points={points} onSelect={setTip} />
-      </PointControls>
-    </div>
-  )
-}
-
-function MoneyPlanChart({ points, columns, scale, animated, size }: BarChartProps) {
-  const spec = sizeSpec(size, 100)
-  const [tip, setTip] = useState<ChartPoint | null>(null)
-  const hoverSeries = useMemo(() => [{ name: '', color: seriesColor(0), points }], [points])
-  const data = points.map((p, i) => ({ ...p, i, h: p.kind === 'value' ? p.value ?? 0 : null, letter: p.kind === 'value' ? p.status : '' }))
-  const domain = moneyDomain(points)
-  return (
-    <div>
-      <div data-testid="metric-chart" data-size={size} aria-hidden="true" className={spec.className} style={spec.style}>
-        <ResponsiveContainer width="100%" height={spec.height} initialDimension={spec.initial}>
-          <BarChart data={data} accessibilityLayer={false} margin={{ top: 14, right: 4, bottom: 4, left: 4 }}>
-            <CartesianGrid vertical={false} stroke="var(--color-ink)" strokeOpacity={0.06} />
-            <XAxis dataKey="label" axisLine={false} tickLine={false} tick={tickStyle(spec)} />
-            <YAxis hide domain={domain} />
-            <ReferenceLine y={100} stroke="var(--color-ink)" strokeWidth={1} ifOverflow="extendDomain" label={{ value: '100%', fontSize: spec.tick }} />
-            {hoverTooltip(columns, hoverSeries, scale, animated, true)}
-            <Bar dataKey="h" radius={[4, 4, 0, 0]} maxBarSize={spec.maxBar} isAnimationActive={animated} {...ANIMATION}>
-              {data.map((p) => (
-                <Cell key={p.key} fill={p.kind === 'value' ? chartTheme(scale, p.status).color : 'transparent'} />
-              ))}
-              <LabelList dataKey="letter" position="top" fontSize={spec.tick} fontWeight={600} fill="var(--color-ink)" />
-            </Bar>
-          </BarChart>
-        </ResponsiveContainer>
-      </div>
+      <StatusRibbon points={points} scale={scale} size={size} inset={inset} />
       <PointControls tip={tip} scale={scale}>
         <PointButtons points={points} onSelect={setTip} />
       </PointControls>
@@ -868,29 +958,40 @@ export function MetricChart({
   const currentCell = row.cells.find((c) => cellKey(c) === currentColumnKey)
   const target = currentCell?.target ?? null
   const theme = chartTheme(scale, currentStatus)
+  const change = headerChange(row, currentCell, fiscalYearStartMonth)
   const summary = `${row.metricName}: ${currentDisplay || 'no data'}, status ${currentStatus || 'none'}`
 
   return (
     <div>
       <p className="sr-only">{summary}</p>
       {scopeNote && <p className="text-xs text-ink/80">{scopeNote}</p>}
-      <div className="mt-1 flex flex-wrap items-center gap-2">
-        <span className="text-xl font-semibold tabular-nums">{currentDisplay || '—'}</span>
+      <div className="mt-1 flex flex-wrap items-baseline gap-x-2 gap-y-1">
+        <span data-testid="header-value" className={`${size === 'focus' ? 'text-[28px] leading-9' : 'text-xl'} font-semibold tabular-nums`}>
+          {currentDisplay || '—'}
+        </span>
         {currentStatus && <StatusMarker theme={theme} title={statusLabel(currentStatus)} />}
+        {change && <ChangeLabel change={change} size={size} />}
         {ytdDisplay && <span className="text-sm text-ink/80">{ytdDisplay}</span>}
       </div>
       {kind === 'uptime' ? (
         <UptimeRows childRows={childRows} columns={columns} currentColumnKey={currentColumnKey} scale={scale} />
       ) : kind === 'sparse' ? (
         <LetteredChips points={points} scale={scale} />
-      ) : kind === 'discrete' ? (
-        <DiscreteChart points={points} columns={columns} scale={scale} animated={animated} size={size} />
-      ) : kind === 'money_plan' ? (
-        <MoneyPlanChart points={points} columns={columns} scale={scale} animated={animated} size={size} />
+      ) : kind === 'discrete' || kind === 'money_plan' ? (
+        <BarsChart
+          points={points}
+          columns={columns}
+          format={row.format}
+          scale={scale}
+          animated={animated}
+          size={size}
+          plan={kind === 'money_plan'}
+        />
       ) : (
         <RatioChart
           row={row}
           chartRows={lines}
+          points={points}
           columns={columns}
           scale={scale}
           target={target}
@@ -899,11 +1000,14 @@ export function MetricChart({
           fyStart={fiscalYearStartMonth}
         />
       )}
-      <p className="mt-2">
-        <Link to={tableTo} className="text-sm font-medium text-accent-deep hover:underline">
-          View as table
-        </Link>
-      </p>
+      {/* In focus, the dialog's own table link sits below its breakdown. */}
+      {size !== 'focus' && (
+        <p className="mt-2">
+          <Link to={tableTo} className="text-sm font-medium text-accent-deep hover:underline">
+            View as table
+          </Link>
+        </p>
+      )}
     </div>
   )
 }

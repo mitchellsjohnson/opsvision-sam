@@ -55,3 +55,26 @@ export function chartTheme(scale: StatusLevel[] | undefined, status: string): St
 export function defaultStatusScale(): StatusLevel[] {
   return DEFAULT_SCALE
 }
+
+export type MoveTone = 'good' | 'bad' | 'neutral'
+
+export interface Move {
+  /** `▲` for a rise, `▼` for a fall, '' for none. */
+  arrow: '▲' | '▼' | ''
+  tone: MoveTone
+}
+
+/** Text color per tone; the arrow and the words carry the meaning too. */
+export const MOVE_CLASS: Record<MoveTone, string> = {
+  good: 'text-status-g',
+  bad: 'text-status-r',
+  neutral: 'text-ink/70',
+}
+
+/** Which way a value moved (`delta`, already rounded) and whether that is good for the metric's direction. */
+export function valueMove(delta: number, direction: string): Move {
+  if (delta === 0) return { arrow: '', tone: 'neutral' }
+  const up = delta > 0
+  const better = direction === 'lower_better' ? !up : direction === 'higher_better' ? up : null
+  return { arrow: up ? '▲' : '▼', tone: better === null ? 'neutral' : better ? 'good' : 'bad' }
+}
