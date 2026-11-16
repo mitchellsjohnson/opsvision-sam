@@ -12,6 +12,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/dynamodb v1.72.3
 	github.com/aws/aws-sdk-go-v2/service/kms v1.62.6
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.114.6
+	github.com/aws/aws-sdk-go-v2/service/sqs v1.53.0
 	github.com/aws/smithy-go v1.28.9
 	github.com/expr-lang/expr v1.17.8
 	github.com/getkin/kin-openapi v0.142.0

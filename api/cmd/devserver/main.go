@@ -30,10 +30,19 @@
 // workbook with the named template and applies the result before it starts
 // listening, and refuses to start if that fails. Use cmd/importcheck to
 // iterate on a template first. Keep real files under /private/ (git-ignored).
+//
+// Ask SAM works with no AWS: turns run in this process. Users' assistant keys
+// are sealed with OPSVISION_CREDENTIAL_KEY (base64, 32 bytes) or, when it is
+// unset, with a random key made at startup, so saved keys stop opening when
+// the server restarts (users are asked to save them again).
+// OPSVISION_ASSISTANT_BASE_URL points the model provider calls elsewhere
+// (https, or http on a loopback address for a local stand-in).
 package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -42,6 +51,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -51,6 +61,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 
+	"opsvision/internal/assistant"
 	"opsvision/internal/auth"
 	"opsvision/internal/bootstrap"
 	"opsvision/internal/changeset"
@@ -80,6 +91,9 @@ type options struct {
 	bootstrap      string // bootstrap file (memory store only)
 	importFile     string // legacy workbook to import at startup
 	importTemplate string // template ID of the bootstrap file to import it with
+
+	credentialKey    []byte // OPSVISION_CREDENTIAL_KEY; nil makes a random key
+	assistantBaseURL string // OPSVISION_ASSISTANT_BASE_URL; "" is the provider default
 }
 
 // parseFlags reads options from args and the environment (getenv). The dev
@@ -123,7 +137,39 @@ func parseFlags(args []string, getenv func(string) string) (options, error) {
 	if o.auth0Audience == "" {
 		o.auth0Audience = getenv("AUTH0_AUDIENCE")
 	}
+	if raw := getenv("OPSVISION_CREDENTIAL_KEY"); raw != "" {
+		key, err := base64.StdEncoding.DecodeString(raw)
+		if err != nil || len(key) != 32 {
+			return options{}, errors.New("OPSVISION_CREDENTIAL_KEY must be 32 bytes, base64-encoded")
+		}
+		o.credentialKey = key
+	}
+	if base := getenv("OPSVISION_ASSISTANT_BASE_URL"); base != "" {
+		if !assistantBaseURLOK(base) {
+			return options{}, errors.New("OPSVISION_ASSISTANT_BASE_URL must be an https URL, or http on a loopback address, with no query or fragment")
+		}
+		o.assistantBaseURL = strings.TrimRight(base, "/")
+	}
 	return o, o.validate()
+}
+
+// assistantBaseURLOK accepts an https URL, or an http URL on a loopback
+// host (a local stand-in for the provider), without user info, query or
+// fragment.
+func assistantBaseURLOK(s string) bool {
+	u, err := url.Parse(s)
+	if err != nil || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.HasSuffix(s, "#") {
+		return false
+	}
+	switch u.Scheme {
+	case "https":
+		return true
+	case "http":
+		host := u.Hostname()
+		ip := net.ParseIP(host)
+		return host == "localhost" || (ip != nil && ip.IsLoopback())
+	}
+	return false
 }
 
 func (o options) validate() error {
@@ -238,6 +284,8 @@ type app struct {
 	handler http.Handler
 	objects objects.Store
 	store   store.Store
+	// turns runs assistant turns in this process.
+	turns *assistant.InProcessQueue
 }
 
 // identity is who /dev/users lists and /dev/login signs in: the demo's users
@@ -307,7 +355,27 @@ func build(ctx context.Context, o options) (*app, error) {
 	if err != nil {
 		return nil, fmt.Errorf("auth: %w", err)
 	}
-	api := httpapi.NewHandler(httpapi.NewServer(httpapi.Deps{Store: st, Objects: objs}), authMW)
+	sealer, err := devSealer(o.credentialKey)
+	if err != nil {
+		return nil, err
+	}
+	var runner *assistant.Runner
+	turns := assistant.NewInProcessQueue(func(ctx context.Context, ref assistant.TurnRef) {
+		if err := runner.Run(ctx, ref); err != nil {
+			slog.Error("assistant turn failed", "thread", ref.ThreadID, "err", err)
+		}
+	})
+	srv := httpapi.NewServer(httpapi.Deps{
+		Store:    st,
+		Objects:  objs,
+		Sealer:   sealer,
+		Provider: assistant.NewHTTPProvider(o.assistantBaseURL, nil),
+		Queue:    turns,
+	})
+	if runner, err = srv.AssistantRunner(); err != nil {
+		return nil, err
+	}
+	api := httpapi.NewHandler(srv, authMW)
 
 	mux := http.NewServeMux()
 	if o.auth == "dev" {
@@ -318,7 +386,20 @@ func build(ctx context.Context, o options) (*app, error) {
 		}
 	}
 	mux.Handle("/", api)
-	return &app{handler: httpapi.CORS(o.allowedOrigin)(mux), objects: objs, store: st}, nil
+	return &app{handler: httpapi.CORS(o.allowedOrigin)(mux), objects: objs, store: st, turns: turns}, nil
+}
+
+// devSealer seals assistant keys with key, or with a random key for this
+// process when key is nil.
+func devSealer(key []byte) (assistant.Sealer, error) {
+	if key == nil {
+		key = make([]byte, 32)
+		if _, err := rand.Read(key); err != nil {
+			return nil, fmt.Errorf("assistant credential key: %w", err)
+		}
+		slog.Warn("OPSVISION_CREDENTIAL_KEY is not set; assistant keys are sealed with a random key for this run only, so saved keys must be saved again after a restart")
+	}
+	return assistant.NewAESSealer(key)
 }
 
 // startupActor is recorded as the author of the startup import.

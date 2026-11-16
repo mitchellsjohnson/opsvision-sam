@@ -53,6 +53,10 @@ func TestKeys(t *testing.T) {
 		{"access token GSI1SK", gsiTenantSK("acme"), "T#acme"},
 		{"assistant credential SK", assistantCredentialSK("user-1"), "ASSISTANTCRED#user-1"},
 		{"assistant settings SK", skAssistantSettings, "ASSISTANTSETTINGS"},
+		{"assistant thread SK", assistantThreadSK("user-1", "th-1"), "ATHREAD#user-1#th-1"},
+		{"assistant thread SK prefix", assistantThreadPrefix("user-1"), "ATHREAD#user-1#"},
+		{"assistant message SK", assistantMessageSK("user-1", "th-1", "m-1"), "AMSG#user-1#th-1#m-1"},
+		{"assistant message SK prefix", assistantMessagePrefix("user-1", "th-1"), "AMSG#user-1#th-1#"},
 		{"version SK", versionSK("sc1", "v1"), "SC#sc1#VER#v1"},
 
 		{"data current PK", dataPK("acme", "sc1", 2026), "T#acme#SC#sc1#FY#2026"},

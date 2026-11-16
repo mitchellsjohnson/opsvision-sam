@@ -262,6 +262,112 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
+  /assistant/threads:
+    get:
+      operationId: listAssistantThreads
+      tags: [Assistant]
+      summary: The current user's assistant threads in the active tenant
+      description: >
+        Threads are private to the user who created them. The 50 most
+        recently used are kept; creating another deletes the least recently
+        used.
+      responses:
+        '200':
+          description: The caller's threads, most recently used first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [threads]
+                properties:
+                  threads:
+                    type: array
+                    items: { $ref: '#/components/schemas/AssistantThreadSummary' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      operationId: createAssistantThread
+      tags: [Assistant]
+      summary: Start a new assistant thread
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateAssistantThreadRequest' }
+      responses:
+        '201':
+          description: The new, empty thread
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AssistantThread' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /assistant/threads/{id}:
+    parameters:
+      - $ref: '#/components/parameters/ServerIdPath'
+    get:
+      operationId: getAssistantThread
+      tags: [Assistant]
+      summary: One of the current user's assistant threads, with its messages
+      description: >
+        Poll this while a message is `pending`. A pending answer older than 3
+        minutes is reported as `error` ("SAM took too long. Try again.").
+      responses:
+        '200':
+          description: The thread
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AssistantThread' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      operationId: deleteAssistantThread
+      tags: [Assistant]
+      summary: Delete one of the current user's assistant threads
+      responses:
+        '204':
+          description: The thread was deleted
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /assistant/threads/{id}/messages:
+    parameters:
+      - $ref: '#/components/parameters/ServerIdPath'
+    post:
+      operationId: postAssistantMessage
+      tags: [Assistant]
+      summary: Ask SAM a question in a thread
+      description: >
+        Stores the question and a pending answer, and starts the turn off the
+        request path; poll `getAssistantThread` until the answer is no longer
+        `pending`. SAM answers with the caller's own model provider key and
+        only reads data the caller can see. A thread has at most one pending
+        answer (409 while one is pending), and holds at most 60 messages
+        (409 when full). 409 also when the assistant is turned off for the
+        organization or the caller has no key saved; 503
+        `assistant_unavailable` when the server cannot run turns.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PostAssistantMessageRequest' }
+      responses:
+        '202':
+          description: The thread with the question and the pending answer
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AssistantThread' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/AssistantUnavailable' }
+
   /operator/tenants:
     get:
       operationId: listOperatorTenants
@@ -1979,6 +2085,96 @@ components:
             (lower cost); `claude-sonnet-5-5` is stronger and costs more. Any
             model id the provider offers is accepted.
           example: claude-haiku-5-5
+    AssistantContext:
+      type: object
+      description: >
+        What the user is looking at when they ask; SAM reads it as the
+        default scorecard, period, scope and metric of the question.
+      required: [page]
+      properties:
+        scorecardId: { $ref: '#/components/schemas/Id' }
+        period: { $ref: '#/components/schemas/Period' }
+        scope:
+          type: string
+          maxLength: 64
+          description: The org unit in view; empty or absent for the whole company.
+          example: unit-a
+        metricKey: { $ref: '#/components/schemas/Key' }
+        page:
+          type: string
+          enum: [overview, table, report, focus, other]
+          x-enum-varnames: [AssistantPageOverview, AssistantPageTable, AssistantPageReport, AssistantPageFocus, AssistantPageOther]
+    AssistantUsage:
+      type: object
+      description: What one answer cost, as the model provider counted it.
+      required: [model, inputTokens, outputTokens, toolCalls]
+      properties:
+        model: { type: string, example: claude-haiku-5-5 }
+        inputTokens: { type: integer }
+        outputTokens: { type: integer }
+        toolCalls:
+          type: integer
+          description: Tools SAM called to answer (data reads and help lookups).
+    AssistantMessage:
+      type: object
+      required: [id, role, text, status, createdAt]
+      properties:
+        id: { $ref: '#/components/schemas/ServerId' }
+        role:
+          type: string
+          enum: [user, assistant]
+          x-enum-varnames: [AssistantMessageRoleUser, AssistantMessageRoleAssistant]
+        text:
+          type: string
+          description: The question, or SAM's answer in Markdown (empty while pending or after an error).
+        status:
+          type: string
+          enum: [done, pending, error]
+          x-enum-varnames: [AssistantMessageStatusDone, AssistantMessageStatusPending, AssistantMessageStatusError]
+          description: User messages are always `done`.
+        error:
+          type: string
+          description: Why SAM could not answer, as a sentence to show the user; present only with status `error`.
+        createdAt: { type: string, format: date-time }
+        usage: { $ref: '#/components/schemas/AssistantUsage' }
+    AssistantThread:
+      type: object
+      required: [id, title, createdAt, updatedAt, messages]
+      properties:
+        id: { $ref: '#/components/schemas/ServerId' }
+        title:
+          type: string
+          description: The start of the first question, or "New chat".
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        context: { $ref: '#/components/schemas/AssistantContext' }
+        messages:
+          type: array
+          description: Oldest first.
+          items: { $ref: '#/components/schemas/AssistantMessage' }
+    AssistantThreadSummary:
+      type: object
+      required: [id, title, createdAt, updatedAt]
+      properties:
+        id: { $ref: '#/components/schemas/ServerId' }
+        title: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    CreateAssistantThreadRequest:
+      type: object
+      properties:
+        context: { $ref: '#/components/schemas/AssistantContext' }
+    PostAssistantMessageRequest:
+      type: object
+      description: A question; `context`, when present, replaces the thread's context.
+      required: [text]
+      properties:
+        text:
+          type: string
+          minLength: 1
+          maxLength: 4000
+          description: The question; surrounding spaces are trimmed.
+        context: { $ref: '#/components/schemas/AssistantContext' }
     CreateTenantRequest:
       type: object
       required: [name, auth0OrgId, fiscalYearStartMonth, adminEmail]

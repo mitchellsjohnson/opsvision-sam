@@ -153,6 +153,74 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/assistant/threads": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The current user's assistant threads in the active tenant
+         * @description Threads are private to the user who created them. The 50 most recently used are kept; creating another deletes the least recently used.
+         */
+        get: operations["listAssistantThreads"];
+        put?: never;
+        /** Start a new assistant thread */
+        post: operations["createAssistantThread"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/assistant/threads/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Server-generated identifier. */
+                id: components["parameters"]["ServerIdPath"];
+            };
+            cookie?: never;
+        };
+        /**
+         * One of the current user's assistant threads, with its messages
+         * @description Poll this while a message is `pending`. A pending answer older than 3 minutes is reported as `error` ("SAM took too long. Try again.").
+         */
+        get: operations["getAssistantThread"];
+        put?: never;
+        post?: never;
+        /** Delete one of the current user's assistant threads */
+        delete: operations["deleteAssistantThread"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/assistant/threads/{id}/messages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Server-generated identifier. */
+                id: components["parameters"]["ServerIdPath"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ask SAM a question in a thread
+         * @description Stores the question and a pending answer, and starts the turn off the request path; poll `getAssistantThread` until the answer is no longer `pending`. SAM answers with the caller's own model provider key and only reads data the caller can see. A thread has at most one pending answer (409 while one is pending), and holds at most 60 messages (409 when full). 409 also when the assistant is turned off for the organization or the caller has no key saved; 503 `assistant_unavailable` when the server cannot run turns.
+         */
+        post: operations["postAssistantMessage"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/operator/tenants": {
         parameters: {
             query?: never;
@@ -1241,6 +1309,74 @@ export interface components {
              * @example claude-haiku-5-5
              */
             model: string;
+        };
+        /** @description What the user is looking at when they ask; SAM reads it as the default scorecard, period, scope and metric of the question. */
+        AssistantContext: {
+            scorecardId?: components["schemas"]["Id"];
+            period?: components["schemas"]["Period"];
+            /**
+             * @description The org unit in view; empty or absent for the whole company.
+             * @example unit-a
+             */
+            scope?: string;
+            metricKey?: components["schemas"]["Key"];
+            /** @enum {string} */
+            page: "overview" | "table" | "report" | "focus" | "other";
+        };
+        /** @description What one answer cost, as the model provider counted it. */
+        AssistantUsage: {
+            /** @example claude-haiku-5-5 */
+            model: string;
+            inputTokens: number;
+            outputTokens: number;
+            /** @description Tools SAM called to answer (data reads and help lookups). */
+            toolCalls: number;
+        };
+        AssistantMessage: {
+            id: components["schemas"]["ServerId"];
+            /** @enum {string} */
+            role: "user" | "assistant";
+            /** @description The question, or SAM's answer in Markdown (empty while pending or after an error). */
+            text: string;
+            /**
+             * @description User messages are always `done`.
+             * @enum {string}
+             */
+            status: "done" | "pending" | "error";
+            /** @description Why SAM could not answer, as a sentence to show the user; present only with status `error`. */
+            error?: string;
+            /** Format: date-time */
+            createdAt: string;
+            usage?: components["schemas"]["AssistantUsage"];
+        };
+        AssistantThread: {
+            id: components["schemas"]["ServerId"];
+            /** @description The start of the first question, or "New chat". */
+            title: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+            context?: components["schemas"]["AssistantContext"];
+            /** @description Oldest first. */
+            messages: components["schemas"]["AssistantMessage"][];
+        };
+        AssistantThreadSummary: {
+            id: components["schemas"]["ServerId"];
+            title: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        CreateAssistantThreadRequest: {
+            context?: components["schemas"]["AssistantContext"];
+        };
+        /** @description A question; `context`, when present, replaces the thread's context. */
+        PostAssistantMessageRequest: {
+            /** @description The question; surrounding spaces are trimmed. */
+            text: string;
+            context?: components["schemas"]["AssistantContext"];
         };
         CreateTenantRequest: {
             name: string;
@@ -2655,6 +2791,140 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+        };
+    };
+    listAssistantThreads: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The caller's threads, most recently used first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        threads: components["schemas"]["AssistantThreadSummary"][];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    createAssistantThread: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["CreateAssistantThreadRequest"];
+            };
+        };
+        responses: {
+            /** @description The new, empty thread */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssistantThread"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    getAssistantThread: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Server-generated identifier. */
+                id: components["parameters"]["ServerIdPath"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The thread */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssistantThread"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    deleteAssistantThread: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Server-generated identifier. */
+                id: components["parameters"]["ServerIdPath"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The thread was deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    postAssistantMessage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Server-generated identifier. */
+                id: components["parameters"]["ServerIdPath"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PostAssistantMessageRequest"];
+            };
+        };
+        responses: {
+            /** @description The thread with the question and the pending answer */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssistantThread"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            503: components["responses"]["AssistantUnavailable"];
         };
     };
     listOperatorTenants: {

@@ -21,6 +21,9 @@ const (
 	ChannelToken = "token"
 	// ChannelMCP is a request made through the MCP endpoint.
 	ChannelMCP = "mcp"
+	// ChannelAssistant is a read made by SAM, the assistant, for the user
+	// whose turn it is.
+	ChannelAssistant = "assistant"
 )
 
 // Principal is the authenticated caller of a request.
@@ -41,8 +44,8 @@ type Principal struct {
 	// and for an operator who is not a member of Tenant.
 	Membership *domain.Membership
 	// Channel is how the request arrived, as recorded in the audit log: ""
-	// for the identity provider's token (the web UI), ChannelToken, or
-	// ChannelMCP. For an access token, UserID is the token's owner, Email
+	// for the identity provider's token (the web UI), ChannelToken,
+	// ChannelMCP, or ChannelAssistant. For an access token, UserID is the token's owner, Email
 	// and Name come from the membership, and IsOperator is false.
 	Channel string
 }

@@ -55,6 +55,8 @@ const (
 	prefixReportRev     = "REPORT#"
 	prefixToken         = "PAT#"
 	prefixAssistantCred = "ASSISTANTCRED#"
+	prefixThread        = "ATHREAD#"
+	prefixThreadMsg     = "AMSG#"
 
 	versionMarker = "#VER#"
 )
@@ -84,6 +86,18 @@ func versionPrefix(scID string) string          { return prefixScorecard + scID 
 // assistantCredentialSK is the sort key of a user's sealed assistant
 // credential in the tenant partition.
 func assistantCredentialSK(userID string) string { return prefixAssistantCred + userID }
+
+// Assistant threads live in the tenant partition: one header item per thread
+// under a per-user prefix (so a list reads headers only), and one item per
+// message under a per-thread prefix.
+func assistantThreadPrefix(userID string) string { return prefixThread + userID + "#" }
+func assistantThreadSK(userID, id string) string { return assistantThreadPrefix(userID) + id }
+func assistantMessagePrefix(userID, id string) string {
+	return prefixThreadMsg + userID + "#" + id + "#"
+}
+func assistantMessageSK(userID, threadID, msgID string) string {
+	return assistantMessagePrefix(userID, threadID) + msgID
+}
 
 func versionSK(scID, versionID string) string { return versionPrefix(scID) + versionID }
 

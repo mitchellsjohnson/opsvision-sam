@@ -13,6 +13,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"time"
 
 	"opsvision/internal/domain"
@@ -328,6 +330,29 @@ type AssistantStore interface {
 	PutAssistantSettings(ctx context.Context, tenantID string, s domain.AssistantSettings) error
 }
 
+// AssistantThreadStore holds users' private assistant threads. A thread is
+// keyed by (tenant, user, thread ID): no method reads or changes another
+// user's threads.
+type AssistantThreadStore interface {
+	// PutThread saves t's header (Title, Context, CreatedAt, UpdatedAt) and
+	// upserts msgs by message ID, with optimistic concurrency like
+	// PutLayout: expectedRevision 0 creates the thread (ErrConflict if it
+	// exists); otherwise expectedRevision must equal the stored Revision
+	// (ErrConflict when it does not or the thread is gone). Header and
+	// messages are written together or not at all, and the stored Revision
+	// becomes expectedRevision+1. t.Revision and t.Messages are ignored;
+	// messages not in msgs are kept as they are.
+	PutThread(ctx context.Context, tenantID string, t domain.AssistantThread, msgs []domain.AssistantMessage, expectedRevision int) error
+	// GetThread returns a thread with its messages sorted by CreatedAt then
+	// ID. ErrNotFound when the user has no such thread.
+	GetThread(ctx context.Context, tenantID, userID, id string) (domain.AssistantThread, error)
+	// ListThreads returns a user's threads without messages (Messages nil),
+	// newest UpdatedAt first, then ID descending.
+	ListThreads(ctx context.Context, tenantID, userID string) ([]domain.AssistantThread, error)
+	// DeleteThread removes a thread and its messages; ErrNotFound if absent.
+	DeleteThread(ctx context.Context, tenantID, userID, id string) error
+}
+
 // RecordStore holds record types, records (one stored item per revision),
 // and upload snapshots.
 type RecordStore interface {
@@ -372,6 +397,28 @@ type Store interface {
 	RecordStore
 	TokenStore
 	AssistantStore
+	AssistantThreadStore
+}
+
+// SortMessages sorts assistant messages in thread order: CreatedAt, then ID.
+func SortMessages(ms []domain.AssistantMessage) {
+	slices.SortFunc(ms, func(a, b domain.AssistantMessage) int {
+		if c := a.CreatedAt.Compare(b.CreatedAt); c != 0 {
+			return c
+		}
+		return strings.Compare(a.ID, b.ID)
+	})
+}
+
+// SortThreads sorts assistant threads in list order: newest UpdatedAt first,
+// then ID descending.
+func SortThreads(ts []domain.AssistantThread) {
+	slices.SortFunc(ts, func(a, b domain.AssistantThread) int {
+		if c := b.UpdatedAt.Compare(a.UpdatedAt); c != 0 {
+			return c
+		}
+		return strings.Compare(b.ID, a.ID)
+	})
 }
 
 // ComparePeriod orders periods by fiscal year, then grain, then index. It

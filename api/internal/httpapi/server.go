@@ -50,8 +50,12 @@ type Deps struct {
 	// assistant_unavailable: there is no plaintext fallback.
 	Sealer assistant.Sealer
 	// Provider is the model provider, used to check a credential before
-	// it is saved.
+	// it is saved and to run turns (see AssistantRunner).
 	Provider assistant.Provider
+	// Queue starts assistant turns off the request path. Without it (or
+	// without Sealer or Provider) asking SAM answers 503
+	// assistant_unavailable.
+	Queue assistant.Queue
 }
 
 // Server implements StrictServerInterface.
@@ -63,6 +67,7 @@ type Server struct {
 	newID    func() string
 	sealer   assistant.Sealer
 	provider assistant.Provider
+	queue    assistant.Queue
 }
 
 var _ StrictServerInterface = (*Server)(nil)
@@ -81,6 +86,7 @@ func NewServer(d Deps) *Server {
 		newID:    d.NewID,
 		sealer:   d.Sealer,
 		provider: d.Provider,
+		queue:    d.Queue,
 	}
 	if s.calendar == nil {
 		s.calendar = func(t domain.Tenant) period.Calendar {

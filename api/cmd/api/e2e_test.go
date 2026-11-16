@@ -17,12 +17,15 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
+	"github.com/aws/aws-sdk-go-v2/service/sqs"
 
+	"opsvision/internal/assistant"
 	"opsvision/internal/domain"
 	"opsvision/internal/objects"
 	"opsvision/internal/store/memstore"
@@ -175,7 +178,7 @@ func TestLoadBalancerEndToEnd(t *testing.T) {
 	if err != nil || sealer == nil {
 		t.Fatalf("sealer %v, err %v", sealer, err)
 	}
-	h, err := newHandler(cfg, st, objects.NewMem("", nil), sealer)
+	h, err := newHandler(cfg, st, objects.NewMem("", nil), sealer, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -301,6 +304,34 @@ func TestLoadBalancerEndToEnd(t *testing.T) {
 		}
 	})
 
+	t.Run("assistant without a queue", func(t *testing.T) {
+		post := func(path, body string) events.ALBTargetGroupResponse {
+			t.Helper()
+			resp, err := serve(ctx, events.ALBTargetGroupRequest{
+				HTTPMethod: http.MethodPost, Path: path, Body: body,
+				MultiValueHeaders: map[string][]string{
+					"Host": {"ops.example.test"}, "X-Forwarded-Proto": {"https"},
+					"Authorization": {"Bearer " + adminToken}, "Content-Type": {"application/json"},
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return resp
+		}
+		resp := post("/v1/assistant/threads", `{}`)
+		var th struct {
+			ID string `json:"id"`
+		}
+		if resp.StatusCode != http.StatusCreated || json.Unmarshal([]byte(resp.Body), &th) != nil {
+			t.Fatalf("POST thread = %d: %s", resp.StatusCode, resp.Body)
+		}
+		resp = post("/v1/assistant/threads/"+th.ID+"/messages", `{"text":"How are we doing?"}`)
+		if resp.StatusCode != http.StatusServiceUnavailable || !strings.Contains(resp.Body, `"assistant_unavailable"`) {
+			t.Fatalf("POST message without a queue = %d: %s", resp.StatusCode, resp.Body)
+		}
+	})
+
 	t.Run("health check", func(t *testing.T) {
 		if resp := get(t, "/healthz", nil); resp.StatusCode != http.StatusOK || strings.TrimSpace(resp.Body) != `{"status":"ok"}` {
 			t.Errorf("GET /healthz = %d %q", resp.StatusCode, resp.Body)
@@ -367,4 +398,109 @@ func TestLoadBalancerEndToEnd(t *testing.T) {
 			t.Errorf("GET /v1/members without gzip = %d %.200s, want 502 response_too_large", resp.StatusCode, resp.Body)
 		}
 	})
+}
+
+// fakeSQS keeps the messages the API sends to the turn queue.
+type fakeSQS struct {
+	mu     sync.Mutex
+	url    string
+	bodies []string
+}
+
+func (f *fakeSQS) SendMessage(_ context.Context, in *sqs.SendMessageInput, _ ...func(*sqs.Options)) (*sqs.SendMessageOutput, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.url = *in.QueueUrl
+	f.bodies = append(f.bodies, *in.MessageBody)
+	return &sqs.SendMessageOutput{}, nil
+}
+
+// TestAssistantTurnThroughTheQueue asks SAM through the load balancer
+// handler, carries the queued turn to the OPSVISION_EVENT_SOURCE=sqs worker,
+// and reads the answer back.
+func TestAssistantTurnThroughTheQueue(t *testing.T) {
+	idp := newIdentityProvider(t, "Admin@Example.test")
+	const queueURL = "https://sqs.us-east-1.amazonaws.com/000000000000/example-turns"
+	e := e2eEnv()
+	e["OPSVISION_ASSISTANT_QUEUE_URL"] = queueURL
+	cfg, err := loadConfig(env(e))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	st := memstore.New()
+	if err := st.CreateTenant(ctx, domain.Tenant{ID: e2eTenant, Name: "Example Co", DefaultRole: domain.RoleViewer, FiscalYearStartMonth: time.January}); err != nil {
+		t.Fatal(err)
+	}
+	sealer, err := newSealer(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	objs := objects.NewMem("", nil)
+	q := &fakeSQS{}
+	h, err := newHandler(cfg, st, objs, sealer, assistant.NewSQSQueue(q, cfg.AssistantQueueURL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	serve := lambdaHandler(cfg.EventSource, h).(func(context.Context, events.ALBTargetGroupRequest) (events.ALBTargetGroupResponse, error))
+	token := idp.token(t, e2eAdminSub)
+	call := func(method, path, body string) events.ALBTargetGroupResponse {
+		t.Helper()
+		resp, err := serve(ctx, events.ALBTargetGroupRequest{
+			HTTPMethod: method, Path: path, Body: body,
+			MultiValueHeaders: map[string][]string{
+				"Host": {"ops.example.test"}, "X-Forwarded-Proto": {"https"},
+				"Authorization": {"Bearer " + token}, "Content-Type": {"application/json"},
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+	if resp := call(http.MethodPut, "/v1/me/assistant/credential", `{"apiKey":"sk-example-e2e-key-8888"}`); resp.StatusCode != http.StatusOK {
+		t.Fatalf("PUT credential = %d: %s", resp.StatusCode, resp.Body)
+	}
+	resp := call(http.MethodPost, "/v1/assistant/threads", `{"context":{"page":"overview"}}`)
+	var th struct {
+		ID       string `json:"id"`
+		Messages []struct {
+			Status string `json:"status"`
+			Text   string `json:"text"`
+		} `json:"messages"`
+	}
+	if resp.StatusCode != http.StatusCreated || json.Unmarshal([]byte(resp.Body), &th) != nil {
+		t.Fatalf("POST thread = %d: %s", resp.StatusCode, resp.Body)
+	}
+	resp = call(http.MethodPost, "/v1/assistant/threads/"+th.ID+"/messages", `{"text":"How are we doing?"}`)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("POST message = %d: %s", resp.StatusCode, resp.Body)
+	}
+	if len(q.bodies) != 1 || q.url != queueURL || strings.Contains(q.bodies[0], "sk-example") {
+		t.Fatalf("queued %v to %q", q.bodies, q.url)
+	}
+
+	e["OPSVISION_EVENT_SOURCE"] = "sqs"
+	wcfg, err := loadConfig(env(e))
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker, err := newWorker(wcfg, st, objs, sealer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := worker(ctx, events.SQSEvent{Records: []events.SQSMessage{{MessageId: "msg-1", Body: q.bodies[0]}}})
+	if err != nil || len(out.BatchItemFailures) != 0 {
+		t.Fatalf("worker = %+v, %v", out, err)
+	}
+	if got, _ := idp.messagesKey.Load().(string); got != "sk-example-e2e-key-8888" {
+		t.Errorf("provider got x-api-key %q, want the user's key", got)
+	}
+	resp = call(http.MethodGet, "/v1/assistant/threads/"+th.ID, "")
+	if resp.StatusCode != http.StatusOK || json.Unmarshal([]byte(resp.Body), &th) != nil {
+		t.Fatalf("GET thread = %d: %s", resp.StatusCode, resp.Body)
+	}
+	if len(th.Messages) != 2 || th.Messages[1].Status != "done" || th.Messages[1].Text != "h" {
+		t.Fatalf("thread after the worker = %s", resp.Body)
+	}
 }

@@ -91,6 +91,7 @@ func TestEventSourceConfig(t *testing.T) {
 		{value: "", set: true, want: "apigateway"},
 		{value: "apigateway", set: true, want: "apigateway"},
 		{value: "alb", set: true, want: "alb"},
+		{value: "sqs", set: true, want: "sqs"},
 	} {
 		e := validEnv()
 		if tc.set {
@@ -102,7 +103,7 @@ func TestEventSourceConfig(t *testing.T) {
 		}
 	}
 
-	for _, bad := range []string{"foo", "ALB", "alb ", "apigw", "function-url"} {
+	for _, bad := range []string{"foo", "ALB", "alb ", "apigw", "function-url", "SQS"} {
 		e := validEnv()
 		e["OPSVISION_EVENT_SOURCE"] = bad
 		_, err := loadConfig(env(e))
@@ -135,7 +136,7 @@ func TestHealthzIsUnauthenticated(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h, err := newHandler(cfg, memstore.New(), objects.NewMem("", nil), nil)
+	h, err := newHandler(cfg, memstore.New(), objects.NewMem("", nil), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,7 +265,7 @@ func TestServeWebRouting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h, err := newHandler(cfg, memstore.New(), objects.NewMem("", nil), nil)
+	h, err := newHandler(cfg, memstore.New(), objects.NewMem("", nil), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -332,7 +333,7 @@ func TestEmbeddedWebFitsLoadBalancer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h, err := newHandler(cfg, memstore.New(), objects.NewMem("", nil), nil)
+	h, err := newHandler(cfg, memstore.New(), objects.NewMem("", nil), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -442,7 +443,7 @@ func TestSingleOrgHandler(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h, err := newHandler(cfg, memstore.New(), objects.NewMem("", nil), nil)
+	h, err := newHandler(cfg, memstore.New(), objects.NewMem("", nil), nil, nil)
 	if err != nil {
 		t.Fatalf("newHandler in single-organization mode: %v", err)
 	}
@@ -458,7 +459,7 @@ func TestServeWebSecurityHeadersOnAPI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h, err := newHandler(cfg, memstore.New(), objects.NewMem("", nil), nil)
+	h, err := newHandler(cfg, memstore.New(), objects.NewMem("", nil), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -489,7 +490,7 @@ func TestHandlerCORSAndAuth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h, err := newHandler(cfg, memstore.New(), objects.NewMem("", nil), nil)
+	h, err := newHandler(cfg, memstore.New(), objects.NewMem("", nil), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -540,7 +541,7 @@ func TestLoadConfigAssistant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.CredentialKey != nil || cfg.CredentialKMSKeyID != "" || cfg.AssistantBaseURL != "" {
+	if cfg.CredentialKey != nil || cfg.CredentialKMSKeyID != "" || cfg.AssistantBaseURL != "" || cfg.AssistantQueueURL != "" {
 		t.Errorf("default assistant config = %+v", cfg)
 	}
 
@@ -548,9 +549,13 @@ func TestLoadConfigAssistant(t *testing.T) {
 	e := validEnv()
 	e["OPSVISION_CREDENTIAL_KEY"] = base64.StdEncoding.EncodeToString(key)
 	e["OPSVISION_ASSISTANT_BASE_URL"] = "https://assistant.example.test/proxy/"
+	e["OPSVISION_ASSISTANT_QUEUE_URL"] = "https://sqs.us-east-1.amazonaws.com/000000000000/example-turns"
 	cfg, err = loadConfig(env(e))
 	if err != nil {
 		t.Fatal(err)
+	}
+	if cfg.AssistantQueueURL != "https://sqs.us-east-1.amazonaws.com/000000000000/example-turns" {
+		t.Errorf("AssistantQueueURL = %q", cfg.AssistantQueueURL)
 	}
 	if !bytes.Equal(cfg.CredentialKey, key) || cfg.CredentialKMSKeyID != "" {
 		t.Errorf("AES config = %+v", cfg)
@@ -582,6 +587,10 @@ func TestLoadConfigAssistant(t *testing.T) {
 		"base URL user info":   {"OPSVISION_ASSISTANT_BASE_URL", "https://u:p@assistant.example.test"},
 		"base URL not a URL":   {"OPSVISION_ASSISTANT_BASE_URL", "assistant.example.test"},
 		"base URL with spaces": {"OPSVISION_ASSISTANT_BASE_URL", " https://assistant.example.test"},
+		"queue URL http":       {"OPSVISION_ASSISTANT_QUEUE_URL", "http://sqs.example.test/1/q"},
+		"queue URL not a URL":  {"OPSVISION_ASSISTANT_QUEUE_URL", "example-turns"},
+		"queue URL query":      {"OPSVISION_ASSISTANT_QUEUE_URL", "https://sqs.example.test/1/q?x=1"},
+		"queue URL spaces":     {"OPSVISION_ASSISTANT_QUEUE_URL", "https://sqs.example.test/1/q "},
 	} {
 		e := validEnv()
 		e[c.key] = c.value

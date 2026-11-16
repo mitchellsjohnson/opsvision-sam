@@ -5,8 +5,9 @@
 // Configuration comes from the environment:
 //
 //	OPSVISION_AUTH_MODE    must be "auth0"; anything else refuses to start
-//	OPSVISION_EVENT_SOURCE "apigateway" (default) or "alb"; anything else
-//	                       refuses to start
+//	OPSVISION_EVENT_SOURCE "apigateway" (default), "alb", or "sqs" (the
+//	                       assistant turn worker, fed by the turn queue);
+//	                       anything else refuses to start
 //	TABLE_NAME           DynamoDB table
 //	UPLOADS_BUCKET       S3 bucket for uploaded workbooks and parsed change sets
 //	AUTH0_DOMAIN         Auth0 tenant domain, e.g. example.us.auth0.com
@@ -36,6 +37,16 @@
 //	OPSVISION_ASSISTANT_BASE_URL  https origin (optionally with a path) of
 //	                     the model provider API (default
 //	                     https://api.anthropic.com)
+//	OPSVISION_ASSISTANT_QUEUE_URL  https URL of the SQS queue assistant turns
+//	                     are sent to; without it asking SAM answers 503
+//	                     assistant_unavailable
+//
+// The worker (OPSVISION_EVENT_SOURCE=sqs) runs from the same zip with the same
+// configuration (it needs the table, the credential key and the provider
+// URL, and is checked like the API). It takes one queue message at a time and
+// reports a failed turn as a batch item failure so SQS retries it; the event
+// source mapping needs ReportBatchItemFailures, and the function a timeout
+// above the 90 s turn budget.
 //
 // With neither credential key set, saving an assistant API key answers 503
 // assistant_unavailable; keys are never stored unencrypted. A malformed
@@ -71,10 +82,12 @@ import (
 	"os"
 	"strings"
 
+	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/kms"
+	"github.com/aws/aws-sdk-go-v2/service/sqs"
 
 	"opsvision/internal/assistant"
 	"opsvision/internal/auth"
@@ -95,6 +108,7 @@ var errNotAuth0 = errors.New("refusing to start: OPSVISION_AUTH_MODE must be aut
 const (
 	eventSourceAPIGateway = "apigateway"
 	eventSourceALB        = "alb"
+	eventSourceSQS        = "sqs"
 )
 
 type appConfig struct {
@@ -118,6 +132,7 @@ type appConfig struct {
 	CredentialKMSKeyID string
 	CredentialKey      []byte
 	AssistantBaseURL   string // "" is the provider default
+	AssistantQueueURL  string // "" leaves the assistant without a queue
 }
 
 // loadConfig reads the configuration from getenv. The auth mode is checked
@@ -130,9 +145,9 @@ func loadConfig(getenv func(string) string) (appConfig, error) {
 	switch eventSource {
 	case "":
 		eventSource = eventSourceAPIGateway
-	case eventSourceAPIGateway, eventSourceALB:
+	case eventSourceAPIGateway, eventSourceALB, eventSourceSQS:
 	default:
-		return appConfig{}, fmt.Errorf("refusing to start: OPSVISION_EVENT_SOURCE must be %s or %s", eventSourceAPIGateway, eventSourceALB)
+		return appConfig{}, fmt.Errorf("refusing to start: OPSVISION_EVENT_SOURCE must be %s, %s or %s", eventSourceAPIGateway, eventSourceALB, eventSourceSQS)
 	}
 	c := appConfig{
 		EventSource:    eventSource,
@@ -277,6 +292,14 @@ func loadAssistant(getenv func(string) string, c *appConfig) error {
 		}
 		c.AssistantBaseURL = strings.TrimRight(base, "/")
 	}
+	if q := getenv("OPSVISION_ASSISTANT_QUEUE_URL"); q != "" {
+		u, err := url.Parse(q)
+		if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil ||
+			u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.HasSuffix(q, "#") || strings.TrimSpace(q) != q {
+			return errors.New("refusing to start: OPSVISION_ASSISTANT_QUEUE_URL must be an https URL with no query or fragment")
+		}
+		c.AssistantQueueURL = q
+	}
 	return nil
 }
 
@@ -326,9 +349,9 @@ func commaList(name, value string) ([]string, error) {
 // the /v1 routes. With cfg.ServeWeb, the embedded web app answers every path
 // other than /v1/ and /healthz, and is never behind CORS or authentication;
 // API responses then carry the web app's HSTS, nosniff and referrer policy.
-// sealer encrypts assistant credentials; nil leaves the assistant
-// unavailable.
-func newHandler(cfg appConfig, st store.Store, objs objects.Store, sealer assistant.Sealer) (http.Handler, error) {
+// sealer encrypts assistant credentials and queue starts assistant turns;
+// without either the assistant is unavailable.
+func newHandler(cfg appConfig, st store.Store, objs objects.Store, sealer assistant.Sealer, queue assistant.Queue) (http.Handler, error) {
 	authMW, err := auth.Middleware(auth.Config{
 		Mode:               auth.ModeAuth0,
 		Domain:             cfg.Auth0Domain,
@@ -342,13 +365,7 @@ func newHandler(cfg appConfig, st store.Store, objs objects.Store, sealer assist
 	if err != nil {
 		return nil, fmt.Errorf("auth: %w", err)
 	}
-	srv := httpapi.NewServer(httpapi.Deps{
-		Store:    st,
-		Objects:  objs,
-		Sealer:   sealer,
-		Provider: assistant.NewHTTPProvider(cfg.AssistantBaseURL, nil),
-	})
-	api := httpapi.CORS(cfg.AllowedOrigin)(httpapi.NewHandler(srv, authMW))
+	api := httpapi.CORS(cfg.AllowedOrigin)(httpapi.NewHandler(newServer(cfg, st, objs, sealer, queue), authMW))
 	if !cfg.ServeWeb {
 		return api, nil
 	}
@@ -367,6 +384,27 @@ func newHandler(cfg appConfig, st store.Store, objs objects.Store, sealer assist
 		}
 		web.ServeHTTP(w, r)
 	}), nil
+}
+
+// newServer is the API server both event sources share.
+func newServer(cfg appConfig, st store.Store, objs objects.Store, sealer assistant.Sealer, queue assistant.Queue) *httpapi.Server {
+	return httpapi.NewServer(httpapi.Deps{
+		Store:    st,
+		Objects:  objs,
+		Sealer:   sealer,
+		Provider: assistant.NewHTTPProvider(cfg.AssistantBaseURL, nil),
+		Queue:    queue,
+	})
+}
+
+// newWorker is the turn queue's handler: each message is one assistant turn,
+// run by the same server's runner (tools dispatched through its router).
+func newWorker(cfg appConfig, st store.Store, objs objects.Store, sealer assistant.Sealer) (func(context.Context, events.SQSEvent) (events.SQSEventResponse, error), error) {
+	runner, err := newServer(cfg, st, objs, sealer, nil).AssistantRunner()
+	if err != nil {
+		return nil, err
+	}
+	return assistant.SQSHandler(runner.Run), nil
 }
 
 // isAPIPath reports whether p belongs to the API rather than the web app.
@@ -395,7 +433,21 @@ func run(ctx context.Context) error {
 	if sealer == nil {
 		slog.Warn("no assistant credential key is set; saving assistant API keys is unavailable")
 	}
-	h, err := newHandler(cfg, st, objs, sealer)
+	if cfg.EventSource == eventSourceSQS {
+		worker, err := newWorker(cfg, st, objs, sealer)
+		if err != nil {
+			return err
+		}
+		lambda.StartWithOptions(worker, lambda.WithContext(ctx))
+		return nil
+	}
+	var queue assistant.Queue
+	if cfg.AssistantQueueURL != "" {
+		queue = assistant.NewSQSQueue(sqs.NewFromConfig(awsCfg), cfg.AssistantQueueURL)
+	} else {
+		slog.Warn("OPSVISION_ASSISTANT_QUEUE_URL is not set; asking SAM is unavailable")
+	}
+	h, err := newHandler(cfg, st, objs, sealer, queue)
 	if err != nil {
 		return err
 	}

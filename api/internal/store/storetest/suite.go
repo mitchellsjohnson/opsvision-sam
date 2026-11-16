@@ -87,6 +87,9 @@ func Run(t *testing.T, newStore func(t *testing.T) store.Store) {
 		{"AssistantCredentialLifecycle", assistantCredentialLifecycle},
 		{"AssistantCredentialIsolation", assistantCredentialIsolation},
 		{"AssistantSettingsRoundTrip", assistantSettingsRoundTrip},
+		{"AssistantThreadLifecycle", assistantThreadLifecycle},
+		{"AssistantThreadIsolation", assistantThreadIsolation},
+		{"AssistantThreadOneWriterWins", assistantThreadOneWriterWins},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) { c.fn(t, newStore(t)) })
@@ -2386,4 +2389,158 @@ func assistantSettingsRoundTrip(t *testing.T, s store.Store) {
 	got, err = s.GetAssistantSettings(ctx, tn)
 	must(t, err)
 	wantEq(t, "replaced", got, on)
+}
+
+func threadMsg(id, role, text, status string, day int) domain.AssistantMessage {
+	return domain.AssistantMessage{ID: id, Role: role, Text: text, Status: status, CreatedAt: at(day)}
+}
+
+func assistantThreadLifecycle(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	tn := newTenant(t, s)
+
+	_, err := s.GetThread(ctx, tn, "user-a", "th-1")
+	wantErr(t, err, store.ErrNotFound)
+	wantErr(t, s.DeleteThread(ctx, tn, "user-a", "th-1"), store.ErrNotFound)
+	list, err := s.ListThreads(ctx, tn, "user-a")
+	wantEmpty(t, "no threads", list, err)
+
+	th := domain.AssistantThread{
+		ID: "th-1", UserID: "user-a", Title: "New chat",
+		Context:   &domain.AssistantContext{ScorecardID: "sc", Period: "2026-M09", Scope: "unit-a", MetricKey: "on_time", Page: "overview"},
+		CreatedAt: at(2), UpdatedAt: at(2),
+	}
+	must(t, s.PutThread(ctx, tn, th, nil, 0))
+	wantErr(t, s.PutThread(ctx, tn, th, nil, 0), store.ErrConflict)
+	got, err := s.GetThread(ctx, tn, "user-a", "th-1")
+	must(t, err)
+	want := th
+	want.Revision = 1
+	wantEq(t, "created", got, want)
+
+	// Messages are upserted with the header; a stale revision changes nothing.
+	q := threadMsg("m-1", domain.AssistantRoleUser, "Why is it red?", domain.AssistantStatusDone, 3)
+	pending := threadMsg("m-2", domain.AssistantRoleAssistant, "", domain.AssistantStatusPending, 3)
+	th.Title, th.UpdatedAt = "Why is it red?", at(3)
+	must(t, s.PutThread(ctx, tn, th, []domain.AssistantMessage{pending, q}, 1))
+	wantErr(t, s.PutThread(ctx, tn, th, []domain.AssistantMessage{threadMsg("m-9", "user", "stale", "done", 4)}, 1), store.ErrConflict)
+	got, err = s.GetThread(ctx, tn, "user-a", "th-1")
+	must(t, err)
+	want.Title, want.UpdatedAt, want.Revision = "Why is it red?", at(3), 2
+	want.Messages = []domain.AssistantMessage{q, pending}
+	wantEq(t, "with messages, sorted by CreatedAt then ID", got, want)
+
+	// Updating one message keeps the others.
+	answer := pending
+	answer.Text, answer.Status = "Because.", domain.AssistantStatusDone
+	answer.Usage = &domain.AssistantUsage{Model: "m", InputTokens: 10, OutputTokens: 5, ToolCalls: 2}
+	must(t, s.PutThread(ctx, tn, th, []domain.AssistantMessage{answer}, 2))
+	got, err = s.GetThread(ctx, tn, "user-a", "th-1")
+	must(t, err)
+	want.Revision = 3
+	want.Messages = []domain.AssistantMessage{q, answer}
+	wantEq(t, "answer updated", got, want)
+
+	// A thread without context round-trips with nil context.
+	bare := domain.AssistantThread{ID: "th-2", UserID: "user-a", Title: "New chat", CreatedAt: at(4), UpdatedAt: at(4)}
+	must(t, s.PutThread(ctx, tn, bare, nil, 0))
+	third := domain.AssistantThread{ID: "th-0", UserID: "user-a", Title: "Older", CreatedAt: at(1), UpdatedAt: at(1)}
+	must(t, s.PutThread(ctx, tn, third, nil, 0))
+	tie := domain.AssistantThread{ID: "th-3", UserID: "user-a", Title: "Tie", CreatedAt: at(4), UpdatedAt: at(4)}
+	must(t, s.PutThread(ctx, tn, tie, nil, 0))
+
+	list, err = s.ListThreads(ctx, tn, "user-a")
+	must(t, err)
+	var ids []string
+	for _, l := range list {
+		if l.Messages != nil {
+			t.Fatalf("list carries messages: %+v", l)
+		}
+		ids = append(ids, l.ID)
+	}
+	wantEq(t, "list order", ids, []string{"th-3", "th-2", "th-1", "th-0"})
+	wantEq(t, "listed header", list[2], domain.AssistantThread{
+		ID: "th-1", UserID: "user-a", Title: "Why is it red?", Context: th.Context, CreatedAt: at(2), UpdatedAt: at(3), Revision: 3,
+	})
+
+	// An update of a deleted thread conflicts and does not bring it back.
+	must(t, s.DeleteThread(ctx, tn, "user-a", "th-1"))
+	_, err = s.GetThread(ctx, tn, "user-a", "th-1")
+	wantErr(t, err, store.ErrNotFound)
+	wantErr(t, s.PutThread(ctx, tn, th, []domain.AssistantMessage{answer}, 3), store.ErrConflict)
+	_, err = s.GetThread(ctx, tn, "user-a", "th-1")
+	wantErr(t, err, store.ErrNotFound)
+	wantErr(t, s.DeleteThread(ctx, tn, "user-a", "th-1"), store.ErrNotFound)
+
+	// Recreating the ID starts empty: the old messages went with the thread.
+	must(t, s.PutThread(ctx, tn, th, nil, 0))
+	got, err = s.GetThread(ctx, tn, "user-a", "th-1")
+	must(t, err)
+	if len(got.Messages) != 0 || got.Revision != 1 {
+		t.Fatalf("recreated thread = %+v, want no messages at revision 1", got)
+	}
+
+	// Returned values are copies.
+	got.Context.Page = "changed"
+	again, err := s.GetThread(ctx, tn, "user-a", "th-1")
+	must(t, err)
+	wantEq(t, "unchanged through a returned value", again.Context.Page, "overview")
+}
+
+func assistantThreadIsolation(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	tn := newTenant(t, s)
+	other := newTenant(t, s)
+	mk := func(id, user string) domain.AssistantThread {
+		return domain.AssistantThread{ID: id, UserID: user, Title: id, CreatedAt: at(2), UpdatedAt: at(2)}
+	}
+	msg := threadMsg("m-1", domain.AssistantRoleUser, "mine", domain.AssistantStatusDone, 2)
+	must(t, s.PutThread(ctx, tn, mk("th-1", "user-a"), []domain.AssistantMessage{msg}, 0))
+	must(t, s.PutThread(ctx, tn, mk("th-1", "user-ab"), nil, 0))
+	must(t, s.PutThread(ctx, other, mk("th-1", "user-a"), nil, 0))
+
+	_, err := s.GetThread(ctx, tn, "user-b", "th-1")
+	wantErr(t, err, store.ErrNotFound)
+	wantErr(t, s.DeleteThread(ctx, tn, "user-b", "th-1"), store.ErrNotFound)
+	list, err := s.ListThreads(ctx, tn, "user-b")
+	wantEmpty(t, "another user's list", list, err)
+	list, err = s.ListThreads(ctx, tn, "user-a")
+	must(t, err)
+	if len(list) != 1 || list[0].UserID != "user-a" {
+		t.Fatalf("user-a list = %+v, want only user-a's thread (not user-ab's)", list)
+	}
+
+	got, err := s.GetThread(ctx, other, "user-a", "th-1")
+	must(t, err)
+	if len(got.Messages) != 0 {
+		t.Fatalf("other tenant's thread has messages %+v", got.Messages)
+	}
+	got, err = s.GetThread(ctx, tn, "user-ab", "th-1")
+	must(t, err)
+	if len(got.Messages) != 0 {
+		t.Fatalf("user-ab's thread has user-a's messages %+v", got.Messages)
+	}
+
+	must(t, s.DeleteThread(ctx, other, "user-a", "th-1"))
+	must(t, s.DeleteThread(ctx, tn, "user-ab", "th-1"))
+	got, err = s.GetThread(ctx, tn, "user-a", "th-1")
+	must(t, err)
+	wantEq(t, "mine kept", got.Messages, []domain.AssistantMessage{msg})
+}
+
+func assistantThreadOneWriterWins(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	tn := newTenant(t, s)
+	th := domain.AssistantThread{ID: "th-1", UserID: "user-a", Title: "New chat", CreatedAt: at(2), UpdatedAt: at(2)}
+	must(t, s.PutThread(ctx, tn, th, nil, 0))
+	errs := race(func(i int) error {
+		m := threadMsg(fmt.Sprintf("m-%d", i), domain.AssistantRoleUser, fmt.Sprintf("writer-%d", i), domain.AssistantStatusDone, 3)
+		return s.PutThread(ctx, tn, th, []domain.AssistantMessage{m}, 1)
+	})
+	w := oneWinner(t, "thread", errs)
+	got, err := s.GetThread(ctx, tn, "user-a", "th-1")
+	must(t, err)
+	if got.Revision != 2 || len(got.Messages) != 1 || got.Messages[0].Text != fmt.Sprintf("writer-%d", w) {
+		t.Fatalf("thread = %+v, want only writer-%d's message at revision 2", got, w)
+	}
 }

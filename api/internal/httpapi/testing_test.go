@@ -29,6 +29,7 @@ var testNow = time.Date(2026, time.October, 15, 12, 0, 0, 0, time.UTC)
 // testEnv is a running test API with its backing store.
 type testEnv struct {
 	srv    *httptest.Server
+	api    *Server
 	store  *memstore.Store
 	objs   *objects.Mem
 	tokens map[string]string
@@ -127,7 +128,7 @@ func newTestEnvDeps(t *testing.T, wrap func(store.Store) store.Store, configure 
 	s := NewServer(deps)
 	srv := httptest.NewServer(NewHandler(s, authMW))
 	t.Cleanup(srv.Close)
-	return &testEnv{srv: srv, store: st, objs: objs, tokens: tokens}
+	return &testEnv{srv: srv, api: s, store: st, objs: objs, tokens: tokens}
 }
 
 // call sends a request to the API under /v1. body may be nil, a string (sent

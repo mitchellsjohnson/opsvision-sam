@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -432,5 +433,91 @@ func TestOriginOf(t *testing.T) {
 		if got := originOf(addr); got != want {
 			t.Errorf("originOf(%q) = %q, want %q", addr, got, want)
 		}
+	}
+}
+
+func TestAssistantFlags(t *testing.T) {
+	key := bytes.Repeat([]byte{6}, 32)
+	envWith := func(kv map[string]string) func(string) string {
+		return func(k string) string {
+			if k == "OPSVISION_DEV_SECRET" {
+				return goodSecret
+			}
+			return kv[k]
+		}
+	}
+	o, err := parseFlags(nil, envWith(nil))
+	if err != nil || o.credentialKey != nil || o.assistantBaseURL != "" {
+		t.Fatalf("defaults: %+v, %v", o, err)
+	}
+	o, err = parseFlags(nil, envWith(map[string]string{
+		"OPSVISION_CREDENTIAL_KEY":     base64.StdEncoding.EncodeToString(key),
+		"OPSVISION_ASSISTANT_BASE_URL": "http://127.0.0.1:9999/",
+	}))
+	if err != nil || !bytes.Equal(o.credentialKey, key) || o.assistantBaseURL != "http://127.0.0.1:9999" {
+		t.Fatalf("set: %+v, %v", o, err)
+	}
+	for _, ok := range []string{"https://assistant.example.test", "http://localhost:8787", "http://[::1]:8787/proxy"} {
+		if _, err := parseFlags(nil, envWith(map[string]string{"OPSVISION_ASSISTANT_BASE_URL": ok})); err != nil {
+			t.Errorf("base URL %q: %v", ok, err)
+		}
+	}
+	for name, kv := range map[string]map[string]string{
+		"short key":       {"OPSVISION_CREDENTIAL_KEY": base64.StdEncoding.EncodeToString(make([]byte, 16))},
+		"key not base64":  {"OPSVISION_CREDENTIAL_KEY": "not base64!"},
+		"http not local":  {"OPSVISION_ASSISTANT_BASE_URL": "http://assistant.example.test"},
+		"base URL query":  {"OPSVISION_ASSISTANT_BASE_URL": "https://assistant.example.test/?x=1"},
+		"base URL no URL": {"OPSVISION_ASSISTANT_BASE_URL": "assistant.example.test"},
+	} {
+		if _, err := parseFlags(nil, envWith(kv)); err == nil {
+			t.Errorf("%s: parseFlags succeeded, want a refusal", name)
+		}
+	}
+}
+
+// TestDevServerAsksSAM runs a whole turn in the dev server: a key saved
+// under the per-process credential key, a question, the in-process queue,
+// and a stand-in provider.
+func TestDevServerAsksSAM(t *testing.T) {
+	var keys []string
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		keys = append(keys, r.Header.Get("x-api-key"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"Hello from SAM"}],"stop_reason":"end_turn","usage":{"input_tokens":3,"output_tokens":4}}`))
+	}))
+	defer provider.Close()
+	o := devOpts()
+	o.assistantBaseURL = provider.URL
+	a, err := build(context.Background(), o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := serve(a.handler, "POST", "/dev/login", `{"userId":"dev|viewer"}`, "")
+	var login struct{ Token string }
+	if err := json.Unmarshal(w.Body.Bytes(), &login); err != nil {
+		t.Fatal(err)
+	}
+	tok := login.Token
+	if w := serve(a.handler, "PUT", "/v1/me/assistant/credential", `{"apiKey":"sk-example-dev-0123456789"}`, tok); w.Code != http.StatusOK {
+		t.Fatalf("PUT credential = %d: %s", w.Code, w.Body)
+	}
+	w = serve(a.handler, "POST", "/v1/assistant/threads", `{"context":{"page":"overview"}}`, tok)
+	var th struct {
+		ID       string `json:"id"`
+		Messages []struct{ Status, Text string }
+	}
+	if w.Code != http.StatusCreated || json.Unmarshal(w.Body.Bytes(), &th) != nil {
+		t.Fatalf("POST thread = %d: %s", w.Code, w.Body)
+	}
+	if w := serve(a.handler, "POST", "/v1/assistant/threads/"+th.ID+"/messages", `{"text":"How are we doing?"}`, tok); w.Code != http.StatusAccepted {
+		t.Fatalf("POST message = %d: %s", w.Code, w.Body)
+	}
+	a.turns.Wait()
+	w = serve(a.handler, "GET", "/v1/assistant/threads/"+th.ID, "", tok)
+	if json.Unmarshal(w.Body.Bytes(), &th) != nil || len(th.Messages) != 2 || th.Messages[1].Status != "done" || th.Messages[1].Text != "Hello from SAM" {
+		t.Fatalf("thread = %s", w.Body)
+	}
+	if len(keys) != 2 || keys[1] != "sk-example-dev-0123456789" {
+		t.Fatalf("provider keys = %v", keys)
 	}
 }

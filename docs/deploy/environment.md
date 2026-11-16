@@ -30,7 +30,7 @@ The variables group into modes:
 | Variable | Required | Default | Notes |
 |----------|----------|---------|-------|
 | `OPSVISION_AUTH_MODE` | yes | none | Must be exactly `auth0`. Anything else, including unset, refuses to start. This is checked first. |
-| `OPSVISION_EVENT_SOURCE` | no | `apigateway` | `apigateway` (API Gateway REST, proxy integration) or `alb` (Application Load Balancer; the target group must have multi-value headers enabled). Anything else refuses to start. |
+| `OPSVISION_EVENT_SOURCE` | no | `apigateway` | `apigateway` (API Gateway REST, proxy integration), `alb` (Application Load Balancer; the target group must have multi-value headers enabled), or `sqs` (the assistant turn worker; see below). Anything else refuses to start. |
 | `TABLE_NAME` | yes | none | DynamoDB table, for example `opsvision-example`. |
 | `UPLOADS_BUCKET` | yes | none | S3 bucket for uploaded workbooks and parsed change sets, for example `opsvision-example-uploads`. |
 | `AUTH0_DOMAIN` | yes | none | Identity provider domain, for example `example.us.auth0.com`. Tokens must be issued by `https://<AUTH0_DOMAIN>/`, and their keys come from its JWKS. |
@@ -63,18 +63,37 @@ The variables group into modes:
 | `OPSVISION_CREDENTIAL_KMS_KEY_ID` | no | none | KMS key (ID, ARN or alias, for example `alias/opsvision-example-credentials`) that encrypts users' assistant API keys. The function needs `kms:Encrypt` and `kms:Decrypt` on it; every call carries the encryption context `{tenant, user, purpose: assistant-credential}`, so a policy can require `kms:EncryptionContext:purpose = assistant-credential`. Takes precedence over `OPSVISION_CREDENTIAL_KEY`. |
 | `OPSVISION_CREDENTIAL_KEY` | no | none | Base64 of a 32-byte AES-256-GCM key, used when no KMS key is set. For local development and tests; generate one with `openssl rand -base64 32`. Not read when `OPSVISION_CREDENTIAL_KMS_KEY_ID` is set. |
 | `OPSVISION_ASSISTANT_BASE_URL` | no | `https://api.anthropic.com` | The model provider's https API base; requests go to `<base>/v1/messages`. A path is allowed (for a proxy); a trailing slash is dropped. |
+| `OPSVISION_ASSISTANT_QUEUE_URL` | no | none | The https URL of the SQS queue the API sends assistant turns to (the API needs `sqs:SendMessage` on it). Without it, asking SAM answers 503 `assistant_unavailable`. Not used by the worker. |
 
 With neither credential key set the API starts, logs a warning, and answers
 saving an assistant API key with 503 `assistant_unavailable`. Keys are never
 stored unencrypted. Changing or losing the credential key makes saved keys
-unreadable; members then save their key again.
+unreadable; members then save their key again (SAM tells them so).
+
+#### The turn worker
+
+SAM answers off the request path. The API stores the question and a pending
+answer, sends `{"tenantId", "userId", "threadId", "messageId"}` to the queue,
+and returns 202; the browser polls the thread. A second function from the same
+zip, with `OPSVISION_EVENT_SOURCE=sqs` and the same configuration as the API
+(table, uploads bucket, credential key or KMS key, provider URL; it does not
+need the queue URL), runs each turn:
+
+- Event source mapping: batch size 1 with `ReportBatchItemFailures`. A turn
+  that cannot read the table is reported failed and retried; every other
+  outcome (an answer, or a reason such as a rejected key) is written to the
+  message, so a redelivered turn does nothing.
+- Timeout: above the 90 s turn budget (120 s is enough). Use a dead-letter
+  queue: a pending answer older than 3 minutes reads as failed anyway.
+- Permissions: read and write the table, `kms:Decrypt` (or nothing, with the
+  AES key), and outbound https to the provider.
 
 ## Startup refusals
 
 The function refuses to start when:
 
 - `OPSVISION_AUTH_MODE` is not exactly `auth0`.
-- `OPSVISION_EVENT_SOURCE` is set to anything but `apigateway` or `alb`.
+- `OPSVISION_EVENT_SOURCE` is set to anything but `apigateway`, `alb` or `sqs`.
 - `TABLE_NAME`, `UPLOADS_BUCKET`, `AUTH0_DOMAIN` or `AUTH0_AUDIENCE` is
   missing.
 - `OPSVISION_TRUSTED_SUB_PREFIXES`, `OPSVISION_BOOTSTRAP_ADMINS` or
@@ -97,8 +116,8 @@ The function refuses to start when:
 - `OPSVISION_CREDENTIAL_KMS_KEY_ID` has leading or trailing spaces.
 - `OPSVISION_CREDENTIAL_KEY` (when no KMS key is set) is not base64 of exactly
   32 bytes.
-- `OPSVISION_ASSISTANT_BASE_URL` is not an https URL, or has user info, a
-  query or a fragment.
+- `OPSVISION_ASSISTANT_BASE_URL` or `OPSVISION_ASSISTANT_QUEUE_URL` is not an
+  https URL, or has user info, a query or a fragment.
 
 Development sign-in and the `/dev/*` routes never exist in this function,
 whatever the configuration.
