@@ -149,10 +149,10 @@ func TestDraftReportSummaryEndToEnd(t *testing.T) {
 		"Scope: the whole company (Tenant t1)",
 		"Months shown, oldest first: 2026-M05 (May 2026), 2026-M06 (June 2026), 2026-M07 (July 2026), 2026-M08 (August 2026), 2026-M09 (September 2026), 2026-M10 (October 2026)",
 		"- not reported: ",
-		"Needs attention, most urgent first:\n- On-time delivery (Flow): Yellow in 2026-M10.",
+		"Needs attention, most urgent first:\n- On-time delivery (Flow): Yellow in 2026-M10 (October 2026).",
 		"2026-M09 (September 2026) 95.8% Green; 2026-M10 (October 2026) 84.3% Yellow.",
-		"Values by category, at company scope:\nFlow\n- On-time delivery: Yellow in 2026-M10.",
-		"- Open defects: not reported in 2026-M10.",
+		"Values by category, at company scope:\nFlow\n- On-time delivery: Yellow in 2026-M10 (October 2026).",
+		"- Open defects: not reported in 2026-M10 (October 2026).",
 	} {
 		if !strings.Contains(data, want) {
 			t.Errorf("report data lacks %q:\n%s", want, data)
@@ -189,6 +189,8 @@ func TestDraftReportLabelsMonthsWithTheTenantCalendar(t *testing.T) {
 		"Months shown, oldest first: 2026-M05 (November 2025), 2026-M06 (December 2025), 2026-M07 (January 2026), 2026-M08 (February 2026), 2026-M09 (March 2026), 2026-M10 (April 2026)",
 		"By month: 2026-M05 (November 2025) ",
 		"2026-M09 (March 2026) 95.8% Green; 2026-M10 (April 2026) 84.3% Yellow.",
+		"- On-time delivery (Flow): Yellow in 2026-M10 (April 2026).",
+		"- Open defects: not reported in 2026-M10 (April 2026).",
 	} {
 		if !strings.Contains(data, want) {
 			t.Errorf("report data lacks %q:\n%s", want, data)

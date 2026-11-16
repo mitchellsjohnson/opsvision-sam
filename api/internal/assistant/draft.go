@@ -216,7 +216,7 @@ func (r DraftReport) month(p string) string {
 // metricLine is a metric's status in the report month, its months, year to
 // date and target.
 func (r DraftReport) metricLine(m DraftMetric) string {
-	month := r.Period
+	month := r.month(r.Period)
 	var b strings.Builder
 	if m.Status != "" {
 		fmt.Fprintf(&b, "%s in %s", m.Status, month)
