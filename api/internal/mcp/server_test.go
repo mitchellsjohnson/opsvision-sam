@@ -374,7 +374,7 @@ func TestToolsList(t *testing.T) {
 			t.Errorf("no %s", want)
 		}
 	}
-	for _, op := range tokenOps {
+	for _, op := range secretOps {
 		if slices.Contains(names, mcp.SnakeCase(op)) {
 			t.Errorf("%s is listed", op)
 		}

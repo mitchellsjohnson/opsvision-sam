@@ -25,6 +25,22 @@
 // OPSVISION_WEB_AUTH0_CLIENT_ID or OPSVISION_UPLOADS_ORIGIN without
 // OPSVISION_SERVE_WEB=1 refuses to start. See docs/deploy/environment.md.
 //
+// Assistant (all optional):
+//
+//	OPSVISION_CREDENTIAL_KMS_KEY_ID  KMS key (ID, ARN or alias) that encrypts
+//	                     users' assistant API keys, with encryption context
+//	                     {tenant, user, purpose: assistant-credential}
+//	OPSVISION_CREDENTIAL_KEY  base64 32-byte AES-256-GCM key used instead when
+//	                     no KMS key is set (local development; not read when
+//	                     OPSVISION_CREDENTIAL_KMS_KEY_ID is set)
+//	OPSVISION_ASSISTANT_BASE_URL  https origin (optionally with a path) of
+//	                     the model provider API (default
+//	                     https://api.anthropic.com)
+//
+// With neither credential key set, saving an assistant API key answers 503
+// assistant_unavailable; keys are never stored unencrypted. A malformed
+// OPSVISION_CREDENTIAL_KEY or OPSVISION_ASSISTANT_BASE_URL refuses to start.
+//
 // Single-organization sign-in (one tenant; org_id is ignored):
 //
 //	OPSVISION_TENANT_ID  the one tenant every trusted caller belongs to;
@@ -46,6 +62,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -57,7 +74,9 @@ import (
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/service/kms"
 
+	"opsvision/internal/assistant"
 	"opsvision/internal/auth"
 	"opsvision/internal/httpapi"
 	"opsvision/internal/lambdahttp"
@@ -95,6 +114,10 @@ type appConfig struct {
 	TrustedSubPrefixes []string
 	BootstrapAdmins    []string
 	UserInfoURL        string
+
+	CredentialKMSKeyID string
+	CredentialKey      []byte
+	AssistantBaseURL   string // "" is the provider default
 }
 
 // loadConfig reads the configuration from getenv. The auth mode is checked
@@ -134,6 +157,9 @@ func loadConfig(getenv func(string) string) (appConfig, error) {
 		c.ClaimNamespace = auth.DefaultClaimNamespace
 	}
 	if err := loadSingleOrg(getenv, &c); err != nil {
+		return appConfig{}, err
+	}
+	if err := loadAssistant(getenv, &c); err != nil {
 		return appConfig{}, err
 	}
 
@@ -228,6 +254,44 @@ func loadSingleOrg(getenv func(string) string, c *appConfig) error {
 	return nil
 }
 
+// loadAssistant reads the assistant settings into c. The KMS key takes
+// precedence over the local key, which is then not read.
+func loadAssistant(getenv func(string) string, c *appConfig) error {
+	if id := getenv("OPSVISION_CREDENTIAL_KMS_KEY_ID"); id != "" {
+		if strings.TrimSpace(id) != id {
+			return errors.New("refusing to start: OPSVISION_CREDENTIAL_KMS_KEY_ID must not have surrounding spaces")
+		}
+		c.CredentialKMSKeyID = id
+	} else if raw := getenv("OPSVISION_CREDENTIAL_KEY"); raw != "" {
+		key, err := base64.StdEncoding.DecodeString(raw)
+		if err != nil || len(key) != 32 {
+			return errors.New("refusing to start: OPSVISION_CREDENTIAL_KEY must be 32 bytes, base64-encoded")
+		}
+		c.CredentialKey = key
+	}
+	if base := getenv("OPSVISION_ASSISTANT_BASE_URL"); base != "" {
+		u, err := url.Parse(base)
+		if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil ||
+			u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.HasSuffix(base, "#") || strings.TrimSpace(base) != base {
+			return errors.New("refusing to start: OPSVISION_ASSISTANT_BASE_URL must be an https URL with no query or fragment")
+		}
+		c.AssistantBaseURL = strings.TrimRight(base, "/")
+	}
+	return nil
+}
+
+// newSealer returns the sealer for assistant credentials that cfg selects: KMS
+// (with the client newKMS builds), the local AES key, or none.
+func newSealer(cfg appConfig, newKMS func() assistant.KMSAPI) (assistant.Sealer, error) {
+	switch {
+	case cfg.CredentialKMSKeyID != "":
+		return assistant.NewKMSSealer(newKMS(), cfg.CredentialKMSKeyID), nil
+	case cfg.CredentialKey != nil:
+		return assistant.NewAESSealer(cfg.CredentialKey)
+	}
+	return nil, nil
+}
+
 // isHTTPSOrigin reports whether s is exactly https://host[:port]: no path,
 // query, fragment or user info, and a host of letters, digits, dots and
 // hyphens. It goes into the web app's Content-Security-Policy as is.
@@ -262,7 +326,9 @@ func commaList(name, value string) ([]string, error) {
 // the /v1 routes. With cfg.ServeWeb, the embedded web app answers every path
 // other than /v1/ and /healthz, and is never behind CORS or authentication;
 // API responses then carry the web app's HSTS, nosniff and referrer policy.
-func newHandler(cfg appConfig, st store.Store, objs objects.Store) (http.Handler, error) {
+// sealer encrypts assistant credentials; nil leaves the assistant
+// unavailable.
+func newHandler(cfg appConfig, st store.Store, objs objects.Store, sealer assistant.Sealer) (http.Handler, error) {
 	authMW, err := auth.Middleware(auth.Config{
 		Mode:               auth.ModeAuth0,
 		Domain:             cfg.Auth0Domain,
@@ -276,7 +342,12 @@ func newHandler(cfg appConfig, st store.Store, objs objects.Store) (http.Handler
 	if err != nil {
 		return nil, fmt.Errorf("auth: %w", err)
 	}
-	srv := httpapi.NewServer(httpapi.Deps{Store: st, Objects: objs})
+	srv := httpapi.NewServer(httpapi.Deps{
+		Store:    st,
+		Objects:  objs,
+		Sealer:   sealer,
+		Provider: assistant.NewHTTPProvider(cfg.AssistantBaseURL, nil),
+	})
 	api := httpapi.CORS(cfg.AllowedOrigin)(httpapi.NewHandler(srv, authMW))
 	if !cfg.ServeWeb {
 		return api, nil
@@ -317,7 +388,14 @@ func run(ctx context.Context) error {
 	}
 	st := dynamostore.New(dynamodb.NewFromConfig(awsCfg), cfg.Table)
 	objs := objects.NewS3(objects.NewS3Client(awsCfg), cfg.UploadsBucket)
-	h, err := newHandler(cfg, st, objs)
+	sealer, err := newSealer(cfg, func() assistant.KMSAPI { return kms.NewFromConfig(awsCfg) })
+	if err != nil {
+		return err
+	}
+	if sealer == nil {
+		slog.Warn("no assistant credential key is set; saving assistant API keys is unavailable")
+	}
+	h, err := newHandler(cfg, st, objs, sealer)
 	if err != nil {
 		return err
 	}

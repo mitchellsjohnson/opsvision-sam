@@ -17,6 +17,7 @@ import (
 
 	"github.com/oklog/ulid/v2"
 
+	"opsvision/internal/assistant"
 	"opsvision/internal/auth"
 	"opsvision/internal/domain"
 	"opsvision/internal/objects"
@@ -44,6 +45,13 @@ type Deps struct {
 	Now func() time.Time
 	// NewID returns a new server-generated identifier. The default is a ULID.
 	NewID func() string
+	// Sealer encrypts assistant credentials at rest. Without it (or
+	// without Provider) saving a credential answers 503
+	// assistant_unavailable: there is no plaintext fallback.
+	Sealer assistant.Sealer
+	// Provider is the model provider, used to check a credential before
+	// it is saved.
+	Provider assistant.Provider
 }
 
 // Server implements StrictServerInterface.
@@ -53,6 +61,8 @@ type Server struct {
 	calendar func(domain.Tenant) period.Calendar
 	now      func() time.Time
 	newID    func() string
+	sealer   assistant.Sealer
+	provider assistant.Provider
 }
 
 var _ StrictServerInterface = (*Server)(nil)
@@ -69,6 +79,8 @@ func NewServer(d Deps) *Server {
 		calendar: d.Calendar,
 		now:      d.Now,
 		newID:    d.NewID,
+		sealer:   d.Sealer,
+		provider: d.Provider,
 	}
 	if s.calendar == nil {
 		s.calendar = func(t domain.Tenant) period.Calendar {

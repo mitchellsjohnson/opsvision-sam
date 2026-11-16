@@ -12,8 +12,12 @@ import (
 	"opsvision/internal/mcp"
 )
 
-// tokenOps are the access-token operations, which MCP must not expose.
-var tokenOps = []string{"listMyTokens", "createMyToken", "deleteMyToken"}
+// secretOps are the access-token and assistant-credential operations, which
+// MCP must not expose.
+var secretOps = []string{
+	"listMyTokens", "createMyToken", "deleteMyToken",
+	"getMyAssistantCredential", "putMyAssistantCredential", "deleteMyAssistantCredential",
+}
 
 func apiSpec(t *testing.T) *openapi3.T {
 	t.Helper()
@@ -48,7 +52,7 @@ func TestCatalogHasOneToolPerOperation(t *testing.T) {
 	for _, path := range spec.Paths.Keys() {
 		for _, op := range spec.Paths.Value(path).Operations() {
 			name := mcp.SnakeCase(op.OperationID)
-			if !slices.ContainsFunc(tokenOps, func(t string) bool { return mcp.SnakeCase(t) == name }) {
+			if !slices.ContainsFunc(secretOps, func(t string) bool { return mcp.SnakeCase(t) == name }) {
 				want = append(want, name)
 			}
 		}
@@ -65,9 +69,9 @@ func TestCatalogHasOneToolPerOperation(t *testing.T) {
 	if len(got) < 50 {
 		t.Fatalf("only %d tools", len(got))
 	}
-	for _, op := range tokenOps {
+	for _, op := range secretOps {
 		if slices.Contains(got, mcp.SnakeCase(op)) {
-			t.Errorf("token operation %s is exposed", op)
+			t.Errorf("secret operation %s is exposed", op)
 		}
 	}
 }

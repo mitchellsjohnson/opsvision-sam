@@ -20,6 +20,8 @@ The variables group into modes:
   picks the tenant from the token's `org_id`.
 - **Web app**: `OPSVISION_SERVE_WEB=1` also serves the web app from the same
   function, usually behind an Application Load Balancer.
+- **Assistant**: a credential key lets members save their own model
+  provider API key for SAM, the in-app assistant.
 
 ## Variables
 
@@ -54,6 +56,19 @@ The variables group into modes:
 | `OPSVISION_WEB_AUTH0_CLIENT_ID` | with `OPSVISION_SERVE_WEB=1` | none | The web app's client ID at the identity provider, for example `example-client-id`. |
 | `OPSVISION_UPLOADS_ORIGIN` | no | `https://<UPLOADS_BUCKET>.s3.<AWS_REGION>.amazonaws.com` | The https origin browsers upload workbooks to; it goes into the web app's Content-Security-Policy. Scheme and host only, such as `https://s3.us-east-1.amazonaws.com`. |
 
+### Assistant
+
+| Variable | Required | Default | Notes |
+|----------|----------|---------|-------|
+| `OPSVISION_CREDENTIAL_KMS_KEY_ID` | no | none | KMS key (ID, ARN or alias, for example `alias/opsvision-example-credentials`) that encrypts users' assistant API keys. The function needs `kms:Encrypt` and `kms:Decrypt` on it; every call carries the encryption context `{tenant, user, purpose: assistant-credential}`, so a policy can require `kms:EncryptionContext:purpose = assistant-credential`. Takes precedence over `OPSVISION_CREDENTIAL_KEY`. |
+| `OPSVISION_CREDENTIAL_KEY` | no | none | Base64 of a 32-byte AES-256-GCM key, used when no KMS key is set. For local development and tests; generate one with `openssl rand -base64 32`. Not read when `OPSVISION_CREDENTIAL_KMS_KEY_ID` is set. |
+| `OPSVISION_ASSISTANT_BASE_URL` | no | `https://api.anthropic.com` | The model provider's https API base; requests go to `<base>/v1/messages`. A path is allowed (for a proxy); a trailing slash is dropped. |
+
+With neither credential key set the API starts, logs a warning, and answers
+saving an assistant API key with 503 `assistant_unavailable`. Keys are never
+stored unencrypted. Changing or losing the credential key makes saved keys
+unreadable; members then save their key again.
+
 ## Startup refusals
 
 The function refuses to start when:
@@ -79,6 +94,11 @@ The function refuses to start when:
   - `OPSVISION_UPLOADS_ORIGIN` is not an https origin (it has a path, a
     trailing slash, a query, a port that is not a number, or another scheme);
   - `OPSVISION_UPLOADS_ORIGIN` and `AWS_REGION` are both unset.
+- `OPSVISION_CREDENTIAL_KMS_KEY_ID` has leading or trailing spaces.
+- `OPSVISION_CREDENTIAL_KEY` (when no KMS key is set) is not base64 of exactly
+  32 bytes.
+- `OPSVISION_ASSISTANT_BASE_URL` is not an https URL, or has user info, a
+  query or a fragment.
 
 Development sign-in and the `/dev/*` routes never exist in this function,
 whatever the configuration.

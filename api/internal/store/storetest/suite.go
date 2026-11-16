@@ -84,6 +84,9 @@ func Run(t *testing.T, newStore func(t *testing.T) store.Store) {
 		{"DeleteDataPointCrossTenant", deleteDataPointCrossTenant},
 		{"AccessTokenLifecycle", accessTokenLifecycle},
 		{"AccessTokenIsolation", accessTokenIsolation},
+		{"AssistantCredentialLifecycle", assistantCredentialLifecycle},
+		{"AssistantCredentialIsolation", assistantCredentialIsolation},
+		{"AssistantSettingsRoundTrip", assistantSettingsRoundTrip},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) { c.fn(t, newStore(t)) })
@@ -2290,4 +2293,97 @@ func accessTokenIsolation(t *testing.T, s store.Store) {
 	list, err = s.ListTokens(ctx, tn, "user-a")
 	must(t, err)
 	wantEq(t, "mine kept", list, []domain.AccessToken{mine})
+}
+
+func assistantCredentialLifecycle(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	tn := newTenant(t, s)
+
+	_, err := s.GetCredential(ctx, tn, "user-a")
+	wantErr(t, err, store.ErrNotFound)
+	wantErr(t, s.DeleteCredential(ctx, tn, "user-a"), store.ErrNotFound)
+
+	first := domain.AssistantCredential{Sealed: []byte{0, 1, 2, 0xff}, Last4: "abcd", UpdatedAt: at(2)}
+	must(t, s.PutCredential(ctx, tn, "user-a", first))
+	got, err := s.GetCredential(ctx, tn, "user-a")
+	must(t, err)
+	wantEq(t, "stored", got, first)
+
+	// Returned values are copies.
+	got.Sealed[0] = 9
+	got, err = s.GetCredential(ctx, tn, "user-a")
+	must(t, err)
+	wantEq(t, "unchanged through a returned value", got, first)
+
+	// Put replaces.
+	second := domain.AssistantCredential{Sealed: []byte("sealed-2"), Last4: "wxyz", UpdatedAt: at(3)}
+	must(t, s.PutCredential(ctx, tn, "user-a", second))
+	got, err = s.GetCredential(ctx, tn, "user-a")
+	must(t, err)
+	wantEq(t, "replaced", got, second)
+
+	must(t, s.DeleteCredential(ctx, tn, "user-a"))
+	_, err = s.GetCredential(ctx, tn, "user-a")
+	wantErr(t, err, store.ErrNotFound)
+	wantErr(t, s.DeleteCredential(ctx, tn, "user-a"), store.ErrNotFound)
+}
+
+func assistantCredentialIsolation(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	tn := newTenant(t, s)
+	other := newTenant(t, s)
+	mine := domain.AssistantCredential{Sealed: []byte("mine"), Last4: "1111", UpdatedAt: at(2)}
+	theirs := domain.AssistantCredential{Sealed: []byte("theirs"), Last4: "2222", UpdatedAt: at(3)}
+	foreign := domain.AssistantCredential{Sealed: []byte("foreign"), Last4: "3333", UpdatedAt: at(4)}
+	must(t, s.PutCredential(ctx, tn, "user-a", mine))
+	must(t, s.PutCredential(ctx, tn, "user-b", theirs))
+	must(t, s.PutCredential(ctx, other, "user-a", foreign))
+
+	for _, c := range []struct {
+		tenant, user string
+		want         domain.AssistantCredential
+	}{{tn, "user-a", mine}, {tn, "user-b", theirs}, {other, "user-a", foreign}} {
+		got, err := s.GetCredential(ctx, c.tenant, c.user)
+		must(t, err)
+		wantEq(t, c.user, got, c.want)
+	}
+	_, err := s.GetCredential(ctx, other, "user-b")
+	wantErr(t, err, store.ErrNotFound)
+
+	must(t, s.DeleteCredential(ctx, other, "user-a"))
+	got, err := s.GetCredential(ctx, tn, "user-a")
+	must(t, err)
+	wantEq(t, "mine kept after the other tenant's delete", got, mine)
+	must(t, s.DeleteCredential(ctx, tn, "user-b"))
+	got, err = s.GetCredential(ctx, tn, "user-a")
+	must(t, err)
+	wantEq(t, "mine kept after another user's delete", got, mine)
+}
+
+func assistantSettingsRoundTrip(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	tn := newTenant(t, s)
+	other := newTenant(t, s)
+
+	got, err := s.GetAssistantSettings(ctx, tn)
+	must(t, err)
+	wantEq(t, "defaults when absent", got, domain.AssistantSettings{Enabled: true, Model: "claude-haiku-5-5"})
+	wantEq(t, "DefaultAssistantSettings", domain.DefaultAssistantSettings(), got)
+
+	off := domain.AssistantSettings{Enabled: false, Model: "claude-sonnet-5-5"}
+	must(t, s.PutAssistantSettings(ctx, tn, off))
+	got, err = s.GetAssistantSettings(ctx, tn)
+	must(t, err)
+	wantEq(t, "stored", got, off)
+
+	// Enabled false is stored, not mistaken for absent.
+	got, err = s.GetAssistantSettings(ctx, other)
+	must(t, err)
+	wantEq(t, "other tenant still defaults", got, domain.DefaultAssistantSettings())
+
+	on := domain.AssistantSettings{Enabled: true, Model: "custom-model-1"}
+	must(t, s.PutAssistantSettings(ctx, tn, on))
+	got, err = s.GetAssistantSettings(ctx, tn)
+	must(t, err)
+	wantEq(t, "replaced", got, on)
 }

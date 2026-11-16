@@ -24,8 +24,9 @@ import (
 
 // Fixed sort keys and GSI1 partition keys.
 const (
-	skTenant   = "TENANT"
-	skAuth0Map = "MAP"
+	skTenant            = "TENANT"
+	skAuth0Map          = "MAP"
+	skAssistantSettings = "ASSISTANTSETTINGS"
 
 	gsiTenants = "TENANTS"
 )
@@ -53,6 +54,7 @@ const (
 	prefixReportSummary = "REPORTSUMMARY#"
 	prefixReportRev     = "REPORT#"
 	prefixToken         = "PAT#"
+	prefixAssistantCred = "ASSISTANTCRED#"
 
 	versionMarker = "#VER#"
 )
@@ -78,6 +80,10 @@ func importSK(id string) string                 { return prefixImport + id }
 func templateSK(id string) string               { return prefixTemplate + id }
 func recordTypeSK(id string) string             { return prefixRecType + id }
 func versionPrefix(scID string) string          { return prefixScorecard + scID + versionMarker }
+
+// assistantCredentialSK is the sort key of a user's sealed assistant
+// credential in the tenant partition.
+func assistantCredentialSK(userID string) string { return prefixAssistantCred + userID }
 
 func versionSK(scID, versionID string) string { return versionPrefix(scID) + versionID }
 

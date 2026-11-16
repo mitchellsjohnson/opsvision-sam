@@ -43,6 +43,9 @@ type identityProvider struct {
 	key           *rsa.PrivateKey
 	userInfoHits  atomic.Int32
 	userInfoEmail string
+	// messagesKey is the x-api-key of the last POST /v1/messages, which the
+	// same server answers in place of the assistant provider.
+	messagesKey atomic.Value
 }
 
 // newIdentityProvider serves the provider over https and points
@@ -73,6 +76,11 @@ func newIdentityProvider(t *testing.T, userInfoEmail string) *identityProvider {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"sub": sub, "email": idp.userInfoEmail, "name": "Avery Admin"})
+	})
+	mux.HandleFunc("POST /v1/messages", func(w http.ResponseWriter, r *http.Request) {
+		idp.messagesKey.Store(r.Header.Get("x-api-key"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"content":[{"type":"text","text":"h"}],"stop_reason":"max_tokens","usage":{"input_tokens":8,"output_tokens":1}}`)
 	})
 	srv := httptest.NewTLSServer(mux)
 	t.Cleanup(srv.Close)
@@ -145,6 +153,8 @@ func e2eEnv() map[string]string {
 		"AUTH0_DOMAIN":                   e2eDomain,
 		"AUTH0_AUDIENCE":                 e2eAudience,
 		"AWS_REGION":                     "us-east-1",
+		"OPSVISION_CREDENTIAL_KEY":       base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{9}, 32)),
+		"OPSVISION_ASSISTANT_BASE_URL":   "https://assistant.example.test",
 	}
 }
 
@@ -161,7 +171,11 @@ func TestLoadBalancerEndToEnd(t *testing.T) {
 	if err := st.CreateTenant(ctx, domain.Tenant{ID: e2eTenant, Name: "Example Co", DefaultRole: domain.RoleViewer}); err != nil {
 		t.Fatal(err)
 	}
-	h, err := newHandler(cfg, st, objects.NewMem("", nil))
+	sealer, err := newSealer(cfg, nil)
+	if err != nil || sealer == nil {
+		t.Fatalf("sealer %v, err %v", sealer, err)
+	}
+	h, err := newHandler(cfg, st, objects.NewMem("", nil), sealer)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,6 +271,33 @@ func TestLoadBalancerEndToEnd(t *testing.T) {
 			if got[k] != v {
 				t.Errorf("config %s = %q, want %q", k, got[k], v)
 			}
+		}
+	})
+
+	t.Run("assistant credential", func(t *testing.T) {
+		const apiKey = "sk-example-e2e-key-7777"
+		resp, err := serve(ctx, events.ALBTargetGroupRequest{
+			HTTPMethod: http.MethodPut, Path: "/v1/me/assistant/credential", Body: `{"apiKey":"` + apiKey + `"}`,
+			MultiValueHeaders: map[string][]string{
+				"Host": {"ops.example.test"}, "X-Forwarded-Proto": {"https"},
+				"Authorization": {"Bearer " + adminToken}, "Content-Type": {"application/json"},
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != http.StatusOK || !strings.Contains(resp.Body, `"last4":"7777"`) || strings.Contains(resp.Body, apiKey) {
+			t.Fatalf("PUT credential = %d: %s", resp.StatusCode, resp.Body)
+		}
+		if got, _ := idp.messagesKey.Load().(string); got != apiKey {
+			t.Errorf("provider got x-api-key %q, want the submitted key", got)
+		}
+		cred, err := st.GetCredential(ctx, e2eTenant, e2eAdminSub)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bytes.Contains(cred.Sealed, []byte(apiKey)) {
+			t.Error("the key is stored in plaintext")
 		}
 	})
 

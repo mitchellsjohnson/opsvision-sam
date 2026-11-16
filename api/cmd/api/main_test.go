@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
@@ -9,7 +11,9 @@ import (
 	"testing"
 
 	"github.com/aws/aws-lambda-go/events"
+	"github.com/aws/aws-sdk-go-v2/service/kms"
 
+	"opsvision/internal/assistant"
 	"opsvision/internal/objects"
 	"opsvision/internal/store/memstore"
 	"opsvision/internal/webui"
@@ -131,7 +135,7 @@ func TestHealthzIsUnauthenticated(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h, err := newHandler(cfg, memstore.New(), objects.NewMem("", nil))
+	h, err := newHandler(cfg, memstore.New(), objects.NewMem("", nil), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,7 +264,7 @@ func TestServeWebRouting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h, err := newHandler(cfg, memstore.New(), objects.NewMem("", nil))
+	h, err := newHandler(cfg, memstore.New(), objects.NewMem("", nil), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -328,7 +332,7 @@ func TestEmbeddedWebFitsLoadBalancer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h, err := newHandler(cfg, memstore.New(), objects.NewMem("", nil))
+	h, err := newHandler(cfg, memstore.New(), objects.NewMem("", nil), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -438,7 +442,7 @@ func TestSingleOrgHandler(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h, err := newHandler(cfg, memstore.New(), objects.NewMem("", nil))
+	h, err := newHandler(cfg, memstore.New(), objects.NewMem("", nil), nil)
 	if err != nil {
 		t.Fatalf("newHandler in single-organization mode: %v", err)
 	}
@@ -454,7 +458,7 @@ func TestServeWebSecurityHeadersOnAPI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h, err := newHandler(cfg, memstore.New(), objects.NewMem("", nil))
+	h, err := newHandler(cfg, memstore.New(), objects.NewMem("", nil), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -485,7 +489,7 @@ func TestHandlerCORSAndAuth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h, err := newHandler(cfg, memstore.New(), objects.NewMem("", nil))
+	h, err := newHandler(cfg, memstore.New(), objects.NewMem("", nil), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -528,5 +532,110 @@ func TestHandlerCORSAndAuth(t *testing.T) {
 	h.ServeHTTP(w, r)
 	if w.Code == http.StatusOK {
 		t.Error("/dev/users must not exist on the Lambda entrypoint")
+	}
+}
+
+func TestLoadConfigAssistant(t *testing.T) {
+	cfg, err := loadConfig(env(validEnv()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.CredentialKey != nil || cfg.CredentialKMSKeyID != "" || cfg.AssistantBaseURL != "" {
+		t.Errorf("default assistant config = %+v", cfg)
+	}
+
+	key := bytes.Repeat([]byte{5}, 32)
+	e := validEnv()
+	e["OPSVISION_CREDENTIAL_KEY"] = base64.StdEncoding.EncodeToString(key)
+	e["OPSVISION_ASSISTANT_BASE_URL"] = "https://assistant.example.test/proxy/"
+	cfg, err = loadConfig(env(e))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(cfg.CredentialKey, key) || cfg.CredentialKMSKeyID != "" {
+		t.Errorf("AES config = %+v", cfg)
+	}
+	if cfg.AssistantBaseURL != "https://assistant.example.test/proxy" {
+		t.Errorf("AssistantBaseURL = %q", cfg.AssistantBaseURL)
+	}
+
+	// The KMS key takes precedence; the local key is not read.
+	e["OPSVISION_CREDENTIAL_KMS_KEY_ID"] = "alias/example-credentials"
+	e["OPSVISION_CREDENTIAL_KEY"] = "not base64!"
+	cfg, err = loadConfig(env(e))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.CredentialKMSKeyID != "alias/example-credentials" || cfg.CredentialKey != nil {
+		t.Errorf("KMS config = %+v", cfg)
+	}
+
+	for name, c := range map[string]struct{ key, value string }{
+		"key not base64":       {"OPSVISION_CREDENTIAL_KEY", "not base64!"},
+		"key 16 bytes":         {"OPSVISION_CREDENTIAL_KEY", base64.StdEncoding.EncodeToString(make([]byte, 16))},
+		"key 33 bytes":         {"OPSVISION_CREDENTIAL_KEY", base64.StdEncoding.EncodeToString(make([]byte, 33))},
+		"kms id spaces":        {"OPSVISION_CREDENTIAL_KMS_KEY_ID", " alias/x"},
+		"base URL http":        {"OPSVISION_ASSISTANT_BASE_URL", "http://assistant.example.test"},
+		"base URL no host":     {"OPSVISION_ASSISTANT_BASE_URL", "https://"},
+		"base URL query":       {"OPSVISION_ASSISTANT_BASE_URL", "https://assistant.example.test/?x=1"},
+		"base URL fragment":    {"OPSVISION_ASSISTANT_BASE_URL", "https://assistant.example.test/#x"},
+		"base URL user info":   {"OPSVISION_ASSISTANT_BASE_URL", "https://u:p@assistant.example.test"},
+		"base URL not a URL":   {"OPSVISION_ASSISTANT_BASE_URL", "assistant.example.test"},
+		"base URL with spaces": {"OPSVISION_ASSISTANT_BASE_URL", " https://assistant.example.test"},
+	} {
+		e := validEnv()
+		e[c.key] = c.value
+		if _, err := loadConfig(env(e)); err == nil || !strings.Contains(err.Error(), c.key) {
+			t.Errorf("%s: err = %v, want a refusal naming %s", name, err, c.key)
+		}
+	}
+	e = validEnv()
+	e["OPSVISION_CREDENTIAL_KEY"] = base64.StdEncoding.EncodeToString(key)
+	if _, err := loadConfig(env(e)); err != nil {
+		t.Errorf("valid key: %v", err)
+	}
+}
+
+type recordingKMS struct{ encrypted bool }
+
+func (k *recordingKMS) Encrypt(_ context.Context, in *kms.EncryptInput, _ ...func(*kms.Options)) (*kms.EncryptOutput, error) {
+	k.encrypted = true
+	return &kms.EncryptOutput{CiphertextBlob: []byte("blob")}, nil
+}
+
+func (k *recordingKMS) Decrypt(_ context.Context, in *kms.DecryptInput, _ ...func(*kms.Options)) (*kms.DecryptOutput, error) {
+	return &kms.DecryptOutput{Plaintext: []byte("secret")}, nil
+}
+
+func TestNewSealer(t *testing.T) {
+	ctx := context.Background()
+	noKMS := func() assistant.KMSAPI { t.Fatal("KMS client built without a KMS key"); return nil }
+
+	s, err := newSealer(appConfig{}, noKMS)
+	if err != nil || s != nil {
+		t.Fatalf("unconfigured: sealer %v, err %v; want none", s, err)
+	}
+
+	s, err = newSealer(appConfig{CredentialKey: bytes.Repeat([]byte{5}, 32)}, noKMS)
+	if err != nil || s == nil {
+		t.Fatalf("AES: sealer %v, err %v", s, err)
+	}
+	ec := assistant.CredentialContext("t1", "u1")
+	sealed, err := s.Seal(ctx, []byte("secret"), ec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plain, err := s.Open(ctx, sealed, ec); err != nil || string(plain) != "secret" {
+		t.Fatalf("AES round trip = %q, %v", plain, err)
+	}
+
+	k := &recordingKMS{}
+	s, err = newSealer(appConfig{CredentialKMSKeyID: "alias/example", CredentialKey: bytes.Repeat([]byte{5}, 32)},
+		func() assistant.KMSAPI { return k })
+	if err != nil || s == nil {
+		t.Fatalf("KMS: sealer %v, err %v", s, err)
+	}
+	if _, err := s.Seal(ctx, []byte("secret"), ec); err != nil || !k.encrypted {
+		t.Fatalf("KMS sealer did not call KMS: %v", err)
 	}
 }

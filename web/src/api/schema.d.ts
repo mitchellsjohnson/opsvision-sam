@@ -107,6 +107,52 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/me/assistant/credential": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Whether the current user has an assistant API key in the active tenant
+         * @description The key itself is never returned; only its last 4 characters.
+         */
+        get: operations["getMyAssistantCredential"];
+        /**
+         * Save the current user's assistant API key
+         * @description The key is checked with one minimal request to the model provider on the tenant's configured model, then encrypted and stored, replacing any previous key. A key the provider rejects is not stored (400). When the server has no credential encryption configured, or the provider cannot be reached or is rate limiting the key, nothing is stored (503 `assistant_unavailable`).
+         */
+        put: operations["putMyAssistantCredential"];
+        post?: never;
+        /** Remove the current user's assistant API key */
+        delete: operations["deleteMyAssistantCredential"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/assistant/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The active tenant's assistant settings
+         * @description Readable by every member, so the app can show which model answers.
+         */
+        get: operations["getAssistantSettings"];
+        /** Save the active tenant's assistant settings (tenant admin) */
+        put: operations["putAssistantSettings"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/operator/tenants": {
         parameters: {
             query?: never;
@@ -1035,7 +1081,7 @@ export interface components {
         Error: {
             error: {
                 /** @enum {string} */
-                code: "not_found" | "forbidden" | "conflict" | "invalid" | "unauthorized" | "not_implemented" | "too_large" | "already_applied" | "preview_out_of_date";
+                code: "not_found" | "forbidden" | "conflict" | "invalid" | "unauthorized" | "not_implemented" | "too_large" | "already_applied" | "preview_out_of_date" | "assistant_unavailable";
                 message: string;
                 details?: components["schemas"]["ErrorDetail"][];
             };
@@ -1169,6 +1215,32 @@ export interface components {
             name: string;
             /** @default 90 */
             expiresInDays: number;
+        };
+        AssistantCredentialStatus: {
+            configured: boolean;
+            /**
+             * @description The last 4 characters of the key; absent when none is saved.
+             * @example x9Q2
+             */
+            last4?: string;
+            /**
+             * Format: date-time
+             * @description When the key was saved; absent when none is saved.
+             */
+            updatedAt?: string;
+        };
+        PutAssistantCredentialRequest: {
+            /** @description The model provider API key: 16 to 512 printable ASCII characters with no spaces (surrounding spaces are trimmed). Never returned or logged. */
+            apiKey: string;
+        };
+        AssistantSettings: {
+            /** @description Whether members can use the assistant. Default true. */
+            enabled: boolean;
+            /**
+             * @description The model id the assistant calls. Default `claude-haiku-5-5` (lower cost); `claude-sonnet-5-5` is stronger and costs more. Any model id the provider offers is accepted.
+             * @example claude-haiku-5-5
+             */
+            model: string;
         };
         CreateTenantRequest: {
             name: string;
@@ -2229,6 +2301,15 @@ export interface components {
                 "application/json": components["schemas"]["Error"];
             };
         };
+        /** @description The assistant cannot do this now: the server has no credential encryption configured, or the model provider is unreachable or rate limiting the key (`assistant_unavailable`) */
+        AssistantUnavailable: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["Error"];
+            };
+        };
     };
     parameters: {
         /** @description Client-supplied identifier. */
@@ -2454,6 +2535,126 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+        };
+    };
+    getMyAssistantCredential: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The caller's key status (`configured` false when none is saved) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssistantCredentialStatus"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    putMyAssistantCredential: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PutAssistantCredentialRequest"];
+            };
+        };
+        responses: {
+            /** @description The stored key's status */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssistantCredentialStatus"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            503: components["responses"]["AssistantUnavailable"];
+        };
+    };
+    deleteMyAssistantCredential: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The key was removed */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    getAssistantSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The tenant's settings (defaults when none are saved) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssistantSettings"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    putAssistantSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AssistantSettings"];
+            };
+        };
+        responses: {
+            /** @description The stored settings */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssistantSettings"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
         };
     };
     listOperatorTenants: {

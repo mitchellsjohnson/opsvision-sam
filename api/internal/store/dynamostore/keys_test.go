@@ -51,6 +51,8 @@ func TestKeys(t *testing.T) {
 		{"access token SK prefix", tokenPrefix("user-1"), "PAT#user-1#"},
 		{"access token GSI1PK", gsiTokenPK([32]byte{0xab, 0x01}), "PATHASH#ab01" + strings.Repeat("00", 30)},
 		{"access token GSI1SK", gsiTenantSK("acme"), "T#acme"},
+		{"assistant credential SK", assistantCredentialSK("user-1"), "ASSISTANTCRED#user-1"},
+		{"assistant settings SK", skAssistantSettings, "ASSISTANTSETTINGS"},
 		{"version SK", versionSK("sc1", "v1"), "SC#sc1#VER#v1"},
 
 		{"data current PK", dataPK("acme", "sc1", 2026), "T#acme#SC#sc1#FY#2026"},

@@ -32,6 +32,7 @@ tags:
   - name: Imports
   - name: Records
   - name: Audit
+  - name: Assistant
 
 paths:
   /me:
@@ -176,6 +177,90 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+
+  /me/assistant/credential:
+    get:
+      operationId: getMyAssistantCredential
+      tags: [Assistant]
+      summary: Whether the current user has an assistant API key in the active tenant
+      description: The key itself is never returned; only its last 4 characters.
+      responses:
+        '200':
+          description: The caller's key status (`configured` false when none is saved)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AssistantCredentialStatus' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    put:
+      operationId: putMyAssistantCredential
+      tags: [Assistant]
+      summary: Save the current user's assistant API key
+      description: >
+        The key is checked with one minimal request to the model provider on
+        the tenant's configured model, then encrypted and stored, replacing
+        any previous key. A key the provider rejects is not stored (400). When
+        the server has no credential encryption configured, or the provider
+        cannot be reached or is rate limiting the key, nothing is stored
+        (503 `assistant_unavailable`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PutAssistantCredentialRequest' }
+      responses:
+        '200':
+          description: The stored key's status
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AssistantCredentialStatus' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/AssistantUnavailable' }
+    delete:
+      operationId: deleteMyAssistantCredential
+      tags: [Assistant]
+      summary: Remove the current user's assistant API key
+      responses:
+        '204':
+          description: The key was removed
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /assistant/settings:
+    get:
+      operationId: getAssistantSettings
+      tags: [Assistant]
+      summary: The active tenant's assistant settings
+      description: Readable by every member, so the app can show which model answers.
+      responses:
+        '200':
+          description: The tenant's settings (defaults when none are saved)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AssistantSettings' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    put:
+      operationId: putAssistantSettings
+      tags: [Assistant]
+      summary: Save the active tenant's assistant settings (tenant admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AssistantSettings' }
+      responses:
+        '200':
+          description: The stored settings
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AssistantSettings' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
 
   /operator/tenants:
     get:
@@ -1659,6 +1744,14 @@ components:
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
+    AssistantUnavailable:
+      description: >
+        The assistant cannot do this now: the server has no credential
+        encryption configured, or the model provider is unreachable or rate
+        limiting the key (`assistant_unavailable`)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
 
   schemas:
     # ---- Errors -----------------------------------------------------------
@@ -1672,7 +1765,7 @@ components:
           properties:
             code:
               type: string
-              enum: [not_found, forbidden, conflict, invalid, unauthorized, not_implemented, too_large, already_applied, preview_out_of_date]
+              enum: [not_found, forbidden, conflict, invalid, unauthorized, not_implemented, too_large, already_applied, preview_out_of_date, assistant_unavailable]
             message: { type: string }
             details:
               type: array
@@ -1844,6 +1937,48 @@ components:
           minimum: 1
           maximum: 365
           default: 90
+    AssistantCredentialStatus:
+      type: object
+      required: [configured]
+      properties:
+        configured: { type: boolean }
+        last4:
+          type: string
+          description: The last 4 characters of the key; absent when none is saved.
+          example: x9Q2
+        updatedAt:
+          type: string
+          format: date-time
+          description: When the key was saved; absent when none is saved.
+    PutAssistantCredentialRequest:
+      type: object
+      required: [apiKey]
+      properties:
+        apiKey:
+          type: string
+          minLength: 16
+          maxLength: 512
+          description: >
+            The model provider API key: 16 to 512 printable ASCII characters
+            with no spaces (surrounding spaces are trimmed). Never returned or
+            logged.
+    AssistantSettings:
+      type: object
+      required: [enabled, model]
+      properties:
+        enabled:
+          type: boolean
+          description: Whether members can use the assistant. Default true.
+        model:
+          type: string
+          minLength: 1
+          maxLength: 100
+          pattern: '^[a-z0-9.-]{1,100}$'
+          description: >
+            The model id the assistant calls. Default `claude-haiku-5-5`
+            (lower cost); `claude-sonnet-5-5` is stronger and costs more. Any
+            model id the provider offers is accepted.
+          example: claude-haiku-5-5
     CreateTenantRequest:
       type: object
       required: [name, auth0OrgId, fiscalYearStartMonth, adminEmail]

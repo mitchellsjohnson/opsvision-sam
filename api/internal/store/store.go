@@ -312,6 +312,22 @@ type TokenStore interface {
 	TouchToken(ctx context.Context, tenantID, userID, id string, at time.Time) error
 }
 
+// AssistantStore holds users' sealed assistant credentials and tenants'
+// assistant settings.
+type AssistantStore interface {
+	// PutCredential replaces a user's credential.
+	PutCredential(ctx context.Context, tenantID, userID string, c domain.AssistantCredential) error
+	// GetCredential returns a user's credential. ErrNotFound when none.
+	GetCredential(ctx context.Context, tenantID, userID string) (domain.AssistantCredential, error)
+	// DeleteCredential removes a user's credential; ErrNotFound if none.
+	DeleteCredential(ctx context.Context, tenantID, userID string) error
+	// GetAssistantSettings returns the tenant's settings, or
+	// domain.DefaultAssistantSettings when none were saved.
+	GetAssistantSettings(ctx context.Context, tenantID string) (domain.AssistantSettings, error)
+	// PutAssistantSettings replaces the tenant's settings (last write wins).
+	PutAssistantSettings(ctx context.Context, tenantID string, s domain.AssistantSettings) error
+}
+
 // RecordStore holds record types, records (one stored item per revision),
 // and upload snapshots.
 type RecordStore interface {
@@ -355,6 +371,7 @@ type Store interface {
 	PreferenceStore
 	RecordStore
 	TokenStore
+	AssistantStore
 }
 
 // ComparePeriod orders periods by fiscal year, then grain, then index. It

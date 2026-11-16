@@ -22,6 +22,9 @@ const (
 	// Records apply conflicts the client handles differently.
 	codeAlreadyApplied   = "already_applied"
 	codePreviewOutOfDate = "preview_out_of_date"
+	// The assistant cannot serve the request (not configured, or the model
+	// provider is unreachable).
+	codeAssistantUnavailable = "assistant_unavailable"
 )
 
 // detail is one validation problem; path looks like `levels[0].id`.
@@ -80,6 +83,10 @@ func previewOutOfDate(msg string) *apiError {
 
 func tooLarge(msg string) *apiError {
 	return &apiError{status: http.StatusRequestEntityTooLarge, code: codeTooLarge, message: msg}
+}
+
+func assistantUnavailable(msg string) *apiError {
+	return &apiError{status: http.StatusServiceUnavailable, code: codeAssistantUnavailable, message: msg}
 }
 
 // writeError writes the error envelope.

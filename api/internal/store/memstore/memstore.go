@@ -88,6 +88,8 @@ type tenantData struct {
 	reportSummaries map[reportSummaryKey]domain.ReportSummary
 	reportRevisions map[reportRevisionKey]domain.ReportRevision
 	tokens          map[tokenKey]domain.AccessToken
+	credentials     map[string]domain.AssistantCredential // by user ID
+	assistant       *domain.AssistantSettings
 }
 
 type snapshotKey struct{ recordType, id string }

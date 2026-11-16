@@ -54,6 +54,13 @@ func newTestEnv(t *testing.T) *testEnv {
 // testEnv.store bypass the wrapper.
 func newTestEnvWith(t *testing.T, wrap func(store.Store) store.Store) *testEnv {
 	t.Helper()
+	return newTestEnvDeps(t, wrap, nil)
+}
+
+// newTestEnvDeps is newTestEnvWith with configure (when non-nil) applied to
+// the server's dependencies before the server is built.
+func newTestEnvDeps(t *testing.T, wrap func(store.Store) store.Store, configure func(*Deps)) *testEnv {
+	t.Helper()
 	st := memstore.New()
 	ctx := context.Background()
 	tokens := map[string]string{}
@@ -108,12 +115,16 @@ func newTestEnvWith(t *testing.T, wrap func(store.Store) store.Store) *testEnv {
 	if wrap != nil {
 		served = wrap(st)
 	}
-	s := NewServer(Deps{
+	deps := Deps{
 		Store:   served,
 		Objects: objs,
 		Now:     func() time.Time { return testNow },
 		NewID:   func() string { return fmt.Sprintf("id-%04d", n.Add(1)) },
-	})
+	}
+	if configure != nil {
+		configure(&deps)
+	}
+	s := NewServer(deps)
 	srv := httptest.NewServer(NewHandler(s, authMW))
 	t.Cleanup(srv.Close)
 	return &testEnv{srv: srv, store: st, objs: objs, tokens: tokens}
