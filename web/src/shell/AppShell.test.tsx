@@ -81,6 +81,19 @@ describe('AppShell', () => {
     expect(signOut).toHaveBeenCalledOnce()
   })
 
+  it('links to access tokens under My settings in the user menu, for every role', async () => {
+    state.role = 'viewer'
+    shell()
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: /Test viewer/ }))
+    const menu = await screen.findByRole('menu')
+    expect(within(menu).getByText('My settings')).toBeTruthy()
+    const item = within(menu).getByRole('menuitem', { name: 'Access tokens' })
+    expect(item.getAttribute('href')).toBe('/settings/tokens')
+    await user.click(item)
+    expect(screen.queryByRole('menu')).toBeNull()
+  })
+
   it('shows the period picker on entry only, not on scorecard placeholder pages', async () => {
     shell()
     expect(screen.queryByRole('group', { name: 'Period' })).toBeNull()

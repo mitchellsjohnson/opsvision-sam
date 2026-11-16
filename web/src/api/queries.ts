@@ -45,6 +45,9 @@ export type RecordsSampleRequest = Schemas['RecordsSampleRequest']
 export type RecordsSample = Schemas['RecordsSample']
 export type RecordValueCount = Schemas['RecordValueCount']
 export type RecordContributions = Schemas['RecordContributions']
+export type AccessToken = Schemas['AccessToken']
+export type CreatedAccessToken = Schemas['CreatedAccessToken']
+export type CreateTokenRequest = Schemas['CreateTokenRequest']
 export interface OverrideCell {
   metricKey: string
   subjectId: string
@@ -78,6 +81,7 @@ export const keys = {
   reportMonths: (sc: string) => ['reportMonths', sc] as const,
   report: (sc: string, period: string, revision: string) => ['report', sc, period, revision] as const,
   reportSummary: (sc: string, period: string) => ['reportSummary', sc, period] as const,
+  myTokens: ['myTokens'] as const,
 }
 
 type Result<T> = { data?: T; error?: unknown; response: Response }
@@ -723,6 +727,40 @@ export function usePutMyPreferences() {
     onSuccess: (data) => {
       queryClient.setQueryData(keys.preferences, data)
     },
+  })
+}
+
+/** The caller's access tokens, oldest first, expired ones included; never the secrets. */
+export function useMyTokens() {
+  const api = useApi()
+  return useQuery({
+    queryKey: keys.myTokens,
+    queryFn: async () => (await unwrap(api.GET('/me/tokens'))).tokens,
+  })
+}
+
+/**
+ * Creates an access token; the response carries the secret, the only time it
+ * is sent. The finished mutation (and the secret with it) leaves the cache as
+ * soon as nothing observes it.
+ */
+export function useCreateToken() {
+  const api = useApi()
+  const queryClient = useQueryClient()
+  return useMutation({
+    gcTime: 0,
+    mutationFn: (body: CreateTokenRequest) => unwrap(api.POST('/me/tokens', { body })),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: keys.myTokens }),
+  })
+}
+
+/** Revokes one of the caller's access tokens; resolves once the list has refreshed. */
+export function useDeleteToken() {
+  const api = useApi()
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => unwrap(api.DELETE('/me/tokens/{id}', { params: { path: { id } } })),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: keys.myTokens }),
   })
 }
 

@@ -10,6 +10,7 @@ import {
   ChevronDown,
   ClipboardPen,
   FileText,
+  KeyRound,
   List,
   LogOut,
   PanelLeftClose,
@@ -18,8 +19,8 @@ import {
   Upload,
   Users,
 } from 'lucide-react'
-import { useEffect, type ReactElement } from 'react'
-import { NavLink, Outlet, useLocation, useMatch, useResolvedPath, useSearchParams } from 'react-router'
+import { useEffect, useId, type ReactElement } from 'react'
+import { Link, NavLink, Outlet, useLocation, useMatch, useResolvedPath, useSearchParams } from 'react-router'
 import { useMe, useScorecards } from '../api/queries'
 import { useAuth } from '../auth/context'
 import { focusOnDark, menuItemHighlight } from '../ui/focus'
@@ -113,6 +114,7 @@ function AppShellBody() {
   // The open dock needs the room: the nav shows as the rail meanwhile.
   const collapsed = navCollapsed || dockOpen
   const toggleLabel = collapsed ? 'Expand navigation' : 'Collapse navigation'
+  const settingsLabelId = useId()
 
   const isAdmin = me.data?.role === 'admin'
   const showFilters = pathname === '/entry'
@@ -189,6 +191,28 @@ function AppShellBody() {
                     {me.data.role ? ` · ${me.data.role}` : ''}
                   </DropdownMenu.Label>
                 )}
+                <DropdownMenu.Separator className="my-1 h-px bg-ink/15" />
+                <DropdownMenu.Group aria-labelledby={settingsLabelId}>
+                  <DropdownMenu.Label
+                    id={settingsLabelId}
+                    className="px-2 py-1 text-xs font-semibold uppercase tracking-wide text-ink/80"
+                  >
+                    My settings
+                  </DropdownMenu.Label>
+                  <DropdownMenu.Item
+                    asChild
+                    className={clsx(
+                      'flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm',
+                      menuItemHighlight,
+                    )}
+                  >
+                    <Link to="/settings/tokens">
+                      <KeyRound aria-hidden="true" size={14} />
+                      Access tokens
+                    </Link>
+                  </DropdownMenu.Item>
+                </DropdownMenu.Group>
+                <DropdownMenu.Separator className="my-1 h-px bg-ink/15" />
                 <DropdownMenu.Item
                   onSelect={() => auth.signOut()}
                   className={clsx(

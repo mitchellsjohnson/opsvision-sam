@@ -17,6 +17,7 @@ import { MethodologyPage } from './features/admin/MethodologyPage'
 import { RecordTypesPage } from './features/admin/RecordTypesPage'
 import { TemplatesPage } from './features/admin/TemplatesPage'
 import { SetupWizard } from './features/import/setup/SetupWizard'
+import { AccessTokensPage } from './features/settings/AccessTokensPage'
 
 export function App() {
   return (
@@ -31,6 +32,10 @@ export function App() {
           <Route path="report" element={<ReportPage />} />
         </Route>
         <Route path="entry" element={<EntryPage />} />
+        <Route path="settings">
+          <Route index element={<Navigate to="tokens" replace />} />
+          <Route path="tokens" element={<AccessTokensPage />} />
+        </Route>
         <Route path="admin" element={<RequireAdmin />}>
           <Route index element={<Navigate to="org" replace />} />
           <Route path="org" element={<OrgPage />} />
