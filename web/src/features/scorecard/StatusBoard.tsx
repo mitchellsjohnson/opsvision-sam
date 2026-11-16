@@ -6,7 +6,7 @@ import { parsePeriod, type Grain } from '../../lib/period'
 import { useElementWidth } from '../../ui/useElementWidth'
 import { chartTheme, MOVE_CLASS, statusFill } from './charts/chartTheme'
 import type { Column } from './columns'
-import { boardLayout, cellName, fiscalGroups, streakAt, VALUE_WIDTH, type BoardCell, type BoardRow } from './logic/statusBoard'
+import { boardLayout, cellName, fiscalGroups, streakAt, type BoardCell, type BoardRow } from './logic/statusBoard'
 
 type StatusLevel = components['schemas']['StatusLevel']
 
@@ -28,6 +28,7 @@ const HATCH: CSSProperties = {
 }
 
 const CHIP = 'inline-flex h-4 w-7 shrink-0 items-center justify-center gap-px rounded-[3px] border text-[11px] font-semibold leading-none'
+const UNRATED_CLASS = 'border-transparent bg-ink/[0.06]'
 const ROW_HOVER = 'hover:bg-ink/[0.035] focus-within:bg-ink/[0.035]'
 
 function fillStyle(scale: StatusLevel[], status: string): CSSProperties {
@@ -50,7 +51,7 @@ function NoDataDot() {
   return <span data-dot="" aria-hidden="true" className="size-1 rounded-full bg-ink/35" />
 }
 
-function Legend({ scale }: { scale: StatusLevel[] }) {
+function Legend({ scale, unrated }: { scale: StatusLevel[]; unrated: boolean }) {
   return (
     <ul aria-label="Status key" className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-ink/80">
       {[...scale]
@@ -73,6 +74,12 @@ function Legend({ scale }: { scale: StatusLevel[] }) {
         <span aria-hidden="true" className={clsx(CHIP, 'border-ink/15 bg-white')} style={HATCH} />
         n/a
       </li>
+      {unrated && (
+        <li className="inline-flex items-center gap-1.5">
+          <span aria-hidden="true" className={clsx(CHIP, UNRATED_CLASS)} />
+          Not rated
+        </li>
+      )}
     </ul>
   )
 }
@@ -156,27 +163,47 @@ function CurrentValue({ row, scale, compact }: { row: BoardRow; scale: StatusLev
   return <span className={clsx('text-[11px] text-ink/70', !compact && 'block')}>{last?.kind === 'na' ? 'n/a' : 'No data'}</span>
 }
 
-/** Only the exceptions, as quiet text: `◆ 1 Red · ▲ 1 Yellow`; `All Green` when nothing is off; nothing when nothing reported. */
+const BLANK_LABELS: Record<Exclude<BoardCell['kind'], 'status'>, string> = { missing: 'no data', na: 'n/a', unrated: 'not rated' }
+
+/**
+ * The selected period's exceptions as quiet text, `◆ 1 Red · ▲ 1 Yellow`, or
+ * `All Green` when nothing is off; rows with no status are counted too
+ * (`· 1 no data`), so a category is never called all green over a gap.
+ * Nothing when no row has a status.
+ */
 function RollUp({ rows, scale }: { rows: BoardRow[]; scale: StatusLevel[] }) {
   const counts = new Map<string, number>()
+  const blanks = new Map<string, number>()
   for (const row of rows) {
     const last = row.cells[row.cells.length - 1]
     if (last?.kind === 'status') counts.set(last.status, (counts.get(last.status) ?? 0) + 1)
+    else {
+      const label = BLANK_LABELS[last?.kind ?? 'missing']
+      blanks.set(label, (blanks.get(label) ?? 0) + 1)
+    }
   }
   if (counts.size === 0) return null
   const ranked = [...scale].sort((a, b) => b.rank - a.rank)
   const best = ranked[ranked.length - 1]
   const exceptions = ranked.filter((s) => s !== best && counts.has(s.key))
+  const parts = [
+    ...(exceptions.length === 0
+      ? [<Fragment key="all">All {best?.label ?? ''}</Fragment>]
+      : exceptions.map((s) => (
+          <Fragment key={s.key}>
+            <span aria-hidden="true">{chartTheme(scale, s.key).shape}</span> {counts.get(s.key)} {s.label}
+          </Fragment>
+        ))),
+    ...[...blanks].map(([label, n]) => <Fragment key={label}>{`${n} ${label}`}</Fragment>),
+  ]
   return (
     <span className="ml-2 text-[11px] font-normal text-ink/70">
-      {exceptions.length === 0
-        ? `All ${best?.label ?? ''}`
-        : exceptions.map((s, i) => (
-            <Fragment key={s.key}>
-              {i > 0 && ' · '}
-              <span aria-hidden="true">{chartTheme(scale, s.key).shape}</span> {counts.get(s.key)} {s.label}
-            </Fragment>
-          ))}
+      {parts.map((part, i) => (
+        <Fragment key={i}>
+          {i > 0 && ' · '}
+          {part}
+        </Fragment>
+      ))}
     </span>
   )
 }
@@ -263,7 +290,7 @@ export function StatusBoard({ label, columns, rows, scale, onOpen }: StatusBoard
     setActive({ row, back })
     if (reopening.current === `${row}:${back}`) {
       reopening.current = null
-      // Stops Radix opening the tooltip on the focus the dialog hands back.
+      // Relies on Radix's Trigger skipping its open-on-focus handler when the event is defaultPrevented.
       e.preventDefault()
     }
   }
@@ -289,7 +316,7 @@ export function StatusBoard({ label, columns, rows, scale, onOpen }: StatusBoard
                   'transition-shadow hover:ring-2 hover:ring-ink/40',
                   'focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ink focus-visible:inset-ring-1 focus-visible:inset-ring-white',
                   cell.kind === 'na' && 'border-ink/15 bg-white',
-                  cell.kind === 'unrated' && 'bg-ink/[0.06]',
+                  cell.kind === 'unrated' && UNRATED_CLASS,
                 )}
                 style={fill ? { backgroundColor: fill.background, color: fill.letter, borderColor: fill.border ?? 'transparent' } : cell.kind === 'na' ? HATCH : undefined}
                 onFocus={onCellFocus(index, back)}
@@ -329,7 +356,7 @@ export function StatusBoard({ label, columns, rows, scale, onOpen }: StatusBoard
             </span>
           )}
         </div>
-        <Legend scale={scale} />
+        <Legend scale={scale} unrated={rows.some((r) => r.cells.slice(offset).some((c) => c.kind === 'unrated'))} />
       </div>
       <div ref={measure} className="mt-3 min-w-0">
         <div className={clsx('relative isolate', inline ? 'w-full' : 'w-fit')}>
@@ -338,7 +365,7 @@ export function StatusBoard({ label, columns, rows, scale, onOpen }: StatusBoard
               data-testid="current-band"
               aria-hidden="true"
               className="pointer-events-none absolute inset-y-0 -z-10 rounded-sm bg-accent/10"
-              style={{ width: layout.cellWidth, right: inline ? VALUE_WIDTH : 0 }}
+              style={{ width: layout.cellWidth, right: layout.valueWidth }}
             />
           )}
           <table
@@ -351,11 +378,11 @@ export function StatusBoard({ label, columns, rows, scale, onOpen }: StatusBoard
             onMouseLeave={() => markColumn(null)}
           >
             <colgroup>
-              {inline ? <col /> : <col style={{ width: 0 }} />}
+              {inline ? <col style={layout.nameWidth ? { width: layout.nameWidth } : undefined} /> : <col style={{ width: 0 }} />}
               {shown.map((c) => (
                 <col key={c.key} style={layout.cellWidth ? { width: layout.cellWidth } : undefined} />
               ))}
-              {inline && <col style={{ width: VALUE_WIDTH }} />}
+              {inline && <col style={{ width: layout.valueWidth }} />}
             </colgroup>
             <thead>
               {groups.length > 0 && (

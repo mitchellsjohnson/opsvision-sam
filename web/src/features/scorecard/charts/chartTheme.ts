@@ -65,7 +65,7 @@ export interface StatusFill {
 }
 
 /** The default statuses' tints, from the design tokens. */
-const TOKEN_TINTS: Record<string, { css: string; hex: string }> = {
+export const TOKEN_TINTS: Record<string, { css: string; hex: string }> = {
   '#137A3A': { css: 'var(--color-status-g-bg)', hex: '#E3F6EA' },
   '#8A5A00': { css: 'var(--color-status-y-bg)', hex: '#FFF3D6' },
 }

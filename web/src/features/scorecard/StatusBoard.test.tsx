@@ -1,7 +1,8 @@
 import * as Tooltip from '@radix-ui/react-tooltip'
-import { act, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { axe } from 'vitest-axe'
 import { buildTrendColumns, type Column } from './columns'
 import { StatusBoard, StatusCellTip } from './StatusBoard'
 import type { BoardCell, BoardRow } from './logic/statusBoard'
@@ -91,6 +92,11 @@ function measuredAt(initial: number): (next: number) => void {
   }
 }
 
+function cleanupAndRender(rows: BoardRow[]) {
+  cleanup()
+  renderBoard({ rows })
+}
+
 const SELECTED_EPICS = 'Epics delivered on time, Oct 2026: Off track, 79%, down 12 pts vs Sep'
 
 afterEach(() => {
@@ -160,7 +166,7 @@ describe('StatusBoard', () => {
     renderBoard()
     const legend = screen.getByRole('list', { name: 'Status key' })
     const items = within(legend).getAllByRole('listitem').map((li) => li.textContent)
-    expect(items).toEqual(['●GOn track', '▲YWatch', '◆ROff track', 'No data', 'n/a'])
+    expect(items).toEqual(['●GOn track', '▲YWatch', '◆ROff track', 'No data', 'n/a', 'Not rated'])
   })
 
   it('emphasizes the selected period column', () => {
@@ -177,7 +183,7 @@ describe('StatusBoard', () => {
     renderBoard()
     const band = screen.getByTestId('current-band')
     expect(band.style.width).toBe('40px')
-    expect(band.style.right).toBe('136px')
+    expect(band.style.right).toBe(`${1150 - 320 - 12 * 40}px`)
     expect(band.className).toContain('bg-accent/10')
   })
 
@@ -214,6 +220,16 @@ describe('StatusBoard', () => {
     expect(delivery.textContent).toBe('Delivery◆ 1 Off track')
     expect(screen.getByRole('rowheader', { name: /^Product/ }).textContent).toBe('Product▲ 1 Watch')
     expect(screen.getByRole('rowheader', { name: /^Design/ }).textContent).toBe('Design')
+  })
+
+  it('counts rows with no status for the selected period instead of calling the category all green', () => {
+    const rows = rowsFor(MONTHS)
+    const green = { ...rows[0]!, cells: MONTHS.map((c) => status(c, 'G', '90%')), current: '90%', change: null }
+    const blank = boardRow('ev', 'Expected value', MONTHS.map((c) => empty(c, 'missing')))
+    renderBoard({ rows: [green, blank, rows[1]!] })
+    expect(screen.getByRole('rowheader', { name: /^Delivery/ }).textContent).toBe('DeliveryAll On track · 1 no data')
+    cleanupAndRender([rows[0]!, blank, rows[1]!])
+    expect(screen.getByRole('rowheader', { name: /^Delivery/ }).textContent).toBe('Delivery◆ 1 Off track · 1 no data')
   })
 
   it('says All On track for a category with nothing off', () => {
@@ -302,6 +318,16 @@ describe('StatusBoard', () => {
     const visibleName = within(nameRow).getByText('Epics delivered on time')
     expect(visibleName.className).not.toMatch(/truncate|line-clamp/)
     expect(within(nameRow).getByText('79%')).toBeTruthy()
+    // The unrated cell (Jan) is outside the latest 6, so the legend drops its entry.
+    const legend = within(screen.getByRole('list', { name: 'Status key' })).getAllByRole('listitem').map((li) => li.textContent)
+    expect(legend).not.toContain('Not rated')
+  })
+
+  it('the stacked layout has no axe violations', async () => {
+    measuredAt(262)
+    renderBoard()
+    expect(screen.getByTestId('name-row-epics')).toBeTruthy()
+    expect((await axe(document.body)).violations).toEqual([])
   })
 })
 

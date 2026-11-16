@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { contrastRatio } from '../../../ui/contrast'
-import { chartTheme, MOVE_CLASS, statusFill, valueMove } from './chartTheme'
+import tokensCss from '../../../ui/tokens.css?raw'
+import { chartTheme, MOVE_CLASS, statusFill, TOKEN_TINTS, valueMove } from './chartTheme'
 
 const level = (color: string) => [{ key: 'X', label: 'Custom', color, rank: 1 }]
 
@@ -34,6 +35,14 @@ describe('statusFill: exception-first tiers', () => {
 
   it('fills the worst status solid, lettered white', () => {
     expect(statusFill(undefined, 'R')).toEqual({ tier: 'solid', background: '#B42318', letter: '#FFFFFF', border: null })
+  })
+
+  it('the tints match the status tokens in tokens.css', () => {
+    const token = (name: string) => new RegExp(`--color-${name}:\\s*(#[0-9A-Fa-f]{6})`).exec(tokensCss)?.[1]?.toUpperCase()
+    for (const key of ['g', 'y']) {
+      const tint = TOKEN_TINTS[token(`status-${key}`)!]
+      expect(tint, key).toEqual({ css: `var(--color-status-${key}-bg)`, hex: token(`status-${key}-bg`) })
+    }
   })
 
   it('the token tints keep the letter at 4.5:1 or more', () => {

@@ -55,11 +55,17 @@ const missing: BoardCell = { key: '-', kind: 'missing', status: '', display: '',
 
 describe('boardLayout', () => {
   it('shows every column, unsized, before the board is measured', () => {
-    expect(boardLayout(0, 12)).toEqual({ count: 12, cellWidth: null, valueColumn: true })
+    expect(boardLayout(0, 12)).toEqual({ count: 12, cellWidth: null, valueColumn: true, nameWidth: null, valueWidth: 136 })
   })
 
   it('shows all 12 months inline with 40px cells (36px plus gutters) and the value column on a wide board', () => {
-    expect(boardLayout(1150, 12)).toEqual({ count: 12, cellWidth: 40, valueColumn: true })
+    expect(boardLayout(1150, 12)).toMatchObject({ count: 12, cellWidth: 40, valueColumn: true })
+  })
+
+  it('caps the name column at 320px on a wide board and gives the rest to the gap before Current', () => {
+    expect(boardLayout(1150, 12)).toMatchObject({ nameWidth: 320, valueWidth: 1150 - 320 - 12 * 40 })
+    // Narrower than the cap: the name takes what the cells and value leave.
+    expect(boardLayout(600, 3)).toMatchObject({ cellWidth: 64, nameWidth: 600 - 136 - 3 * 64, valueWidth: 136 })
   })
 
   it('lets a short window (halves, years) use wider cells so year labels fit', () => {
@@ -68,11 +74,12 @@ describe('boardLayout', () => {
   })
 
   it('prefers all columns over the value column: a half-width board stacks rather than drops months', () => {
-    expect(boardLayout(560, 12)).toEqual({ count: 12, cellWidth: 40, valueColumn: false })
+    expect(boardLayout(560, 12)).toEqual({ count: 12, cellWidth: 46, valueColumn: false, nameWidth: null, valueWidth: 0 })
   })
 
-  it('stacks on a phone and shows the latest 6 months at full width', () => {
-    expect(boardLayout(262, 12)).toEqual({ count: 6, cellWidth: 40, valueColumn: false })
+  it('stacks on a phone and shows the latest 6 months, cells growing to fill the width', () => {
+    expect(boardLayout(262, 12)).toMatchObject({ count: 6, cellWidth: 43, valueColumn: false })
+    expect(boardLayout(400, 8).cellWidth).toBe(48)
   })
 
   it('halves again when 6 do not fit, never below 24px targets', () => {
@@ -82,7 +89,7 @@ describe('boardLayout', () => {
   })
 
   it('keeps all 8 quarters on a phone', () => {
-    expect(boardLayout(262, 8)).toEqual({ count: 8, cellWidth: 32, valueColumn: false })
+    expect(boardLayout(262, 8)).toMatchObject({ count: 8, cellWidth: 32, valueColumn: false })
   })
 
   it.each([12, 8, 4, 3])('never shows fewer columns on a wider board (%i columns)', (total) => {

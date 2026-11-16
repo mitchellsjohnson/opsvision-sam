@@ -37,6 +37,8 @@ export interface BoardRow {
 /** Inline rows keep at least this much for the metric name; cells grow only once it is comfortable. */
 const NAME_MIN = 100
 const NAME_COMFORT = 176
+/** On a wide board the name column stops here, so cells sit near their names; the gap before Current takes the rest. */
+const NAME_MAX = 320
 /** Fixed width of the value column in inline rows. */
 export const VALUE_WIDTH = 136
 /** Below this width rows always stack: the name and value above, the cells below. */
@@ -44,6 +46,8 @@ export const VALUE_BREAK = 440
 /** Cell column widths, including a 2px gutter each side (4px between cells): 24px is the smallest target WCAG 2.2 allows. */
 const CELL_MIN = 28
 const CELL_MAX = 40
+/** Stacked rows have no name beside the cells, so cells may grow wider to fill the board. */
+const CELL_MAX_STACKED = 48
 /** Four or fewer columns (halves, years) may grow wider, so `FY2026` fits its header. */
 const CELL_MAX_SHORT = 64
 
@@ -54,11 +58,14 @@ export interface BoardLayout {
   cellWidth: number | null
   /** Inline rows (name, cells, value side by side); false when each metric stacks into two rows. */
   valueColumn: boolean
+  /** The name column's width in px on a measured inline board; null otherwise. */
+  nameWidth: number | null
+  /** The value column's width in px: at least `VALUE_WIDTH` inline, 0 stacked. */
+  valueWidth: number
 }
 
-function cellWidthFor(room: number, count: number): number {
-  const max = count <= 4 ? CELL_MAX_SHORT : CELL_MAX
-  return Math.min(max, Math.max(CELL_MIN, Math.floor(room / count)))
+function cellWidthFor(room: number, count: number, max: number): number {
+  return Math.min(count <= 4 ? CELL_MAX_SHORT : max, Math.max(CELL_MIN, Math.floor(room / count)))
 }
 
 /**
@@ -67,15 +74,18 @@ function cellWidthFor(room: number, count: number): number {
  * stacked rows with all columns across the full width; else the latest half,
  * quarter, and so on. A wider board never shows fewer columns.
  */
-export function boardLayout(width: number, total: number): BoardLayout {
+export function boardLayout(boardWidth: number, total: number): BoardLayout {
   const all = Math.max(total, 1)
-  if (width <= 0) return { count: all, cellWidth: null, valueColumn: true }
+  const width = Math.floor(boardWidth)
+  if (width <= 0) return { count: all, cellWidth: null, valueColumn: true, nameWidth: null, valueWidth: VALUE_WIDTH }
   if (width >= VALUE_BREAK && all * CELL_MIN <= width - NAME_MIN - VALUE_WIDTH) {
-    return { count: all, cellWidth: cellWidthFor(width - VALUE_WIDTH - NAME_COMFORT, all), valueColumn: true }
+    const cellWidth = cellWidthFor(width - VALUE_WIDTH - NAME_COMFORT, all, CELL_MAX)
+    const nameWidth = Math.min(NAME_MAX, width - VALUE_WIDTH - all * cellWidth)
+    return { count: all, cellWidth, valueColumn: true, nameWidth, valueWidth: width - nameWidth - all * cellWidth }
   }
   let count = all
   while (count > 1 && count * CELL_MIN > width) count = Math.ceil(count / 2)
-  return { count, cellWidth: cellWidthFor(width, count), valueColumn: false }
+  return { count, cellWidth: cellWidthFor(width, count, CELL_MAX_STACKED), valueColumn: false, nameWidth: null, valueWidth: 0 }
 }
 
 export interface FiscalGroup {

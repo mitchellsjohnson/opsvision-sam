@@ -457,8 +457,8 @@ function StatusRibbon({ points, scale, size, inset }: { points: ChartPoint[]; sc
         }
         if (p.kind === 'missing' || !p.status) {
           return (
-            <span key={p.key} data-status={p.kind === 'missing' ? 'missing' : 'none'} className={`${cell} bg-ink/5 text-ink/70`}>
-              —
+            <span key={p.key} data-status={p.kind === 'missing' ? 'missing' : 'none'} className={`${cell} ${p.kind === 'missing' ? '' : 'bg-ink/[0.06]'}`}>
+              {p.kind === 'missing' && <span data-dot="" className="size-1 rounded-full bg-ink/35" />}
             </span>
           )
         }

@@ -105,11 +105,13 @@ describe('MetricChart status ribbon', () => {
     }
   })
 
-  it('says n/a for a period not applicable and — for one with no data', () => {
+  it('says n/a for a period not applicable and draws no data as the status board dot', () => {
     const { container } = draw(rowOf('defect_rate', (r) => (r.chartKind = 'discrete')))
     const cells = ribbonCells(container)
-    expect(cells.map((c) => c.textContent).slice(-4)).toEqual(['G', 'R', '—', 'n/a'])
+    expect(cells.map((c) => c.textContent).slice(-4)).toEqual(['G', 'R', '', 'n/a'])
     expect(cells.map((c) => c.dataset.status).slice(-4)).toEqual(['G', 'R', 'missing', 'na'])
+    expect(cells.at(-2)!.querySelector('[data-dot]')).not.toBeNull()
+    expect(cells.at(-1)!.querySelector('[data-dot]')).toBeNull()
   })
 
   it('fills cells exception-first: green a soft tint, yellow an outlined tint, as on the status board', () => {
