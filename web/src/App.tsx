@@ -18,6 +18,8 @@ import { RecordTypesPage } from './features/admin/RecordTypesPage'
 import { TemplatesPage } from './features/admin/TemplatesPage'
 import { SetupWizard } from './features/import/setup/SetupWizard'
 import { AccessTokensPage } from './features/settings/AccessTokensPage'
+import { AskSamSettingsPage } from './features/settings/AskSamSettingsPage'
+import { AssistantAdminPage } from './features/admin/AssistantAdminPage'
 
 export function App() {
   return (
@@ -35,6 +37,7 @@ export function App() {
         <Route path="settings">
           <Route index element={<Navigate to="tokens" replace />} />
           <Route path="tokens" element={<AccessTokensPage />} />
+          <Route path="ask-sam" element={<AskSamSettingsPage />} />
         </Route>
         <Route path="admin" element={<RequireAdmin />}>
           <Route index element={<Navigate to="org" replace />} />
@@ -46,6 +49,7 @@ export function App() {
           <Route path="import/setup" element={<SetupWizard />} />
           <Route path="record-types" element={<RecordTypesPage />} />
           <Route path="templates" element={<TemplatesPage />} />
+          <Route path="assistant" element={<AssistantAdminPage />} />
         </Route>
         <Route path="*" element={<NotFoundPage />} />
       </Route>

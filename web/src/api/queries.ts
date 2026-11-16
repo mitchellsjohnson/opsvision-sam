@@ -48,6 +48,13 @@ export type RecordContributions = Schemas['RecordContributions']
 export type AccessToken = Schemas['AccessToken']
 export type CreatedAccessToken = Schemas['CreatedAccessToken']
 export type CreateTokenRequest = Schemas['CreateTokenRequest']
+export type AssistantContext = Schemas['AssistantContext']
+export type AssistantThread = Schemas['AssistantThread']
+export type AssistantMessage = Schemas['AssistantMessage']
+export type AssistantUsage = Schemas['AssistantUsage']
+export type AssistantSettings = Schemas['AssistantSettings']
+export type AssistantCredentialStatus = Schemas['AssistantCredentialStatus']
+export type ReportSummaryDraft = Schemas['ReportSummaryDraft']
 export interface OverrideCell {
   metricKey: string
   subjectId: string
@@ -82,7 +89,14 @@ export const keys = {
   report: (sc: string, period: string, revision: string) => ['report', sc, period, revision] as const,
   reportSummary: (sc: string, period: string) => ['reportSummary', sc, period] as const,
   myTokens: ['myTokens'] as const,
+  assistantCredential: ['assistantCredential'] as const,
+  assistantSettings: ['assistantSettings'] as const,
+  assistantThreads: ['assistantThreads'] as const,
+  assistantThread: (id: string) => ['assistantThread', id] as const,
 }
+
+/** How often the client asks for SAM's answer (or draft) while one is pending. */
+export const ASSISTANT_POLL_MS = 1500
 
 type Result<T> = { data?: T; error?: unknown; response: Response }
 
@@ -844,6 +858,152 @@ export function usePutDefaultLayout(sc: string) {
       queryClient.setQueryData(keys.layout(sc), (prev: Schemas['LayoutResponse'] | undefined) =>
         prev ? { ...prev, defaultRevision: data.revision } : prev,
       )
+    },
+  })
+}
+
+// ---- Ask SAM ------------------------------------------------------------------
+
+/** True while SAM is still writing one of the thread's answers. */
+export function threadPending(thread: AssistantThread | undefined): boolean {
+  return thread?.messages.some((m) => m.status === 'pending') ?? false
+}
+
+/** Whether the caller has saved a model provider key (never the key itself). */
+export function useMyAssistantCredential(enabled = true) {
+  const api = useApi()
+  return useQuery({
+    queryKey: keys.assistantCredential,
+    enabled,
+    queryFn: () => unwrap(api.GET('/me/assistant/credential')),
+  })
+}
+
+/**
+ * Saves or replaces the caller's key. The key is in the mutation's variables,
+ * so the finished mutation leaves the cache as soon as nothing observes it.
+ */
+export function usePutAssistantCredential() {
+  const api = useApi()
+  const queryClient = useQueryClient()
+  return useMutation({
+    gcTime: 0,
+    mutationFn: (apiKey: string) => unwrap(api.PUT('/me/assistant/credential', { body: { apiKey } })),
+    onSuccess: (data) => queryClient.setQueryData(keys.assistantCredential, data),
+  })
+}
+
+export function useDeleteAssistantCredential() {
+  const api = useApi()
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: () => unwrap(api.DELETE('/me/assistant/credential')),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: keys.assistantCredential }),
+  })
+}
+
+/** Whether Ask SAM is on for the organization, and the model it answers with. */
+export function useAssistantSettings(enabled = true) {
+  const api = useApi()
+  return useQuery({
+    queryKey: keys.assistantSettings,
+    enabled,
+    queryFn: () => unwrap(api.GET('/assistant/settings')),
+  })
+}
+
+export function usePutAssistantSettings() {
+  const api = useApi()
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (body: AssistantSettings) => unwrap(api.PUT('/assistant/settings', { body })),
+    onSuccess: (data) => queryClient.setQueryData(keys.assistantSettings, data),
+  })
+}
+
+/** The caller's chats, most recently used first. */
+export function useAssistantThreads(enabled = true) {
+  const api = useApi()
+  return useQuery({
+    queryKey: keys.assistantThreads,
+    enabled,
+    queryFn: async () => (await unwrap(api.GET('/assistant/threads'))).threads,
+  })
+}
+
+/** One chat; polled while an answer is pending, and only while something shows it. */
+export function useAssistantThread(id: string | null) {
+  const api = useApi()
+  return useQuery({
+    queryKey: keys.assistantThread(id ?? ''),
+    enabled: id !== null,
+    // The chat a question just returned is current; the next read is the first poll.
+    staleTime: 1000,
+    refetchInterval: (query) => (threadPending(query.state.data) ? ASSISTANT_POLL_MS : false),
+    queryFn: () => unwrap(api.GET('/assistant/threads/{id}', { params: { path: { id: id ?? '' } } })),
+  })
+}
+
+/** Asks SAM a question, starting a chat first when there is none; resolves with the chat, its answer pending. */
+export function useAskSamQuestion() {
+  const api = useApi()
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async ({
+      threadId,
+      text,
+      context,
+    }: {
+      threadId: string | null
+      text: string
+      context: AssistantContext
+    }) => {
+      const id = threadId ?? (await unwrap(api.POST('/assistant/threads', { body: { context } }))).id
+      return unwrap(api.POST('/assistant/threads/{id}/messages', { params: { path: { id } }, body: { text, context } }))
+    },
+    onSuccess: async (thread) => {
+      queryClient.setQueryData(keys.assistantThread(thread.id), thread)
+      await queryClient.invalidateQueries({ queryKey: keys.assistantThreads })
+    },
+  })
+}
+
+function wait(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(signal.reason)
+    const t = setTimeout(resolve, ms)
+    signal?.addEventListener(
+      'abort',
+      () => {
+        clearTimeout(t)
+        reject(signal.reason)
+      },
+      { once: true },
+    )
+  })
+}
+
+/**
+ * Asks SAM to draft the month's summary (admin) and polls until the draft is
+ * written or fails. Nothing is saved: the caller puts the text in the editor.
+ */
+export function useDraftReportSummary(sc: string, period: string) {
+  const api = useApi()
+  return useMutation({
+    mutationFn: async ({ signal }: { signal?: AbortSignal } = {}) => {
+      let draft = await unwrap(
+        api.POST('/scorecards/{sc}/reports/{period}/summary/draft', { params: { path: { sc, period } }, body: {} }),
+      )
+      while (draft.pending) {
+        await wait(ASSISTANT_POLL_MS, signal)
+        draft = await unwrap(
+          api.GET('/scorecards/{sc}/reports/{period}/summary/draft/{id}', {
+            params: { path: { sc, period, id: draft.id } },
+            signal,
+          }),
+        )
+      }
+      return draft
     },
   })
 }

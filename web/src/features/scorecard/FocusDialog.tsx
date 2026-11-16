@@ -6,6 +6,8 @@ import { useMe, useOrgUnits, useScorecards, useVersions, useView } from '../../a
 import type { components } from '../../api/schema'
 import { parsePeriod } from '../../lib/period'
 import { usePeriodState } from '../../shell/usePeriodState'
+import { Sam } from '../../ui/Sam'
+import { useAskSam } from '../assistant/useAssistant'
 import { defaultStatusScale, MOVE_CLASS } from './charts/chartTheme'
 import { FOCUS_CHART_HEIGHT, MetricChart } from './charts/MetricChart'
 import { RANGES, rangeChange, rangeMonths, type RangeChange, type RangeKey } from './charts/ranges'
@@ -52,6 +54,7 @@ function MetricFocusBody({
   const [params, setParams] = useSearchParams()
   const [range, setRange] = useState<RangeKey>('12M')
   const [exportError, setExportError] = useState('')
+  const sam = useAskSam()
   const me = useMe()
   const orgUnits = useOrgUnits()
   const versions = useVersions(scorecardId)
@@ -308,7 +311,22 @@ function MetricFocusBody({
         <button type="button" className="rounded border border-ink/20 px-2 py-1 text-sm hover:bg-cream" onClick={() => void copyLink()}>
           Copy link
         </button>
-        <button type="button" disabled aria-label="Ask SAM (coming soon)" className="rounded border border-ink/20 px-2 py-1 text-sm opacity-60">
+        <button
+          type="button"
+          aria-haspopup="dialog"
+          aria-expanded={sam.isOpen}
+          className="inline-flex items-center gap-1.5 rounded border border-accent/40 bg-white px-2 py-1 text-sm font-medium text-accent-deep hover:bg-cream"
+          onClick={() =>
+            sam.open({
+              page: 'focus',
+              scorecardId,
+              metricKey,
+              ...(period.ready ? { period: period.period } : {}),
+              ...(period.scope ? { scope: period.scope } : {}),
+            })
+          }
+        >
+          <Sam className="size-5" />
           Ask SAM
         </button>
       </div>

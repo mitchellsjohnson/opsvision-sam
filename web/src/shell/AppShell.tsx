@@ -13,6 +13,7 @@ import {
   KeyRound,
   List,
   LogOut,
+  MessageCircleQuestion,
   PanelLeftClose,
   PanelLeftOpen,
   Tags,
@@ -23,6 +24,8 @@ import { useEffect, useId, type ReactElement } from 'react'
 import { Link, NavLink, Outlet, useLocation, useMatch, useResolvedPath, useSearchParams } from 'react-router'
 import { useMe, useScorecards } from '../api/queries'
 import { useAuth } from '../auth/context'
+import { AskSamProvider } from '../features/assistant/AskSamDrawer'
+import { useAskSam, usePageAssistantContext } from '../features/assistant/useAssistant'
 import { focusOnDark, menuItemHighlight } from '../ui/focus'
 import { Sam } from '../ui/Sam'
 import { PeriodPicker } from './PeriodPicker'
@@ -39,6 +42,7 @@ const ADMIN_LINKS: { to: string; label: string; icon: LucideIcon }[] = [
   { to: '/admin/import', label: 'Import', icon: Upload },
   { to: '/admin/record-types', label: 'Record types', icon: Tags },
   { to: '/admin/templates', label: 'Templates', icon: FileText },
+  { to: '/admin/assistant', label: 'Ask SAM', icon: MessageCircleQuestion },
 ]
 
 const NAV_LINKS_ID = 'main-nav-links'
@@ -103,8 +107,31 @@ function ShellNavLink({
   )
 }
 
+/** Opens Ask SAM from the navigation; a button, since it opens the drawer rather than a page. */
+function AskSamNavButton({ collapsed }: { collapsed: boolean }) {
+  const sam = useAskSam()
+  const context = usePageAssistantContext()
+  return (
+    <RailTip label="Ask SAM" collapsed={collapsed}>
+      <button
+        type="button"
+        aria-haspopup="dialog"
+        aria-expanded={sam.isOpen}
+        aria-label={collapsed ? 'Ask SAM' : undefined}
+        onClick={() => sam.open(context)}
+        className={clsx(itemClass(collapsed), 'text-ink hover:bg-white')}
+      >
+        <Sam className={navIconClass(collapsed)} />
+        {!collapsed && <span>Ask SAM</span>}
+      </button>
+    </RailTip>
+  )
+}
+
 function AppShellBody() {
   const { open: dockOpen, dockRef } = useShellDock()
+  const sam = useAskSam()
+  const samContext = usePageAssistantContext()
   const auth = useAuth()
   const me = useMe()
   const scorecards = useScorecards()
@@ -144,7 +171,8 @@ function AppShellBody() {
   }, [tenant, rememberTenant])
 
   return (
-    <div className="flex min-h-screen flex-col">
+    // Beside the page, SAM takes the right edge and the page reflows into the rest.
+    <div className={clsx('flex min-h-screen flex-col', sam.docked && 'lg:pr-[26rem]')}>
       <a
         href="#main"
         className="sr-only focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-50 focus:rounded-md focus:bg-white focus:px-3 focus:py-2 focus:font-medium focus:text-accent-deep focus:outline-2 focus:outline-offset-2 focus:outline-amber"
@@ -157,9 +185,14 @@ function AppShellBody() {
         <div className="ml-auto flex items-center gap-4">
           <button
             type="button"
-            disabled
-            aria-label="Ask SAM (coming soon)"
-            className={clsx('flex size-9 items-center justify-center rounded-full bg-white p-0.5 opacity-80', focusOnDark)}
+            aria-label="Ask SAM"
+            aria-haspopup="dialog"
+            aria-expanded={sam.isOpen}
+            onClick={() => sam.open(samContext)}
+            className={clsx(
+              'flex size-9 items-center justify-center rounded-full bg-white p-0.5 hover:ring-2 hover:ring-white/60',
+              focusOnDark,
+            )}
           >
             <Sam className="size-8" />
           </button>
@@ -211,6 +244,18 @@ function AppShellBody() {
                       Access tokens
                     </Link>
                   </DropdownMenu.Item>
+                  <DropdownMenu.Item
+                    asChild
+                    className={clsx(
+                      'flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm',
+                      menuItemHighlight,
+                    )}
+                  >
+                    <Link to="/settings/ask-sam">
+                      <MessageCircleQuestion aria-hidden="true" size={14} />
+                      Ask SAM
+                    </Link>
+                  </DropdownMenu.Item>
                 </DropdownMenu.Group>
                 <DropdownMenu.Separator className="my-1 h-px bg-ink/15" />
                 <DropdownMenu.Item
@@ -256,6 +301,9 @@ function AppShellBody() {
                   icon={ClipboardPen}
                   collapsed={collapsed}
                 />
+              </li>
+              <li>
+                <AskSamNavButton collapsed={collapsed} />
               </li>
             </ul>
             {isAdmin && (
@@ -350,7 +398,9 @@ export function AppShell() {
   return (
     <Tooltip.Provider delayDuration={300}>
       <ShellDockProvider>
-        <AppShellBody />
+        <AskSamProvider>
+          <AppShellBody />
+        </AskSamProvider>
       </ShellDockProvider>
     </Tooltip.Provider>
   )

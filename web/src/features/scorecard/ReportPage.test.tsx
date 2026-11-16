@@ -15,6 +15,7 @@ import {
   type ReportHandlerOptions,
 } from '../../test/reportFixtures'
 import { renderApp } from '../../test/utils'
+import { assistantHandlers, newAssistantSeen, type AssistantFakeOptions } from '../../test/assistantFixtures'
 import { viewHandlers } from '../../test/viewFixtures'
 
 const ROUTE = '/scorecards/sc-main/report?period=2026-M10'
@@ -317,5 +318,86 @@ describe('ReportPage', () => {
     await userEvent.setup().click(await screen.findByRole('button', { name: 'View live' }))
     await waitFor(() => expect(location()).toBe('/scorecards/sc-main/report?period=2026-M10&revision=live'))
     expect(await screen.findByRole('button', { name: 'View published' })).toBeTruthy()
+  })
+})
+
+describe('ReportPage: Draft with SAM', () => {
+  function renderDraft(options: AssistantFakeOptions = {}) {
+    const seen = newSeen()
+    const sam = options.seen ?? newAssistantSeen()
+    server.use(...assistantHandlers({ ...options, seen: sam }))
+    const view = renderReport(ROUTE, { seen })
+    return { seen, sam, ...view }
+  }
+
+  it('fills the summary with a draft marked for review, and saves nothing until Save', async () => {
+    const { seen, sam, container } = renderDraft()
+    const box = (await screen.findByRole('textbox', { name: 'Summary' })) as HTMLTextAreaElement
+    await waitFor(() => expect(box.value).toBe(REPORT_SUMMARY))
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: 'Draft with SAM' }))
+    expect(await screen.findByText('SAM is drafting the summary…')).toBeTruthy()
+    await waitFor(() => expect(box.value).toBe('October was steady: on-time delivery held at 84.3%.'), { timeout: 4000 })
+    expect(sam.draftPosts).toHaveLength(1)
+    const note = screen.getByText('Draft from SAM — review before saving')
+    expect(box.getAttribute('aria-describedby')).toContain(note.id)
+    expect(screen.getByText('claude-haiku-5-5 · 1,234 in · 56 out tokens')).toBeTruthy()
+    expect(seen.summaryPuts).toEqual([])
+    expect(screen.getByText('You have unsaved summary changes. Save before publishing.')).toBeTruthy()
+    expect((await axe(container)).violations).toEqual([])
+
+    await user.click(screen.getByRole('button', { name: 'Save summary' }))
+    await waitFor(() =>
+      expect(seen.summaryPuts).toEqual([{ text: 'October was steady: on-time delivery held at 84.3%.', expectedRevision: 3 }]),
+    )
+    expect(screen.queryByText('Draft from SAM — review before saving')).toBeNull()
+  })
+
+  it('discards a draft back to the text before it', async () => {
+    renderDraft()
+    const box = (await screen.findByRole('textbox', { name: 'Summary' })) as HTMLTextAreaElement
+    await waitFor(() => expect(box.value).toBe(REPORT_SUMMARY))
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: 'Draft with SAM' }))
+    await user.click(await screen.findByRole('button', { name: 'Discard draft' }, { timeout: 4000 }))
+    expect(box.value).toBe(REPORT_SUMMARY)
+    expect(screen.queryByText('Draft from SAM — review before saving')).toBeNull()
+  })
+
+  it('shows why SAM could not draft, with the way to fix it', async () => {
+    renderDraft()
+    server.use(
+      http.post(`${API}/v1/scorecards/:sc/reports/:period/summary/draft`, () =>
+        HttpResponse.json(
+          { error: { code: 'conflict', message: 'Add your Claude API key in My settings → Ask SAM to draft with SAM.' } },
+          { status: 409 },
+        ),
+      ),
+    )
+    const box = (await screen.findByRole('textbox', { name: 'Summary' })) as HTMLTextAreaElement
+    await waitFor(() => expect(box.value).toBe(REPORT_SUMMARY))
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Draft with SAM' }))
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toContain('Add your Claude API key in My settings → Ask SAM to draft with SAM.')
+    expect(within(alert).getByRole('link', { name: 'Open Ask SAM settings' }).getAttribute('href')).toBe('/settings/ask-sam')
+    expect(box.value).toBe(REPORT_SUMMARY)
+  })
+
+  it('shows a draft that failed in the worker', async () => {
+    renderDraft({ draft: { error: 'Claude could not be reached. Try again in a minute.' } })
+    const box = (await screen.findByRole('textbox', { name: 'Summary' })) as HTMLTextAreaElement
+    await waitFor(() => expect(box.value).toBe(REPORT_SUMMARY))
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Draft with SAM' }))
+    expect((await screen.findByRole('alert', {}, { timeout: 4000 })).textContent).toContain(
+      'Claude could not be reached. Try again in a minute.',
+    )
+    expect(box.value).toBe(REPORT_SUMMARY)
+  })
+
+  it('is not offered to viewers', async () => {
+    state.role = 'viewer'
+    renderReport()
+    expect(await screen.findByText(REPORT_SUMMARY)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Draft with SAM' })).toBeNull()
   })
 })

@@ -32,7 +32,7 @@ function shell(route = '/scorecards/sc-main?period=2026-M10', auth = testAuth())
   )
 }
 
-const ADMIN_LINKS = ['Org', 'Items', 'Members', 'Methodology', 'Import', 'Record types', 'Templates']
+const ADMIN_LINKS = ['Org', 'Items', 'Members', 'Methodology', 'Import', 'Record types', 'Templates', 'Ask SAM']
 
 describe('AppShell', () => {
   it('shows the admin navigation to admins', async () => {
@@ -57,7 +57,7 @@ describe('AppShell', () => {
     expect(within(nav).getByRole('link', { name: 'Enter data' })).toBeTruthy()
   })
 
-  it('has landmarks, a skip link and the disabled SAM button', async () => {
+  it('has landmarks, a skip link and the Ask SAM button', async () => {
     shell()
     expect(screen.getByRole('banner')).toBeTruthy()
     const main = screen.getByRole('main')
@@ -65,8 +65,9 @@ describe('AppShell', () => {
     const skip = screen.getByRole('link', { name: 'Skip to main content' })
     expect(skip.getAttribute('href')).toBe('#main')
     expect(main.id).toBe('main')
-    const sam = screen.getByRole('button', { name: 'Ask SAM (coming soon)' })
-    expect((sam as HTMLButtonElement).disabled).toBe(true)
+    const sam = within(screen.getByRole('banner')).getByRole('button', { name: 'Ask SAM' })
+    expect((sam as HTMLButtonElement).disabled).toBe(false)
+    expect(sam.getAttribute('aria-haspopup')).toBe('dialog')
     expect(sam.querySelector('img[data-sam="mark"]')).toBeTruthy()
     expect(screen.getByText('OpsVision')).toBeTruthy()
     await screen.findByRole('button', { name: /Test admin/ })
@@ -305,7 +306,7 @@ describe('AppShell collapsible navigation', () => {
     const user = userEvent.setup()
     const nav = await screen.findByRole('navigation', { name: 'Main' })
     await within(nav).findByRole('link', { name: 'Templates' })
-    const expected = ['Main scorecard', 'Enter data', ...ADMIN_LINKS, 'Expand navigation']
+    const expected = ['Main scorecard', 'Enter data', 'Ask SAM', ...ADMIN_LINKS, 'Expand navigation']
     // Start from the skip link, the first stop on the page.
     await user.tab()
     expect(document.activeElement).toBe(screen.getByRole('link', { name: 'Skip to main content' }))
@@ -371,7 +372,7 @@ describe('AppShell focus indicators', () => {
     const header = screen.getByRole('banner')
     const userMenu = await within(header).findByRole('button', { name: /Test admin/ })
     const tenantMenu = await within(header).findByRole('button', { name: /Tenant:\s*Example Co/ })
-    const sam = within(header).getByRole('button', { name: 'Ask SAM (coming soon)' })
+    const sam = within(header).getByRole('button', { name: 'Ask SAM' })
     for (const control of [userMenu, tenantMenu, sam]) {
       for (const cls of ON_DARK) expect(control.classList.contains(cls), `${cls} on ${control.textContent}`).toBe(true)
     }

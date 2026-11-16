@@ -95,12 +95,14 @@ describe('ControlBar', () => {
     }
   })
 
-  it('keeps Ask SAM disabled in the control bar', async () => {
+  it('offers Ask SAM in the control bar', async () => {
     renderScorecard('/scorecards/sc-main/overview?period=2026-M10')
     await screen.findByRole('heading', { name: 'Overview', level: 1 })
     const bar = screen.getByRole('toolbar', { name: 'Scorecard controls' })
-    const sam = within(bar).getByRole('button', { name: 'Ask SAM (coming soon)' })
-    expect((sam as HTMLButtonElement).disabled).toBe(true)
+    const sam = within(bar).getByRole('button', { name: 'Ask SAM' })
+    expect((sam as HTMLButtonElement).disabled).toBe(false)
+    expect(sam.getAttribute('aria-haspopup')).toBe('dialog')
+    expect(sam.getAttribute('aria-expanded')).toBe('false')
   })
 })
 

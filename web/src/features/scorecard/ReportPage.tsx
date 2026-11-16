@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useId, useMemo, useState } from 'react'
+import clsx from 'clsx'
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router'
 import {
+  useDraftReportSummary,
   useItems,
   useLayout,
   useMe,
@@ -12,12 +14,15 @@ import {
   useReportMonths,
   useReportSummary,
   useScorecards,
+  type AssistantUsage,
 } from '../../api/queries'
 import { ApiError } from '../../api/errors'
 import type { components } from '../../api/schema'
 import { parsePeriod, periodLabel } from '../../lib/period'
 import { usePeriodState } from '../../shell/usePeriodState'
+import { Sam } from '../../ui/Sam'
 import { StatusBadge } from '../../ui/StatusBadge'
+import { usageText } from '../assistant/AssistantMessage'
 import { inputClass, primaryButton, secondaryButton } from '../admin/formUi'
 import { defaultStatusScale } from './charts/chartTheme'
 import { downloadBlob } from './exports'
@@ -57,10 +62,42 @@ function SummaryEditor({ scorecardId, period, summary, reload, onDirtyChange }: 
   const [conflict, setConflict] = useState(false)
   const [reloadFailed, setReloadFailed] = useState(false)
   const put = usePutReportSummary(scorecardId, period)
+  const drafting = useDraftReportSummary(scorecardId, period)
+  /** Set while the text box holds SAM's draft: the text it replaced, and what the draft cost. */
+  const [fromSam, setFromSam] = useState<{ before: string; usage?: AssistantUsage } | null>(null)
+  const abortDraft = useRef<AbortController | null>(null)
+  const noteId = useId()
   const dirty = draft.text !== draft.savedText
 
   useEffect(() => onDirtyChange(dirty), [dirty, onDirtyChange])
   useEffect(() => () => onDirtyChange(false), [onDirtyChange])
+  useEffect(() => () => abortDraft.current?.abort(), [])
+
+  const draftWithSam = () => {
+    abortDraft.current?.abort()
+    const controller = new AbortController()
+    abortDraft.current = controller
+    const before = draft.text
+    drafting.mutate(
+      { signal: controller.signal },
+      {
+        onSuccess: (d) => {
+          if (d.text === undefined) return
+          const text = d.text
+          setDraft((cur) => ({ ...cur, text }))
+          setFromSam({ before, usage: d.usage })
+          setSaved(false)
+        },
+      },
+    )
+  }
+  const discardDraft = () => {
+    if (!fromSam) return
+    const text = fromSam.before
+    setDraft((cur) => ({ ...cur, text }))
+    setFromSam(null)
+  }
+  const draftError = drafting.isError ? drafting.error.message : drafting.data?.error
 
   const save = () => {
     const text = draft.text
@@ -71,6 +108,7 @@ function SummaryEditor({ scorecardId, period, summary, reload, onDirtyChange }: 
           setDraft((d) => ({ ...d, baseRevision: data.revision, savedText: data.text }))
           setSaved(true)
           setConflict(false)
+          setFromSam(null)
         },
         onError: (e) => setConflict(e instanceof ApiError && e.status === 409),
       },
@@ -84,6 +122,7 @@ function SummaryEditor({ scorecardId, period, summary, reload, onDirtyChange }: 
       return
     }
     setDraft({ text: fresh.text, baseRevision: fresh.revision, savedText: fresh.text })
+    setFromSam(null)
     setConflict(false)
     setReloadFailed(false)
     setSaved(false)
@@ -92,21 +131,63 @@ function SummaryEditor({ scorecardId, period, summary, reload, onDirtyChange }: 
 
   return (
     <div className="mt-3">
-      <label htmlFor={id} className="block text-sm font-medium">
-        Summary
-      </label>
+      <div className="flex flex-wrap items-end justify-between gap-2">
+        <label htmlFor={id} className="block text-sm font-medium">
+          Summary
+        </label>
+        <button
+          type="button"
+          className={clsx(secondaryButton, 'inline-flex items-center gap-1.5')}
+          disabled={drafting.isPending}
+          onClick={draftWithSam}
+        >
+          <Sam pose={drafting.isPending ? 'thinking' : 'mark'} className={clsx('size-5', drafting.isPending && 'ov-sam-think')} />
+          {drafting.isPending ? 'Drafting…' : 'Draft with SAM'}
+        </button>
+      </div>
+      {fromSam && (
+        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-amber bg-cream px-3 py-2 text-sm">
+          <p id={noteId} className="font-medium">
+            Draft from SAM — review before saving
+          </p>
+          {fromSam.usage && <p className="text-xs text-ink/70">{usageText(fromSam.usage)}</p>}
+          <button type="button" className="ml-auto text-sm font-medium text-accent-deep underline" onClick={discardDraft}>
+            Discard draft
+          </button>
+        </div>
+      )}
       <textarea
         id={id}
-        rows={4}
+        rows={fromSam ? 8 : 4}
         maxLength={8000}
         className={inputClass}
         value={draft.text}
+        readOnly={drafting.isPending}
+        aria-describedby={fromSam ? noteId : undefined}
         onChange={(e) => {
           const text = e.target.value
           setDraft((d) => ({ ...d, text }))
           setSaved(false)
         }}
       />
+      {drafting.isPending && (
+        <p role="status" className="mt-2 text-sm text-ink/80">
+          SAM is drafting the summary…
+        </p>
+      )}
+      {draftError && (
+        <p role="alert" className="mt-2 text-sm text-status-r">
+          {draftError}
+          {draftError.includes('My settings') && (
+            <>
+              {' '}
+              <Link to="/settings/ask-sam" className="font-medium text-accent-deep underline">
+                Open Ask SAM settings
+              </Link>
+            </>
+          )}
+        </p>
+      )}
       <div className="mt-2 flex flex-wrap items-center gap-3">
         <button type="button" className={secondaryButton} disabled={put.isPending} onClick={save}>
           Save summary

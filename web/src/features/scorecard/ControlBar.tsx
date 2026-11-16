@@ -16,6 +16,7 @@ import {
 } from '../../lib/period'
 import { Sam } from '../../ui/Sam'
 import { usePeriodState } from '../../shell/usePeriodState'
+import { useAskSam, usePageAssistantContext } from '../assistant/useAssistant'
 import { GlobalFilters } from './GlobalFilters'
 
 const fieldClass = 'rounded-md border border-ink/30 bg-white px-2 py-1 text-sm'
@@ -57,6 +58,8 @@ export function ControlBar({ scorecardId, barRef }: { scorecardId: string; barRe
   const id = useId()
   const versions = useVersions(scorecardId)
   const [view, update] = usePeriodState()
+  const sam = useAskSam()
+  const samContext = usePageAssistantContext()
 
   const parsed = parsePeriod(view.period)
   const start = view.fiscalYearStartMonth
@@ -254,9 +257,11 @@ export function ControlBar({ scorecardId, barRef }: { scorecardId: string; barRe
 
       <button
         type="button"
-        disabled
-        aria-label="Ask SAM (coming soon)"
-        className="ml-auto flex size-9 shrink-0 items-center justify-center rounded-full bg-cream p-0.5 opacity-80 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-deep"
+        aria-label="Ask SAM"
+        aria-haspopup="dialog"
+        aria-expanded={sam.isOpen}
+        onClick={() => sam.open(samContext)}
+        className="ml-auto flex size-9 shrink-0 items-center justify-center rounded-full bg-cream p-0.5 hover:ring-2 hover:ring-accent/40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-deep"
       >
         <Sam className="size-8" />
       </button>
