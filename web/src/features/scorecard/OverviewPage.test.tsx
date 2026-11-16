@@ -6,7 +6,7 @@ import { axe } from 'vitest-axe'
 import type { components } from '../../api/schema'
 import { App } from '../../App'
 import { monthLabel, parsePeriod } from '../../lib/period'
-import { orgUnits } from '../../test/fixtures'
+import { meFor, orgUnits, tenant } from '../../test/fixtures'
 import { API, server } from '../../test/server'
 import { renderApp } from '../../test/utils'
 import {
@@ -153,8 +153,9 @@ describe('OverviewPage', () => {
     expect(bands.map((b) => b.status)).toEqual(['Y', 'G'])
     expect(bands[0]!.y1).toBe(90)
     expect(bands[1]!.y0).toBe(90)
-    expect(within(metricCard('On-time delivery')).getByTestId('current-point-label').textContent).toMatch(/84\.3%/)
-    expect(within(metricCard('On-time delivery')).getByTestId('current-point-label').textContent).toContain('Y')
+    // The value row carries the current value; the tile has no separate Current line.
+    expect(within(metricCard('On-time delivery')).queryByTestId('current-point-label')).toBeNull()
+    expect(within(metricCard('On-time delivery')).getByTestId('header-value').textContent).toBe('84.3%')
   })
 
   it('a metric card shows its change once, beside the value', async () => {
@@ -323,7 +324,8 @@ describe('OverviewPage', () => {
     it('an item-only metric is Not reported when the subtree has no services', async () => {
       scoped('unit-b')
       await screen.findByRole('heading', { name: 'Overview', level: 1 })
-      await waitFor(() => expect(screen.getByText(/^Not reported:/).textContent).toMatch(/Service uptime/))
+      const notReported = await screen.findByRole('region', { name: /^Not reported for Oct 2026/ })
+      await waitFor(() => expect(within(notReported).getByRole('rowheader', { name: 'Service uptime' })).toBeTruthy())
       expect(screen.queryByRole('article', { name: /Service uptime/ })).toBeNull()
       expect(within(screen.getByRole('region', { name: 'Health this month' })).getByText(/Not reported \d/)).toBeTruthy()
     })
@@ -357,9 +359,11 @@ describe('OverviewPage', () => {
       expect(within(health).getByRole('button', { name: /On track/ }).textContent).toBe('On track 1')
       expect(within(health).getByRole('button', { name: /Watch/ }).textContent).toBe('Watch 1')
       expect(within(health).getByText('Not reported 1')).toBeTruthy()
-      const listed = screen.getByText(/^Not reported:/).textContent ?? ''
-      expect(listed).toMatch(/Defect rate: Not applicable: Not measured this month/)
-      expect(listed).not.toMatch(/Concepts/)
+      const listed = screen.getByRole('region', { name: /^Not reported for Oct 2026/ })
+      const defect = within(listed).getByRole('rowheader', { name: 'Defect rate' }).closest('tr')!
+      expect(within(defect).getByText('Not applicable: Not measured this month')).toBeTruthy()
+      expect(within(defect).getByText('Quality')).toBeTruthy()
+      expect(within(listed).queryByRole('rowheader', { name: /Concepts/ })).toBeNull()
       expect(
         screen.getByText('Reported less often and up to date: Concepts delivered expected value (Q3 FY2026; Q4 due by Jan).'),
       ).toBeTruthy()
@@ -374,9 +378,9 @@ describe('OverviewPage', () => {
       )
       renderApp(<App />, { route: '/scorecards/sc-main/overview?period=2026-M11' })
       await screen.findByRole('heading', { name: 'Overview', level: 1 })
-      expect(screen.getByText(/^Not reported:/).textContent).toMatch(
-        /Concepts delivered expected value: Q3 FY2026 overdue \(due by Oct 2026\)/,
-      )
+      const listed = screen.getByRole('region', { name: /^Not reported for Nov 2026/ })
+      const row = within(listed).getByRole('rowheader', { name: 'Concepts delivered expected value' }).closest('tr')!
+      expect(within(row).getByText('Q3 FY2026 overdue (due by Oct 2026)')).toBeTruthy()
       expect(screen.queryByText(/^Reported less often/)).toBeNull()
     })
 
@@ -401,6 +405,154 @@ describe('OverviewPage', () => {
       const card = metricCard('Concepts delivered expected value')
       expect(within(card).getByTestId('header-value').textContent).toBe('90%')
       expect(within(card).getByText(/Concepts delivered expected value: 90%, status G/)).toBeTruthy()
+    })
+
+    it('the quarterly tile gets quarter columns, not months', async () => {
+      renderQuarterly()
+      await screen.findByRole('heading', { name: 'Overview', level: 1 })
+      const card = metricCard('Concepts delivered expected value')
+      const points = within(card)
+        .getAllByRole('button')
+        .map((b) => b.getAttribute('aria-label') ?? '')
+        .filter((n) => /^(Q\d|[A-Z][a-z]{2}): /.test(n))
+      expect(points).toEqual(['Q4: 70%', 'Q1: 75%', 'Q2: 85%', 'Q3: 90%'])
+      expect(within(card).getByText(/^Reported quarterly · /)).toBeTruthy()
+    })
+  })
+
+  describe('frame', () => {
+    function blankCells(view: ScorecardView, metric: string, periods?: string[]) {
+      for (const row of view.rows.filter((r) => r.metricKey === metric)) {
+        for (const c of row.cells) {
+          if (periods && !periods.includes(c.period)) continue
+          Object.assign(c, { value: null, display: '', status: '', naReason: '', components: {}, change: null, changeKind: '' })
+        }
+      }
+    }
+
+    it('renders the title, header and a busy page skeleton before the view loads', async () => {
+      server.use(
+        // Before viewHandlers, so it answers first: the view never arrives.
+        http.get(`${API}/v1/scorecards/sc-main/view`, async () => {
+          await new Promise(() => {})
+          return HttpResponse.json({})
+        }),
+        ...viewHandlers(),
+      )
+      renderApp(<App />, { route: ROUTE })
+      const status = await screen.findByText('Loading overview')
+      // The title is drawn at once; the h1 waits for content.
+      expect(screen.getByText('Overview', { selector: 'p' }).getAttribute('aria-hidden')).toBe('true')
+      expect(screen.queryByRole('heading', { name: 'Overview', level: 1 })).toBeNull()
+      expect(status.getAttribute('role')).toBe('status')
+      expect(status.className).toContain('sr-only')
+      const busy = status.closest('[aria-busy="true"]')
+      expect(busy).toBeTruthy()
+      expect(busy!.querySelectorAll('[data-skeleton]').length).toBeGreaterThan(2)
+      expect(screen.queryByText(/Loading overview…/)).toBeNull()
+      expect(screen.getByRole('button', { name: 'Customize layout' })).toBeTruthy()
+    })
+
+    it('section headers carry the roll-up in the tenant’s labels', async () => {
+      server.use(
+        http.get(`${API}/v1/me`, () =>
+          HttpResponse.json({
+            ...meFor('admin'),
+            tenant: {
+              ...tenant,
+              statusScale: [
+                { key: 'G', label: 'On track', color: '#137A3A', rank: 1 },
+                { key: 'Y', label: 'Watch', color: '#8A5A00', rank: 2 },
+                { key: 'R', label: 'Off track', color: '#B42318', rank: 3 },
+              ],
+            },
+          }),
+        ),
+      )
+      renderOverview(ROUTE, (view) => {
+        addServiceUptime(view)
+      })
+      await screen.findByRole('article', { name: /Service uptime/ })
+      const heading = screen.getAllByRole('heading', { level: 2 }).find((h) => h.textContent === 'Delivery')!
+      const header = heading.closest<HTMLElement>('[data-section-header]')!
+      await waitFor(() => expect(header.textContent).toBe('Delivery◆ 1 Off track · ▲ 1 Watch'))
+      expect(header.className).toContain('border-b')
+      expect(header.textContent).not.toMatch(/1R|1Y/)
+    })
+
+    it('a tile under its own section has no category eyebrow; moved under another, it keeps one', async () => {
+      server.use(
+        http.get(`${API}/v1/me/layouts/:sc`, () =>
+          HttpResponse.json({
+            items: [
+              { id: 'widget:health', size: 'wide', hidden: false },
+              { id: 'section:delivery', size: 'wide', hidden: false },
+              { id: 'metric:on_time_pct', size: 'small', hidden: false },
+              { id: 'metric:defect_rate', size: 'small', hidden: false },
+              { id: 'section:quality', size: 'wide', hidden: false },
+            ],
+            revision: 1,
+            source: 'user',
+            defaultRevision: 0,
+          }),
+        ),
+      )
+      renderOverview()
+      await screen.findByRole('article', { name: /Defect rate/ })
+      const eyebrowOf = (tile: HTMLElement) => tile.closest('[data-layout-item]')!.querySelector('[data-eyebrow]')
+      // The saved layout arrives after the view; tiles move once it does.
+      await waitFor(() => expect(eyebrowOf(metricCard('Defect rate'))?.textContent).toBe('Quality'))
+      expect(eyebrowOf(metricCard('On-time delivery'))).toBeNull()
+    })
+
+    it('a tile is an article with an h3, the threshold line and an Expand icon; no table link or Current line', async () => {
+      renderOverview(ROUTE, (view) => {
+        Object.assign(cellOf(view, 'on_time_pct', 'root', '2026-M10'), {
+          rule: {
+            type: 'bands',
+            bands: [
+              { status: 'G', op: '>=', value: 90 },
+              { status: 'Y', op: '>=', value: 80 },
+              { status: 'R', op: '', value: 0 },
+            ],
+          },
+        })
+      })
+      await screen.findByRole('heading', { name: 'Overview', level: 1 })
+      const card = metricCard('On-time delivery')
+      expect(within(card).getByRole('heading', { level: 3, name: 'On-time delivery' })).toBeTruthy()
+      expect(within(card).getByText('Green at 90.0% or better · Red below 80.0%')).toBeTruthy()
+      expect(within(card).queryByRole('link', { name: 'View as table' })).toBeNull()
+      expect(within(card).queryByText(/Current:/)).toBeNull()
+      const user = userEvent.setup()
+      const expand = within(card).getByRole('button', { name: 'Expand On-time delivery' })
+      await user.click(expand)
+      expect(await screen.findByRole('dialog', { name: /On-time delivery/i })).toBeTruthy()
+      await user.keyboard('{Escape}')
+      await waitFor(() => expect(document.activeElement).toBe(expand))
+    })
+
+    it('stopped reporting: the last value as history, with when it stopped', async () => {
+      renderOverview(ROUTE, (view) => blankCells(view, 'on_time_pct', ['2026-M09', '2026-M10']))
+      await screen.findByRole('heading', { name: 'Overview', level: 1 })
+      const card = metricCard('On-time delivery')
+      expect(within(card).getByTestId('header-value').textContent).toBe('95.0%')
+      expect(within(card).getByText('Last reported Aug 2026')).toBeTruthy()
+      expect(within(card).getByText('· nothing for Sep–Oct')).toBeTruthy()
+      expect(within(card).getByRole('button', { name: 'Expand On-time delivery' })).toBeTruthy()
+      const listed = screen.getByRole('region', { name: /^Not reported for Oct 2026/ })
+      expect(within(listed).getByText('Last reported Aug 2026 (95.0%)')).toBeTruthy()
+    })
+
+    it('no reports in the window: no plot and no Expand, an entry link for admins', async () => {
+      renderOverview(ROUTE, (view) => blankCells(view, 'on_time_pct'))
+      await screen.findByRole('heading', { name: 'Overview', level: 1 })
+      const card = metricCard('On-time delivery')
+      expect(within(card).getByText('No reports in the last 12 months')).toBeTruthy()
+      expect(within(card).getByText(/^Nothing has been entered for Nov 2025 – Oct 2026\. Measured monthly/)).toBeTruthy()
+      expect(within(card).queryByRole('button', { name: /Expand/ })).toBeNull()
+      expect(within(card).queryByTestId('metric-chart')).toBeNull()
+      expect(within(card).getByRole('link', { name: 'Enter Oct 2026 data ›' }).getAttribute('href')).toBe('/entry?period=2026-M10')
     })
   })
 

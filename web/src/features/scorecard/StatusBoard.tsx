@@ -154,7 +154,10 @@ export function StatusBoard({ label, columns, rows, scale, onOpen }: StatusBoard
     })
 
   return (
-    <section aria-labelledby={headingId} className="min-w-0 sm:rounded-lg sm:border sm:border-ink/20 sm:bg-white sm:p-4">
+    <section
+      aria-labelledby={headingId}
+      className="min-w-0 scroll-mt-[var(--control-bar-h,0px)] sm:rounded-lg sm:border sm:border-ink/20 sm:bg-white sm:p-4"
+    >
       {/* The tile's drag and menu buttons sit over the top-right corner; LayoutGrid publishes their width. */}
       <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2" style={{ paddingRight: 'var(--tile-toolbar, 0px)' }}>
         <div className="flex flex-wrap items-baseline gap-x-2">
@@ -289,8 +292,10 @@ export function StatusBoard({ label, columns, rows, scale, onOpen }: StatusBoard
                       >
                         <td colSpan={colSpan} className="px-0.5 pt-2">
                           <span className="flex items-baseline justify-between gap-3">
-                            <span className={clsx('min-w-0 break-words font-medium', muted && 'text-ink/70')}>{row.name}</span>
-                            <span className="shrink-0">
+                            <span title={row.name} className={clsx('line-clamp-2 min-w-0 break-words font-medium', muted && 'text-ink/70')}>
+                              {row.name}
+                            </span>
+                            <span data-testid="stacked-value" className="max-w-[45%] shrink-0 truncate">
                               <CurrentValue row={row} scale={scale} compact />
                             </span>
                           </span>

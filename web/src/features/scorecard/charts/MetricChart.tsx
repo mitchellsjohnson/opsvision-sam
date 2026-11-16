@@ -36,12 +36,15 @@ export interface MetricChartProps {
   currentStatus: string
   statusLabel: (key: string) => string | undefined
   scale: components['schemas']['StatusLevel'][]
-  tableTo: To
+  /** The tile's table link; none when absent. */
+  tableTo?: To
   scopeNote?: string
   ytdDisplay?: string | null
   size?: ChartSize
   /** Names the prior period in the change text. */
   fiscalYearStartMonth?: number
+  /** Inside a tile frame: the frame shows the value row, so only the chart region renders. */
+  framed?: boolean
 }
 
 /** Renders the chart for one metric row and encodings required by the UX spec. */
@@ -60,6 +63,7 @@ export function MetricChart({
   ytdDisplay,
   size = 'tile',
   fiscalYearStartMonth = 1,
+  framed = false,
 }: MetricChartProps) {
   const reduced = usePrefersReducedMotion()
   const animated = !reduced
@@ -75,15 +79,19 @@ export function MetricChart({
   return (
     <div>
       <p className="sr-only">{summary}</p>
-      {scopeNote && <p className="text-xs text-ink/80">{scopeNote}</p>}
-      <div className="mt-1 flex flex-wrap items-baseline gap-x-2 gap-y-1">
-        <span data-testid="header-value" className={`${size === 'focus' ? 'text-[28px] leading-9' : 'text-xl'} font-semibold tabular-nums`}>
-          {currentDisplay || '—'}
-        </span>
-        {currentStatus && <StatusMarker theme={theme} title={statusLabel(currentStatus)} />}
-        {change && <ChangeLabel change={change} size={size} />}
-        {ytdDisplay && <span className="text-sm text-ink/80">{ytdDisplay}</span>}
-      </div>
+      {!framed && (
+        <>
+          {scopeNote && <p className="text-xs text-ink/80">{scopeNote}</p>}
+          <div className="mt-1 flex flex-wrap items-baseline gap-x-2 gap-y-1">
+            <span data-testid="header-value" className={`${size === 'focus' ? 'text-[28px] leading-9' : 'text-xl'} font-semibold tabular-nums`}>
+              {currentDisplay || '—'}
+            </span>
+            {currentStatus && <StatusMarker theme={theme} title={statusLabel(currentStatus)} />}
+            {change && <ChangeLabel change={change} size={size} />}
+            {ytdDisplay && <span className="text-sm text-ink/80">{ytdDisplay}</span>}
+          </div>
+        </>
+      )}
       {kind === 'uptime' ? (
         <UptimeRows childRows={childRows} columns={columns} currentColumnKey={currentColumnKey} scale={scale} />
       ) : kind === 'sparse' ? (
@@ -109,10 +117,11 @@ export function MetricChart({
           animated={animated}
           size={size}
           fyStart={fiscalYearStartMonth}
+          framed={framed}
         />
       )}
       {/* In focus, the dialog's own table link sits below its breakdown. */}
-      {size !== 'focus' && (
+      {size !== 'focus' && !framed && tableTo && (
         <p className="mt-2">
           <Link to={tableTo} className="text-sm font-medium text-accent-deep hover:underline">
             View as table

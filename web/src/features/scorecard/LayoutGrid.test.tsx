@@ -4,7 +4,7 @@ import { HttpResponse, http } from 'msw'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { components } from '../../api/schema'
 import { App } from '../../App'
-import { API, server } from '../../test/server'
+import { API, server, state } from '../../test/server'
 import { renderApp } from '../../test/utils'
 import { viewHandlers } from '../../test/viewFixtures'
 import { defaultLayout } from './logic/layout'
@@ -90,9 +90,14 @@ function renderOverviewWithLayout(
   renderApp(<App />, { route: ROUTE })
 }
 
-function openCardMenu(cardName: string) {
-  const article = screen.getByRole('article', { name: new RegExp(`^${cardName}$`, 'i') })
-  return within(article).getByRole('button', { name: 'Layout options' })
+async function customize(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(await screen.findByRole('button', { name: 'Customize layout' }))
+  return screen.getByRole('region', { name: 'Customize layout' })
+}
+
+async function openSectionMenu(user: ReturnType<typeof userEvent.setup>, name: string) {
+  await customize(user)
+  await user.click(screen.getByRole('button', { name: `Layout options for section ${name}` }))
 }
 
 afterEach(() => {
@@ -119,8 +124,8 @@ describe('LayoutGrid', () => {
     await waitFor(() => expect(layoutFetched).toBe(true))
 
     const user = userEvent.setup()
-    await user.click(openCardMenu('Delivery'))
-    await user.click(await screen.findByRole('menuitem', { name: 'Move down' }))
+    await openSectionMenu(user, 'Delivery')
+    await user.click(await screen.findByRole('menuitem', { name: 'Move section down' }))
 
     await waitFor(() => expect(puts.length).toBeGreaterThan(0))
     const ids = puts[puts.length - 1]!.items.map((i) => i.id)
@@ -156,11 +161,12 @@ describe('LayoutGrid', () => {
     renderApp(<App />, { route: ROUTE })
     await screen.findByRole('heading', { name: 'Overview', level: 1 })
     await waitFor(() => expect(layoutFetched).toBe(true))
-    await screen.findByRole('button', { name: 'Hidden (1)' })
+    const user = userEvent.setup()
+    const bar = await customize(user)
+    await within(bar).findByRole('button', { name: 'Hidden (1)' })
     expect(screen.queryByRole('article', { name: /Defect rate/ })).toBeNull()
 
-    const user = userEvent.setup()
-    await user.click(screen.getByRole('button', { name: 'Hidden (1)' }))
+    await user.click(within(bar).getByRole('button', { name: 'Hidden (1)' }))
     await waitFor(() => expect(screen.getByRole('article', { name: /Defect rate/ })).toBeTruthy())
     expect(puts.length).toBeGreaterThan(0)
     const defect = puts[puts.length - 1]!.items.find((i) => i.id === 'metric:defect_rate')
@@ -197,8 +203,8 @@ describe('LayoutGrid', () => {
     await screen.findByRole('heading', { name: 'Overview', level: 1 })
     await waitFor(() => expect(sectionOrder()).toEqual(['Delivery', 'Quality']))
     const user = userEvent.setup()
-    await user.click(openCardMenu('Delivery'))
-    await user.click(await screen.findByRole('menuitem', { name: 'Move down' }))
+    await openSectionMenu(user, 'Delivery')
+    await user.click(await screen.findByRole('menuitem', { name: 'Move section down' }))
   }
 
   it('reorders at once, before the save finishes', async () => {
@@ -254,5 +260,143 @@ describe('LayoutGrid', () => {
     await screen.findByRole('heading', { name: 'Overview', level: 1 })
     expect(screen.getByRole('article', { name: /On-time delivery/ })).toBeTruthy()
     expect(screen.getByRole('article', { name: /Defect rate/ })).toBeTruthy()
+  })
+})
+
+describe('Customize layout mode', () => {
+  const TILES = ['Health this month', '12-month status', 'Needs attention', 'On-time delivery', 'Defect rate', 'Not reported']
+
+  async function renderDefault() {
+    renderOverviewWithLayout([])
+    await screen.findByRole('heading', { name: 'Overview', level: 1 })
+    await screen.findByRole('article', { name: /On-time delivery/ })
+  }
+
+  it('at rest has one layout control and no handles or menus on tiles', async () => {
+    await renderDefault()
+    expect(screen.getAllByRole('button', { name: 'Customize layout' })).toHaveLength(1)
+    expect(screen.queryAllByRole('button', { name: /^(Drag|Move) / })).toEqual([])
+    expect(screen.queryAllByRole('button', { name: /Layout options/ })).toEqual([])
+    expect(screen.queryByRole('button', { name: 'Reset layout' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Save as default' })).toBeNull()
+    expect(screen.queryByRole('region', { name: 'Customize layout' })).toBeNull()
+  })
+
+  it('sits beside the page title', async () => {
+    await renderDefault()
+    const button = screen.getByRole('button', { name: 'Customize layout' })
+    const title = screen.getByRole('heading', { name: 'Overview', level: 1 })
+    expect(button.parentElement!.contains(title)).toBe(true)
+  })
+
+  it('in the mode every tile and section has a handle and a menu, and its content is inert', async () => {
+    await renderDefault()
+    const user = userEvent.setup()
+    const bar = await customize(user)
+    for (const title of TILES) {
+      expect(screen.getByRole('button', { name: `Move ${title}. Space to pick up` })).toBeTruthy()
+      expect(screen.getByRole('button', { name: `Layout options for ${title}` })).toBeTruthy()
+    }
+    for (const name of ['Delivery', 'Quality']) {
+      expect(screen.getByRole('button', { name: `Move section ${name}. Space to pick up` })).toBeTruthy()
+      expect(screen.getByRole('button', { name: `Layout options for section ${name}` })).toBeTruthy()
+    }
+    expect(screen.getByText('On-time delivery · Small')).toBeTruthy()
+    expect(screen.getByText('Health this month · Wide')).toBeTruthy()
+    expect(screen.getByText('Section · Delivery')).toBeTruthy()
+    const tile = screen.getByRole('article', { name: /On-time delivery/ })
+    const content = tile.closest('[inert]')
+    expect(content).toBeTruthy()
+    expect(content!.className).toContain('opacity-70')
+    expect(within(bar).getByRole('button', { name: 'Reset layout' })).toBeTruthy()
+    expect(within(bar).getByRole('button', { name: 'Save as default' })).toBeTruthy()
+    expect(within(bar).getByRole('button', { name: 'Done' })).toBeTruthy()
+    expect(within(bar).getByText('Customizing layout')).toBeTruthy()
+  })
+
+  it('offers Save as default to admins only', async () => {
+    state.role = 'viewer'
+    await renderDefault()
+    const bar = await customize(userEvent.setup())
+    expect(within(bar).getByRole('button', { name: 'Reset layout' })).toBeTruthy()
+    expect(within(bar).queryByRole('button', { name: 'Save as default' })).toBeNull()
+  })
+
+  it('Done leaves the mode and returns focus to Customize layout', async () => {
+    await renderDefault()
+    const user = userEvent.setup()
+    const bar = await customize(user)
+    await user.click(within(bar).getByRole('button', { name: 'Done' }))
+    expect(screen.queryByRole('region', { name: 'Customize layout' })).toBeNull()
+    expect(screen.queryAllByRole('button', { name: /Layout options/ })).toEqual([])
+    expect(screen.getByRole('article', { name: /On-time delivery/ }).closest('[inert]')).toBeNull()
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Customize layout' }))
+  })
+
+  it('Esc with nothing picked up leaves the mode; Esc in a menu only closes the menu', async () => {
+    await renderDefault()
+    const user = userEvent.setup()
+    await customize(user)
+    await user.click(screen.getByRole('button', { name: 'Layout options for On-time delivery' }))
+    await screen.findByRole('menu')
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull())
+    expect(screen.getByRole('region', { name: 'Customize layout' })).toBeTruthy()
+    await user.keyboard('{Escape}')
+    expect(screen.queryByRole('region', { name: 'Customize layout' })).toBeNull()
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Customize layout' }))
+  })
+
+  it('a tile menu shows its size as checked, then Hide and the moves', async () => {
+    await renderDefault()
+    const user = userEvent.setup()
+    await customize(user)
+    await user.click(screen.getByRole('button', { name: 'Layout options for On-time delivery' }))
+    const menu = await screen.findByRole('menu')
+    expect(within(menu).getByRole('menuitemradio', { name: 'Small' }).getAttribute('aria-checked')).toBe('true')
+    expect(within(menu).getByRole('menuitemradio', { name: 'Wide' }).getAttribute('aria-checked')).toBe('false')
+    expect(within(menu).getAllByRole('menuitem').map((i) => i.textContent)).toEqual(['Hide', 'Move up', 'Move down', 'Move to top'])
+  })
+
+  it('a section menu moves the section with its tiles and can hide its header', async () => {
+    const puts: Array<{ items: LayoutItem[]; expectedRevision: number }> = []
+    renderOverviewWithLayout(baseFallback(), (body) => puts.push(body))
+    await screen.findByRole('article', { name: /On-time delivery/ })
+    const user = userEvent.setup()
+    await openSectionMenu(user, 'Quality')
+    const menu = await screen.findByRole('menu')
+    expect(within(menu).getAllByRole('menuitem').map((i) => i.textContent)).toEqual([
+      'Move section up',
+      'Move section down',
+      'Move section to top',
+      'Hide section header',
+    ])
+    await user.click(within(menu).getByRole('menuitem', { name: 'Move section up' }))
+    await waitFor(() => expect(puts.length).toBe(1))
+    const ids = puts[0]!.items.map((i) => i.id)
+    expect(ids.indexOf('metric:defect_rate')).toBe(ids.indexOf('section:quality') + 1)
+    expect(ids.indexOf('section:quality')).toBeLessThan(ids.indexOf('section:delivery'))
+    expect(ids.indexOf('section:delivery') + 1).toBe(ids.indexOf('metric:on_time_pct'))
+
+    await user.click(screen.getByRole('button', { name: 'Layout options for section Quality' }))
+    await user.click(await screen.findByRole('menuitem', { name: 'Hide section header' }))
+    await waitFor(() => expect(puts.length).toBe(2))
+    expect(puts[1]!.items.find((i) => i.id === 'section:quality')?.hidden).toBe(true)
+    expect(puts[1]!.items.find((i) => i.id === 'metric:defect_rate')?.hidden).toBe(false)
+  })
+
+  it('pins Health, then Needs attention, to the top', async () => {
+    const fallback = baseFallback()
+    const health = fallback.find((i) => i.id === 'widget:health')!
+    const needs = fallback.find((i) => i.id === 'widget:needs')!
+    const rest = fallback.filter((i) => i !== health && i !== needs)
+    renderOverviewWithLayout([...rest.slice(0, 3), needs, ...rest.slice(3), health])
+    await screen.findByRole('article', { name: /On-time delivery/ })
+    await customize(userEvent.setup())
+    const order = screen.getAllByRole('button', { name: /^Move .*Space to pick up$/ }).map((b) => b.getAttribute('aria-label'))
+    expect(order.slice(0, 2)).toEqual([
+      'Move Health this month. Space to pick up',
+      'Move Needs attention. Space to pick up',
+    ])
   })
 })

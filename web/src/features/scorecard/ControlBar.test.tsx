@@ -2,7 +2,7 @@ import { cleanup, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { useLocation } from 'react-router'
 import { axe } from 'vitest-axe'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { App } from '../../App'
 import { filterHandlers } from '../../test/filterFixtures'
 import { server } from '../../test/server'
@@ -90,9 +90,75 @@ describe('ControlBar', () => {
       await waitFor(() =>
         expect(bar.parentElement!.style.getPropertyValue('--scorecard-control-bar-height')).toBe('112px'),
       )
+      await waitFor(() => expect(document.documentElement.style.getPropertyValue('--control-bar-h')).toBe('112px'))
     } finally {
       vi.restoreAllMocks()
     }
+  })
+
+  describe('on a phone', () => {
+    function phone() {
+      Object.defineProperty(window, 'matchMedia', {
+        writable: true,
+        configurable: true,
+        value: (query: string) => ({
+          matches: query.includes('max-width'),
+          media: query,
+          onchange: null,
+          addListener: () => {},
+          removeListener: () => {},
+          addEventListener: () => {},
+          removeEventListener: () => {},
+          dispatchEvent: () => false,
+        }),
+      })
+    }
+
+    afterEach(() => {
+      // @ts-expect-error matchMedia is absent in jsdom unless a test defines it.
+      delete window.matchMedia
+    })
+
+    it('collapses to one 40px summary row that opens the full controls in a sheet', async () => {
+      phone()
+      server.use(...filterHandlers().handlers)
+      renderScorecard('/scorecards/sc-main/overview?period=2026-M10')
+      await screen.findByRole('heading', { name: 'Overview', level: 1 })
+      const bar = screen.getByRole('region', { name: 'Scorecard controls' })
+      expect(within(bar).queryByRole('toolbar')).toBeNull()
+      expect(bar.className).not.toContain('sticky')
+      const summary = within(bar).getByRole('button', { name: /^Oct 2026 · All of Example Co · Filters$/ })
+      expect(within(bar).getAllByRole('button')).toEqual([summary])
+      expect(summary.className).toContain('h-10')
+      expect(summary.getAttribute('aria-haspopup')).toBe('dialog')
+
+      const user = userEvent.setup()
+      await user.click(summary)
+      const sheet = await screen.findByRole('dialog', { name: 'Scorecard controls' })
+      const toolbar = within(sheet).getByRole('toolbar', { name: 'Scorecard controls' })
+      expect(await within(toolbar).findByRole('group', { name: 'Global filters' })).toBeTruthy()
+      expect(within(toolbar).getByRole('navigation', { name: 'Scorecard views' })).toBeTruthy()
+      expect(within(toolbar).getByRole('button', { name: /Period:/ })).toBeTruthy()
+      expect(within(toolbar).getByRole('button', { name: 'As reported' })).toBeTruthy()
+      expect(within(toolbar).getByRole('link', { name: 'Table' })).toBeTruthy()
+      await user.click(within(sheet).getByRole('button', { name: 'Done' }))
+      await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Scorecard controls' })).toBeNull())
+      expect(document.activeElement).toBe(summary)
+    })
+
+    it('is not sticky, so nothing below it is offset', async () => {
+      phone()
+      renderScorecard('/scorecards/sc-main/overview?period=2026-M10')
+      await screen.findByRole('heading', { name: 'Overview', level: 1 })
+      await waitFor(() => expect(document.documentElement.style.getPropertyValue('--control-bar-h')).toBe('0px'))
+    })
+
+    it('the summary names the scope when one is chosen', async () => {
+      phone()
+      renderScorecard('/scorecards/sc-main/overview?period=2026-M10&scope=unit-a')
+      await screen.findByRole('heading', { name: 'Overview', level: 1 })
+      expect(await screen.findByRole('button', { name: 'Oct 2026 · Unit A · Filters' })).toBeTruthy()
+    })
   })
 
   it('offers Ask SAM in the control bar', async () => {

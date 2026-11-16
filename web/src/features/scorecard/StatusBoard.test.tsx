@@ -118,6 +118,12 @@ describe('StatusBoard', () => {
     expect(rowHeader.getAttribute('title')).toBe('Epics delivered on time')
   })
 
+  it('scrolls into view below the sticky control bar', () => {
+    renderBoard()
+    const board = screen.getByRole('grid', { name: '12-month status' }).closest('section')!
+    expect(board.className).toContain('scroll-mt-[var(--control-bar-h,0px)]')
+  })
+
   it('cells show only the letter; the name says metric, period, status and value, and the selected one the change', () => {
     renderBoard()
     expect(screen.getByRole('button', { name: SELECTED_EPICS }).textContent).toBe('R')
@@ -316,8 +322,14 @@ describe('StatusBoard', () => {
     const nameRow = screen.getByTestId('name-row-epics')
     expect(nameRow.getAttribute('aria-hidden')).toBe('true')
     const visibleName = within(nameRow).getByText('Epics delivered on time')
-    expect(visibleName.className).not.toMatch(/truncate|line-clamp/)
-    expect(within(nameRow).getByText('79%')).toBeTruthy()
+    // Long names wrap to two lines and the value truncates, so nothing clips at 320px.
+    expect(visibleName.className).toContain('min-w-0')
+    expect(visibleName.className).toContain('line-clamp-2')
+    expect(visibleName.getAttribute('title')).toBe('Epics delivered on time')
+    const value = within(nameRow).getByText('79%').closest<HTMLElement>('[data-testid="stacked-value"]')!
+    expect(value.className).toContain('shrink-0')
+    expect(value.className).toContain('max-w-[45%]')
+    expect(value.className).toContain('truncate')
     // The unrated cell (Jan) is outside the latest 6, so the legend drops its entry.
     const legend = within(screen.getByRole('list', { name: 'Status key' })).getAllByRole('listitem').map((li) => li.textContent)
     expect(legend).not.toContain('Not rated')

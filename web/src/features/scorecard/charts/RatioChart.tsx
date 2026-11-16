@@ -58,6 +58,7 @@ export function RatioChart({
   animated,
   size,
   fyStart,
+  framed = false,
 }: {
   row: ViewRow
   chartRows: ViewRow[]
@@ -69,6 +70,8 @@ export function RatioChart({
   animated: boolean
   size: ChartSize
   fyStart: number
+  /** Inside a tile frame, whose value row already states the current value. */
+  framed?: boolean
 }) {
   const spec = sizeSpec(size, 120)
   const focus = size === 'focus'
@@ -242,7 +245,7 @@ export function RatioChart({
           ))}
         </ul>
       )}
-      {!focus && currentPoint?.kind === 'value' && (
+      {!focus && !framed && currentPoint?.kind === 'value' && (
         <p data-testid="current-point-label" className="mt-1 text-xs text-ink/80">
           Current: {currentPoint.display}{' '}
           <StatusMarker theme={chartTheme(scale, currentPoint.status)} />

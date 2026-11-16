@@ -1,20 +1,30 @@
 import { useMemo } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router'
-import { useMe, useOrgUnits, useVersions, useView } from '../../api/queries'
+import clsx from 'clsx'
+import { LayoutDashboard } from 'lucide-react'
+import type { ReactNode } from 'react'
+import { useMe, useOrgLevels, useOrgUnits, useVersions, useView } from '../../api/queries'
 import type { components } from '../../api/schema'
 import { monthLabel, parsePeriod, periodLabel } from '../../lib/period'
 import { Sparkline } from '../../ui/Sparkline'
 import { StatusBadge } from '../../ui/StatusBadge'
+import { StatusChip } from '../../ui/status'
 import { usePeriodState } from '../../shell/usePeriodState'
 import { buildTrendColumns, COARSE_SPAN, coarseColumns, type CoarseGrain, type Column } from './columns'
 import { changeText, withDirection } from './format'
 import { needsAttention, type NeedsAttentionItem } from './logic/needsAttention'
-import { defaultStatusScale } from './charts/chartTheme'
+import { defaultStatusScale, MOVE_CLASS } from './charts/chartTheme'
 import { MetricChart } from './charts/MetricChart'
+import { headerChange } from './charts/points'
+import { LAYOUT_BUTTON } from './CustomizeBar'
 import { focusReturnRef } from './focusTrigger'
 import { LayoutGrid } from './LayoutGrid'
+import { NotReportedCard } from './NotReportedCard'
+import { SectionHeader } from './SectionHeader'
+import { TileFrame } from './TileFrame'
 import { periodStatus } from './logic/coarse'
-import { columnUnit } from './logic/statusText'
+import { nounForms } from './logic/nouns'
+import { columnUnit, thresholdText } from './logic/statusText'
 import { cellReported, type StatusScaleEntry } from './logic/statusAtScope'
 import { cellKey, columnsFor, groupRows, metricScope } from './viewHelpers'
 import { useScorecardViewRequest } from './viewRequest'
@@ -24,6 +34,14 @@ import { buildBoardRow } from './logic/statusBoard'
 type Schemas = components['schemas']
 type ViewRow = Schemas['ViewRow']
 type Cell = Schemas['Cell']
+type Frequency = Schemas['Frequency']
+
+const MEASURED: Record<Frequency, string> = {
+  monthly: 'monthly',
+  quarterly: 'quarterly',
+  biannual: 'twice a year',
+  annual: 'yearly',
+}
 
 function metricNoun(chartKind: string, scope: ViewRow | null, children: ViewRow[]): 'segments' | 'services' | 'items' {
   if (chartKind === 'uptime') return 'services'
@@ -58,12 +76,80 @@ function healthLabels(scale: StatusScaleEntry[]): Map<string, string> {
   return labels
 }
 
-function Skeleton() {
+function Bone({ className }: { className: string }) {
+  return <div data-skeleton="" className={clsx('rounded bg-ink/[0.06]', className)} />
+}
+
+/** Widgets at their final size while the one Overview request loads. */
+function PageSkeleton() {
+  const card = 'rounded-lg border border-ink/20 bg-white p-4'
   return (
-    <p role="status" aria-busy="true">
-      Loading overview…
-    </p>
+    <div aria-busy="true" className="mt-6 grid grid-cols-[minmax(0,1fr)] gap-4 sm:grid-cols-2">
+      <p role="status" className="sr-only">
+        Loading overview
+      </p>
+      <div aria-hidden="true" className={clsx(card, 'sm:col-span-2')}>
+        <Bone className="h-5 w-48" />
+        <Bone className="mt-3 h-3 w-full" />
+        <div className="mt-3 flex flex-wrap gap-2">
+          {[0, 1, 2, 3].map((i) => (
+            <Bone key={i} className="h-9 w-28" />
+          ))}
+        </div>
+      </div>
+      <div aria-hidden="true" className={clsx(card, 'sm:col-span-2')}>
+        <Bone className="h-5 w-40" />
+        <Bone className="mt-3 h-48 w-full" />
+      </div>
+      <div aria-hidden="true" className="border-b border-ink/15 pb-1.5 pt-2 sm:col-span-2">
+        <Bone className="h-5 w-32" />
+      </div>
+      {[0, 1].map((i) => (
+        <div key={i} aria-hidden="true" className={card}>
+          <Bone className="h-5 w-48" />
+          <Bone className="mt-1 h-3 w-40" />
+          <Bone className="mt-3 h-8 w-28" />
+          <Bone className="mt-2 h-[120px] w-full" />
+          <Bone className="mt-1 h-[18px] w-full" />
+        </div>
+      ))}
+    </div>
   )
+}
+
+const TITLE = 'text-[28px] font-semibold leading-9 text-accent-deep'
+
+/** The page title row; while loading, the title is drawn but the h1 waits for content, so heading navigation never lands on an empty page. */
+function OverviewHeader({ parts, actions, loading = false }: { parts: string[]; actions: ReactNode; loading?: boolean }) {
+  return (
+    <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
+      <div className="min-w-0">
+        {loading ? (
+          <p aria-hidden="true" className={TITLE}>
+            Overview
+          </p>
+        ) : (
+          <h1 className={TITLE}>Overview</h1>
+        )}
+        <p className="mt-0.5 text-sm text-ink/80">{parts.join(' · ')}</p>
+      </div>
+      {actions}
+    </div>
+  )
+}
+
+/** Remembers the control that opened the dialog, so focus goes back to it on close. */
+function rememberTrigger(trigger: HTMLElement) {
+  focusReturnRef.current = trigger
+}
+
+/** The last column with a value in `row`, for a metric that stopped reporting. */
+function lastValued(row: ViewRow | null, columns: Column[]): { index: number; cell: Cell } | null {
+  for (let i = columns.length - 1; i >= 0; i--) {
+    const c = scopeCell(row, columns[i]!.key)
+    if (c && c.value !== null && c.naReason === '') return { index: i, cell: c }
+  }
+  return null
 }
 
 export function OverviewPage() {
@@ -73,6 +159,7 @@ export function OverviewPage() {
   const [params, setParams] = useSearchParams()
   const me = useMe()
   const orgUnits = useOrgUnits()
+  const orgLevels = useOrgLevels()
   const versions = useVersions(scorecardId)
   const fy = period.fiscalYearStartMonth
   const scale: StatusScaleEntry[] = useMemo(
@@ -99,19 +186,28 @@ export function OverviewPage() {
       : `All of ${companyName}`,
   ].filter(Boolean)
 
-  const tableLink = (metricKey: string) => {
-    const next = new URLSearchParams(params)
-    const search = next.size > 0 ? `?${next.toString()}` : ''
-    return { pathname: '../table', search, hash: `#metric-${metricKey}` }
-  }
-
   const ytdCellFor = (row: ViewRow): Cell | undefined => row.cells.find((c) => c.ytd && c.display !== '')
 
-  if (view.isPending) return <Skeleton />
-  if (view.isError) {
+  if (view.isPending || view.isError) {
     return (
-      <div role="alert" className="rounded-md border border-status-r bg-status-r-bg p-4 text-sm">
-        Could not load the overview: {view.error.message}
+      <div>
+        <OverviewHeader
+          parts={headerParts as string[]}
+          loading={view.isPending}
+          actions={
+            <button type="button" className={LAYOUT_BUTTON} disabled>
+              <LayoutDashboard aria-hidden size={16} />
+              Customize layout
+            </button>
+          }
+        />
+        {view.isError ? (
+          <div role="alert" className="mt-6 rounded-md border border-status-r bg-status-r-bg p-4 text-sm">
+            Could not load the overview: {view.error.message}
+          </div>
+        ) : (
+          <PageSkeleton />
+        )}
       </div>
     )
   }
@@ -204,13 +300,22 @@ export function OverviewPage() {
           : '12-month status'
 
   const windowText = `No reports in the last ${trendColumns.length} ${columnUnit(selectedColumn, trendColumns.length)}`
+  const categoryName = (id: string) => view.data.categories.find((c) => c.id === id)?.name ?? ''
   const unreported = [
-    ...metrics.flatMap(({ head, status }) =>
-      status?.notReported ? [{ name: head.metricName, why: status.notReported.text }] : status ? [] : [{ name: head.metricName, why: '' }],
+    ...metrics.flatMap(({ category, metric, head, status }) =>
+      status?.notReported ? [{ key: metric.key, name: head.metricName, why: status.notReported.text, category: category.name }] : [],
     ),
-    ...absentItemMetrics.map((m) => ({ name: m.name, why: windowText })),
+    ...absentItemMetrics.map((m) => ({ key: m.key, name: m.name, why: windowText, category: categoryName(m.categoryId) })),
   ]
   const quiet = metrics.flatMap(({ status }) => (status?.quiet ? [status.quiet] : []))
+  const selectedLabel = parsed ? periodLabel(parsed, fy) : period.period
+
+  const openFocus = (metricKey: string, trigger: HTMLElement) => {
+    rememberTrigger(trigger)
+    const next = new URLSearchParams(params)
+    next.set('focus', metricKey)
+    setParams(next)
+  }
 
   const metricsByCategory: Record<string, { key: string }[]> = {}
   const metricCategories: Record<string, string> = {}
@@ -234,8 +339,8 @@ export function OverviewPage() {
     const meta = metrics.find((m) => m.metric.key === metricKey)
     const shownStatus = meta?.status?.status ?? ''
     if (!meta || (healthFilter && shownStatus !== healthFilter)) return null
-    const { metric, scope, head, children, noun, columns } = meta
-    const columnKey = meta.status?.counted.key ?? ''
+    const { metric, scope, head, children, noun, columns, status } = meta
+    const columnKey = status?.counted.key ?? ''
     const cell = scopeCell(scope, columnKey)
     const scopeReported = cellReported(cell)
     const reportedChildren = children.filter((ch) => cellReported(scopeCell(ch, columnKey)))
@@ -243,42 +348,114 @@ export function OverviewPage() {
     const scopeNote =
       chartChildren && scope
         ? `Company total not reported; ${reportedChildren.length} ${noun} reported`
-        : (shownStatus && meta.status?.caption) || undefined
+        : (shownStatus && status?.caption) || undefined
     const chartRow = scope ?? emptyScope(head)
     const chartRows = chartChildren ? reportedChildren : [chartRow]
     const ytdCell = scope ? ytdCellFor(scope) : undefined
     const ytdDisplay = ytdCell?.display ? `YTD ${ytdCell.display}` : null
+    const metricDef = versions.data?.versions
+      .find((v) => v.id === (cell?.versionId || view.data.versionByPeriod[columnKey]))
+      ?.content.metrics.find((x) => x.key === head.metricKey)
+    const rule = cell?.rule ?? metricDef?.rule
+    const bestKey = [...scale].sort((a, b) => a.rank - b.rank)[0]?.key
+    const ownTargets = (rule?.perSubject ?? []).flatMap((p) => {
+      const band = p.bands.find((b) => b.status === bestKey && b.op !== '')
+      return band ? [{ name: children.find((c) => c.subjectId === p.subjectId)?.subjectName ?? p.subjectId, value: band.value }] : []
+    })
+    const levelName = orgLevels.data?.find((l) => l.depth === (children[0]?.depth ?? -1))?.name
+    const threshold = rule
+      ? thresholdText(rule, {
+          format: head.format,
+          direction: head.direction,
+          chartKind: head.chartKind,
+          frequency: head.frequency,
+          statusLabel,
+          perSubject: ownTargets,
+          noun: noun === 'services' ? nounForms('services', 'item') : nounForms(levelName, 'unit'),
+          surface: 'tile',
+        })
+      : ''
+    const kind = status?.notReported?.kind
+    const state = kind === 'window' ? 'window' : kind === 'stopped' ? 'stopped' : 'normal'
+
+    if (state === 'window') {
+      const first = columns[0]
+      const last = columns[columns.length - 1]
+      const by = levelName ? `, by ${nounForms(levelName, 'unit').one}` : ''
+      return (
+        <TileFrame
+          head={head}
+          threshold={threshold}
+          value={status?.notReported?.text ?? ''}
+          context={`Nothing has been entered for ${first?.fullLabel ?? ''} – ${last?.fullLabel ?? ''}. Measured ${MEASURED[head.frequency]}${by}.`}
+          footer={
+            canEnter ? (
+              <Link to={`/entry?period=${period.period}`} className="text-sm font-medium text-accent-deep hover:underline">
+                Enter {selectedLabel} data ›
+              </Link>
+            ) : undefined
+          }
+          onExpand={(trigger) => openFocus(metric.key, trigger)}
+          state="window"
+        >
+          {null}
+        </TileFrame>
+      )
+    }
+
+    let value: ReactNode
+    if (state === 'stopped') {
+      const last = lastValued(scope, columns)
+      const after = last ? columns.slice(last.index + 1) : []
+      value = (
+        <>
+          <span data-testid="header-value" className="text-[28px] font-semibold leading-9 tabular-nums">
+            {last?.cell.display || '—'}
+          </span>
+          {last && <span className="text-sm">Last reported {columns[last.index]!.fullLabel}</span>}
+          {after.length > 0 && (
+            <span className="text-xs">
+              · nothing for {after.length === 1 ? after[0]!.label : `${after[0]!.label}–${after[after.length - 1]!.label}`}
+            </span>
+          )}
+        </>
+      )
+    } else {
+      const change = headerChange(chartRow, cell, fy)
+      value = (
+        <>
+          <span data-testid="header-value" className="text-[28px] font-semibold leading-9 tabular-nums">
+            {cell?.display || '—'}
+          </span>
+          {shownStatus && (
+            <span title={statusLabel(shownStatus)}>
+              <StatusChip status={shownStatus} scale={statusColors} size="lg" />
+            </span>
+          )}
+          {change && (
+            <span
+              data-testid="header-change"
+              data-tone={change.move.tone}
+              className={clsx('text-sm font-medium tabular-nums', MOVE_CLASS[change.move.tone])}
+            >
+              {change.move.arrow && <span aria-hidden="true">{change.move.arrow} </span>}
+              {change.text}
+            </span>
+          )}
+        </>
+      )
+    }
+
     return (
-      // A pointer shortcut only: the Expand button is the keyboard and screen reader path.
-      // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions
-      <article
-        aria-label={head.metricName}
-        className="h-full cursor-pointer rounded-lg border border-ink/20 bg-white p-4 pt-10"
-        onClick={(e) => {
-          const target = e.target as HTMLElement
-          if (target.closest('button, a, [role="button"]')) return
-          focusReturnRef.current = e.currentTarget.querySelector<HTMLElement>('[data-card-expand]')
-          const next = new URLSearchParams(params)
-          next.set('focus', metric.key)
-          setParams(next)
-        }}
+      <TileFrame
+        head={head}
+        threshold={threshold}
+        value={value}
+        extras={state === 'normal' ? ytdDisplay : undefined}
+        context={scopeNote}
+        onExpand={(trigger) => openFocus(metric.key, trigger)}
+        state={state}
       >
-        <div className="flex items-start justify-between gap-2">
-          <h3 className="text-base font-semibold">{head.metricName}</h3>
-          <button
-            type="button"
-            data-card-expand=""
-            className="rounded border border-ink/20 px-2 py-0.5 text-xs hover:bg-cream"
-            onClick={(e) => {
-              focusReturnRef.current = e.currentTarget
-              const next = new URLSearchParams(params)
-              next.set('focus', metric.key)
-              setParams(next)
-            }}
-          >
-            Expand
-          </button>
-        </div>
         <MetricChart
           row={chartRow}
           chartRows={chartRows}
@@ -289,21 +466,17 @@ export function OverviewPage() {
           currentStatus={shownStatus}
           statusLabel={statusLabel}
           scale={statusColors}
-          tableTo={tableLink(metric.key)}
-          scopeNote={scopeNote}
-          ytdDisplay={ytdDisplay}
           fiscalYearStartMonth={fy}
+          framed
         />
-      </article>
+      </TileFrame>
     )
   }
 
   return (
     <div>
-      <h1 className="text-2xl font-semibold text-accent-deep">Overview</h1>
-      <p className="mt-1 text-sm text-ink/80">{headerParts.join(' · ')}</p>
-
       <LayoutGrid
+        renderHeaderActions={(button) => <OverviewHeader parts={headerParts as string[]} actions={button} />}
         scorecardId={scorecardId}
         categories={view.data.categories}
         metricsByCategory={metricsByCategory}
@@ -357,12 +530,7 @@ export function OverviewPage() {
             columns={trendColumns}
             rows={boardRows}
             scale={statusColors}
-            onOpen={(metricKey, trigger) => {
-              focusReturnRef.current = trigger
-              const next = new URLSearchParams(params)
-              next.set('focus', metricKey)
-              setParams(next)
-            }}
+            onOpen={openFocus}
           />
         )}
         renderNeeds={() =>
@@ -447,45 +615,24 @@ export function OverviewPage() {
         renderSection={(categoryId) => {
           const g = groups.find((x) => x.id === categoryId)
           if (!g) return null
-          const sectionCounts = new Map<string, number>()
-          for (const m of g.metrics) {
-            const status = metrics.find((x) => x.metric.key === m.key)?.status?.status
-            if (status) sectionCounts.set(status, (sectionCounts.get(status) ?? 0) + 1)
-          }
           return (
-            <section aria-labelledby={`overview-cat-${g.id}`} className="pt-8">
-              <h2 id={`overview-cat-${g.id}`} className="text-lg font-semibold text-accent-deep">
-                {g.name}
-                <span className="ml-2 text-sm font-normal text-ink/70">
-                  {[...sectionCounts].map(([k, n]) => `${n}${k}`).join(' ')}
-                </span>
-              </h2>
-            </section>
+            <SectionHeader
+              id={`overview-cat-${g.id}`}
+              name={g.name}
+              rows={boardRows.filter((r) => r.category.id === g.id)}
+              scale={statusColors}
+            />
           )
         }}
         renderMetric={renderMetricCard}
-        renderUnreported={() =>
-          unreported.length > 0 || quiet.length > 0 ? (
-            <div>
-              {unreported.length > 0 && (
-                <p className="text-sm text-ink/80">
-                  Not reported: {unreported.map((m) => (m.why ? `${m.name}: ${m.why}` : m.name)).join('; ')}
-                  {canEnter && (
-                    <>
-                      {' '}
-                      <Link to={`/entry?period=${period.period}`} className="font-medium text-accent-deep hover:underline">
-                        Enter data
-                      </Link>
-                    </>
-                  )}
-                </p>
-              )}
-              {quiet.length > 0 && (
-                <p className="mt-1 text-xs text-ink/70">Reported less often and up to date: {quiet.join(' · ')}.</p>
-              )}
-            </div>
-          ) : null
-        }
+        renderUnreported={() => (
+          <NotReportedCard
+            period={period.period}
+            items={unreported}
+            quiet={quiet.length > 0 ? `Reported less often and up to date: ${quiet.join(' · ')}.` : null}
+            canEnter={canEnter}
+          />
+        )}
       />
     </div>
   )
