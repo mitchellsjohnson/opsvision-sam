@@ -1,30 +1,34 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router'
 import clsx from 'clsx'
 import { LayoutDashboard } from 'lucide-react'
 import type { ReactNode } from 'react'
-import { useMe, useOrgLevels, useOrgUnits, useVersions, useView } from '../../api/queries'
+import { useItemKinds, useMe, useOrgLevels, useOrgUnits, useVersions, useView } from '../../api/queries'
 import type { components } from '../../api/schema'
-import { monthLabel, parsePeriod, periodLabel } from '../../lib/period'
-import { Sparkline } from '../../ui/Sparkline'
-import { StatusBadge } from '../../ui/StatusBadge'
+import { monthLabel, parsePeriod, periodLabel, type Grain } from '../../lib/period'
 import { StatusChip } from '../../ui/status'
 import { usePeriodState } from '../../shell/usePeriodState'
+import { NeedsAttention, type AttentionMeta } from './AttentionCard'
 import { buildTrendColumns, COARSE_SPAN, coarseColumns, type CoarseGrain, type Column } from './columns'
-import { changeText, withDirection } from './format'
-import { needsAttention, type NeedsAttentionItem } from './logic/needsAttention'
-import { defaultStatusScale, MOVE_CLASS } from './charts/chartTheme'
+import { formatMetricValue } from './format'
+import { needsAttention, streakMonths, type NeedsAttentionItem } from './logic/needsAttention'
+import { chartTheme, defaultStatusScale, MOVE_CLASS } from './charts/chartTheme'
 import { MetricChart } from './charts/MetricChart'
 import { headerChange } from './charts/points'
 import { LAYOUT_BUTTON } from './CustomizeBar'
+import { focusBodyKind } from './focusBody'
 import { focusReturnRef } from './focusTrigger'
+import { HealthSummary, NOT_REPORTED } from './HealthSummary'
+import { ItemSummaryTile } from './ItemSummaryTile'
 import { LayoutGrid } from './LayoutGrid'
 import { NotReportedCard } from './NotReportedCard'
 import { SectionHeader } from './SectionHeader'
 import { TileFrame } from './TileFrame'
 import { periodStatus } from './logic/coarse'
-import { nounForms } from './logic/nouns'
-import { columnUnit, thresholdText } from './logic/statusText'
+import { worstChildren } from './logic/drivers'
+import { buildItemRows, ITEM_PARAM, itemSummary, sortItems } from './logic/itemGrid'
+import { countNoun, nounForms, type NounForms } from './logic/nouns'
+import { columnUnit, sinceText, thresholdText } from './logic/statusText'
 import { cellReported, type StatusScaleEntry } from './logic/statusAtScope'
 import { cellKey, columnsFor, groupRows, metricScope } from './viewHelpers'
 import { useScorecardViewRequest } from './viewRequest'
@@ -35,6 +39,29 @@ type Schemas = components['schemas']
 type ViewRow = Schemas['ViewRow']
 type Cell = Schemas['Cell']
 type Frequency = Schemas['Frequency']
+
+const HEALTH_TITLE: Record<Grain, string> = {
+  month: 'Health this month',
+  quarter: 'Health this quarter',
+  half: 'Health this half',
+  year: 'Health this year',
+}
+
+/** The first matching tile's Expand button: where Show all moves focus. */
+const FIRST_TILE = '[data-layout-item^="metric:"] article button[aria-label^="Expand "]'
+
+/** The item kinds' names, asked for only where an item metric is drawn (so other pages never ask). */
+function WithItemKinds({ children }: { children: (kindName: (id: string | undefined) => string | undefined) => ReactNode }) {
+  const kinds = useItemKinds()
+  return children((id) => (id ? kinds.data?.find((k) => k.id === id)?.name : undefined))
+}
+
+const NO_KINDS = () => undefined
+
+/** A column's short label under a ribbon: a month's initial, else the label (`Q3`). */
+function initialOf(column: Column): string {
+  return parsePeriod(column.period)?.grain === 'month' && !column.ytd ? column.label.slice(0, 1) : column.label
+}
 
 const MEASURED: Record<Frequency, string> = {
   monthly: 'monthly',
@@ -54,26 +81,8 @@ function emptyScope(head: ViewRow): ViewRow {
   return { ...head, subjectId: '', subjectName: '', cells: [] }
 }
 
-/** The column before `key` among `columns`. */
-function priorColumn(columns: Column[], key: string): string | undefined {
-  const i = columns.findIndex((c) => c.key === key)
-  return i > 0 ? columns[i - 1]?.key : undefined
-}
-
 function scopeCell(row: ViewRow | null, columnKey: string): Cell | undefined {
   return row?.cells.find((c) => cellKey(c) === columnKey)
-}
-
-function healthLabels(scale: StatusScaleEntry[]): Map<string, string> {
-  const sorted = [...scale].sort((a, b) => a.rank - b.rank)
-  const labels = new Map<string, string>()
-  if (sorted[0]) labels.set(sorted[0].key, 'On track')
-  if (sorted.length > 2) {
-    for (const mid of sorted.slice(1, -1)) labels.set(mid.key, 'Watch')
-  } else if (sorted[1]) labels.set(sorted[1].key, 'Watch')
-  const worst = sorted[sorted.length - 1]
-  if (worst) labels.set(worst.key, 'Off track')
-  return labels
 }
 
 function Bone({ className }: { className: string }) {
@@ -171,6 +180,15 @@ export function OverviewPage() {
   const companyName = me.data?.tenant?.name ?? 'Company'
   const canEnter = me.data?.role === 'admin' || me.data?.role === 'contributor'
   const healthFilter = params.get('health') ?? ''
+  // Show all (Needs attention) moves focus to the first tile once the filtered tiles are drawn.
+  const focusFirstTile = useRef(false)
+  useEffect(() => {
+    if (!focusFirstTile.current) return
+    const first = document.querySelector<HTMLElement>(FIRST_TILE)
+    if (!first) return
+    focusFirstTile.current = false
+    first.focus()
+  })
 
   const trendColumns = useMemo(() => buildTrendColumns(period.period, fy), [period.period, fy])
   const selectedColumn = trendColumns[trendColumns.length - 1]
@@ -222,6 +240,10 @@ export function OverviewPage() {
     if (cols.length > 0 && cols.every((c) => responded.has(c.period))) coarseByGrain[grain] = cols
   }
 
+  const priorTrend = trendColumns[trendColumns.length - 2]
+  const metricDefOf = (metricKey: string, versionId: string) =>
+    versions.data?.versions.find((v) => v.id === versionId)?.content.metrics.find((x) => x.key === metricKey)
+
   const metrics = groups.flatMap((g) =>
     g.metrics.map((m) => {
       const { scope, children, head } = metricScope(m.rows)
@@ -231,48 +253,104 @@ export function OverviewPage() {
       const status = selectedColumn
         ? periodStatus({ scope, children, frequency: head.frequency, selected: selectedColumn, coarse, scale, noun, fy })
         : null
-      return { category: g, metric: m, scope, head, children, noun, columns, coarse, status }
+      const prior = priorTrend
+        ? periodStatus({ scope, children, frequency: head.frequency, selected: priorTrend, coarse, scale, noun, fy })
+        : null
+      const columnKey = status?.counted.key ?? ''
+      const cell = scopeCell(scope, columnKey)
+      const metricDef = metricDefOf(head.metricKey, cell?.versionId || view.data.versionByPeriod[columnKey] || '')
+      // The metric over its own columns (quarters for a quarterly metric), for streaks and the attention ribbon.
+      const own = buildBoardRow({
+        key: m.key,
+        category: { id: g.id, name: g.name },
+        scope,
+        head,
+        children,
+        noun,
+        columns,
+        scale,
+        fyStart: fy,
+      })
+      return {
+        category: g,
+        metric: m,
+        scope,
+        head,
+        children,
+        noun,
+        columns,
+        coarse,
+        status,
+        prior,
+        cell,
+        rule: cell?.rule ?? metricDef?.rule,
+        // Uptime and metrics reported only for items get the item tile (§6.1).
+        isItems: focusBodyKind(m.rows) === 'items' && m.rows.some((r) => r.subjectKind === 'item'),
+        kindId: metricDef?.reportedAt.find((s) => s.kind === 'item_kind')?.id,
+        own,
+      }
     }),
   )
+  type MetricMeta = (typeof metrics)[number]
 
-  const rankOf = (status: string) => scale.find((s) => s.key === status)?.rank ?? 0
-  const worstRank = Math.max(...scale.map((s) => s.rank))
-  const healthLabelsMap = healthLabels(scale)
-  const healthCounts = new Map<string, number>()
+  const byRank = [...statusColors].sort((a, b) => a.rank - b.rank)
+  const bestKey = byRank[0]?.key ?? ''
+  const worstLevel = byRank[byRank.length - 1]
+  const worstKey = worstLevel?.key ?? ''
+  const worstLabel = worstLevel?.label || worstKey
   // A metric reported only for tracked items has no rows when no item is in
   // view (a scope with no services): it is not reported, not gone.
   const shownKeys = new Set(metrics.map((m) => m.metric.key))
   const absentItemMetrics = (
     versions.data?.versions.find((v) => v.id === view.data.versionByPeriod[selectedColumn?.key ?? ''])?.content.metrics ?? []
   ).filter((m) => !shownKeys.has(m.key) && m.reportedAt.length > 0 && m.reportedAt.every((s) => s.kind === 'item_kind'))
-  let notReported = absentItemMetrics.length
-  for (const { status } of metrics) {
-    if (!status?.status) notReported++
-    else healthCounts.set(status.status, (healthCounts.get(status.status) ?? 0) + 1)
+  const tally = (statuses: string[]) => {
+    const counts = new Map<string, number>([[NOT_REPORTED, absentItemMetrics.length]])
+    for (const s of statuses) {
+      const key = s || NOT_REPORTED
+      counts.set(key, (counts.get(key) ?? 0) + 1)
+    }
+    return counts
   }
+  const healthCounts = tally(metrics.map((m) => m.status?.status ?? ''))
+  const priorCounts = priorTrend ? tally(metrics.map((m) => m.prior?.status ?? '')) : null
+  const healthTitle = HEALTH_TITLE[selectedGrain]
 
-  const attentionItems: NeedsAttentionItem[] = []
-  for (const { category, scope, head, status, columns } of metrics) {
-    if (!status?.status) continue
-    const cell = scopeCell(scope, status.counted.key)
-    const priorKey = priorColumn(columns, status.counted.key)
-    const prior = priorKey ? scopeCell(scope, priorKey) : undefined
-    const metricDef = versions.data?.versions
-      .find((v) => v.id === cell?.versionId)
-      ?.content.metrics.find((x) => x.key === head.metricKey)
-    attentionItems.push({
-      metricKey: head.metricKey,
-      name: head.metricName,
-      categoryOrder: view.data.categories.find((c) => c.id === category.id)?.order ?? 0,
-      status: status.status,
-      value: cell?.value ?? null,
-      change: cell?.change ?? null,
-      direction: head.direction,
-      rule: cell?.rule ?? metricDef?.rule ?? { type: 'bands' },
-      priorStatus: prior?.status ?? '',
+  const itemRowsOf = (m: MetricMeta) => buildItemRows(m.metric.rows, m.columns, scale, () => '', fy)
+  const levelNoun = (children: ViewRow[]) =>
+    nounForms(orgLevels.data?.find((l) => l.depth === (children[0]?.depth ?? -1))?.name, 'unit')
+
+  const attentionInputs = (kindName: (id: string | undefined) => string | undefined): NeedsAttentionItem[] =>
+    metrics.flatMap((m): NeedsAttentionItem[] => {
+      const { category, head, status, columns, own, cell } = m
+      if (!status?.status) return []
+      const index = columns.findIndex((c) => c.key === status.counted.key)
+      const before = index > 0 ? own.cells[index - 1] : undefined
+      const priorStatus = before?.kind === 'status' ? before.status : ''
+      const label = statusLabel(status.status) ?? status.status
+      const items = m.isItems ? itemRowsOf(m) : null
+      const worst = items ? itemSummary(items, scale).worst : null
+      const count = items ? items.filter((r) => r.reported && r.status === status.status).length : 0
+      return [
+        {
+          metricKey: head.metricKey,
+          name: head.metricName,
+          categoryOrder: view.data.categories.find((c) => c.id === category.id)?.order ?? 0,
+          status: status.status,
+          value: worst ? worst.value : (cell?.value ?? null),
+          change: worst ? (worst.cell?.change ?? null) : (cell?.change ?? null),
+          direction: head.direction,
+          rule: (worst ? worst.cell?.rule : undefined) ?? m.rule ?? { type: 'bands' },
+          priorStatus,
+          streakMonths: index >= 0 ? streakMonths(own.cells, index, columns) : 0,
+          priorLabel: priorStatus ? (statusLabel(priorStatus) ?? priorStatus) : '',
+          label,
+          since: index >= 0 ? sinceText(own.cells, index, columns, statusLabel) : '',
+          countReason: items ? `${countNoun(count, nounForms(kindName(m.kindId), 'item'))} ${label}` : undefined,
+        },
+      ]
     })
-  }
-  const attention = needsAttention(attentionItems, scale)
+  const itemCandidates = metrics.some((m) => m.isItems && m.kindId && m.status?.status && m.status.status !== bestKey)
 
   const boardRows = metrics.map(({ category, metric, scope, head, children, noun, coarse }) =>
     buildBoardRow({
@@ -314,13 +392,14 @@ export function OverviewPage() {
     rememberTrigger(trigger)
     const next = new URLSearchParams(params)
     next.set('focus', metricKey)
+    next.delete(ITEM_PARAM)
     setParams(next)
   }
 
   const metricsByCategory: Record<string, { key: string }[]> = {}
   const metricCategories: Record<string, string> = {}
   const itemLabels: Record<string, string> = {
-    'widget:health': 'Health this month',
+    'widget:health': healthTitle,
     'widget:ribbon': ribbonLabel,
     'widget:needs': 'Needs attention',
     'widget:unreported': 'Not reported',
@@ -335,13 +414,43 @@ export function OverviewPage() {
     }
   }
 
+  /** The tile's threshold and direction line (§3.5), with how many children have their own target. */
+  const thresholdOf = (m: MetricMeta, noun: NounForms): string => {
+    const { head, children, rule } = m
+    if (!rule) return ''
+    const ownTargets = (rule.perSubject ?? []).flatMap((p) => {
+      const band = p.bands.find((b) => b.status === bestKey && b.op !== '')
+      return band ? [{ name: children.find((c) => c.subjectId === p.subjectId)?.subjectName ?? p.subjectId, value: band.value }] : []
+    })
+    return thresholdText(rule, {
+      format: head.format,
+      direction: head.direction,
+      chartKind: head.chartKind,
+      frequency: head.frequency,
+      statusLabel,
+      perSubject: ownTargets,
+      noun,
+      surface: 'tile',
+    })
+  }
+
+  const openItem = (metricKey: string, itemId: string, trigger: HTMLElement) => {
+    rememberTrigger(trigger)
+    const next = new URLSearchParams(params)
+    next.set('focus', metricKey)
+    next.set(ITEM_PARAM, itemId)
+    setParams(next)
+  }
+
+  const shownByHealth = (status: string) =>
+    !healthFilter || (healthFilter === NOT_REPORTED ? status === '' : status === healthFilter)
+
   const renderMetricCard = (metricKey: string) => {
     const meta = metrics.find((m) => m.metric.key === metricKey)
     const shownStatus = meta?.status?.status ?? ''
-    if (!meta || (healthFilter && shownStatus !== healthFilter)) return null
-    const { metric, scope, head, children, noun, columns, status } = meta
+    if (!meta || !shownByHealth(shownStatus)) return null
+    const { metric, scope, head, children, noun, columns, status, cell } = meta
     const columnKey = status?.counted.key ?? ''
-    const cell = scopeCell(scope, columnKey)
     const scopeReported = cellReported(cell)
     const reportedChildren = children.filter((ch) => cellReported(scopeCell(ch, columnKey)))
     const chartChildren = !scopeReported && reportedChildren.length > 0
@@ -353,28 +462,8 @@ export function OverviewPage() {
     const chartRows = chartChildren ? reportedChildren : [chartRow]
     const ytdCell = scope ? ytdCellFor(scope) : undefined
     const ytdDisplay = ytdCell?.display ? `YTD ${ytdCell.display}` : null
-    const metricDef = versions.data?.versions
-      .find((v) => v.id === (cell?.versionId || view.data.versionByPeriod[columnKey]))
-      ?.content.metrics.find((x) => x.key === head.metricKey)
-    const rule = cell?.rule ?? metricDef?.rule
-    const bestKey = [...scale].sort((a, b) => a.rank - b.rank)[0]?.key
-    const ownTargets = (rule?.perSubject ?? []).flatMap((p) => {
-      const band = p.bands.find((b) => b.status === bestKey && b.op !== '')
-      return band ? [{ name: children.find((c) => c.subjectId === p.subjectId)?.subjectName ?? p.subjectId, value: band.value }] : []
-    })
     const levelName = orgLevels.data?.find((l) => l.depth === (children[0]?.depth ?? -1))?.name
-    const threshold = rule
-      ? thresholdText(rule, {
-          format: head.format,
-          direction: head.direction,
-          chartKind: head.chartKind,
-          frequency: head.frequency,
-          statusLabel,
-          perSubject: ownTargets,
-          noun: noun === 'services' ? nounForms('services', 'item') : nounForms(levelName, 'unit'),
-          surface: 'tile',
-        })
-      : ''
+    const threshold = thresholdOf(meta, noun === 'services' ? nounForms('services', 'item') : nounForms(levelName, 'unit'))
     const kind = status?.notReported?.kind
     const state = kind === 'window' ? 'window' : kind === 'stopped' ? 'stopped' : 'normal'
 
@@ -401,6 +490,23 @@ export function OverviewPage() {
           {null}
         </TileFrame>
       )
+    }
+
+    if (meta.isItems) {
+      const tile = (kindName: (id: string | undefined) => string | undefined) => (
+        <ItemSummaryTile
+          head={head}
+          rows={itemRowsOf(meta)}
+          columns={columns}
+          scale={statusColors}
+          direction={head.direction}
+          noun={nounForms(kindName(meta.kindId), 'item')}
+          rule={meta.rule}
+          onExpand={(trigger) => openFocus(metric.key, trigger)}
+          onOpenItem={(itemId, trigger) => openItem(metric.key, itemId, trigger)}
+        />
+      )
+      return meta.kindId ? <WithItemKinds>{tile}</WithItemKinds> : tile(NO_KINDS)
     }
 
     let value: ReactNode
@@ -473,6 +579,122 @@ export function OverviewPage() {
     )
   }
 
+  const selectHealth = (key: string) => {
+    const next = new URLSearchParams(params)
+    if (key) next.set('health', key)
+    else next.delete('health')
+    setParams(next)
+  }
+
+  const focusHref = (metricKey: string) => {
+    const next = new URLSearchParams(params)
+    next.set('focus', metricKey)
+    next.delete(ITEM_PARAM)
+    return `?${next.toString()}`
+  }
+
+  /** What a needs-attention card shows besides its reason (§4.3). */
+  const attentionMeta = (m: MetricMeta): AttentionMeta => {
+    const { category, scope, head, children, columns, status, cell, own } = m
+    const columnKey = status?.counted.key ?? ''
+    const base = {
+      category: category.name,
+      scale: statusColors,
+      display: cell?.display ?? '',
+      caption: status?.caption ?? '',
+      change: headerChange(scope ?? emptyScope(head), cell, fy),
+      threshold: thresholdOf(m, levelNoun(children)),
+      ribbon: { cells: own.cells, labels: columns.map(initialOf) },
+    }
+    if (m.isItems) {
+      const rows = itemRowsOf(m)
+      const summary = itemSummary(rows, scale)
+      const worst = summary.worst
+      const others = [...byRank]
+        .reverse()
+        .filter((l) => l.key !== bestKey && (summary.counts.get(l.key) ?? 0) > 0)
+        .map((l) => `${chartTheme(statusColors, l.key).shape} ${summary.counts.get(l.key)} ${l.label}`)
+      const distribution = [
+        `${summary.best} of ${summary.total} ${byRank[0]?.label ?? bestKey}`,
+        ...others,
+        ...(summary.notReported > 0 ? [`${summary.notReported} not reported`] : []),
+      ].join(' · ')
+      const worstRuns = worst ? worst.cells.filter((c) => c.kind === 'status' && c.status === worst.status).length : 0
+      return {
+        ...base,
+        display: '',
+        change: null,
+        threshold: '',
+        trend: null,
+        ribbon: { cells: worst?.cells ?? [], labels: columns.map(initialOf) },
+        why: null,
+        items: {
+          worst: worst ? { name: worst.name, display: worst.display, status: worst.status } : null,
+          distribution,
+          rows: sortItems(rows, 'worst', head.direction, scale)
+            .reported.slice(0, 3)
+            .map((r) => ({ id: r.id, name: r.name, display: r.display, cells: r.cells })),
+          why: worst
+            ? `${worst.name}: ${statusLabel(worst.status) ?? worst.status} in ${worstRuns} of the last ${columns.length} ${columnUnit(columns[columns.length - 1], columns.length)}`
+            : '',
+        },
+      }
+    }
+    const points = scope
+      ? columns.map((col) => {
+          const c = scopeCell(scope, col.key)
+          return { label: col.label, value: c && c.naReason === '' ? (c.value ?? null) : null, display: c?.display ?? '' }
+        })
+      : []
+    const valued = points.filter((p) => p.value !== null)
+    const goal = cell?.target ?? null
+    const goalText = goal !== null && cell ? `; goal ${formatMetricValue(head.format, goal)}` : ''
+    const unit = columnUnit(columns[columns.length - 1], columns.length)
+    const kids = worstChildren(children, columnKey, scale, head.direction)
+    const worstKid = kids.worst && kids.worst.cell.status ? kids.worst : null
+    const kidNoun = levelNoun(children)
+    return {
+      ...base,
+      trend:
+        valued.length > 1
+          ? {
+              points,
+              goal,
+              bands: m.rule?.type === 'bands' ? (m.rule.bands ?? []) : [],
+              summary: `Trend over ${columns.length} ${unit}: from ${valued[0]!.display} to ${valued[valued.length - 1]!.display}${goalText}`,
+            }
+          : null,
+      why: worstKid
+        ? {
+            lead: head.direction === 'lower_better' ? 'Highest' : 'Lowest',
+            name: worstKid.row.subjectName,
+            display: worstKid.cell.display,
+            status: worstKid.cell.status,
+            share: `${kids.worstCount} of ${countNoun(kids.total, kidNoun)} ${statusLabel(worstKid.cell.status) ?? worstKid.cell.status}`,
+          }
+        : null,
+    }
+  }
+
+  const renderAttention = (kindName: (id: string | undefined) => string | undefined) => {
+    const { shown, totals } = needsAttention(attentionInputs(kindName), scale)
+    if (shown.length === 0) return null
+    return (
+      <NeedsAttention
+        shown={shown.flatMap((item) => {
+          const m = metrics.find((x) => x.head.metricKey === item.metricKey)
+          return m ? [{ item, meta: attentionMeta(m), href: focusHref(m.metric.key) }] : []
+        })}
+        totals={totals}
+        worstLabel={worstLabel}
+        onShowAll={() => {
+          focusFirstTile.current = true
+          selectHealth(worstKey)
+        }}
+      />
+    )
+  }
+
   return (
     <div>
       <LayoutGrid
@@ -484,45 +706,17 @@ export function OverviewPage() {
         itemLabels={itemLabels}
         metricCategories={metricCategories}
         renderHealth={() => (
-      <section aria-label="Health this month">
-        <h2 className="sr-only">Health this month</h2>
-        <div className="flex flex-wrap gap-2">
-            {[...healthCounts].map(([key, count]) => (
-              <button
-                key={key}
-                type="button"
-                className="rounded-md border border-ink/20 bg-white px-3 py-1.5 text-sm hover:bg-cream"
-                onClick={() => {
-                  const next = new URLSearchParams(params)
-                  next.set('health', key)
-                  setParams(next)
-                }}
-              >
-                {healthLabelsMap.get(key) ?? key} {count}
-              </button>
-            ))}
-            {notReported > 0 && (
-              <span className="rounded-md border border-ink/20 bg-white px-3 py-1.5 text-sm">
-                Not reported {notReported}
-              </span>
-            )}
-        </div>
-        {healthFilter && (
-          <div className="mt-2">
-            <span className="inline-flex items-center gap-2 rounded-full border border-ink/20 bg-cream px-3 py-1 text-sm">
-              <StatusBadge status={healthFilter} label={statusLabel(healthFilter)} />
-              <span>{healthLabelsMap.get(healthFilter) ?? healthFilter}</span>
-              <button type="button" aria-label="Clear health filter" className="font-medium text-accent-deep" onClick={() => {
-                const next = new URLSearchParams(params)
-                next.delete('health')
-                setParams(next)
-              }}>
-                Clear
-              </button>
-            </span>
-          </div>
-        )}
-      </section>
+          <HealthSummary
+            title={healthTitle}
+            period={selectedLabel}
+            total={metrics.length + absentItemMetrics.length}
+            counts={healthCounts}
+            prior={priorCounts}
+            priorLabel={priorTrend?.label ?? ''}
+            selected={healthFilter}
+            onSelect={selectHealth}
+            scale={statusColors}
+          />
         )}
         renderRibbon={() => (
           <StatusBoard
@@ -534,83 +728,7 @@ export function OverviewPage() {
           />
         )}
         renderNeeds={() =>
-          attention.length > 0 ? (
-        <section aria-label="Needs attention">
-          <h2 className="text-lg font-semibold text-accent-deep">Needs attention</h2>
-          <ul className="mt-3 grid gap-4 lg:grid-cols-3">
-            {attention.map((item) => {
-              const meta = metrics.find((m) => m.metric.key === item.metricKey)
-              if (!meta?.status) return null
-              const { scope, head, children, status, columns } = meta
-              const columnKey = status.counted.key
-              const cell = scopeCell(scope, columnKey)
-              const driver = children
-                .map((ch) => {
-                  const c = scopeCell(ch, columnKey)
-                  return cellReported(c) && c?.status ? { name: ch.subjectName, rank: rankOf(c.status) } : null
-                })
-                .filter((d): d is { name: string; rank: number } => d !== null)
-                .sort((a, b) => b.rank - a.rank)[0]
-              const change =
-                cell && cell.changeKind
-                  ? changeText({
-                      period: cell.period,
-                      ytd: cell.ytd,
-                      format: head.format,
-                      change: cell.change,
-                      changeKind: cell.changeKind,
-                      compare: item.rule.type === 'change' ? item.rule.compare : undefined,
-                      fyStart: fy,
-                    })
-                  : null
-              const trend = scope
-                ? columns.map((col) => {
-                    const c = scopeCell(scope, col.key)
-                    return { label: col.label, value: c && c.naReason === '' ? (c.value ?? null) : null, display: c?.display ?? '' }
-                  })
-                : []
-              const shown = trend.filter((p) => p.value !== null)
-              return (
-                <li key={item.metricKey} className="rounded-lg border border-ink/20 bg-white p-4">
-                  <div className="flex items-start justify-between gap-2">
-                    <h3 className="font-semibold">{item.name}</h3>
-                    <button
-                      type="button"
-                      aria-label={`Expand ${item.name}`}
-                      className="rounded border border-ink/20 px-2 py-0.5 text-xs hover:bg-cream"
-                      onClick={(e) => {
-                        focusReturnRef.current = e.currentTarget
-                        const next = new URLSearchParams(params)
-                        next.set('focus', item.metricKey)
-                        setParams(next)
-                      }}
-                    >
-                      Expand
-                    </button>
-                  </div>
-                  <p className="mt-1 flex flex-wrap items-center gap-2">
-                    <StatusBadge status={status.status} label={statusLabel(status.status)} />
-                    <span className="text-lg font-semibold tabular-nums">{cell?.display || '—'}</span>
-                    {status.caption && <span className="text-xs text-ink/80">{status.caption}</span>}
-                  </p>
-                  {change && <p className="mt-1 text-xs text-ink/80">{withDirection(change, head.direction)}</p>}
-                  {shown.length > 1 && (
-                    <div className="mt-2">
-                      <Sparkline
-                        points={trend}
-                        target={cell?.target ?? null}
-                        height={40}
-                        summary={`Trend over ${trend.length} periods: from ${shown[0]!.display} to ${shown[shown.length - 1]!.display}`}
-                      />
-                    </div>
-                  )}
-                  {driver && driver.rank >= worstRank && <p className="mt-1 text-sm text-ink/80">Driver: {driver.name}</p>}
-                </li>
-              )
-            })}
-          </ul>
-        </section>
-          ) : null
+          itemCandidates ? <WithItemKinds>{renderAttention}</WithItemKinds> : renderAttention(NO_KINDS)
         }
         renderSection={(categoryId) => {
           const g = groups.find((x) => x.id === categoryId)

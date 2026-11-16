@@ -14,6 +14,11 @@ type LayoutResponse = components['schemas']['LayoutResponse']
 
 const ROUTE = '/scorecards/sc-main/overview?period=2026-M10'
 
+/** The metric's tile; its Needs attention card is an article with the same name. */
+function tileOf(name: RegExp): HTMLElement {
+  return screen.getAllByRole('article', { name }).find((a) => a.closest('[data-layout-item^="metric:"]'))!
+}
+
 function baseFallback(): LayoutItem[] {
   return defaultLayout(
     [
@@ -258,7 +263,7 @@ describe('LayoutGrid', () => {
     ]
     renderOverviewWithLayout(saved)
     await screen.findByRole('heading', { name: 'Overview', level: 1 })
-    expect(screen.getByRole('article', { name: /On-time delivery/ })).toBeTruthy()
+    expect(tileOf(/On-time delivery/)).toBeTruthy()
     expect(screen.getByRole('article', { name: /Defect rate/ })).toBeTruthy()
   })
 })
@@ -269,7 +274,7 @@ describe('Customize layout mode', () => {
   async function renderDefault() {
     renderOverviewWithLayout([])
     await screen.findByRole('heading', { name: 'Overview', level: 1 })
-    await screen.findByRole('article', { name: /On-time delivery/ })
+    await screen.findAllByRole('article', { name: /On-time delivery/ })
   }
 
   it('at rest has one layout control and no handles or menus on tiles', async () => {
@@ -304,7 +309,7 @@ describe('Customize layout mode', () => {
     expect(screen.getByText('On-time delivery · Small')).toBeTruthy()
     expect(screen.getByText('Health this month · Wide')).toBeTruthy()
     expect(screen.getByText('Section · Delivery')).toBeTruthy()
-    const tile = screen.getByRole('article', { name: /On-time delivery/ })
+    const tile = tileOf(/On-time delivery/)
     const content = tile.closest('[inert]')
     expect(content).toBeTruthy()
     expect(content!.className).toContain('opacity-70')
@@ -329,7 +334,7 @@ describe('Customize layout mode', () => {
     await user.click(within(bar).getByRole('button', { name: 'Done' }))
     expect(screen.queryByRole('region', { name: 'Customize layout' })).toBeNull()
     expect(screen.queryAllByRole('button', { name: /Layout options/ })).toEqual([])
-    expect(screen.getByRole('article', { name: /On-time delivery/ }).closest('[inert]')).toBeNull()
+    expect(tileOf(/On-time delivery/).closest('[inert]')).toBeNull()
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Customize layout' }))
   })
 
@@ -361,7 +366,7 @@ describe('Customize layout mode', () => {
   it('a section menu moves the section with its tiles and can hide its header', async () => {
     const puts: Array<{ items: LayoutItem[]; expectedRevision: number }> = []
     renderOverviewWithLayout(baseFallback(), (body) => puts.push(body))
-    await screen.findByRole('article', { name: /On-time delivery/ })
+    await screen.findAllByRole('article', { name: /On-time delivery/ })
     const user = userEvent.setup()
     await openSectionMenu(user, 'Quality')
     const menu = await screen.findByRole('menu')
@@ -391,7 +396,7 @@ describe('Customize layout mode', () => {
     const needs = fallback.find((i) => i.id === 'widget:needs')!
     const rest = fallback.filter((i) => i !== health && i !== needs)
     renderOverviewWithLayout([...rest.slice(0, 3), needs, ...rest.slice(3), health])
-    await screen.findByRole('article', { name: /On-time delivery/ })
+    await screen.findAllByRole('article', { name: /On-time delivery/ })
     await customize(userEvent.setup())
     const order = screen.getAllByRole('button', { name: /^Move .*Space to pick up$/ }).map((b) => b.getAttribute('aria-label'))
     expect(order.slice(0, 2)).toEqual([

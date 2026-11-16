@@ -57,8 +57,9 @@ function renderRamp(route: string) {
   renderApp(<App />, { route })
 }
 
+/** The metric's tile; its Needs attention card is an article with the same name. */
 function metricCard(name: string): HTMLElement {
-  return screen.getByRole('article', { name: new RegExp(name) })
+  return screen.getAllByRole('article', { name: new RegExp(name) }).find((a) => a.closest('[data-layout-item^="metric:"]'))!
 }
 
 async function openMore(dialog: HTMLElement) {

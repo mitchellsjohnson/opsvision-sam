@@ -1,5 +1,8 @@
 import type { components } from '../../../api/schema'
+import { monthsOf, parsePeriod } from '../../../lib/period'
+import type { Column } from '../columns'
 import type { StatusScaleEntry } from './statusAtScope'
+import { streakAt, type BoardCell } from './statusBoard'
 
 export type Direction = components['schemas']['Direction']
 export type StatusRule = components['schemas']['StatusRule']
@@ -14,6 +17,16 @@ export interface NeedsAttentionItem {
   direction: Direction
   rule: StatusRule
   priorStatus: string
+  /** Months the status has held at the counted period (`streakMonths`). */
+  streakMonths: number
+  /** The scale's label for `priorStatus`; '' when there is none. */
+  priorLabel: string
+  /** The scale's label for `status`. */
+  label: string
+  /** `sinceText` at the counted period: `Red since Jul 2026 · 4 months`, `Red all 12 months shown`. */
+  since: string
+  /** For item metrics, the reason in items: `1 service Red`. */
+  countReason?: string
 }
 
 function rankOf(scale: StatusScaleEntry[], status: string): number {
@@ -72,13 +85,23 @@ export function distancePastWorst(item: NeedsAttentionItem, scale: StatusScaleEn
   return (value - threshold) / width
 }
 
-type Tiered = NeedsAttentionItem & {
-  tier: number
+/** How many metrics Needs attention shows. */
+const SHOWN = 3
+
+/** Worst status (1), lost a rank since the prior period (2, "slipping"), or a middle status (3). */
+export type Tier = 1 | 2 | 3
+
+export type RankedItem = NeedsAttentionItem & {
+  tier: Tier
+  /** Band widths past the worst line (`distancePastWorst`). */
   distance: number
-  ranksLost: number
+  /** Worst now, and not worst in the prior period. */
+  newRed: boolean
+  /** `Red since Jul 2026 · 4 months`, `New Red · fell from Green`, `1 service Red`, `Fell from Green`. */
+  reason: string
 }
 
-function tierFor(item: NeedsAttentionItem, scale: StatusScaleEntry[]): number | null {
+function tierFor(item: NeedsAttentionItem, scale: StatusScaleEntry[]): Tier | null {
   const rank = rankOf(scale, item.status)
   if (rank === bestRank(scale)) return null
   if (rank === worstRank(scale)) return 1
@@ -88,33 +111,65 @@ function tierFor(item: NeedsAttentionItem, scale: StatusScaleEntry[]): number | 
   return null
 }
 
-export function needsAttention(items: NeedsAttentionItem[], scale: StatusScaleEntry[]): NeedsAttentionItem[] {
-  const tiered: Tiered[] = []
+function reasonFor(item: NeedsAttentionItem, tier: Tier, newRed: boolean): string {
+  if (item.countReason) return item.countReason
+  if (tier === 1 && newRed) return item.priorLabel ? `New ${item.label} · fell from ${item.priorLabel}` : `New ${item.label}`
+  if (tier === 2 && item.priorLabel) return `Fell from ${item.priorLabel}`
+  return item.since || item.label
+}
+
+/**
+ * How many months the status at `index` has held, whatever the grain: a
+ * quarter counts 3, a half 6, a year 12. 0 when the cell has no status.
+ */
+export function streakMonths(cells: BoardCell[], index: number, columns: Column[]): number {
+  const streak = streakAt(cells, index)
+  return columns.slice(index - streak + 1, index + 1).reduce((n, c) => {
+    const p = parsePeriod(c.period)
+    return n + (p && !c.ytd ? monthsOf(p).length : 1)
+  }, 0)
+}
+
+const byStreak = (a: RankedItem, b: RankedItem) =>
+  b.streakMonths - a.streakMonths || b.distance - a.distance || a.categoryOrder - b.categoryOrder
+
+/**
+ * The metrics that need attention, at most three (§4.3): the most severe New
+ * Red takes one slot, the other worst-status metrics fill slots by streak in
+ * months, then distance past the line, then category order; then slipping,
+ * then middle statuses. Shown by tier, then streak, then distance. `totals`
+ * counts every metric in each tier, shown or not.
+ */
+export function needsAttention(
+  items: NeedsAttentionItem[],
+  scale: StatusScaleEntry[],
+): { shown: RankedItem[]; totals: { red: number; slipping: number; middle: number } } {
+  const ranked: RankedItem[] = []
+  const lostOf = new Map<string, number>()
   for (const item of items) {
-    const distance = distancePastWorst(item, scale)
     const tier = tierFor(item, scale)
     if (tier == null) continue
-    tiered.push({
-      ...item,
-      tier,
-      distance,
-      ranksLost: item.priorStatus ? rankOf(scale, item.status) - rankOf(scale, item.priorStatus) : 0,
-    })
+    const newRed = tier === 1 && item.priorStatus !== '' && rankOf(scale, item.priorStatus) < worstRank(scale)
+    lostOf.set(item.metricKey, item.priorStatus ? rankOf(scale, item.status) - rankOf(scale, item.priorStatus) : 0)
+    ranked.push({ ...item, tier, distance: distancePastWorst(item, scale), newRed, reason: reasonFor(item, tier, newRed) })
   }
 
-  tiered.sort((a, b) => {
-    if (a.tier !== b.tier) return a.tier - b.tier
-    if (a.tier === 1) {
-      if (b.distance !== a.distance) return b.distance - a.distance
-      return a.categoryOrder - b.categoryOrder
-    }
-    if (a.tier === 2) {
-      if (b.ranksLost !== a.ranksLost) return b.ranksLost - a.ranksLost
-      if (b.distance !== a.distance) return b.distance - a.distance
-      return a.categoryOrder - b.categoryOrder
-    }
-    return a.categoryOrder - b.categoryOrder
-  })
+  const red = ranked.filter((r) => r.tier === 1).sort(byStreak)
+  const slipping = ranked
+    .filter((r) => r.tier === 2)
+    .sort((a, b) => (lostOf.get(b.metricKey) ?? 0) - (lostOf.get(a.metricKey) ?? 0) || byStreak(a, b))
+  const middle = ranked.filter((r) => r.tier === 3).sort(byStreak)
 
-  return tiered.slice(0, 3)
+  const severestNew = [...red.filter((r) => r.newRed)].sort(
+    (a, b) => b.distance - a.distance || a.categoryOrder - b.categoryOrder,
+  )[0]
+  const picked = new Set<RankedItem>(severestNew ? [severestNew] : [])
+  for (const r of [...red, ...slipping, ...middle]) {
+    if (picked.size >= SHOWN) break
+    picked.add(r)
+  }
+  const order = [...red, ...slipping, ...middle]
+  const shown = [...picked].sort((a, b) => a.tier - b.tier || (a.tier === 1 ? byStreak(a, b) : order.indexOf(a) - order.indexOf(b)))
+
+  return { shown, totals: { red: red.length, slipping: slipping.length, middle: middle.length } }
 }

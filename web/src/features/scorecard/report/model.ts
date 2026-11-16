@@ -494,6 +494,11 @@ export function buildReportModel(input: ReportModelInput): ReportModel {
       direction: m.head.direction,
       rule: cell?.rule ?? { type: 'bands' },
       priorStatus: priorKey ? (cellAt(m.scope, priorKey)?.status ?? '') : '',
+      // The report ranks by distance and prints no reasons.
+      streakMonths: 0,
+      priorLabel: '',
+      label: '',
+      since: '',
     })
   }
 
@@ -552,7 +557,7 @@ export function buildReportModel(input: ReportModelInput): ReportModel {
           period,
           scaleEntries,
         ),
-    needsAttention: needsAttention(attentionItems, scaleEntries).map((item) => byKey.get(item.metricKey)!),
+    needsAttention: needsAttention(attentionItems, scaleEntries).shown.map((item) => byKey.get(item.metricKey)!),
     categories: groups.map((g) => ({ id: g.id, name: g.name, metrics: g.metrics.map((m) => byKey.get(m.key)!) })),
     columns,
     table: metrics.map((m) => ({
