@@ -9,7 +9,16 @@ import { monthLabel, parsePeriod } from '../../lib/period'
 import { orgUnits } from '../../test/fixtures'
 import { API, server } from '../../test/server'
 import { renderApp } from '../../test/utils'
-import { addServiceUptime, buildView, UPTIME_ITEMS, versions, viewHandlers } from '../../test/viewFixtures'
+import {
+  addQuarterly,
+  addServiceUptime,
+  buildView,
+  QUARTERLY_VALUES,
+  quarterlyVersions,
+  UPTIME_ITEMS,
+  versions,
+  viewHandlers,
+} from '../../test/viewFixtures'
 
 type ScorecardView = components['schemas']['ScorecardView']
 type Cell = components['schemas']['Cell']
@@ -330,6 +339,69 @@ describe('OverviewPage', () => {
     expect(squares).toHaveLength(12)
     expect(squares.at(-1)!.getAttribute('aria-label')).toMatch(/^Oct\w* 2026: 99\.20%, status R/)
     expect(squares.at(-2)!.getAttribute('aria-label')).toMatch(/^Sep\w* 2026: 99\.90%, status G/)
+  })
+
+  describe('a quarterly metric', () => {
+    function renderQuarterly(values?: Parameters<typeof addQuarterly>[1]) {
+      server.use(
+        http.get(`${API}/v1/scorecards/sc-main/versions`, () => HttpResponse.json({ versions: quarterlyVersions })),
+        ...viewHandlers({ respond: (u) => HttpResponse.json(addQuarterly(buildView(u.searchParams), values)) }),
+      )
+      return renderApp(<App />, { route: ROUTE })
+    }
+
+    it('reported for Q3: counted once in Health, not listed as not reported, named in the quiet line', async () => {
+      renderQuarterly()
+      await screen.findByRole('heading', { name: 'Overview', level: 1 })
+      const health = screen.getByRole('region', { name: 'Health this month' })
+      expect(within(health).getByRole('button', { name: /On track/ }).textContent).toBe('On track 1')
+      expect(within(health).getByRole('button', { name: /Watch/ }).textContent).toBe('Watch 1')
+      expect(within(health).getByText('Not reported 1')).toBeTruthy()
+      const listed = screen.getByText(/^Not reported:/).textContent ?? ''
+      expect(listed).toMatch(/Defect rate: Not applicable: Not measured this month/)
+      expect(listed).not.toMatch(/Concepts/)
+      expect(
+        screen.getByText('Reported less often and up to date: Concepts delivered expected value (Q3 FY2026; Q4 due by Jan).'),
+      ).toBeTruthy()
+    })
+
+    it('overdue in Nov: listed as not reported with when it was due', async () => {
+      server.use(
+        http.get(`${API}/v1/scorecards/sc-main/versions`, () => HttpResponse.json({ versions: quarterlyVersions })),
+        ...viewHandlers({
+          respond: (u) => HttpResponse.json(addQuarterly(buildView(u.searchParams), { '2026-Q2': QUARTERLY_VALUES['2026-Q2']! })),
+        }),
+      )
+      renderApp(<App />, { route: '/scorecards/sc-main/overview?period=2026-M11' })
+      await screen.findByRole('heading', { name: 'Overview', level: 1 })
+      expect(screen.getByText(/^Not reported:/).textContent).toMatch(
+        /Concepts delivered expected value: Q3 FY2026 overdue \(due by Oct 2026\)/,
+      )
+      expect(screen.queryByText(/^Reported less often/)).toBeNull()
+    })
+
+    it('the board puts Q3 in Sep and leaves the other months not due, with no dot', async () => {
+      renderQuarterly()
+      const grid = await screen.findByRole('grid', { name: '12-month status' })
+      const ribbon = within(grid).getByTestId('ribbon-concepts_value')
+      const sep = within(ribbon).getByRole('button', { name: 'Concepts delivered expected value, Sep 2026: Green, 90%' })
+      expect(sep.textContent).toBe('G')
+      for (const month of ['Jul', 'Aug', 'Oct']) {
+        const cell = within(ribbon).getByRole('button', { name: `Concepts delivered expected value, ${month} 2026: Not due` })
+        expect(cell.querySelector('[data-dot]')).toBeNull()
+        expect(cell.textContent).toBe('')
+      }
+      expect(within(ribbon).getByText('90%')).toBeTruthy()
+      expect(within(ribbon).getByText('Q3 FY2026')).toBeTruthy()
+    })
+
+    it('the quarterly tile charts its quarters, with Q3 as the current value', async () => {
+      renderQuarterly()
+      await screen.findByRole('heading', { name: 'Overview', level: 1 })
+      const card = metricCard('Concepts delivered expected value')
+      expect(within(card).getByTestId('header-value').textContent).toBe('90%')
+      expect(within(card).getByText(/Concepts delivered expected value: 90%, status G/)).toBeTruthy()
+    })
   })
 
   it('shows the period header sentence', async () => {

@@ -64,8 +64,9 @@ export function statusAtScope({
     }
   }
 
+  const silent = children.length - reported.length
   return {
     status: worstStatus,
-    caption: `worst of ${reported.length} ${reported.length === 1 ? noun.slice(0, -1) : noun}`,
+    caption: `worst of ${reported.length} ${reported.length === 1 ? noun.slice(0, -1) : noun}${silent > 0 ? ` · ${silent} not reported` : ''}`,
   }
 }

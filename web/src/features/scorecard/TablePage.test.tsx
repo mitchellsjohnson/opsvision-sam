@@ -1,4 +1,4 @@
-import { screen, within } from '@testing-library/react'
+import { cleanup, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { HttpResponse } from 'msw'
 import { describe, expect, it } from 'vitest'
@@ -152,6 +152,35 @@ describe('TablePage', () => {
     await screen.findByRole('grid')
     expect(screen.getByText('12 values as reported in the legacy workbook')).toBeTruthy()
     expect(screen.getByRole('button', { name: 'show cells' })).toBeTruthy()
+  })
+
+  it('with the extra quarter, half and year columns in the response renders the same cells as before', async () => {
+    const shown = () => ({
+      headers: periodHeaders(),
+      onTime: gridCell('On-time delivery', 'All units', 'Oct').textContent,
+      unitA: gridCell('On-time delivery', 'Unit A', 'Oct').textContent,
+      defect: gridCell('Defect rate', 'All units', 'Oct').textContent,
+      rows: screen.getAllByRole('row').length,
+    })
+    renderTable()
+    await screen.findByRole('grid')
+    const before = shown()
+    cleanup()
+    server.use(
+      ...viewHandlers({
+        respond: (url) => {
+          const q = new URLSearchParams(url.searchParams)
+          for (const p of ['2025-Q4', '2026-Q1', '2026-Q2', '2026-Q3', '2025-H2', '2026-H1', '2023-FY', '2024-FY', '2025-FY']) {
+            q.append('periods', p)
+          }
+          return HttpResponse.json(buildView(q))
+        },
+      }),
+    )
+    renderApp(<TablePage scorecardId="sc-main" scorecardName="Main scorecard" />, { route: '/scorecards/sc-main?period=2026-M10' })
+    await screen.findByRole('grid')
+    expect(shown()).toEqual(before)
+    expect(before.onTime).toMatch(/84\.3%/)
   })
 
   describe('compact', () => {

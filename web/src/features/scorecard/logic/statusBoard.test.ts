@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { components } from '../../../api/schema'
-import { buildTrendColumns } from '../columns'
+import { buildTrendColumns, coarseColumns } from '../columns'
 import { boardLayout, buildBoardRow, cellName, fiscalGroups, streakAt, type BoardCell } from './statusBoard'
 
 type ViewRow = components['schemas']['ViewRow']
@@ -185,6 +185,109 @@ describe('buildBoardRow', () => {
   })
 })
 
+describe('buildBoardRow coarse', () => {
+  const months = buildTrendColumns('2026-M10', 1)
+  const quarters = coarseColumns('2026-M10', 'quarter', 4, 1)
+  const board = (cells: Cell[], columns = months, coarse = quarters) => {
+    const scope = row(cells, { frequency: 'quarterly', chartKind: 'discrete', metricName: 'Concepts delivered expected value' })
+    return buildBoardRow({
+      key: 'm',
+      category: { id: 'delivery', name: 'Delivery' },
+      scope,
+      head: scope,
+      children: [],
+      noun: 'segments',
+      columns,
+      scale: SCALE,
+      fyStart: 1,
+      frequency: 'quarterly',
+      coarse,
+    })
+  }
+
+  it('a quarter’s status sits in its last month; the other months are not due', () => {
+    const b = board([cell('2026-Q2', { status: 'Y', display: '70%' }), cell('2026-Q3', { status: 'G', display: '90%' })])
+    const at = (label: string) => b.cells[months.findIndex((c) => c.label === label)]!
+    expect(at('Sep')).toMatchObject({ key: '2026-M09', kind: 'status', status: 'G', display: '90%' })
+    expect(at('Jun')).toMatchObject({ kind: 'status', status: 'Y', display: '70%' })
+    expect(at('Jul').kind).toBe('notDue')
+    expect(at('Aug')).toMatchObject({ kind: 'notDue', caption: 'Q3 FY2026 reports after Sep' })
+    expect(at('Oct')).toMatchObject({ kind: 'notDue', caption: 'Q4 FY2026 reports after Dec' })
+    expect(b.cells.filter((c) => c.kind !== 'notDue').map((c) => c.key)).toEqual(['2025-M12', '2026-M03', '2026-M06', '2026-M09'])
+  })
+
+  it('the Current column shows the counted quarter, captioned', () => {
+    const b = board([cell('2026-Q3', { status: 'G', display: '90%' })])
+    expect(b).toMatchObject({ current: '90%', caption: 'Q3 FY2026' })
+    expect(b.counted).toMatchObject({ kind: 'status', status: 'G', display: '90%' })
+  })
+
+  it('while Q3 is due, the Current column shows Q2', () => {
+    const b = board([cell('2026-Q2', { status: 'Y', display: '70%' })])
+    expect(b).toMatchObject({ current: '70%', caption: 'Q3 due by Oct' })
+    expect(b.counted?.status).toBe('Y')
+  })
+
+  it('overdue: no current value, the caption says what is overdue', () => {
+    const nov = buildTrendColumns('2026-M11', 1)
+    const b = board([cell('2026-Q2', { status: 'Y' })], nov, coarseColumns('2026-M11', 'quarter', 4, 1))
+    expect(b.current).toBe('')
+    expect(b.caption).toBe('Q3 FY2026 overdue (due by Oct 2026)')
+    expect(b.counted?.kind).toBe('missing')
+  })
+
+  it('in a quarter view, a half sits in its last quarter', () => {
+    const q = buildTrendColumns('2026-Q3', 1)
+    const halves = coarseColumns('2026-Q3', 'half', 2, 1)
+    const scope = row([cell('2026-H1', { status: 'R', display: '40%' })], { frequency: 'biannual' })
+    const b = buildBoardRow({
+      key: 'm',
+      category: { id: 'delivery', name: 'Delivery' },
+      scope,
+      head: scope,
+      children: [],
+      noun: 'segments',
+      columns: q,
+      scale: SCALE,
+      fyStart: 1,
+      frequency: 'biannual',
+      coarse: halves,
+    })
+    // 2024-Q4 … 2026-Q3. H2 FY2024 and H1 FY2025 close in 2024-Q4 and 2025-Q2 but are older than the halves asked for: no data, not "not due".
+    expect(b.cells.map((c) => [c.key, c.kind])).toEqual([
+      ['2024-Q4', 'missing'],
+      ['2025-Q1', 'notDue'],
+      ['2025-Q2', 'missing'],
+      ['2025-Q3', 'notDue'],
+      ['2025-Q4', 'missing'],
+      ['2026-Q1', 'notDue'],
+      ['2026-Q2', 'status'],
+      ['2026-Q3', 'notDue'],
+    ])
+    expect(b.cells.find((c) => c.key === '2026-Q2')).toMatchObject({ status: 'R', display: '40%' })
+  })
+
+  it('a monthly row ignores coarse columns', () => {
+    const scope = row([cell('2026-M10', { status: 'R', display: '72%' })])
+    const b = buildBoardRow({
+      key: 'm',
+      category: { id: 'delivery', name: 'Delivery' },
+      scope,
+      head: scope,
+      children: [],
+      noun: 'items',
+      columns: months,
+      scale: SCALE,
+      fyStart: 1,
+      frequency: 'monthly',
+      coarse: quarters,
+    })
+    expect(b.cells.some((c) => c.kind === 'notDue')).toBe(false)
+    expect(b.counted).toBeUndefined()
+    expect(b.current).toBe('72%')
+  })
+})
+
 describe('buildBoardRow unrated', () => {
   it('a value with no status is unrated, not no data', () => {
     const columns = buildTrendColumns('2026-M10', 1).slice(-1)
@@ -224,6 +327,12 @@ describe('cellName', () => {
 
   it('names an unrated value', () => {
     expect(cellName('Epics', column, { ...missing, kind: 'unrated', display: '12' }, label)).toBe('Epics, Sep 2026: 12, not rated')
+  })
+
+  it('names a not-due cell', () => {
+    const aug = buildTrendColumns('2026-M08', 1).at(-1)!
+    const notDue: BoardCell = { ...missing, kind: 'notDue', caption: 'Q3 FY2026 reports after Sep' }
+    expect(cellName('Concepts delivered expected value', aug, notDue, label)).toBe('Concepts delivered expected value, Aug 2026: Not due')
   })
 
   it('says why there is no status', () => {

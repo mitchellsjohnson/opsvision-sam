@@ -1,12 +1,42 @@
+import type { components } from '../../api/schema'
 import {
   formatPeriod,
   lastMonth,
   monthLabel,
+  parent,
   parsePeriod,
   periodLabel,
   prev,
+  type Grain,
   type Period,
 } from '../../lib/period'
+
+type Frequency = components['schemas']['Frequency']
+
+export type CoarseGrain = 'quarter' | 'half' | 'year'
+
+const GRAIN_ORDER: Record<Grain, number> = { month: 0, quarter: 1, half: 2, year: 3 }
+
+/** The grain a metric's data is entered at. */
+export const FREQUENCY_GRAIN: Record<Frequency, Grain> = {
+  monthly: 'month',
+  quarterly: 'quarter',
+  biannual: 'half',
+  annual: 'year',
+}
+
+export function coarserGrain(a: Grain, b: Grain): boolean {
+  return GRAIN_ORDER[a] > GRAIN_ORDER[b]
+}
+
+/** How many periods of each coarse grain the shared request adds: 4 quarters, 2 halves, 3 years. */
+export const COARSE_SPAN: Record<CoarseGrain, number> = { quarter: 4, half: 2, year: 3 }
+
+/** A month count that orders periods of any grain by their last month. */
+export function endOrdinal(p: Period): number {
+  const m = lastMonth(p)
+  return m.fy * 12 + m.index
+}
 
 export interface Column {
   /** Matches the API's `versionByPeriod` keys: `2026-M10` or `YTD:2026-M10`. */
@@ -111,6 +141,27 @@ export function buildMonthTrendColumns(
   const periods: Period[] = [selected]
   for (let i = 1; i < monthCount; i++) periods.unshift(prev(periods[0] as Period))
   return periods.map((p) => periodColumn(p, fiscalYearStartMonth))
+}
+
+/**
+ * The `count` periods of `grain` whose last month is on or before the
+ * selected period's last month, oldest first. Grains at or coarser than the
+ * selected one only.
+ */
+export function windowColumns(period: string, grain: Grain, count: number, fiscalYearStartMonth: number): Column[] {
+  const selected = parsePeriod(period)
+  if (!selected || count < 1) return []
+  const end = lastMonth(selected)
+  let last = parent(end, grain)
+  if (endOrdinal(last) > endOrdinal(end)) last = prev(last)
+  const periods: Period[] = [last]
+  for (let i = 1; i < count; i++) periods.unshift(prev(periods[0] as Period))
+  return periods.map((p) => periodColumn(p, fiscalYearStartMonth))
+}
+
+/** Coarse periods closed by the selected period: Oct 2026 → Q4 FY2025…Q3 FY2026 for 4 quarters (§5.1). */
+export function coarseColumns(period: string, grain: CoarseGrain, count: number, fiscalYearStartMonth: number): Column[] {
+  return windowColumns(period, grain, count, fiscalYearStartMonth)
 }
 
 /** The `periods` and `ytd` view query parameters for a set of columns. */

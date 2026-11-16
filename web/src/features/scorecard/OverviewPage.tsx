@@ -2,26 +2,21 @@ import { useMemo } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router'
 import { useMe, useOrgUnits, useVersions, useView } from '../../api/queries'
 import type { components } from '../../api/schema'
-import {
-  monthLabel,
-  parent,
-  parsePeriod,
-  periodLabel,
-  type Grain,
-  type Period,
-} from '../../lib/period'
+import { monthLabel, parsePeriod, periodLabel } from '../../lib/period'
 import { Sparkline } from '../../ui/Sparkline'
 import { StatusBadge } from '../../ui/StatusBadge'
 import { usePeriodState } from '../../shell/usePeriodState'
-import { buildTrendColumns, type Column } from './columns'
+import { buildTrendColumns, COARSE_SPAN, coarseColumns, type CoarseGrain, type Column } from './columns'
 import { changeText, withDirection } from './format'
 import { needsAttention, type NeedsAttentionItem } from './logic/needsAttention'
 import { defaultStatusScale } from './charts/chartTheme'
 import { MetricChart } from './charts/MetricChart'
 import { focusReturnRef } from './focusTrigger'
 import { LayoutGrid } from './LayoutGrid'
-import { cellReported, statusAtScope, type StatusScaleEntry } from './logic/statusAtScope'
-import { cellKey, groupRows, metricScope } from './viewHelpers'
+import { periodStatus } from './logic/coarse'
+import { columnUnit } from './logic/statusText'
+import { cellReported, type StatusScaleEntry } from './logic/statusAtScope'
+import { cellKey, columnsFor, groupRows, metricScope } from './viewHelpers'
 import { useScorecardViewRequest } from './viewRequest'
 import { StatusBoard } from './StatusBoard'
 import { buildBoardRow } from './logic/statusBoard'
@@ -41,32 +36,14 @@ function emptyScope(head: ViewRow): ViewRow {
   return { ...head, subjectId: '', subjectName: '', cells: [] }
 }
 
-function priorColumn(columns: Column[]): string | undefined {
-  if (columns.length < 2) return undefined
-  return columns[columns.length - 2]?.key
+/** The column before `key` among `columns`. */
+function priorColumn(columns: Column[], key: string): string | undefined {
+  const i = columns.findIndex((c) => c.key === key)
+  return i > 0 ? columns[i - 1]?.key : undefined
 }
 
 function scopeCell(row: ViewRow | null, columnKey: string): Cell | undefined {
   return row?.cells.find((c) => cellKey(c) === columnKey)
-}
-
-function nextPeriod(p: Period): Period {
-  if (p.grain === 'year') return { grain: 'year', fy: p.fy + 1, index: 0 }
-  const max = p.grain === 'month' ? 12 : p.grain === 'quarter' ? 4 : 2
-  if (p.index < max) return { ...p, index: p.index + 1 }
-  return { grain: p.grain, fy: p.fy + 1, index: 1 }
-}
-
-/** Next reporting period for quarterly, biannual, or annual metrics after the selected month. */
-function nextDuePeriodLabel(frequency: ViewRow['frequency'], selectedPeriod: string, fyStart: number): string | null {
-  if (frequency === 'monthly') return null
-  const month = parsePeriod(selectedPeriod)
-  if (!month || month.grain !== 'month') return null
-  const grain: Grain =
-    frequency === 'quarterly' ? 'quarter' : frequency === 'biannual' ? 'half' : frequency === 'annual' ? 'year' : 'month'
-  if (grain === 'month') return null
-  const containing = parent(month, grain)
-  return periodLabel(nextPeriod(containing), fyStart)
 }
 
 function healthLabels(scale: StatusScaleEntry[]): Map<string, string> {
@@ -140,21 +117,25 @@ export function OverviewPage() {
   }
 
   const groups = groupRows(view.data)
-  const columnKey = selectedColumn?.key ?? ''
-  const priorKey = priorColumn(trendColumns)
+  const selectedGrain = parsed?.grain ?? 'month'
+  // The coarse periods the shared request added (the version in force decides which).
+  const responded = new Set(view.data.periods)
+  const coarseByGrain: Partial<Record<CoarseGrain, Column[]>> = {}
+  for (const grain of ['quarter', 'half', 'year'] as const) {
+    const cols = coarseColumns(period.period, grain, COARSE_SPAN[grain], fy)
+    if (cols.length > 0 && cols.every((c) => responded.has(c.period))) coarseByGrain[grain] = cols
+  }
 
   const metrics = groups.flatMap((g) =>
     g.metrics.map((m) => {
       const { scope, children, head } = metricScope(m.rows)
       const noun = metricNoun(head.chartKind, scope, children)
-      const atScope = statusAtScope({
-        scope: scope ?? { cells: [] },
-        children,
-        columnKey,
-        scale,
-        noun,
-      })
-      return { category: g, metric: m, scope, head, children, atScope, noun }
+      const columns = columnsFor(head.frequency, selectedGrain, trendColumns, coarseByGrain)
+      const coarse = columns === trendColumns ? [] : columns
+      const status = selectedColumn
+        ? periodStatus({ scope, children, frequency: head.frequency, selected: selectedColumn, coarse, scale, noun, fy })
+        : null
+      return { category: g, metric: m, scope, head, children, noun, columns, coarse, status }
     }),
   )
 
@@ -166,18 +147,19 @@ export function OverviewPage() {
   // view (a scope with no services): it is not reported, not gone.
   const shownKeys = new Set(metrics.map((m) => m.metric.key))
   const absentItemMetrics = (
-    versions.data?.versions.find((v) => v.id === view.data.versionByPeriod[columnKey])?.content.metrics ?? []
+    versions.data?.versions.find((v) => v.id === view.data.versionByPeriod[selectedColumn?.key ?? ''])?.content.metrics ?? []
   ).filter((m) => !shownKeys.has(m.key) && m.reportedAt.length > 0 && m.reportedAt.every((s) => s.kind === 'item_kind'))
   let notReported = absentItemMetrics.length
-  for (const { atScope } of metrics) {
-    if (!atScope.status) notReported++
-    else healthCounts.set(atScope.status, (healthCounts.get(atScope.status) ?? 0) + 1)
+  for (const { status } of metrics) {
+    if (!status?.status) notReported++
+    else healthCounts.set(status.status, (healthCounts.get(status.status) ?? 0) + 1)
   }
 
   const attentionItems: NeedsAttentionItem[] = []
-  for (const { category, scope, head, atScope } of metrics) {
-    if (!atScope.status) continue
-    const cell = scopeCell(scope, columnKey)
+  for (const { category, scope, head, status, columns } of metrics) {
+    if (!status?.status) continue
+    const cell = scopeCell(scope, status.counted.key)
+    const priorKey = priorColumn(columns, status.counted.key)
     const prior = priorKey ? scopeCell(scope, priorKey) : undefined
     const metricDef = versions.data?.versions
       .find((v) => v.id === cell?.versionId)
@@ -186,7 +168,7 @@ export function OverviewPage() {
       metricKey: head.metricKey,
       name: head.metricName,
       categoryOrder: view.data.categories.find((c) => c.id === category.id)?.order ?? 0,
-      status: atScope.status,
+      status: status.status,
       value: cell?.value ?? null,
       change: cell?.change ?? null,
       direction: head.direction,
@@ -196,7 +178,7 @@ export function OverviewPage() {
   }
   const attention = needsAttention(attentionItems, scale)
 
-  const boardRows = metrics.map(({ category, metric, scope, head, children, noun }) =>
+  const boardRows = metrics.map(({ category, metric, scope, head, children, noun, coarse }) =>
     buildBoardRow({
       key: metric.key,
       category: { id: category.id, name: category.name },
@@ -207,6 +189,8 @@ export function OverviewPage() {
       columns: trendColumns,
       scale,
       fyStart: fy,
+      frequency: head.frequency,
+      coarse,
     }),
   )
 
@@ -219,10 +203,14 @@ export function OverviewPage() {
           ? '3-year status'
           : '12-month status'
 
+  const windowText = `No reports in the last ${trendColumns.length} ${columnUnit(selectedColumn, trendColumns.length)}`
   const unreported = [
-    ...metrics.filter(({ atScope }) => !atScope.status).map(({ head }) => ({ name: head.metricName, frequency: head.frequency })),
-    ...absentItemMetrics.map((m) => ({ name: m.name, frequency: m.frequency })),
+    ...metrics.flatMap(({ head, status }) =>
+      status?.notReported ? [{ name: head.metricName, why: status.notReported.text }] : status ? [] : [{ name: head.metricName, why: '' }],
+    ),
+    ...absentItemMetrics.map((m) => ({ name: m.name, why: windowText })),
   ]
+  const quiet = metrics.flatMap(({ status }) => (status?.quiet ? [status.quiet] : []))
 
   const metricsByCategory: Record<string, { key: string }[]> = {}
   const metricCategories: Record<string, string> = {}
@@ -244,8 +232,10 @@ export function OverviewPage() {
 
   const renderMetricCard = (metricKey: string) => {
     const meta = metrics.find((m) => m.metric.key === metricKey)
-    if (!meta || (healthFilter && meta.atScope.status !== healthFilter)) return null
-    const { metric, scope, head, children, atScope, noun } = meta
+    const shownStatus = meta?.status?.status ?? ''
+    if (!meta || (healthFilter && shownStatus !== healthFilter)) return null
+    const { metric, scope, head, children, noun, columns } = meta
+    const columnKey = meta.status?.counted.key ?? ''
     const cell = scopeCell(scope, columnKey)
     const scopeReported = cellReported(cell)
     const reportedChildren = children.filter((ch) => cellReported(scopeCell(ch, columnKey)))
@@ -253,7 +243,7 @@ export function OverviewPage() {
     const scopeNote =
       chartChildren && scope
         ? `Company total not reported; ${reportedChildren.length} ${noun} reported`
-        : atScope.caption || undefined
+        : (shownStatus && meta.status?.caption) || undefined
     const chartRow = scope ?? emptyScope(head)
     const chartRows = chartChildren ? reportedChildren : [chartRow]
     const ytdCell = scope ? ytdCellFor(scope) : undefined
@@ -293,10 +283,10 @@ export function OverviewPage() {
           row={chartRow}
           chartRows={chartRows}
           childRows={children}
-          columns={trendColumns}
+          columns={columns}
           currentColumnKey={columnKey}
           currentDisplay={cell?.display ?? ''}
-          currentStatus={atScope.status}
+          currentStatus={shownStatus}
           statusLabel={statusLabel}
           scale={statusColors}
           tableTo={tableLink(metric.key)}
@@ -382,8 +372,9 @@ export function OverviewPage() {
           <ul className="mt-3 grid gap-4 lg:grid-cols-3">
             {attention.map((item) => {
               const meta = metrics.find((m) => m.metric.key === item.metricKey)
-              if (!meta) return null
-              const { scope, head, children, atScope } = meta
+              if (!meta?.status) return null
+              const { scope, head, children, status, columns } = meta
+              const columnKey = status.counted.key
               const cell = scopeCell(scope, columnKey)
               const driver = children
                 .map((ch) => {
@@ -405,7 +396,7 @@ export function OverviewPage() {
                     })
                   : null
               const trend = scope
-                ? trendColumns.map((col) => {
+                ? columns.map((col) => {
                     const c = scopeCell(scope, col.key)
                     return { label: col.label, value: c && c.naReason === '' ? (c.value ?? null) : null, display: c?.display ?? '' }
                   })
@@ -430,9 +421,9 @@ export function OverviewPage() {
                     </button>
                   </div>
                   <p className="mt-1 flex flex-wrap items-center gap-2">
-                    <StatusBadge status={atScope.status} label={statusLabel(atScope.status)} />
+                    <StatusBadge status={status.status} label={statusLabel(status.status)} />
                     <span className="text-lg font-semibold tabular-nums">{cell?.display || '—'}</span>
-                    {atScope.caption && <span className="text-xs text-ink/80">{atScope.caption}</span>}
+                    {status.caption && <span className="text-xs text-ink/80">{status.caption}</span>}
                   </p>
                   {change && <p className="mt-1 text-xs text-ink/80">{withDirection(change, head.direction)}</p>}
                   {shown.length > 1 && (
@@ -458,10 +449,8 @@ export function OverviewPage() {
           if (!g) return null
           const sectionCounts = new Map<string, number>()
           for (const m of g.metrics) {
-            const meta = metrics.find((x) => x.metric.key === m.key)
-            if (!meta) continue
-            if (meta.atScope.status)
-              sectionCounts.set(meta.atScope.status, (sectionCounts.get(meta.atScope.status) ?? 0) + 1)
+            const status = metrics.find((x) => x.metric.key === m.key)?.status?.status
+            if (status) sectionCounts.set(status, (sectionCounts.get(status) ?? 0) + 1)
           }
           return (
             <section aria-labelledby={`overview-cat-${g.id}`} className="pt-8">
@@ -476,24 +465,25 @@ export function OverviewPage() {
         }}
         renderMetric={renderMetricCard}
         renderUnreported={() =>
-          unreported.length > 0 ? (
-            <p className="text-sm text-ink/80">
-              Not reported:{' '}
-              {unreported
-                .map((m) => {
-                  const due = nextDuePeriodLabel(m.frequency, period.period, fy)
-                  return due ? `${m.name} (next due ${due})` : m.name
-                })
-                .join(', ')}
-              {canEnter && (
-                <>
-                  {' '}
-                  <Link to={`/entry?period=${period.period}`} className="font-medium text-accent-deep hover:underline">
-                    Enter data
-                  </Link>
-                </>
+          unreported.length > 0 || quiet.length > 0 ? (
+            <div>
+              {unreported.length > 0 && (
+                <p className="text-sm text-ink/80">
+                  Not reported: {unreported.map((m) => (m.why ? `${m.name}: ${m.why}` : m.name)).join('; ')}
+                  {canEnter && (
+                    <>
+                      {' '}
+                      <Link to={`/entry?period=${period.period}`} className="font-medium text-accent-deep hover:underline">
+                        Enter data
+                      </Link>
+                    </>
+                  )}
+                </p>
               )}
-            </p>
+              {quiet.length > 0 && (
+                <p className="mt-1 text-xs text-ink/70">Reported less often and up to date: {quiet.join(' · ')}.</p>
+              )}
+            </div>
           ) : null
         }
       />

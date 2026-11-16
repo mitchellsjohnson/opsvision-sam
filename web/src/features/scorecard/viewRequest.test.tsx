@@ -6,8 +6,8 @@ import { App } from '../../App'
 import { orgUnits } from '../../test/fixtures'
 import { API, server } from '../../test/server'
 import { renderApp } from '../../test/utils'
-import { UPTIME_ITEMS, viewHandlers } from '../../test/viewFixtures'
-import { MAX_VIEW_SUBJECTS, scorecardViewRequest, viewSubjects } from './viewRequest'
+import { quarterlyVersions, UPTIME_ITEMS, viewHandlers } from '../../test/viewFixtures'
+import { MAX_VIEW_SUBJECTS, scorecardViewRequest, versionInForce, viewSubjects } from './viewRequest'
 
 const base = {
   period: '2026-M10',
@@ -77,6 +77,75 @@ describe('scorecardViewRequest', () => {
     const req = scorecardViewRequest(base, { units }, { months: 24, metrics: ['on_time_pct'] })
     expect(req.periods).toHaveLength(24)
     expect(req.metrics).toEqual(['on_time_pct'])
+  })
+
+  it('a month adds 4 quarters, 2 halves and 3 years, each only when asked for, after the months', () => {
+    const req = scorecardViewRequest(base, {}, { coarse: ['quarter', 'year'] })
+    expect(req.periods?.slice(0, 12)).toEqual(scorecardViewRequest(base, {}).periods)
+    expect(req.periods?.slice(12)).toEqual(['2025-Q4', '2026-Q1', '2026-Q2', '2026-Q3', '2023-FY', '2024-FY', '2025-FY'])
+  })
+
+  it('a quarter adds halves and years only; a half adds years; finer grains are ignored', () => {
+    const q = scorecardViewRequest({ ...base, period: '2026-Q3' }, {}, { coarse: ['quarter', 'half', 'year'] })
+    expect(q.periods).toHaveLength(8 + 2 + 3)
+    expect(q.periods?.slice(8)).toEqual(['2025-H2', '2026-H1', '2023-FY', '2024-FY', '2025-FY'])
+    const h = scorecardViewRequest({ ...base, period: '2026-H1' }, {}, { coarse: ['quarter', 'half', 'year'] })
+    expect(h.periods?.slice(4)).toEqual(['2023-FY', '2024-FY', '2025-FY'])
+    const y = scorecardViewRequest({ ...base, period: '2025-FY' }, {}, { coarse: ['quarter', 'half', 'year'] })
+    expect(y.periods).toEqual(['2023-FY', '2024-FY', '2025-FY'])
+  })
+
+  it('monthly-only methodologies send exactly today’s request', () => {
+    expect(scorecardViewRequest({ ...base, ytd: true }, { units }, { coarse: [] })).toEqual(
+      scorecardViewRequest({ ...base, ytd: true }, { units }),
+    )
+  })
+})
+
+describe('versionInForce', () => {
+  const v = (id: string, status: 'published' | 'superseded' | 'draft', effectiveFrom: string) =>
+    ({ id, status, effectiveFrom }) as Parameters<typeof versionInForce>[0][number]
+  const list = [v('draft', 'draft', ''), v('old', 'superseded', '2025-M01'), v('mid', 'published', '2026-M07')]
+
+  it('the published or superseded version with the latest start on or before the period’s last month', () => {
+    expect(versionInForce(list, '2026-M10', '')?.id).toBe('mid')
+    expect(versionInForce(list, '2026-M06', '')?.id).toBe('old')
+    // A quarter is judged by its last month.
+    expect(versionInForce(list, '2026-Q3', '')?.id).toBe('mid')
+    expect(versionInForce(list, '2024-M12', '')).toBeUndefined()
+  })
+
+  it('a restated view uses the restating version, draft or not', () => {
+    expect(versionInForce(list, '2026-M10', 'draft')?.id).toBe('draft')
+  })
+})
+
+describe('useScorecardViewRequest coarse grains', () => {
+  function withQuarterly(seen: URL[]) {
+    server.use(
+      http.get(`${API}/v1/scorecards/sc-main/versions`, () => HttpResponse.json({ versions: quarterlyVersions })),
+      ...viewHandlers({ onView: (u) => seen.push(u) }),
+    )
+  }
+
+  it('waits for the versions and adds the quarters of the version in force, in one request', async () => {
+    const seen: URL[] = []
+    withQuarterly(seen)
+    renderApp(<App />, { route: '/scorecards/sc-main/overview?period=2026-M10' })
+    await screen.findByRole('heading', { name: 'Overview', level: 1 })
+    expect(seen).toHaveLength(1)
+    const periods = seen[0]!.searchParams.getAll('periods')
+    expect(periods).toHaveLength(16)
+    expect(periods.slice(12)).toEqual(['2025-Q4', '2026-Q1', '2026-Q2', '2026-Q3'])
+  })
+
+  it('restated under a monthly-only version, sends no coarse periods', async () => {
+    const seen: URL[] = []
+    withQuarterly(seen)
+    renderApp(<App />, { route: '/scorecards/sc-main/overview?period=2026-M10&restate=ver-2' })
+    await screen.findByRole('heading', { name: 'Overview', level: 1 })
+    expect(seen).toHaveLength(1)
+    expect(seen[0]!.searchParams.getAll('periods')).toHaveLength(12)
   })
 })
 

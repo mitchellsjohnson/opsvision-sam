@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildColumns, columnRequest } from './columns'
+import { buildColumns, coarseColumns, columnRequest } from './columns'
 
 const keys = (cols: ReturnType<typeof buildColumns>) => cols.map((c) => c.key)
 const labels = (cols: ReturnType<typeof buildColumns>) => cols.map((c) => c.label)
@@ -51,6 +51,29 @@ describe('buildColumns', () => {
     const cols = buildColumns('2026-FY', true, 1)
     expect(keys(cols)).toEqual(['2024-FY', '2025-FY', '2026-FY'])
     expect(labels(cols)).toEqual(['FY2024', 'FY2025', 'FY2026'])
+  })
+})
+
+describe('coarseColumns', () => {
+  it('coarse columns end at or before the selected month', () => {
+    expect(coarseColumns('2026-M10', 'quarter', 4, 1).map((c) => c.period)).toEqual(['2025-Q4', '2026-Q1', '2026-Q2', '2026-Q3'])
+    expect(coarseColumns('2026-M10', 'half', 2, 1).map((c) => c.period)).toEqual(['2025-H2', '2026-H1'])
+    expect(coarseColumns('2026-M10', 'year', 3, 1).map((c) => c.period)).toEqual(['2023-FY', '2024-FY', '2025-FY'])
+    // Periods are fiscal-indexed: fiscal M03 closes Q1 whatever the start month; the start month only changes labels.
+    expect(coarseColumns('2026-M03', 'quarter', 1, 4).map((c) => c.period)).toEqual(['2026-Q1'])
+    expect(coarseColumns('2026-M02', 'quarter', 1, 4).map((c) => c.period)).toEqual(['2025-Q4'])
+  })
+
+  it('a period that closes in the selected month is included', () => {
+    expect(coarseColumns('2026-M09', 'quarter', 1, 1).map((c) => c.period)).toEqual(['2026-Q3'])
+    expect(coarseColumns('2026-M12', 'year', 1, 1).map((c) => c.period)).toEqual(['2026-FY'])
+    // A quarter view: halves closing by the quarter's last month.
+    expect(coarseColumns('2026-Q3', 'half', 2, 1).map((c) => c.period)).toEqual(['2025-H2', '2026-H1'])
+  })
+
+  it('labels like the trend columns', () => {
+    const [q] = coarseColumns('2026-M10', 'quarter', 1, 1)
+    expect(q).toEqual({ key: '2026-Q3', label: 'Q3', fullLabel: 'Q3 FY2026', period: '2026-Q3', ytd: false })
   })
 })
 

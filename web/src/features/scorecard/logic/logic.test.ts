@@ -49,6 +49,20 @@ describe('statusAtScope', () => {
     const children = [{ cells: [cell({ period: '2026-M10', value: 99.2, status: 'R' })] }]
     expect(statusAtScope({ scope, children, columnKey: '2026-M10', scale, noun: 'services' }).caption).toBe('worst of 1 service')
   })
+
+  it('adds how many children did not report', () => {
+    const reported = Array.from({ length: 21 }, (_, i) => ({
+      cells: [cell({ period: '2026-M10', value: 99.9, status: i === 0 ? 'R' : 'G' })],
+    }))
+    const silent = [
+      { cells: [cell({ period: '2026-M10' })] },
+      { cells: [cell({ period: '2026-M10', naReason: 'Retired' })] },
+      { cells: [] },
+    ]
+    expect(
+      statusAtScope({ scope: { cells: [] }, children: [...reported, ...silent], columnKey: '2026-M10', scale, noun: 'services' }),
+    ).toEqual({ status: 'R', caption: 'worst of 21 services · 3 not reported' })
+  })
 })
 
 describe('applyLayout', () => {

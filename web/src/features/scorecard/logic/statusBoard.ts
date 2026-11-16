@@ -1,25 +1,31 @@
 import type { components } from '../../../api/schema'
-import { parsePeriod } from '../../../lib/period'
+import { lastMonth, parent, parsePeriod } from '../../../lib/period'
 import type { Move } from '../charts/chartTheme'
-import { buildPoints, headerChange } from '../charts/points'
-import type { Column } from '../columns'
+import { buildPoints, headerChange, type ChartPoint } from '../charts/points'
+import { coarserGrain, endOrdinal, FREQUENCY_GRAIN, type Column } from '../columns'
+import { notDueCaption, periodStatus } from './coarse'
 import { statusAtScope, type StatusScaleEntry } from './statusAtScope'
 import { cellKey } from '../viewHelpers'
 
 type ViewRow = components['schemas']['ViewRow']
+type Frequency = components['schemas']['Frequency']
 
 export interface BoardCell {
   /** The column key. */
   key: string
-  /** A status (the scope's, or the worst child's), a value with no status, not applicable, or no data. */
-  kind: 'status' | 'unrated' | 'na' | 'missing'
+  /**
+   * A status (the scope's, or the worst child's), a value with no status, not
+   * applicable, no data, or not due (a coarse metric's month that closes no
+   * period of its own).
+   */
+  kind: 'status' | 'unrated' | 'na' | 'missing' | 'notDue'
   status: string
   /** The scope's value; '' when the status comes from children or there is none. */
   display: string
   naReason: string
   /** The change as a phrase, e.g. `-10 pts vs Sep`. */
   change: string | null
-  /** `worst of 3 services` when the status comes from children. */
+  /** `worst of 3 services` when the status comes from children; `Q3 FY2026 reports after Sep` when not due. */
   caption: string
 }
 
@@ -28,10 +34,12 @@ export interface BoardRow {
   name: string
   category: { id: string; name: string }
   cells: BoardCell[]
-  /** The selected period's value; '' when the scope has none. */
+  /** The selected period's value (a coarse metric's counted period); '' when the scope has none. */
   current: string
   caption: string
   change: { text: string; move: Move } | null
+  /** A coarse metric's counted period, which the Current column and roll-up read instead of the last cell. */
+  counted?: BoardCell
 }
 
 /** Inline rows keep at least this much for the metric name; cells grow only once it is comfortable. */
@@ -121,7 +129,13 @@ export function streakAt(cells: BoardCell[], index: number): number {
   return n
 }
 
-/** One metric's row: each column's status by the shared rule, with what the tooltip and value column show. */
+/**
+ * One metric's row: each column's status by the shared rule, with what the
+ * tooltip and value column show. A coarse metric (`coarse` holds its own
+ * grain's columns) puts each period's status in the column of its last month
+ * or quarter; the other columns are not due, and the Current column shows
+ * the period `periodStatus` counts.
+ */
 export function buildBoardRow({
   key,
   category,
@@ -132,6 +146,8 @@ export function buildBoardRow({
   columns,
   scale,
   fyStart,
+  frequency = head.frequency,
+  coarse = [],
 }: {
   key: string
   category: { id: string; name: string }
@@ -142,14 +158,15 @@ export function buildBoardRow({
   columns: Column[]
   scale: StatusScaleEntry[]
   fyStart: number
+  frequency?: Frequency
+  coarse?: Column[]
 }): BoardRow {
-  const points = buildPoints(scope ?? { ...head, cells: [] }, columns, fyStart)
-  const cells = columns.map((col, i): BoardCell => {
-    const point = points[i]!
+  const row = scope ?? { ...head, cells: [] }
+  const cellAt = (col: Column, point: ChartPoint, key = col.key): BoardCell => {
     const at = statusAtScope({ scope: scope ?? { cells: [] }, children, columnKey: col.key, scale, noun })
     const kind = at.status ? 'status' : point.kind === 'na' ? 'na' : point.kind === 'value' && point.display ? 'unrated' : 'missing'
     return {
-      key: col.key,
+      key,
       kind,
       status: at.status,
       display: point.kind === 'value' ? point.display : '',
@@ -157,8 +174,43 @@ export function buildBoardRow({
       change: point.kind === 'value' ? point.change : null,
       caption: at.caption,
     }
-  })
+  }
+
   const last = columns[columns.length - 1]
+  const own = FREQUENCY_GRAIN[frequency]
+  const selectedGrain = parsePeriod(last?.period)?.grain
+  if (last && selectedGrain && own !== 'month' && coarse.length > 0 && coarserGrain(own, selectedGrain)) {
+    const coarsePoints = buildPoints(row, coarse, fyStart)
+    const byEnd = new Map(coarse.map((c, i) => [endOrdinal(parsePeriod(c.period)!), i]))
+    const cells = columns.map((col): BoardCell => {
+      const p = parsePeriod(col.period)
+      const i = p ? byEnd.get(endOrdinal(p)) : undefined
+      if (i !== undefined) return cellAt(coarse[i]!, coarsePoints[i]!, col.key)
+      const blank = { key: col.key, status: '', display: '', naReason: '', change: null }
+      // A column that closes an older period than those asked for has no data; any other is not due.
+      const closes = p !== null && endOrdinal(parent(lastMonth(p), own)) === endOrdinal(p)
+      return closes
+        ? { ...blank, kind: 'missing', caption: '' }
+        : { ...blank, kind: 'notDue', caption: notDueCaption(col, own, fyStart) }
+    })
+    const ps = periodStatus({ scope, children, frequency, selected: last, coarse, scale, noun, fy: fyStart })
+    const i = coarse.findIndex((c) => c.key === ps.counted.key)
+    const counted = i >= 0 ? cellAt(ps.counted, coarsePoints[i]!) : undefined
+    const countedCell = scope?.cells.find((c) => cellKey(c) === ps.counted.key)
+    return {
+      key,
+      name: head.metricName,
+      category,
+      cells,
+      current: ps.status ? (counted?.display ?? '') : '',
+      caption: ps.caption,
+      change: scope && ps.status && counted?.display ? headerChange(scope, countedCell, fyStart) : null,
+      counted: counted && { ...counted, caption: ps.caption },
+    }
+  }
+
+  const points = buildPoints(row, columns, fyStart)
+  const cells = columns.map((col, i): BoardCell => cellAt(col, points[i]!))
   const currentCell = scope && last ? scope.cells.find((c) => cellKey(c) === last.key) : undefined
   const current = cells[cells.length - 1]
   return {
@@ -188,6 +240,7 @@ export function cellName(
 ): string {
   const where = `${metricName}, ${column.fullLabel}`
   if (cell.kind === 'na') return `${where}: Not applicable${cell.naReason ? `, ${cell.naReason}` : ''}`
+  if (cell.kind === 'notDue') return `${where}: Not due`
   if (cell.kind === 'missing') return `${where}: No data`
   const change = withChange && cell.change ? `, ${spokenChange(cell.change)}` : ''
   if (cell.kind === 'unrated') return `${where}: ${cell.display}, not rated${change}`

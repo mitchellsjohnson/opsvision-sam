@@ -1,4 +1,6 @@
 import type { components } from '../../api/schema'
+import type { Grain } from '../../lib/period'
+import { coarserGrain, FREQUENCY_GRAIN, type CoarseGrain, type Column } from './columns'
 
 type Schemas = components['schemas']
 type Cell = Schemas['Cell']
@@ -58,6 +60,23 @@ export function metricScope(rows: ViewRow[]): MetricScope {
   if (units.length === 0) return { scope: null, children: rows, head: rows[0]! }
   const scope = units.reduce((best, r) => (r.depth < best.depth ? r : best))
   return { scope, children: rows.filter((r) => r.depth === scope.depth + 1), head: scope }
+}
+
+/**
+ * The columns a metric is shown over: its own grain's coarse columns when it
+ * reports less often than the selected grain and the view has them, else the
+ * trend.
+ */
+export function columnsFor(
+  frequency: Schemas['Frequency'],
+  selected: Grain,
+  trend: Column[],
+  coarse: Partial<Record<CoarseGrain, Column[]>>,
+): Column[] {
+  const own = FREQUENCY_GRAIN[frequency]
+  if (own === 'month' || !coarserGrain(own, selected)) return trend
+  const columns = coarse[own]
+  return columns && columns.length > 0 ? columns : trend
 }
 
 /** The key of a cell's column, matching `Column.key`: `2026-M10` or `YTD:2026-M10`. */

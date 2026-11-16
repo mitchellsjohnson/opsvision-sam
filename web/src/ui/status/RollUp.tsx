@@ -3,7 +3,12 @@ import { chartTheme } from '../../features/scorecard/charts/chartTheme'
 import type { BoardCell, BoardRow } from '../../features/scorecard/logic/statusBoard'
 import type { StatusLevel } from './StatusChip'
 
-const BLANK_LABELS: Record<Exclude<BoardCell['kind'], 'status'>, string> = { missing: 'no data', na: 'n/a', unrated: 'not rated' }
+const BLANK_LABELS: Record<Exclude<BoardCell['kind'], 'status'>, string> = {
+  missing: 'no data',
+  na: 'n/a',
+  unrated: 'not rated',
+  notDue: 'not due',
+}
 
 /**
  * The selected period's exceptions as quiet text, `◆ 1 Red · ▲ 1 Yellow`, or
@@ -15,7 +20,7 @@ export function RollUp({ rows, scale }: { rows: BoardRow[]; scale: StatusLevel[]
   const counts = new Map<string, number>()
   const blanks = new Map<string, number>()
   for (const row of rows) {
-    const last = row.cells[row.cells.length - 1]
+    const last = row.counted ?? row.cells[row.cells.length - 1]
     if (last?.kind === 'status') counts.set(last.status, (counts.get(last.status) ?? 0) + 1)
     else {
       const label = BLANK_LABELS[last?.kind ?? 'missing']

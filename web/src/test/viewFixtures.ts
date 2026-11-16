@@ -288,6 +288,89 @@ export function addServiceUptime(view: ScorecardView, subjects: string[] = []): 
   return view
 }
 
+/** A quarterly metric: in a month view the API answers it only for the quarter, half and year periods asked for. */
+export const QUARTERLY_METRIC = {
+  key: 'concepts_value',
+  name: 'Concepts delivered expected value',
+  categoryId: 'delivery',
+  format: 'percent0',
+  direction: 'higher_better',
+  frequency: 'quarterly',
+  chartKind: 'discrete',
+} as const
+
+/** Quarterly values by period; Q3 FY2026 is reported (Green). */
+export const QUARTERLY_VALUES: Record<string, { value: number; display: string; status: string }> = {
+  '2025-Q4': { value: 70, display: '70%', status: 'Y' },
+  '2026-Q1': { value: 75, display: '75%', status: 'Y' },
+  '2026-Q2': { value: 85, display: '85%', status: 'G' },
+  '2026-Q3': { value: 90, display: '90%', status: 'G' },
+}
+
+/**
+ * Appends `concepts_value`'s company row to a view built by `buildView`:
+ * `values` for the quarter, half and year periods it lists, blank for every
+ * other period (a month has no whole quarter to report).
+ */
+export function addQuarterly(view: ScorecardView, values = QUARTERLY_VALUES): ScorecardView {
+  const m = QUARTERLY_METRIC
+  const cellFor = (period: string, ytd: boolean): Cell => ({
+    metricKey: m.key,
+    subjectId: 'root',
+    period,
+    ytd,
+    ...blank,
+    ...(ytd ? {} : (values[period] ?? {})),
+    coverage: [1, 1],
+  })
+  view.rows.push({
+    metricKey: m.key,
+    metricName: m.name,
+    categoryId: m.categoryId,
+    subjectId: 'root',
+    subjectName: 'All units',
+    subjectKind: 'unit',
+    format: m.format,
+    depth: 0,
+    direction: m.direction,
+    frequency: m.frequency,
+    chartKind: m.chartKind,
+    definition: '',
+    cells: [...view.periods.map((p) => cellFor(p, false)), ...view.ytd.map((p) => cellFor(p, true))],
+  })
+  return view
+}
+
+/** `versions` with `concepts_value` in the published ver-1. */
+export const quarterlyVersions: MethodologyVersion[] = versions.map((v) =>
+  v.id !== 'ver-1'
+    ? v
+    : {
+        ...v,
+        content: {
+          ...v.content,
+          metrics: [
+            ...v.content.metrics,
+            {
+              ...v.content.metrics[0]!,
+              key: QUARTERLY_METRIC.key,
+              name: QUARTERLY_METRIC.name,
+              format: QUARTERLY_METRIC.format,
+              frequency: QUARTERLY_METRIC.frequency,
+              rule: {
+                type: 'bands' as const,
+                bands: [
+                  { status: 'G', op: '>=', value: 80 },
+                  { status: 'Y', op: '>=', value: 60 },
+                  { status: 'R', op: '', value: 0 },
+                ],
+              },
+            },
+          ],
+        },
+      },
+)
+
 export interface ViewHandlerOptions {
   /** Called with the URL of each view request. */
   onView?: (url: URL) => void

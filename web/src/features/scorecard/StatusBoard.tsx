@@ -12,7 +12,7 @@ export { StatusCellTip, type StatusCellTipProps } from '../../ui/status'
 const ROW_HOVER = 'hover:bg-ink/[0.035] focus-within:bg-ink/[0.035]'
 
 function CurrentValue({ row, scale, compact }: { row: BoardRow; scale: StatusLevel[]; compact: boolean }) {
-  const last = row.cells[row.cells.length - 1]
+  const last = row.counted ?? row.cells[row.cells.length - 1]
   if (row.current && compact) {
     return (
       <span className="text-sm font-semibold tabular-nums">
@@ -48,7 +48,12 @@ function CurrentValue({ row, scale, compact }: { row: BoardRow; scale: StatusLev
       </>
     )
   }
-  return <span className={clsx('text-[11px] text-ink/70', !compact && 'block')}>{last?.kind === 'na' ? 'n/a' : 'No data'}</span>
+  return (
+    <>
+      <span className={clsx('text-[11px] text-ink/70', !compact && 'block')}>{last?.kind === 'na' ? 'n/a' : 'No data'}</span>
+      {row.caption && !compact && <span className="block truncate text-[11px] text-ink/70">{row.caption}</span>}
+    </>
+  )
 }
 
 export interface StatusBoardProps {
@@ -261,7 +266,7 @@ export function StatusBoard({ label, columns, rows, scale, onOpen }: StatusBoard
                   </tr>
                 )}
                 {category.rows.map((row) => {
-                  const muted = row.cells.slice(offset).every((c) => c.kind === 'missing')
+                  const muted = row.cells.slice(offset).every((c) => c.kind === 'missing' || c.kind === 'notDue')
                   if (inline) {
                     return (
                       <tr key={row.key} data-testid={`ribbon-${row.key}`} className={ROW_HOVER}>

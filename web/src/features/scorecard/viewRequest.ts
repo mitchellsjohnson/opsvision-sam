@@ -1,7 +1,22 @@
-import { useItems, useOrgUnits } from '../../api/queries'
-import { formatPeriod, lastMonth, parsePeriod, type ViewRequest } from '../../lib/period'
+import { useParams } from 'react-router'
+import { useItems, useOrgUnits, useVersions } from '../../api/queries'
+import type { components } from '../../api/schema'
+import { formatPeriod, lastMonth, monthsOf, parsePeriod, type Grain, type ViewRequest } from '../../lib/period'
 import { usePeriodState, type PeriodView } from '../../shell/usePeriodState'
-import { buildMonthTrendColumns, buildTrendColumns, columnRequest } from './columns'
+import {
+  buildMonthTrendColumns,
+  buildTrendColumns,
+  COARSE_SPAN,
+  coarseColumns,
+  coarserGrain,
+  columnRequest,
+  endOrdinal,
+  windowColumns,
+  type CoarseGrain,
+} from './columns'
+import { coarseGrains } from './logic/coarse'
+
+type MethodologyVersion = components['schemas']['MethodologyVersion']
 
 /** The API's cap on `subjects`. */
 export const MAX_VIEW_SUBJECTS = 200
@@ -33,6 +48,10 @@ export interface ViewRequestOptions {
   months?: number
   /** Only these metrics' rows. */
   metrics?: string[]
+  /** Coarse grains to add after the trend (§5.2): 4 quarters, 2 halves, 3 years, each closed by the period. */
+  coarse?: CoarseGrain[]
+  /** One grain only, `count` periods closed by the period, instead of the trend; never mixed with `coarse`. */
+  window?: { grain: Grain; count: number }
 }
 
 function withDescendants(selected: string[], units: Unit[]): string[] {
@@ -75,10 +94,11 @@ export function viewSubjects(state: Pick<ViewState, 'subjects' | 'scope'>, tree:
 
 /**
  * The scorecard view request for a URL: the trend window ending at the
- * period (12 months, 8 quarters, 4 halves or 3 years), its YTD column when
- * year to date is on, the scope or subjects, `restate` and `structure`. The
- * Overview, the Table and the full-screen views all use it, so the same URL
- * makes one request and shares one cache entry.
+ * period (12 months, 8 quarters, 4 halves or 3 years), then any coarse
+ * periods, its YTD column when year to date is on, the scope or subjects,
+ * `restate` and `structure`. The Overview, the Table and the full-screen
+ * views all use it, so the same URL makes one request and shares one cache
+ * entry.
  */
 export function scorecardViewRequest(
   state: ViewState,
@@ -86,12 +106,22 @@ export function scorecardViewRequest(
   options: ViewRequestOptions = {},
 ): ViewRequest {
   const fy = state.fiscalYearStartMonth
-  const columns =
-    options.months !== undefined
-      ? buildMonthTrendColumns(state.period, options.months, fy)
-      : buildTrendColumns(state.period, fy)
-  const req: ViewRequest = { ...columnRequest(columns) }
   const selected = parsePeriod(state.period)
+  let columns
+  if (options.window) {
+    columns = windowColumns(state.period, options.window.grain, options.window.count, fy)
+  } else {
+    columns =
+      options.months !== undefined
+        ? buildMonthTrendColumns(state.period, options.months, fy)
+        : buildTrendColumns(state.period, fy)
+    for (const grain of options.coarse ?? []) {
+      if (selected && coarserGrain(grain, selected.grain)) {
+        columns = [...columns, ...coarseColumns(state.period, grain, COARSE_SPAN[grain], fy)]
+      }
+    }
+  }
+  const req: ViewRequest = { ...columnRequest(columns) }
   if (state.ytd && selected && selected.grain !== 'year') req.ytd = [formatPeriod(lastMonth(selected))]
   const subjects = viewSubjects(state, tree)
   if (subjects.length > 0) req.subjects = subjects
@@ -101,11 +131,53 @@ export function scorecardViewRequest(
   return req
 }
 
+/** The first month a version is effective from, as a month count; null when it has no valid start. */
+function startOrdinal(v: Pick<MethodologyVersion, 'effectiveFrom'>): number | null {
+  const p = parsePeriod(v.effectiveFrom)
+  const first = p ? monthsOf(p)[0] : undefined
+  return first ? first.fy * 12 + first.index : null
+}
+
+function newerVersion(a: MethodologyVersion, b: MethodologyVersion): boolean {
+  const ao = startOrdinal(a) ?? 0
+  const bo = startOrdinal(b) ?? 0
+  if (ao !== bo) return ao > bo
+  if ((a.publishedAt ?? '') !== (b.publishedAt ?? '')) return (a.publishedAt ?? '') > (b.publishedAt ?? '')
+  return a.id > b.id
+}
+
+/**
+ * The methodology version the API computes a period under: the restating
+ * version when restated; else, among published and superseded versions, the
+ * one that started latest on or before the period's last month.
+ */
+export function versionInForce(
+  versions: Pick<MethodologyVersion, 'id' | 'status' | 'effectiveFrom' | 'publishedAt'>[],
+  period: string,
+  restate: string,
+): MethodologyVersion | undefined {
+  const all = versions as MethodologyVersion[]
+  if (restate !== '') return all.find((v) => v.id === restate)
+  const p = parsePeriod(period)
+  if (!p) return undefined
+  const end = endOrdinal(p)
+  let best: MethodologyVersion | undefined
+  for (const v of all) {
+    if (v.status !== 'published' && v.status !== 'superseded') continue
+    const from = startOrdinal(v)
+    if (from === null || from > end) continue
+    if (!best || newerVersion(v, best)) best = v
+  }
+  return best
+}
+
 /**
  * The view request for the current URL. `ready` is false until the period
- * default is known and, when a scope or subjects need their descendants, the
- * org units and tracked items have loaded (or failed: the request then goes
- * without them).
+ * default is known; when a scope or subjects need their descendants, until
+ * the org units and tracked items have loaded; and for the shared request
+ * (no `months`, `window` or `coarse`), until the versions have loaded, so
+ * the coarse grains of the version in force go in the first request. A
+ * failed load sends the request without what it would have added.
  */
 export function useScorecardViewRequest(options: ViewRequestOptions = {}): {
   request: ViewRequest
@@ -113,12 +185,22 @@ export function useScorecardViewRequest(options: ViewRequestOptions = {}): {
   period: PeriodView
 } {
   const [period] = usePeriodState()
+  const { sc } = useParams()
   const orgUnits = useOrgUnits()
   const needsTree = period.subjects.length > 0 || period.scope !== ''
   const items = useItems({ enabled: needsTree })
+  const shared = options.months === undefined && options.window === undefined && options.coarse === undefined
+  const needsVersions = shared && sc !== undefined
+  const versions = useVersions(needsVersions ? sc : undefined)
+  const selectedGrain = parsePeriod(period.period)?.grain ?? 'month'
+  const version = needsVersions ? versionInForce(versions.data?.versions ?? [], period.period, period.restate) : undefined
+  const coarse = shared && version ? coarseGrains(version.content.metrics.map((m) => m.frequency), selectedGrain) : options.coarse
   return {
-    request: scorecardViewRequest(period, { units: orgUnits.data?.units, items: items.data }, options),
-    ready: period.ready && (!needsTree || (!orgUnits.isPending && !items.isPending)),
+    request: scorecardViewRequest(period, { units: orgUnits.data?.units, items: items.data }, { ...options, coarse }),
+    ready:
+      period.ready &&
+      (!needsTree || (!orgUnits.isPending && !items.isPending)) &&
+      (!needsVersions || !versions.isPending),
     period,
   }
 }
