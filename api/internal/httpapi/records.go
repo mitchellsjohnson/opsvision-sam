@@ -1067,7 +1067,7 @@ func (s *Server) applyRecords(ctx context.Context, p auth.Principal, objs object
 		saved.Name = strings.TrimSpace(save.Name)
 	}
 
-	err = recordimport.Apply(ctx, s.store, *p.Tenant, doc.ScorecardID, doc.Plan, doc.Answers, p.UserID)
+	err = recordimport.ApplyVia(ctx, s.store, *p.Tenant, doc.ScorecardID, doc.Plan, doc.Answers, p.UserID, p.Channel)
 	switch {
 	case errors.Is(err, recordimport.ErrAlreadyApplied):
 		return nil, alreadyApplied("this preview was already applied")

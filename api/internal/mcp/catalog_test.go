@@ -147,15 +147,20 @@ func TestCatalogBodyAndAnnotations(t *testing.T) {
 	if body["type"] != "object" || body["properties"] == nil {
 		t.Errorf("body schema not resolved: %v", body)
 	}
-	if put.Annotations["idempotentHint"] != true || put.Annotations["readOnlyHint"] != false {
+	if put.Annotations["idempotentHint"] != true || put.Annotations["readOnlyHint"] != false || put.Annotations["destructiveHint"] != true {
 		t.Errorf("PUT annotations = %v", put.Annotations)
+	}
+	patch := toolNamed(t, tools, "update_member")
+	if patch.Method != "PATCH" || patch.Annotations["destructiveHint"] != true {
+		t.Errorf("PATCH annotations = %v (%s)", patch.Annotations, patch.Method)
 	}
 	del := toolNamed(t, tools, "delete_override")
 	if del.Annotations["destructiveHint"] != true {
 		t.Errorf("DELETE annotations = %v", del.Annotations)
 	}
+	// A POST creates: destructiveHint is left out rather than false.
 	post := toolNamed(t, tools, "create_item_kind")
-	if post.Annotations["readOnlyHint"] != false || post.Annotations["destructiveHint"] != false {
+	if _, set := post.Annotations["destructiveHint"]; post.Annotations["readOnlyHint"] != false || set {
 		t.Errorf("POST annotations = %v", post.Annotations)
 	}
 	if mcp.ReadOnly(post) || !mcp.ReadOnly(toolNamed(t, tools, "get_me")) {
@@ -290,4 +295,35 @@ func strs(v any) []string {
 		return out
 	}
 	return nil
+}
+
+// Every operation under the secret paths stays out of MCP, including any
+// added later: a token or key handled by a tool would reach the model.
+func TestCatalogHasNoSecretPaths(t *testing.T) {
+	secret := func(path string) bool {
+		for _, p := range []string{"/me/tokens", "/me/assistant"} {
+			if path == p || strings.HasPrefix(path, p+"/") {
+				return true
+			}
+		}
+		return false
+	}
+	spec, err := httpapi.GetSpec()
+	if err != nil {
+		t.Fatal(err)
+	}
+	inSpec := 0
+	for path, item := range spec.Paths.Map() {
+		if secret(path) {
+			inSpec += len(item.Operations())
+		}
+	}
+	if inSpec == 0 {
+		t.Fatal("no secret operations in the spec; the check checks nothing")
+	}
+	for _, tool := range apiTools(t) {
+		if secret(tool.PathTemplate) {
+			t.Errorf("%s (%s %s) is an MCP tool", tool.Name, tool.Method, tool.PathTemplate)
+		}
+	}
 }

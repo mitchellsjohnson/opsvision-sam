@@ -1,9 +1,11 @@
 package auth_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -115,8 +117,8 @@ func TestBearerTokenAuthenticates(t *testing.T) {
 	if p.UserID != "u-1" || p.Email != "u-1@example.test" || p.Name != "User One" || p.IsOperator {
 		t.Fatalf("principal = %+v", p)
 	}
-	if auth.ChannelToken != "token" || p.Channel != auth.ChannelToken {
-		t.Fatalf("channel = %q, want token", p.Channel)
+	if auth.ChannelToken != "token" || p.Channel != auth.ChannelToken || p.Interactive {
+		t.Fatalf("channel = %q, interactive %v; want token, not interactive", p.Channel, p.Interactive)
 	}
 	if p.Tenant == nil || p.Tenant.ID != "t1" || p.Membership == nil || p.Membership.Role != domain.RoleContributor {
 		t.Fatalf("tenant/membership = %+v / %+v", p.Tenant, p.Membership)
@@ -141,8 +143,8 @@ func TestIdentityProviderTokenChannelIsEmpty(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, p := run(t, f.config(), f.st, jwt)
-	if p == nil || p.Channel != "" {
-		t.Fatalf("principal = %+v, want an empty channel", p)
+	if p == nil || p.Channel != "" || !p.Interactive {
+		t.Fatalf("principal = %+v, want an empty channel, interactive", p)
 	}
 }
 
@@ -158,6 +160,27 @@ func TestRevokedTokenRejected(t *testing.T) {
 	wantError(t, rec, http.StatusUnauthorized, "unauthorized", "")
 	if p != nil {
 		t.Fatal("handler reached")
+	}
+}
+
+func TestMiddlewareWarnsWithoutTokenStore(t *testing.T) {
+	f := newPATFixture(t)
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	if _, err := auth.Middleware(f.config(), f.st); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(logs.String(), "access tokens") {
+		t.Fatalf("warned with a token store: %s", logs.String())
+	}
+	if _, err := auth.Middleware(f.config(), tenantOnlyStore{f.st.Store}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(logs.String(), "level=WARN") || !strings.Contains(logs.String(), "access tokens") {
+		t.Fatalf("no warning without a token store: %s", logs.String())
 	}
 }
 
@@ -194,6 +217,11 @@ func TestRemovedMemberTokenRejected(t *testing.T) {
 	f := newPATFixture(t)
 	ctx := context.Background()
 	if err := f.st.DeleteMembership(ctx, "t1", "u-1"); err != nil {
+		t.Fatal(err)
+	}
+	// Removal deletes the user's tokens; one left behind (a removal that
+	// failed part-way) still does not authenticate.
+	if err := f.st.PutToken(ctx, f.tok); err != nil {
 		t.Fatal(err)
 	}
 	rec, p := run(t, f.config(), f.st, f.secret)

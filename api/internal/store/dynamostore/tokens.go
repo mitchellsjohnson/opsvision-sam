@@ -107,6 +107,10 @@ func (s *Store) ListTokens(ctx context.Context, tenantID, userID string) ([]doma
 	}
 	out := make([]domain.AccessToken, 0, len(items))
 	for _, it := range items {
+		// The key prefix of "u" also matches a user ID such as "u#x".
+		if it.UserID != userID {
+			continue
+		}
 		t, err := it.domain()
 		if err != nil {
 			return nil, err

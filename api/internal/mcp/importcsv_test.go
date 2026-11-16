@@ -9,8 +9,10 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"opsvision/internal/demo"
+	"opsvision/internal/httpapi"
 	"opsvision/internal/mcp"
 )
 
@@ -192,20 +194,24 @@ func TestImportCSVApplies(t *testing.T) {
 	if n := e.snapshots(t); n != before+1 {
 		t.Errorf("snapshots %d -> %d", before, n)
 	}
-	var create, parse string
-	for _, a := range e.audits(t) {
-		if a.TargetID != got.ImportID {
-			continue
-		}
-		switch a.Action {
-		case "import.create":
+	var create, parse, apply string
+	// recordimport.Apply stamps its entry with the real clock.
+	all, err := e.store.ListAudit(context.Background(), demo.TenantID, time.Time{}, time.Now().Add(24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range all {
+		switch {
+		case a.Action == "import.create" && a.TargetID == got.ImportID:
 			create = a.Channel
-		case "import.parse":
+		case a.Action == "import.parse" && a.TargetID == got.ImportID:
 			parse = a.Channel
+		case a.Action == "records.import" && a.TargetID == got.Applied.Records.SnapshotID:
+			apply = a.Channel
 		}
 	}
-	if create != "mcp" || parse != "mcp" {
-		t.Errorf("audit channels create %q parse %q", create, parse)
+	if create != "mcp" || parse != "mcp" || apply != "mcp" {
+		t.Errorf("audit channels create %q parse %q apply %q", create, parse, apply)
 	}
 }
 
@@ -252,5 +258,59 @@ func TestImportCSVErrors(t *testing.T) {
 	})
 	if !res.IsError || !strings.Contains(res.text(), "defect") {
 		t.Fatalf("other record type: %.300s", res.text())
+	}
+}
+
+// previewAnswers returns the answers schema of preview_records_import in tools.
+func previewAnswers(t *testing.T, tools []mcp.Tool) map[string]any {
+	t.Helper()
+	for _, tl := range tools {
+		if tl.Name == "preview_records_import" {
+			body := tl.InputSchema["properties"].(map[string]any)["body"].(map[string]any)
+			return body["properties"].(map[string]any)["answers"].(map[string]any)
+		}
+	}
+	t.Fatal("no preview_records_import tool")
+	return nil
+}
+
+func TestImportCSVLeavesTheCatalogAlone(t *testing.T) {
+	newEnv(t)
+	tools, err := httpapi.Tools()
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := json.Marshal(previewAnswers(t, tools))
+	if err != nil {
+		t.Fatal(err)
+	}
+	imp, err := mcp.ImportRecordsCSV(tools, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := json.Marshal(previewAnswers(t, tools))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Errorf("preview_records_import answers changed:\n%s\n%s", before, after)
+	}
+	own := imp.Tool.InputSchema["properties"].(map[string]any)["answers"].(map[string]any)["description"]
+	if previewAnswers(t, tools)["description"] == own {
+		t.Errorf("preview_records_import answers carry import_records_csv's description %q", own)
+	}
+}
+
+func TestImportCSVAnnotations(t *testing.T) {
+	tools, err := httpapi.Tools()
+	if err != nil {
+		t.Fatal(err)
+	}
+	imp, err := mcp.ImportRecordsCSV(tools, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, set := imp.Tool.Annotations["destructiveHint"]; set || imp.Tool.Annotations["readOnlyHint"] != false {
+		t.Fatalf("annotations = %v; want a write without destructiveHint", imp.Tool.Annotations)
 	}
 }

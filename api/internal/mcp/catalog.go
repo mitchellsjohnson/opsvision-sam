@@ -209,14 +209,21 @@ func describe(op *openapi3.Operation) string {
 	return strings.Join(parts, "\n\n")
 }
 
-// annotations are the MCP tool hints of an operation: GET only reads,
-// DELETE destroys, PUT is idempotent.
+// annotations are the MCP tool hints of an operation: GET only reads; PUT,
+// PATCH and DELETE can overwrite or remove data; PUT and DELETE are
+// idempotent. A POST creates, which is not destructive but not known safe
+// either, so it has no destructiveHint.
 func annotations(method string, op *openapi3.Operation) map[string]any {
 	a := map[string]any{
-		"readOnlyHint":    method == http.MethodGet,
-		"destructiveHint": method == http.MethodDelete,
-		"idempotentHint":  method == http.MethodGet || method == http.MethodPut || method == http.MethodDelete,
-		"openWorldHint":   false,
+		"readOnlyHint":   method == http.MethodGet,
+		"idempotentHint": method == http.MethodGet || method == http.MethodPut || method == http.MethodDelete,
+		"openWorldHint":  false,
+	}
+	switch method {
+	case http.MethodGet:
+		a["destructiveHint"] = false
+	case http.MethodPut, http.MethodPatch, http.MethodDelete:
+		a["destructiveHint"] = true
 	}
 	if op.Summary != "" {
 		a["title"] = strings.TrimSpace(op.Summary)

@@ -29,7 +29,8 @@ import (
 // AuditAction is the audit action recorded when a plan is applied.
 const AuditAction = "records.import"
 
-// auditChannel is the channel recorded on the audit entry.
+// auditChannel is the channel recorded on the audit entry when the caller
+// names none (the web UI).
 const auditChannel = "import"
 
 // ProblemAmbiguousSubject is a row whose product or team value matches more
@@ -801,6 +802,15 @@ func mergeRevisions(recs []domain.Record, revs []store.RecordRevisionWrite) []do
 // snapshot with ErrAlreadyApplied (a store.ErrConflict); the org writes
 // before it are idempotent. Other conflicts are races with an edit.
 func Apply(ctx context.Context, st store.Store, tenant domain.Tenant, scorecardID string, p Plan, ans Answers, actor string) error {
+	return ApplyVia(ctx, st, tenant, scorecardID, p, ans, actor, "")
+}
+
+// ApplyVia is Apply recording the audit entry on channel (the caller's
+// channel, such as "token" or "mcp"); "" records "import".
+func ApplyVia(ctx context.Context, st store.Store, tenant domain.Tenant, scorecardID string, p Plan, ans Answers, actor, channel string) error {
+	if channel == "" {
+		channel = auditChannel
+	}
 	if p.Snapshot.ID == "" {
 		return errors.New("apply plan: the plan has no snapshot")
 	}
@@ -937,7 +947,7 @@ func Apply(ctx context.Context, st store.Store, tenant domain.Tenant, scorecardI
 		return err
 	}
 	entry := domain.AuditEntry{
-		ID: newID(), ActorID: actor, Channel: auditChannel, Action: AuditAction,
+		ID: newID(), ActorID: actor, Channel: channel, Action: AuditAction,
 		TargetType: "snapshot", TargetID: sn.ID, After: after, At: at,
 	}
 	if err := st.AppendAudit(ctx, tenant.ID, entry); err != nil {

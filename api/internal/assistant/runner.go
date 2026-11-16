@@ -40,13 +40,22 @@ const (
 	// finishTimeout bounds writing the outcome, which happens even after the
 	// turn's budget is spent.
 	finishTimeout = 10 * time.Second
+	// minTurnBudget is the least time worth calling the model with; a job
+	// with less left before it reads as stale is marked stale instead.
+	minTurnBudget = 15 * time.Second
+	// ToolResultLimit bounds a tool result sent to the model, in bytes of
+	// encoded JSON text; a longer one is cut with mcp.TruncationNote. It is
+	// well under MCP's limit: every result is sent again on each later
+	// round of the turn.
+	ToolResultLimit = 64 << 10
 )
 
-// Notes appended to an answer.
-const (
-	RoundsNote = "_I stopped after 8 rounds of looking things up. Ask a narrower question for a complete answer._"
-	CutNote    = "_(Answer cut short.)_"
-)
+// RoundsNote ends an answer whose turn wanted more than MaxToolRounds rounds
+// of tools.
+var RoundsNote = fmt.Sprintf("_I stopped after %d rounds of looking things up. Ask a narrower question for a complete answer._", MaxToolRounds)
+
+// CutNote ends an answer cut at MaxAnswerRunes.
+const CutNote = "_(Answer cut short.)_"
 
 // Reasons a turn fails, as shown to the user.
 const (
@@ -123,19 +132,19 @@ func (r *Runner) Run(ctx context.Context, ref TurnRef) error {
 	if idx < 0 || th.Messages[idx].Status != domain.AssistantStatusPending {
 		return nil
 	}
-	if r.now().Sub(th.Messages[idx].CreatedAt) >= StalePending {
-		return r.finish(ctx, ref, func(m *domain.AssistantMessage) { m.Status, m.Error = domain.AssistantStatusError, MsgStale })
-	}
-
-	budget := TurnBudget
-	if r.Budget > 0 {
-		budget = r.Budget
+	created := th.Messages[idx].CreatedAt
+	stale := func(m *domain.AssistantMessage) { m.Status, m.Error = domain.AssistantStatusError, MsgStale }
+	budget, ok := r.budget(created)
+	if !ok {
+		return r.finish(ctx, ref, stale)
 	}
 	tctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 	text, usage, err := r.answer(tctx, ref, th, idx)
 	var tf *turnFailure
 	switch {
+	case r.readsStale(created):
+		return r.finish(ctx, ref, func(m *domain.AssistantMessage) { stale(m); m.Usage = usage })
 	case err == nil:
 		return r.finish(ctx, ref, func(m *domain.AssistantMessage) {
 			m.Status, m.Text, m.Usage = domain.AssistantStatusDone, text, usage
@@ -147,6 +156,27 @@ func (r *Runner) Run(ctx context.Context, ref TurnRef) error {
 	default:
 		return err
 	}
+}
+
+// budget is the time a job asked at created may run: TurnBudget (or
+// r.Budget), cut so that it is written before reads report it as stale.
+// ok is false when less than minTurnBudget is left: mark it stale instead.
+func (r *Runner) budget(created time.Time) (time.Duration, bool) {
+	budget := TurnBudget
+	if r.Budget > 0 {
+		budget = r.Budget
+	}
+	left := StalePending - r.now().Sub(created) - finishTimeout
+	if left <= minTurnBudget {
+		return 0, false
+	}
+	return min(budget, left), true
+}
+
+// readsStale reports whether a job asked at created already reads as stale,
+// so its outcome must be written as stale too.
+func (r *Runner) readsStale(created time.Time) bool {
+	return r.now().Sub(created) >= StalePending
 }
 
 func messageIndex(ms []domain.AssistantMessage, id string) int {
@@ -161,7 +191,7 @@ func messageIndex(ms []domain.AssistantMessage, id string) int {
 // answer runs the model and tool loop for the message at idx. A *turnFailure
 // is a reason to show the user; any other error is to retry.
 func (r *Runner) answer(ctx context.Context, ref TurnRef, th domain.AssistantThread, idx int) (string, *domain.AssistantUsage, error) {
-	js, err := r.start(ctx, ref, MsgNoKey)
+	js, err := r.start(ctx, ref, MsgNoKey, nil)
 	if err != nil {
 		return "", nil, err
 	}
@@ -215,13 +245,7 @@ func (r *Runner) answer(ctx context.Context, ref TurnRef, th domain.AssistantThr
 			}
 			return cut(answer) + "\n\n" + RoundsNote, usage, nil
 		}
-		assistantTurn := make([]Block, 0, len(resp.Content))
-		for _, b := range resp.Content {
-			if b.Type == "tool_use" && len(b.Input) == 0 {
-				b.Input = json.RawMessage("{}")
-			}
-			assistantTurn = append(assistantTurn, b)
-		}
+		assistantTurn := replayable(resp.Content)
 		results := make([]Block, 0, len(uses))
 		for _, u := range uses {
 			usage.ToolCalls++
@@ -231,6 +255,27 @@ func (r *Runner) answer(ctx context.Context, ref TurnRef, th domain.AssistantThr
 			Message{Role: "assistant", Content: assistantTurn},
 			Message{Role: "user", Content: results})
 	}
+}
+
+// replayable is the model's reply as it is sent back on the next round:
+// without empty text blocks, which the provider refuses, and with every
+// tool use's input a JSON object.
+func replayable(content []Block) []Block {
+	out := make([]Block, 0, len(content))
+	for _, b := range content {
+		switch b.Type {
+		case "text":
+			if strings.TrimSpace(b.Text) == "" {
+				continue
+			}
+		case "tool_use":
+			if t := bytes.TrimSpace(b.Input); len(t) == 0 || t[0] != '{' || !json.Valid(t) {
+				b.Input = json.RawMessage("{}")
+			}
+		}
+		out = append(out, b)
+	}
+	return out
 }
 
 // jobStart is what every job needs before it calls the model.
@@ -245,8 +290,10 @@ type jobStart struct {
 
 // start loads the job's tenant, the user's current membership, the
 // tenant's settings, and the user's key. A removed user, a turned-off
-// assistant, and a missing (noKey) or unreadable key are failures.
-func (r *Runner) start(ctx context.Context, ref TurnRef, noKey string) (jobStart, error) {
+// assistant, and a missing (noKey) or unreadable key are failures. allow,
+// when set, checks the user before the key is opened; its error ends the
+// job.
+func (r *Runner) start(ctx context.Context, ref TurnRef, noKey string, allow func(auth.Principal) error) (jobStart, error) {
 	var js jobStart
 	tenant, err := r.Store.GetTenant(ctx, ref.TenantID)
 	if errors.Is(err, store.ErrNotFound) {
@@ -269,14 +316,18 @@ func (r *Runner) start(ctx context.Context, ref TurnRef, noKey string) (jobStart
 	if !settings.Enabled {
 		return js, fail(MsgDisabled)
 	}
-	key, err := r.openKey(ctx, ref, noKey)
-	if err != nil {
-		return js, err
-	}
-	js = jobStart{tenant: tenant, membership: m, settings: settings, key: key}
+	js = jobStart{tenant: tenant, membership: m, settings: settings}
 	js.principal = auth.Principal{
 		UserID: ref.UserID, Email: m.Email, Name: m.Name,
 		Tenant: &js.tenant, Membership: &js.membership, Channel: auth.ChannelAssistant,
+	}
+	if allow != nil {
+		if err := allow(js.principal); err != nil {
+			return js, err
+		}
+	}
+	if js.key, err = r.openKey(ctx, ref, noKey); err != nil {
+		return js, err
 	}
 	return js, nil
 }
@@ -337,8 +388,8 @@ func history(ms []domain.AssistantMessage) []Message {
 // any request is made.
 func (r *Runner) callTool(ctx context.Context, allowed map[string]mcp.Tool, u Block) Block {
 	result := func(content string, isErr bool) Block {
-		if head, cut := mcp.Truncate(content); cut {
-			content = head + "\n\n" + mcp.TruncatedNote
+		if head, cut := mcp.TruncateAt(content, ToolResultLimit); cut {
+			content = head + "\n\n" + mcp.TruncationNote(ToolResultLimit)
 		}
 		return Block{Type: "tool_result", ToolUseID: u.ID, Content: content, IsError: isErr}
 	}
@@ -387,14 +438,10 @@ func providerFailure(ctx context.Context, err error, model string) string {
 		return MsgUnavailable
 	case errors.As(err, &ae):
 		slog.Warn("assistant: the provider refused a turn", "model", model, "status", ae.Status, "type", ae.Type)
-		if ae.Status == http.StatusNotFound {
+		if ae.RefusesModel(model) {
 			return "The model " + model + " was not accepted by Claude. An admin can change the model in Ask SAM settings."
 		}
-		msg := ae.Message
-		if utf8.RuneCountInString(msg) > 200 {
-			msg = string([]rune(msg)[:200]) + "…"
-		}
-		return "Claude did not accept the request: " + msg
+		return "Claude did not accept the request: " + ae.ShownMessage()
 	}
 	slog.Error("assistant: model call failed", "err", err)
 	return msgFailed

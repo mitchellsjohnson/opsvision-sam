@@ -7,9 +7,8 @@ records, and publish a report.
 
 Every tool calls the matching API operation as you. Your role and scope apply
 exactly as they do in the web app, and so do validation and the audit log.
-Changes made through MCP are audited with channel `mcp`. The one exception is
-the entry an import writes when it is applied, which has channel `import`, as
-it does in the web app.
+Changes made through MCP are audited with channel `mcp`, including the entry
+an import writes when it is applied (`import` in the web app).
 
 The examples use `https://opsvision.example.test`. Use your deployment's API
 address instead. When you run `make dev` locally, it is
@@ -128,7 +127,8 @@ schema takes:
 - the request body, when the operation has one, as the `body` argument.
 
 Annotations tell the client what a tool does. A `GET` tool has
-`readOnlyHint`. A `DELETE` tool has `destructiveHint`. A `PUT` tool has
+`readOnlyHint`. A `PUT`, `PATCH` or `DELETE` tool has `destructiveHint`; a
+`POST` tool, which creates, leaves it unset. A `PUT` or `DELETE` tool has
 `idempotentHint`. Many clients ask before they run a tool without
 `readOnlyHint`.
 
@@ -185,11 +185,15 @@ same answers.
 
 - **Tool results: 512 KB.** A longer result is cut at 512 KB and followed by
   the note `Result truncated at 512 KB; narrow the request (fewer periods or
-  a smaller scope).` A two-year view of the whole company can reach this
-  limit. Ask for fewer `periods`, or filter by `subjects` or `metrics`.
+  a smaller scope).` The size is counted as the result travels through the
+  load balancer, where a JSON result's quotes take more room, so JSON is cut
+  somewhat sooner. A two-year view of the whole company reaches this limit.
+  Ask for fewer `periods`, or filter by `subjects` or `metrics`. A large
+  result comes as text only, without `structuredContent`.
 - **`import_records_csv`: 700 KB of CSV.** Split a larger export and import
   each part.
-- **Requests: 4 MB** per JSON-RPC message.
+- **Requests: 4 MB** per JSON-RPC message, one message per request:
+  JSON-RPC batches (an array of messages) are not supported and get HTTP 400.
 - **Access tokens:** at most 10 active per user, each valid for 1 to 365 days
   (90 by default).
 - The API's own limits apply too, such as at most 24 period columns in a

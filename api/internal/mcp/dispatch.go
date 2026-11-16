@@ -50,7 +50,7 @@ func (d httpDispatcher) Call(ctx context.Context, t Tool, args map[string]any) (
 	if !ok {
 		return 0, nil, ErrNoPrincipal
 	}
-	p.Channel = d.channel
+	p.Channel, p.Interactive = d.channel, false
 	req, err := newRequest(auth.WithPrincipal(ctx, p), t, args)
 	if err != nil {
 		return 0, nil, err
@@ -69,7 +69,7 @@ func (d httpDispatcher) Call(ctx context.Context, t Tool, args map[string]any) (
 // encoded as the JSON body. A missing or unusable path argument, or an
 // argument of a shape the query cannot carry, is an *ArgumentError.
 func newRequest(ctx context.Context, t Tool, args map[string]any) (*http.Request, error) {
-	raw, escaped := t.PathTemplate, t.PathTemplate
+	values := make(map[string]string, len(t.PathParams))
 	for _, name := range t.PathParams {
 		v, ok := args[name]
 		if !ok || v == nil {
@@ -82,8 +82,11 @@ func newRequest(ctx context.Context, t Tool, args map[string]any) (*http.Request
 		if s == "" || s == "." || s == ".." {
 			return nil, &ArgumentError{name, fmt.Sprintf("%q is not a valid value", s)}
 		}
-		raw = strings.ReplaceAll(raw, "{"+name+"}", s)
-		escaped = strings.ReplaceAll(escaped, "{"+name+"}", url.PathEscape(s))
+		values[name] = s
+	}
+	raw, escaped, err := fillPath(t.PathTemplate, values)
+	if err != nil {
+		return nil, err
 	}
 	q := url.Values{}
 	for _, name := range t.QueryParams {
@@ -125,6 +128,34 @@ func newRequest(ctx context.Context, t Tool, args map[string]any) (*http.Request
 		req.Header.Set("Content-Type", "application/json")
 	}
 	return req, nil
+}
+
+// fillPath replaces each {name} of template with its value, in one pass over
+// the template, so a value that looks like a placeholder stays as it is. It
+// returns the path and its escaped form (each value one segment).
+func fillPath(template string, values map[string]string) (raw, escaped string, err error) {
+	var r, e strings.Builder
+	for rest := template; rest != ""; {
+		open := strings.IndexByte(rest, '{')
+		if open < 0 {
+			r.WriteString(rest)
+			e.WriteString(rest)
+			break
+		}
+		end := strings.IndexByte(rest[open:], '}')
+		if end < 0 {
+			return "", "", fmt.Errorf("mcp: path template %q has an unclosed parameter", template)
+		}
+		name := rest[open+1 : open+end]
+		v, ok := values[name]
+		if !ok {
+			return "", "", fmt.Errorf("mcp: path template %q has an undeclared parameter %q", template, name)
+		}
+		r.WriteString(rest[:open] + v)
+		e.WriteString(rest[:open] + url.PathEscape(v))
+		rest = rest[open+end+1:]
+	}
+	return r.String(), e.String(), nil
 }
 
 // scalar formats a string, number or boolean argument for a path or query.

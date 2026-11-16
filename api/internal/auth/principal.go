@@ -48,6 +48,10 @@ type Principal struct {
 	// ChannelMCP, or ChannelAssistant. For an access token, UserID is the token's owner, Email
 	// and Name come from the membership, and IsOperator is false.
 	Channel string
+	// Interactive reports a person signed in through the identity provider
+	// (the web app). Only the middleware's identity-provider path sets it;
+	// access tokens, MCP calls and SAM never have it.
+	Interactive bool
 }
 
 type ctxKey struct{}

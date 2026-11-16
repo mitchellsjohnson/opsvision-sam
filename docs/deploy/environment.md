@@ -70,6 +70,12 @@ saving an assistant API key with 503 `assistant_unavailable`. Keys are never
 stored unencrypted. Changing or losing the credential key makes saved keys
 unreadable; members then save their key again (SAM tells them so).
 
+To rotate the KMS key, turn on its automatic key rotation. KMS keeps every
+earlier key version, so saved keys stay readable and new ones use the current
+version. Do not point the alias at a different KMS key: keys saved under the
+old one can no longer be read through the alias, and every member has to
+save their key again.
+
 #### The turn worker
 
 SAM answers off the request path. The API stores the question and a pending

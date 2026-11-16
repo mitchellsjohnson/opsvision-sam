@@ -452,9 +452,20 @@ func (s *Store) GetMembership(ctx context.Context, tenantID, userID string) (dom
 	return it.domain(), nil
 }
 
-// DeleteMembership implements store.TenantStore.
+// DeleteMembership implements store.TenantStore. The tokens go first: a
+// failure part-way leaves the member without tokens, never tokens that a
+// later re-add would revive.
 func (s *Store) DeleteMembership(ctx context.Context, tenantID, userID string) error {
-	_, err := s.client.DeleteItem(ctx, &dynamodb.DeleteItemInput{
+	toks, err := s.ListTokens(ctx, tenantID, userID)
+	if err != nil {
+		return fmt.Errorf("dynamostore: delete membership: %w", err)
+	}
+	for _, t := range toks {
+		if err := s.DeleteToken(ctx, tenantID, userID, t.ID); err != nil && !errors.Is(err, store.ErrNotFound) {
+			return fmt.Errorf("dynamostore: delete membership: %w", err)
+		}
+	}
+	_, err = s.client.DeleteItem(ctx, &dynamodb.DeleteItemInput{
 		TableName:           &s.table,
 		Key:                 s.keyOf(tenantPK(tenantID), memberSK(userID)),
 		ConditionExpression: ptrTo("attribute_exists(PK)"),

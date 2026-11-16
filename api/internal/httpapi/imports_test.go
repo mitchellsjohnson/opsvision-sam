@@ -332,6 +332,48 @@ func TestUploadParseApply(t *testing.T) {
 	}
 }
 
+// auditChannelOf returns the channel of the first audit entry with action.
+func auditChannelOf(t *testing.T, e *testEnv, tenant, action string) string {
+	t.Helper()
+	all, err := e.store.ListAudit(context.Background(), tenant, time.Time{}, time.Now().Add(24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range all {
+		if a.Action == action {
+			return a.Channel
+		}
+	}
+	t.Fatalf("no %s audit entry", action)
+	return ""
+}
+
+func TestApplyImportAuditChannel(t *testing.T) {
+	t.Run("web UI", func(t *testing.T) {
+		e := newTestEnv(t)
+		seedLegacy(t, e)
+		e.putTemplate(t, e.tokens["t1-admin"], sampleTemplate(t, "legacy-1"))
+		up := e.createImport(t, readSample(t))
+		e.parse(t, up.ImportID, "legacy-1")
+		e.expect(t, 200, e.tokens["t1-admin"], "POST", "/imports/"+up.ImportID+"/apply", nil, nil)
+		if got := auditChannelOf(t, e, "t1", changeset.AuditAction); got != "import" {
+			t.Errorf("channel = %q, want import", got)
+		}
+	})
+	t.Run("access token", func(t *testing.T) {
+		e := newTestEnv(t)
+		seedLegacy(t, e)
+		e.putTemplate(t, e.tokens["t1-admin"], sampleTemplate(t, "legacy-1"))
+		up := e.createImport(t, readSample(t))
+		e.parse(t, up.ImportID, "legacy-1")
+		tok := e.createToken(t, e.tokens["t1-admin"], "Script")
+		e.expect(t, 200, tok.Token, "POST", "/imports/"+up.ImportID+"/apply", nil, nil)
+		if got := auditChannelOf(t, e, "t1", changeset.AuditAction); got != "token" {
+			t.Errorf("channel = %q, want token", got)
+		}
+	})
+}
+
 func TestChangeSetLivesInObjectsNotInTheImportItem(t *testing.T) {
 	e := newTestEnv(t)
 	seedLegacy(t, e)

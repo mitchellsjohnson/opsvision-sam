@@ -104,8 +104,17 @@ func (s *Server) DraftReportSummary(ctx context.Context, req DraftReportSummaryR
 		}
 		kept = append(kept, d)
 	}
-	if len(kept) >= assistant.MaxDraftsPerUser {
-		gone = append(gone, kept[assistant.MaxDraftsPerUser-1:]...)
+	// Make room by deleting the oldest drafts that are no longer being
+	// written (kept is newest first); a draft still being written stays.
+	excess := len(kept) - (assistant.MaxDraftsPerUser - 1)
+	for i := len(kept) - 1; i >= 0 && excess > 0; i-- {
+		if d := kept[i]; d.Status != domain.AssistantStatusPending || draftStale(d, now) {
+			gone = append(gone, d)
+			excess--
+		}
+	}
+	if excess > 0 {
+		return nil, conflict(fmt.Sprintf("SAM is still writing %d drafts. Wait for one to finish before asking again.", assistant.MaxDraftsPerUser))
 	}
 	for _, d := range gone {
 		if err := s.store.DeleteDraft(ctx, p.Tenant.ID, p.UserID, d.ID); err != nil && !errors.Is(err, store.ErrNotFound) {
@@ -183,7 +192,14 @@ func (s *Server) DraftReport(ctx context.Context, p auth.Principal, scorecardID,
 	}
 	out := draftReport(view, mo.String(), statusScale(*p.Tenant))
 	out.Organization, out.ScorecardName, out.Facts = p.Tenant.Name, sc.Name, facts
-	out.MonthLabel = s.calendar(*p.Tenant).Start(mo).Format("January 2006")
+	cal := s.calendar(*p.Tenant)
+	out.MonthLabel = cal.Start(mo).Format("January 2006")
+	out.MonthNames = map[string]string{mo.String(): out.MonthLabel}
+	for _, m := range out.Months {
+		if pm, err := period.Parse(m); err == nil && pm.Grain == period.Month {
+			out.MonthNames[m] = cal.Start(pm).Format("January 2006")
+		}
+	}
 	return out, nil
 }
 
@@ -325,9 +341,9 @@ func draftReport(v ScorecardView, month string, scale []domain.StatusLevel) assi
 
 	out := assistant.DraftReport{Period: month, Months: months}
 	type attention struct {
-		metric                   assistant.DraftMetric
-		tier, lost, order, index int
-		distance                 float64
+		metric            assistant.DraftMetric
+		tier, lost, order int
+		distance          float64
 	}
 	var items []attention
 	lastCategory := ""
@@ -391,7 +407,7 @@ func draftReport(v ScorecardView, month string, scale []domain.StatusLevel) assi
 			continue
 		}
 		items = append(items, attention{
-			metric: dm, tier: tier, lost: lost, order: m.category.Order, index: len(items),
+			metric: dm, tier: tier, lost: lost, order: m.category.Order,
 			distance: distancePastWorst(cur, m.head.Direction, scale, rank, worst),
 		})
 	}

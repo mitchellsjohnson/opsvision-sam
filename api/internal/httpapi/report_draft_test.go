@@ -147,10 +147,10 @@ func TestDraftReportSummaryEndToEnd(t *testing.T) {
 		"Scorecard: Scorecard delivery",
 		"Month: 2026-M10 (October 2026)",
 		"Scope: the whole company (Tenant t1)",
-		"Months shown, oldest first: 2026-M05, 2026-M06, 2026-M07, 2026-M08, 2026-M09, 2026-M10",
+		"Months shown, oldest first: 2026-M05 (May 2026), 2026-M06 (June 2026), 2026-M07 (July 2026), 2026-M08 (August 2026), 2026-M09 (September 2026), 2026-M10 (October 2026)",
 		"- not reported: ",
 		"Needs attention, most urgent first:\n- On-time delivery (Flow): Yellow in 2026-M10.",
-		"2026-M09 95.8% Green; 2026-M10 84.3% Yellow.",
+		"2026-M09 (September 2026) 95.8% Green; 2026-M10 (October 2026) 84.3% Yellow.",
 		"Values by category, at company scope:\nFlow\n- On-time delivery: Yellow in 2026-M10.",
 		"- Open defects: not reported in 2026-M10.",
 	} {
@@ -162,6 +162,40 @@ func TestDraftReportSummaryEndToEnd(t *testing.T) {
 		if strings.Contains(data, not) {
 			t.Errorf("report data names %q, which is not company scope:\n%s", not, data)
 		}
+	}
+}
+
+func TestDraftReportLabelsMonthsWithTheTenantCalendar(t *testing.T) {
+	env, _, _ := newDraftEnv(t)
+	ctx := context.Background()
+	tenant, err := env.store.GetTenant(ctx, "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := env.store.GetMembership(ctx, "t1", "u-t1-admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Fiscal 2026 starts in July 2025: 2026-M10 is April 2026.
+	tenant.FiscalYearStartMonth = time.July
+	p := auth.Principal{UserID: m.UserID, Tenant: &tenant, Membership: &m, Channel: auth.ChannelAssistant}
+	rep, err := env.api.DraftReport(auth.WithPrincipal(ctx, p), p, "delivery", "2026-M10")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := assistant.DraftData(rep)
+	for _, want := range []string{
+		"Month: 2026-M10 (April 2026)",
+		"Months shown, oldest first: 2026-M05 (November 2025), 2026-M06 (December 2025), 2026-M07 (January 2026), 2026-M08 (February 2026), 2026-M09 (March 2026), 2026-M10 (April 2026)",
+		"By month: 2026-M05 (November 2025) ",
+		"2026-M09 (March 2026) 95.8% Green; 2026-M10 (April 2026) 84.3% Yellow.",
+	} {
+		if !strings.Contains(data, want) {
+			t.Errorf("report data lacks %q:\n%s", want, data)
+		}
+	}
+	if sys := assistant.DraftPrompt(assistant.DraftPromptInput{}); !strings.Contains(sys, "Refer to months by the calendar names given") {
+		t.Errorf("the prompt does not ask for calendar month names:\n%s", sys)
 	}
 }
 
@@ -355,6 +389,62 @@ func TestReportSummaryDraftsAreCapped(t *testing.T) {
 	if strings.Join(ids, ",") != strings.Join(want, ",") {
 		t.Fatalf("drafts kept = %v, want %v", ids, want)
 	}
+}
+
+// A draft is cut to the summary's own limit, so it can always be saved as is.
+func TestDraftFitsTheSummaryLimit(t *testing.T) {
+	if assistant.MaxDraftRunes != maxReportSummaryRunes {
+		t.Fatalf("MaxDraftRunes = %d, summary limit = %d", assistant.MaxDraftRunes, maxReportSummaryRunes)
+	}
+}
+
+func TestReportSummaryDraftCapKeepsRunningDrafts(t *testing.T) {
+	setup := func(t *testing.T, running int) (*testEnv, *recordingQueue) {
+		sealer := testSealer(t)
+		q := &recordingQueue{}
+		env := newTestEnvDeps(t, nil, func(d *Deps) { d.Sealer = sealer; d.Provider = &fakeProvider{}; d.Queue = q })
+		seedDelivery(t, env)
+		saveKey(t, env, sealer, "t1", "u-t1-admin")
+		for i := range assistant.MaxDraftsPerUser {
+			d := domain.AssistantDraft{
+				ID: fmt.Sprintf("d-%d", i), Status: domain.AssistantStatusDone, Text: "x",
+				ScorecardID: "delivery", Period: fmt.Sprintf("2026-M0%d", i+1), CreatedAt: testNow.Add(-time.Duration(5-i) * 10 * time.Second),
+			}
+			// The oldest drafts are the ones still being written.
+			if i < running {
+				d.Status, d.Text = domain.AssistantStatusPending, ""
+			}
+			putDraft(t, env, d)
+		}
+		return env, q
+	}
+	ids := func(t *testing.T, env *testEnv) string {
+		ds, err := env.store.ListDrafts(context.Background(), "t1", "u-t1-admin")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, x := range ds {
+			out = append(out, x.ID)
+		}
+		return strings.Join(out, ",")
+	}
+
+	t.Run("evicts the oldest finished draft", func(t *testing.T) {
+		env, _ := setup(t, 2)
+		var d reportDraftBody
+		env.expect(t, http.StatusAccepted, env.tokens["t1-admin"], "POST", draftPath, nil, &d)
+		if got, want := ids(t, env), d.ID+",d-4,d-3,d-1,d-0"; got != want {
+			t.Fatalf("drafts kept = %s, want %s", got, want)
+		}
+	})
+	t.Run("all running", func(t *testing.T) {
+		env, q := setup(t, assistant.MaxDraftsPerUser)
+		env.expectError(t, http.StatusConflict, "conflict", env.tokens["t1-admin"], "POST", draftPath, nil)
+		if got := ids(t, env); got != "d-4,d-3,d-2,d-1,d-0" || q.count() != 0 {
+			t.Fatalf("drafts = %s, enqueued %d", got, q.count())
+		}
+	})
 }
 
 // The needs-attention list follows the report page: the worst status first

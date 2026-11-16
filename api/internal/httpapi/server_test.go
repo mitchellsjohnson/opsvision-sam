@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"opsvision/internal/auth"
 	"opsvision/internal/domain"
 	"opsvision/internal/store"
 )
@@ -109,4 +110,43 @@ func TestNewServerAndHandlerRequireDeps(t *testing.T) {
 	}
 	mustPanic("NewServer without store", func() { NewServer(Deps{}) })
 	mustPanic("NewHandler without auth", func() { NewHandler(NewServer(Deps{Store: newTestEnv(t).store}), nil) })
+}
+
+func TestDispatchHandlerNeedsAPrincipal(t *testing.T) {
+	e := newTestEnv(t)
+	rec := httptest.NewRecorder()
+	DispatchHandler(e.api).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/me", nil))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status %d, want 401: %s", rec.Code, rec.Body)
+	}
+}
+
+func TestDispatchHandlerAssistantOnlyReads(t *testing.T) {
+	e := newTestEnv(t)
+	h := DispatchHandler(e.api)
+	serve := func(p auth.Principal, method, path, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req.WithContext(auth.WithPrincipal(req.Context(), p)))
+		return rec
+	}
+	sam := principalOf(t, e, "t1", "u-t1-admin", auth.ChannelAssistant, false)
+	if rec := serve(sam, http.MethodGet, "/v1/me", ""); rec.Code != http.StatusOK {
+		t.Fatalf("GET as SAM: %d %s", rec.Code, rec.Body)
+	}
+	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
+		rec := serve(sam, method, "/v1/item-kinds", `{"id":"k","name":"Kind"}`)
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("%s as SAM: %d, want 403", method, rec.Code)
+		}
+	}
+	if n := len(e.audits(t, "t1")); n != 0 {
+		t.Fatalf("SAM's refused writes left %d audit entries", n)
+	}
+	// The same write on another channel reaches the API.
+	mcpAdmin := principalOf(t, e, "t1", "u-t1-admin", auth.ChannelMCP, false)
+	if rec := serve(mcpAdmin, http.MethodPost, "/v1/item-kinds", `{"id":"k","name":"Kind"}`); rec.Code == http.StatusForbidden {
+		t.Fatalf("POST over MCP refused: %s", rec.Body)
+	}
 }

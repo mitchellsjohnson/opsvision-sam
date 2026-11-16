@@ -329,6 +329,78 @@ func TestDraftRunIsIdempotentAndStaleAware(t *testing.T) {
 	})
 }
 
+// countingSealer counts Open calls.
+type countingSealer struct {
+	Sealer
+	opens int
+}
+
+func (s *countingSealer) Open(ctx context.Context, sealed []byte, ec map[string]string) ([]byte, error) {
+	s.opens++
+	return s.Sealer.Open(ctx, sealed, ec)
+}
+
+func TestDraftChecksTheRoleBeforeOpeningTheKey(t *testing.T) {
+	e := newDraftEnv(t, domain.RoleContributor, textReply(exampleDraftText, 1, 1))
+	cs := &countingSealer{Sealer: e.runner.Sealer}
+	e.runner.Sealer = cs
+	got := e.run(t)
+	if got.Status != domain.AssistantStatusError || got.Error != MsgDraftNotAdmin {
+		t.Fatalf("draft = %+v", got)
+	}
+	if cs.opens != 0 || len(e.provider.calls) != 0 {
+		t.Fatalf("a non-admin's key was opened %d times, provider called %d times", cs.opens, len(e.provider.calls))
+	}
+
+	// An admin's key is opened once.
+	e = newDraftEnv(t, domain.RoleAdmin, textReply(exampleDraftText, 1, 1))
+	cs = &countingSealer{Sealer: e.runner.Sealer}
+	e.runner.Sealer = cs
+	if got := e.run(t); got.Status != domain.AssistantStatusDone || cs.opens != 1 {
+		t.Fatalf("admin draft = %+v, opens %d", got, cs.opens)
+	}
+}
+
+func TestDraftNearlyStale(t *testing.T) {
+	t.Run("too late to start", func(t *testing.T) {
+		var left time.Duration
+		e := newDraftEnv(t, domain.RoleAdmin, blockingReply(&left))
+		// The draft was asked 5 s before runnerNow: it is 2m50s old.
+		e.runner.Now = func() time.Time { return runnerNow.Add(2*time.Minute + 45*time.Second) }
+		got := e.run(t)
+		if got.Status != domain.AssistantStatusError || got.Error != MsgStale || len(e.provider.calls) != 0 {
+			t.Fatalf("draft = %+v, provider calls %d", got, len(e.provider.calls))
+		}
+	})
+	t.Run("budget capped", func(t *testing.T) {
+		var left time.Duration
+		e := newDraftEnv(t, domain.RoleAdmin, func(ctx context.Context, req MessagesRequest) (MessagesResponse, error) {
+			if dl, ok := ctx.Deadline(); ok {
+				left = time.Until(dl)
+			}
+			return textReply(exampleDraftText, 1, 1)(ctx, req)
+		})
+		e.runner.Now = func() time.Time { return runnerNow.Add(115 * time.Second) }
+		if got := e.run(t); got.Status != domain.AssistantStatusDone {
+			t.Fatalf("draft = %+v", got)
+		}
+		if left > 50*time.Second || left < 40*time.Second {
+			t.Fatalf("draft deadline %v away, want about 50s", left)
+		}
+	})
+	t.Run("finished after it reads stale", func(t *testing.T) {
+		now := runnerNow
+		e := newDraftEnv(t, domain.RoleAdmin, func(ctx context.Context, req MessagesRequest) (MessagesResponse, error) {
+			now = runnerNow.Add(StalePending)
+			return textReply(exampleDraftText, 1, 1)(ctx, req)
+		})
+		e.runner.Now = func() time.Time { return now }
+		if got := e.run(t); got.Status != domain.AssistantStatusError || got.Error != MsgStale || got.Text != "" {
+			t.Fatalf("draft = %+v, want stale", got)
+		}
+	})
+}
+
 func TestDraftRefsTravelTheQueue(t *testing.T) {
 	var got []TurnRef
 	h := SQSHandler(func(_ context.Context, ref TurnRef) error {

@@ -344,7 +344,7 @@ func (s *Server) ApplyImport(ctx context.Context, req ApplyImportRequestObject) 
 		return nil, badRequest("the change set no longer fits the methodology; parse the import again", problemList...)
 	}
 
-	res, err := changeset.Apply(ctx, s.store, tenantID, stored.ScorecardID, cs, p.UserID)
+	res, err := changeset.ApplyVia(ctx, s.store, tenantID, stored.ScorecardID, cs, p.UserID, p.Channel)
 	if err != nil {
 		return nil, fmt.Errorf("httpapi: apply import %s: %w", im.ID, err)
 	}

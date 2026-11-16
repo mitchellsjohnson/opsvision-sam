@@ -84,6 +84,8 @@ func Run(t *testing.T, newStore func(t *testing.T) store.Store) {
 		{"DeleteDataPointCrossTenant", deleteDataPointCrossTenant},
 		{"AccessTokenLifecycle", accessTokenLifecycle},
 		{"AccessTokenIsolation", accessTokenIsolation},
+		{"AccessTokensGoWithTheMembership", accessTokensGoWithTheMembership},
+		{"AccessTokensOfAUserIDPrefix", accessTokensOfAUserIDPrefix},
 		{"AssistantCredentialLifecycle", assistantCredentialLifecycle},
 		{"AssistantCredentialIsolation", assistantCredentialIsolation},
 		{"AssistantSettingsRoundTrip", assistantSettingsRoundTrip},
@@ -2299,6 +2301,55 @@ func accessTokenIsolation(t *testing.T, s store.Store) {
 	list, err = s.ListTokens(ctx, tn, "user-a")
 	must(t, err)
 	wantEq(t, "mine kept", list, []domain.AccessToken{mine})
+}
+
+func accessTokensGoWithTheMembership(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	tn, other := newTenant(t, s), newTenant(t, s)
+	user := uid("user")
+	m := domain.Membership{UserID: user, Email: "a@example.test", Role: domain.RoleViewer, CreatedAt: at(1)}
+	must(t, s.PutMembership(ctx, tn, m))
+	must(t, s.PutMembership(ctx, other, m))
+	t1, t2 := accessToken(tn, user, "tok-1", 2), accessToken(tn, user, "tok-2", 3)
+	kept := accessToken(other, user, "tok-1", 2)
+	colleague := accessToken(tn, uid("user"), "tok-1", 2)
+	for _, tok := range []domain.AccessToken{t1, t2, kept, colleague} {
+		must(t, s.PutToken(ctx, tok))
+	}
+
+	must(t, s.DeleteMembership(ctx, tn, user))
+	list, err := s.ListTokens(ctx, tn, user)
+	wantEmpty(t, "tokens of the removed member", list, err)
+	for _, tok := range []domain.AccessToken{t1, t2} {
+		_, err := s.TokenByHash(ctx, tok.Hash)
+		wantErr(t, err, store.ErrNotFound)
+	}
+	for _, tok := range []domain.AccessToken{kept, colleague} {
+		got, err := s.TokenByHash(ctx, tok.Hash)
+		must(t, err)
+		wantEq(t, "other token kept", got, tok)
+	}
+
+	// Adding the user back does not bring the tokens back.
+	must(t, s.PutMembership(ctx, tn, m))
+	list, err = s.ListTokens(ctx, tn, user)
+	wantEmpty(t, "tokens after re-adding", list, err)
+	_, err = s.TokenByHash(ctx, t1.Hash)
+	wantErr(t, err, store.ErrNotFound)
+}
+
+// accessTokensOfAUserIDPrefix: a user ID that extends another's with "#"
+// shares its key prefix; listing still returns only the user's own tokens.
+func accessTokensOfAUserIDPrefix(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	tn := newTenant(t, s)
+	mine := accessToken(tn, "user-a", "tok-1", 2)
+	longer := accessToken(tn, "user-a#tok", "x", 2)
+	must(t, s.PutToken(ctx, mine))
+	must(t, s.PutToken(ctx, longer))
+	list, err := s.ListTokens(ctx, tn, "user-a")
+	must(t, err)
+	wantEq(t, "own tokens only", list, []domain.AccessToken{mine})
 }
 
 func assistantCredentialLifecycle(t *testing.T, s store.Store) {

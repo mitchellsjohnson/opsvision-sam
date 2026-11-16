@@ -70,6 +70,9 @@ func Middleware(cfg Config, ts store.TenantStore) (func(http.Handler) http.Handl
 	}
 	a := &authenticator{validator: v, ts: ts, single: single, now: cfg.Now}
 	a.tokens, _ = ts.(store.TokenStore)
+	if a.tokens == nil {
+		slog.Warn("auth: the store does not hold access tokens; every access token will be rejected")
+	}
 	if a.now == nil {
 		a.now = time.Now
 	}
@@ -143,10 +146,11 @@ func (a *authenticator) authenticate(r *http.Request) (Principal, *httpError) {
 
 	c := v.claims
 	p := Principal{
-		UserID:     v.subject,
-		Email:      c.Email,
-		Name:       c.Name,
-		IsOperator: c.isOperator(),
+		UserID:      v.subject,
+		Email:       c.Email,
+		Name:        c.Name,
+		IsOperator:  c.isOperator(),
+		Interactive: true,
 	}
 	if a.single != nil {
 		return a.authenticateSingle(ctx, extracted.Token, v, p)

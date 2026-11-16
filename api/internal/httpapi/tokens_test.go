@@ -4,11 +4,14 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
 
+	"opsvision/internal/auth"
 	"opsvision/internal/domain"
 )
 
@@ -291,7 +294,17 @@ func TestTokenStopsWorking(t *testing.T) {
 	t.Run("member removed", func(t *testing.T) {
 		e := newTestEnv(t)
 		tok := e.createToken(t, e.tokens["t1-viewer"], "Remove me")
+		stored, err := e.store.TokenByHash(ctx, sha256.Sum256([]byte(tok.Token)))
+		if err != nil {
+			t.Fatal(err)
+		}
 		if err := e.store.DeleteMembership(ctx, "t1", "u-t1-viewer"); err != nil {
+			t.Fatal(err)
+		}
+		e.expectError(t, 401, "unauthorized", tok.Token, "GET", "/me", nil)
+		// A token left behind by a removal that failed part-way is refused
+		// for the missing membership.
+		if err := e.store.PutToken(ctx, stored); err != nil {
 			t.Fatal(err)
 		}
 		e.expectError(t, 403, "forbidden", tok.Token, "GET", "/me", nil)
@@ -317,4 +330,73 @@ func TestTokensRequireMembership(t *testing.T) {
 	e.expectError(t, 403, "forbidden", e.tokens["operator"], "GET", "/me/tokens", nil)
 	e.expectError(t, 403, "forbidden", e.tokens["operator"], "POST", "/me/tokens", map[string]any{"name": "x"})
 	e.expectError(t, 403, "forbidden", e.tokens["operator"], "DELETE", "/me/tokens/x", nil)
+}
+
+// principalOf is the principal the middleware would build for a member.
+func principalOf(t *testing.T, e *testEnv, tenantID, userID, channel string, interactive bool) auth.Principal {
+	t.Helper()
+	ctx := context.Background()
+	tenant, err := e.store.GetTenant(ctx, tenantID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := e.store.GetMembership(ctx, tenantID, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return auth.Principal{UserID: userID, Email: m.Email, Tenant: &tenant, Membership: &m, Channel: channel, Interactive: interactive}
+}
+
+func TestCreateTokenNeedsAnInteractiveSession(t *testing.T) {
+	e := newTestEnv(t)
+	for _, tc := range []struct {
+		name        string
+		channel     string
+		interactive bool
+	}{
+		{"access token", auth.ChannelToken, false},
+		{"MCP", auth.ChannelMCP, false},
+		{"assistant", auth.ChannelAssistant, false},
+		{"MCP marked interactive", auth.ChannelMCP, true},
+		{"no channel, not interactive", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := principalOf(t, e, "t1", "u-t1-admin", tc.channel, tc.interactive)
+			_, err := e.api.CreateMyToken(auth.WithPrincipal(context.Background(), p),
+				CreateMyTokenRequestObject{Body: &CreateTokenRequest{Name: "Child"}})
+			var ae *apiError
+			if !errors.As(err, &ae) || ae.status != http.StatusForbidden {
+				t.Fatalf("err = %v, want 403", err)
+			}
+		})
+	}
+	p := principalOf(t, e, "t1", "u-t1-admin", "", true)
+	if _, err := e.api.CreateMyToken(auth.WithPrincipal(context.Background(), p),
+		CreateMyTokenRequestObject{Body: &CreateTokenRequest{Name: "Web"}}); err != nil {
+		t.Fatalf("the web app could not create a token: %v", err)
+	}
+	toks, err := e.store.ListTokens(context.Background(), "t1", "u-t1-admin")
+	if err != nil || len(toks) != 1 {
+		t.Fatalf("tokens = %+v, %v; want only the web app's", toks, err)
+	}
+}
+
+func TestRemovedMemberTokensAreDeleted(t *testing.T) {
+	e := newTestEnv(t)
+	ctx := context.Background()
+	tok := e.createToken(t, e.tokens["t1-viewer"], "Script")
+	e.expect(t, 200, tok.Token, "GET", "/me", nil, nil)
+	if err := e.store.DeleteMembership(ctx, "t1", "u-t1-viewer"); err != nil {
+		t.Fatal(err)
+	}
+	if toks, err := e.store.ListTokens(ctx, "t1", "u-t1-viewer"); err != nil || len(toks) != 0 {
+		t.Fatalf("tokens after removal = %+v, %v", toks, err)
+	}
+	// Adding the user back does not bring the old token back.
+	m := domain.Membership{UserID: "u-t1-viewer", Email: "viewer@example.test", Role: domain.RoleViewer,
+		Scope: domain.Scope{OrgUnitIDs: []string{}, MetricKeys: []string{}}, CreatedAt: testNow}
+	if err := e.store.PutMembership(ctx, "t1", m); err != nil {
+		t.Fatal(err)
+	}
+	e.expectError(t, 401, "unauthorized", tok.Token, "GET", "/me", nil)
 }

@@ -139,7 +139,9 @@ func NewHandler(s *Server, authMW func(http.Handler) http.Handler) http.Handler 
 
 // DispatchHandler is the generated router under /v1 with the request body
 // limit, and nothing else: no authentication and no compression. Every
-// request must already carry its caller in the context (auth.WithPrincipal).
+// request must already carry its caller in the context (auth.WithPrincipal);
+// one without is 401, and one on the assistant channel that is not a GET is
+// 403.
 // It serves in-process calls such as MCP tool calls; NewHandler wraps it for
 // the network.
 func DispatchHandler(s *Server) http.Handler {
@@ -152,6 +154,16 @@ func DispatchHandler(s *Server) http.Handler {
 		ErrorHandlerFunc: requestErrorHandler,
 	})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p, ok := auth.FromContext(r.Context())
+		if !ok {
+			writeError(w, unauthorized("missing or invalid token"))
+			return
+		}
+		// SAM only reads, whatever its dispatcher lets through.
+		if p.Channel == auth.ChannelAssistant && r.Method != http.MethodGet {
+			writeError(w, forbidden("the assistant can only read"))
+			return
+		}
 		r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
 		api.ServeHTTP(w, r)
 	})

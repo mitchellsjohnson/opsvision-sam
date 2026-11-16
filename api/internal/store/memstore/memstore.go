@@ -395,6 +395,12 @@ func (s *Store) DeleteMembership(_ context.Context, tenantID, userID string) err
 		return store.ErrNotFound
 	}
 	delete(td.members, userID)
+	for key, t := range td.tokens {
+		if key.userID == userID {
+			delete(td.tokens, key)
+			delete(s.tokenHashes, t.Hash)
+		}
+	}
 	return nil
 }
 

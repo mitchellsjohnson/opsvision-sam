@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // DefaultBaseURL is the model provider's API origin.
@@ -49,6 +51,29 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("assistant: the provider returned HTTP %d %s: %s", e.Status, e.Type, e.Message)
 }
 
+// RefusesModel reports whether e is the provider refusing model: a 404, or
+// a 400 whose message names the model.
+func (e *APIError) RefusesModel(model string) bool {
+	return e.Status == http.StatusNotFound ||
+		e.Status == http.StatusBadRequest && model != "" && strings.Contains(e.Message, model)
+}
+
+// maxShownMessageRunes bounds a provider message shown to a user.
+const maxShownMessageRunes = 200
+
+// keyLike matches what looks like a provider API key.
+var keyLike = regexp.MustCompile(`sk-[A-Za-z0-9_-]{6,}`)
+
+// ShownMessage is e's message fit to show a user: anything that looks like
+// an API key replaced with [redacted], cut at 200 characters.
+func (e *APIError) ShownMessage() string {
+	msg := keyLike.ReplaceAllString(strings.TrimSpace(e.Message), "[redacted]")
+	if utf8.RuneCountInString(msg) > maxShownMessageRunes {
+		msg = string([]rune(msg)[:maxShownMessageRunes]) + "…"
+	}
+	return msg
+}
+
 // Provider calls the model provider's Messages API with a user's API key.
 type Provider interface {
 	Messages(ctx context.Context, apiKey string, req MessagesRequest) (MessagesResponse, error)
@@ -80,6 +105,16 @@ type Block struct {
 	ToolUseID string          `json:"tool_use_id,omitempty"`
 	Content   string          `json:"content,omitempty"`
 	IsError   bool            `json:"is_error,omitempty"`
+}
+
+// MarshalJSON implements json.Marshaler: a tool_use block always carries
+// input, {} when it has none, as the provider requires.
+func (b Block) MarshalJSON() ([]byte, error) {
+	type plain Block
+	if b.Type == "tool_use" && len(bytes.TrimSpace(b.Input)) == 0 {
+		b.Input = json.RawMessage("{}")
+	}
+	return json.Marshal(plain(b))
 }
 
 // ToolDef is a tool offered to the model. InputSchema is a JSON Schema

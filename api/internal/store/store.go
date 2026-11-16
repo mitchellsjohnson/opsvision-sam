@@ -55,7 +55,9 @@ type TenantStore interface {
 	// PutMembership upserts a membership by UserID.
 	PutMembership(ctx context.Context, tenantID string, m domain.Membership) error
 	GetMembership(ctx context.Context, tenantID, userID string) (domain.Membership, error)
-	// DeleteMembership returns ErrNotFound if the membership is absent.
+	// DeleteMembership also deletes the user's access tokens in the tenant,
+	// so adding the user back does not revive them. It returns ErrNotFound
+	// if the membership is absent.
 	DeleteMembership(ctx context.Context, tenantID, userID string) error
 	// ListMemberships returns memberships sorted by UserID.
 	ListMemberships(ctx context.Context, tenantID string) ([]domain.Membership, error)

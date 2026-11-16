@@ -97,13 +97,16 @@ func (s *Server) PutMyAssistantCredential(ctx context.Context, req PutMyAssistan
 
 	sealed, err := s.sealer.Seal(ctx, []byte(key), assistant.CredentialContext(p.Tenant.ID, p.UserID))
 	if err != nil {
-		return nil, err
+		slog.Error("httpapi: could not seal an assistant key", "tenant", p.Tenant.ID, "err", err)
+		return nil, assistantUnavailable("Couldn't save your key right now. Try again later.")
 	}
-	var before *credentialAudit
+	// before stays a nil interface on the first save, so the audit entry has
+	// no before at all rather than null.
+	var before any
 	prev, err := s.store.GetCredential(ctx, p.Tenant.ID, p.UserID)
 	switch {
 	case err == nil:
-		before = &credentialAudit{Configured: true, UpdatedAt: prev.UpdatedAt}
+		before = credentialAudit{Configured: true, UpdatedAt: prev.UpdatedAt}
 	case !errors.Is(err, store.ErrNotFound):
 		return nil, err
 	}
@@ -138,8 +141,11 @@ func (s *Server) checkKey(ctx context.Context, key, model string) error {
 		return assistantUnavailable("The provider is rate limiting this key; try again in a minute.")
 	case errors.As(err, &ae):
 		slog.Warn("httpapi: assistant key check refused", "model", model, "err", err)
-		return badRequest("The provider did not accept a request for model " + model +
-			"; a tenant admin can change the model in assistant settings.")
+		if ae.RefusesModel(model) {
+			return badRequest("The provider did not accept a request for model " + model +
+				"; a tenant admin can change the model in assistant settings.")
+		}
+		return badRequest("The provider refused the request: " + ae.ShownMessage())
 	default:
 		slog.Warn("httpapi: assistant key check failed", "err", err)
 		return assistantUnavailable("The provider could not be reached; try again later.")

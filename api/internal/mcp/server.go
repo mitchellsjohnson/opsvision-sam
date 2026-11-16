@@ -27,12 +27,23 @@ const (
 // over Streamable HTTP with JSON responses are the same in each.
 var ProtocolVersions = []string{LatestProtocolVersion, "2025-06-18", "2025-03-26", "2024-11-05"}
 
-// ResultLimit is the largest tool result, in bytes of encoded JSON text. It
-// keeps a whole response well inside the load balancer's 1 MB limit.
+// ResultLimit is the largest tool result text, in bytes once encoded twice:
+// as a JSON string in the response, and again when the load balancer's
+// Lambda integration encodes the whole response as a JSON string. It keeps
+// a whole response inside the load balancer's 1 MB limit.
 const ResultLimit = 512 << 10
 
+// structuredLimit bounds a result's text and structuredContent together, in
+// bytes through the load balancer; over it, structuredContent is left out.
+const structuredLimit = 600 << 10
+
 // TruncatedNote follows a result cut at ResultLimit.
-const TruncatedNote = "Result truncated at 512 KB; narrow the request (fewer periods or a smaller scope)."
+var TruncatedNote = TruncationNote(ResultLimit)
+
+// TruncationNote is the note that follows a result cut at limit bytes.
+func TruncationNote(limit int) string {
+	return fmt.Sprintf("Result truncated at %d KB; narrow the request (fewer periods or a smaller scope).", limit>>10)
+}
 
 // maxRequestBytes bounds a JSON-RPC request.
 const maxRequestBytes = 4 << 20
@@ -138,8 +149,13 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBytes))
-	if err != nil {
-		writeError(w, http.StatusRequestEntityTooLarge, nil, codeInvalidRequest, fmt.Sprintf("the request is larger than %d MiB", maxRequestBytes>>20))
+	var tooLarge *http.MaxBytesError
+	switch {
+	case errors.As(err, &tooLarge):
+		writeError(w, http.StatusRequestEntityTooLarge, nil, codeInvalidRequest, fmt.Sprintf("the request is larger than %d MiB", tooLarge.Limit>>20))
+		return
+	case err != nil:
+		writeError(w, http.StatusBadRequest, nil, codeInvalidRequest, "the request body could not be read")
 		return
 	}
 	if t := bytes.TrimLeft(raw, " \t\r\n"); len(t) > 0 && t[0] == '[' {
@@ -296,11 +312,21 @@ func ToolResult(status int, body []byte) map[string]any {
 		return out
 	}
 	out["content"] = []any{textContent(text)}
-	if len(body) > 0 && len(body) <= ResultLimit/2 && body[0] == '{' {
-		var obj map[string]any
-		if json.Unmarshal(body, &obj) == nil {
-			out["structuredContent"] = obj
-		}
+	if len(body) == 0 || body[0] != '{' {
+		return out
+	}
+	// Through the load balancer the text is encoded twice and the
+	// structured copy, JSON in the response, once.
+	textSize := encodedLen(text, 2)
+	if textSize+len(body) > structuredLimit {
+		return out
+	}
+	var obj map[string]any
+	if json.Unmarshal(body, &obj) != nil {
+		return out
+	}
+	if raw, err := json.Marshal(obj); err == nil && textSize+encodedLen(string(raw), 1) <= structuredLimit {
+		out["structuredContent"] = obj
 	}
 	return out
 }
@@ -338,15 +364,21 @@ func errorText(status int, body []byte) string {
 	return b.String()
 }
 
-// Truncate cuts s, at a character boundary, to the longest prefix whose
-// encoding as a JSON string fits ResultLimit, and reports whether it cut.
-// The encoded size counts the escapes encoding/json writes (including its
-// HTML escapes), so a result of quotes or markup cannot overflow the budget.
-func Truncate(s string) (string, bool) {
-	n := 2 // the quotes
+// Truncate cuts s, at a character boundary, to the longest prefix that fits
+// ResultLimit once encoded twice (see ResultLimit), and reports whether it
+// cut. The size counts the escapes encoding/json writes (including its HTML
+// escapes), so a result of quotes or markup cannot overflow the budget.
+func Truncate(s string) (string, bool) { return truncate(s, ResultLimit, 2) }
+
+// TruncateAt cuts s, at a character boundary, to the longest prefix whose
+// encoding as one JSON string fits limit bytes, and reports whether it cut.
+func TruncateAt(s string, limit int) (string, bool) { return truncate(s, limit, 1) }
+
+func truncate(s string, limit, times int) (string, bool) {
+	n := quotesLen(times)
 	for i, r := range s {
-		w := escapedLen(r, s[i:])
-		if n+w > ResultLimit {
+		w := escapedLen(r, s[i:], times)
+		if n+w > limit {
 			return s[:i], true
 		}
 		n += w
@@ -354,16 +386,52 @@ func Truncate(s string) (string, bool) {
 	return s, false
 }
 
-// escapedLen is the encoded length of the rune r starting rest.
-func escapedLen(r rune, rest string) int {
+// encodedLen is the size of s encoded as a JSON string times times (1 or 2).
+func encodedLen(s string, times int) int {
+	n := quotesLen(times)
+	for i, r := range s {
+		n += escapedLen(r, s[i:], times)
+	}
+	return n
+}
+
+// quotesLen is the size of a JSON string's quotes encoded times times: the
+// second encoding escapes the inner pair.
+func quotesLen(times int) int {
+	if times > 1 {
+		return 6
+	}
+	return 2
+}
+
+// escapedLen is the length of the rune r starting rest encoded as JSON
+// string content times times (1 or 2). The second encoding escapes the
+// backslash and quote of the first one's escapes, not their letters.
+func escapedLen(r rune, rest string, times int) int {
+	again := times > 1
 	switch {
-	case r == '"' || r == '\\' || r == '\n' || r == '\r' || r == '\t':
+	case r == '"' || r == '\\':
+		if again {
+			return 4
+		}
+		return 2
+	case r == '\n' || r == '\r' || r == '\t':
+		if again {
+			return 3
+		}
 		return 2
 	case r < 0x20 || r == '<' || r == '>' || r == '&' || r == '\u2028' || r == '\u2029':
+		if again {
+			return 7
+		}
 		return 6
 	case r == utf8.RuneError:
 		if _, size := utf8.DecodeRuneInString(rest); size == 1 {
-			return 6 // invalid byte, written as \ufffd
+			// An invalid byte, written as \ufffd.
+			if again {
+				return 7
+			}
+			return 6
 		}
 	}
 	return utf8.RuneLen(r)

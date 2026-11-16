@@ -15,7 +15,8 @@ import (
 // AuditAction is the audit action recorded when a change set is applied.
 const AuditAction = "import.apply"
 
-// auditChannel is the channel recorded on the audit entry.
+// auditChannel is the channel recorded on the audit entry when the caller
+// names none (the web UI).
 const auditChannel = "import"
 
 // Hooks for tests.
@@ -54,7 +55,16 @@ type ApplyResult struct {
 // Data points and overrides that have no EnteredBy/By or EnteredAt/At are
 // stamped with actor and the current time.
 func Apply(ctx context.Context, st store.Store, tenantID, scorecardID string, cs ChangeSet, actor string) (ApplyResult, error) {
+	return ApplyVia(ctx, st, tenantID, scorecardID, cs, actor, "")
+}
+
+// ApplyVia is Apply recording the audit entry on channel (the caller's
+// channel, such as "token" or "mcp"); "" records "import".
+func ApplyVia(ctx context.Context, st store.Store, tenantID, scorecardID string, cs ChangeSet, actor, channel string) (ApplyResult, error) {
 	res := ApplyResult{Findings: []Finding{}}
+	if channel == "" {
+		channel = auditChannel
+	}
 
 	// Only a parsed change set with no error findings may be applied.
 	if cs.Status != StatusParsed {
@@ -140,7 +150,7 @@ func Apply(ctx context.Context, st store.Store, tenantID, scorecardID string, cs
 	entry := domain.AuditEntry{
 		ID:         newID(),
 		ActorID:    actor,
-		Channel:    auditChannel,
+		Channel:    channel,
 		Action:     AuditAction,
 		TargetType: "change_set",
 		TargetID:   cs.ID,

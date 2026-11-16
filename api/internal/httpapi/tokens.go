@@ -47,15 +47,16 @@ func (s *Server) ListMyTokens(ctx context.Context, _ ListMyTokensRequestObject) 
 }
 
 // CreateMyToken creates an access token for the caller in the active tenant
-// and returns its secret, once. A request authenticated by an access token
-// cannot create one, so a leaked token cannot outlive its own expiry, and a
-// secret never reaches an MCP client or the model.
+// and returns its secret, once. Only a person signed in to the web app may:
+// a request authenticated by an access token cannot create one, so a leaked
+// token cannot outlive its own expiry, and a secret never reaches an MCP
+// client or the model.
 func (s *Server) CreateMyToken(ctx context.Context, req CreateMyTokenRequestObject) (CreateMyTokenResponseObject, error) {
 	p, err := member(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if p.Channel != "" {
+	if !p.Interactive || p.Channel != "" {
 		return nil, forbidden("access tokens can only be created in the web app")
 	}
 	if req.Body == nil {

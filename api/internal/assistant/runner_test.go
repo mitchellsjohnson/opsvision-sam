@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"testing"
@@ -257,7 +258,7 @@ func TestRunExecutesAReadToolAsTheUser(t *testing.T) {
 }
 
 func TestRunRejectsToolsOutsideTheAllowlist(t *testing.T) {
-	for _, name := range []string{"delete_org_unit", "list_members", "create_my_token", "made_up_tool"} {
+	for _, name := range []string{"delete_org_unit", "list_members", "create_my_token", "made_up_tool", "Get_Scorecard_View", "GET_SCORECARD_VIEW"} {
 		t.Run(name, func(t *testing.T) {
 			e := newRunnerEnv(t,
 				toolReply("tu-1", name, `{"id":"unit-a"}`, 10, 5),
@@ -275,6 +276,85 @@ func TestRunRejectsToolsOutsideTheAllowlist(t *testing.T) {
 				t.Fatalf("answer = %+v", got)
 			}
 		})
+	}
+}
+
+func TestRunPathArgumentsStayInTheirSegment(t *testing.T) {
+	var paths []string
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.EscapedPath())
+		w.WriteHeader(http.StatusNotFound)
+	})
+	e := newRunnerEnv(t,
+		toolReply("tu-1", "get_scorecard_view", `{"sc":"../../members"}`, 10, 5),
+		toolReply("tu-2", "get_scorecard_view", `{"sc":".."}`, 10, 5),
+		textReply("Those scorecards do not exist.", 10, 5),
+	)
+	view := tool("get_scorecard_view", "GET", "/scorecards/{sc}/view")
+	view.PathParams = []string{"sc"}
+	e.runner.Catalog = []mcp.Tool{view}
+	e.runner.Dispatcher = mcp.NewHTTPDispatcher(h, auth.ChannelAssistant)
+	e.run(t)
+	if len(paths) != 1 || paths[0] != "/v1/scorecards/..%2F..%2Fmembers/view" {
+		t.Fatalf("requested paths = %v", paths)
+	}
+	if res := toolResults(e.provider.calls[1])[0]; !res.IsError {
+		t.Fatalf("traversal result = %+v, want the API's 404", res)
+	}
+	if res := toolResults(e.provider.calls[2])[0]; !res.IsError || !strings.Contains(res.Content, "sc") {
+		t.Fatalf(`".." result = %+v, want an argument error`, res)
+	}
+}
+
+func TestRunReplaysCleanToolTurns(t *testing.T) {
+	e := newRunnerEnv(t,
+		func(context.Context, MessagesRequest) (MessagesResponse, error) {
+			return MessagesResponse{Content: []Block{
+				{Type: "text", Text: ""},
+				{Type: "text", Text: "  \n"},
+				{Type: "tool_use", ID: "tu-1", Name: SearchHelpTool, Input: json.RawMessage(`null`)},
+				{Type: "tool_use", ID: "tu-2", Name: SearchHelpTool, Input: json.RawMessage(`["status"]`)},
+				{Type: "tool_use", ID: "tu-3", Name: SearchHelpTool},
+			}, StopReason: "tool_use"}, nil
+		},
+		textReply("Done.", 1, 1),
+	)
+	e.run(t)
+	replayed := e.provider.calls[1].Messages[3]
+	if replayed.Role != "assistant" || len(replayed.Content) != 3 {
+		t.Fatalf("replayed turn = %+v, want the three tool uses only", replayed)
+	}
+	raw, err := json.Marshal(replayed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range replayed.Content {
+		if b.Type != "tool_use" || string(b.Input) != "{}" {
+			t.Errorf("replayed block = %+v, want a tool use with input {}", b)
+		}
+	}
+	if n := strings.Count(string(raw), `"input":{}`); n != 3 {
+		t.Errorf("encoded turn has %d inputs: %s", n, raw)
+	}
+}
+
+func TestToolUseAlwaysEncodesInput(t *testing.T) {
+	raw, err := json.Marshal(Block{Type: "tool_use", ID: "tu-1", Name: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"input":{}`) {
+		t.Fatalf("tool use = %s", raw)
+	}
+	raw, _ = json.Marshal(Block{Type: "text", Text: "hi"})
+	if strings.Contains(string(raw), "input") {
+		t.Fatalf("text block = %s", raw)
+	}
+}
+
+func TestRoundsNoteNamesTheLimit(t *testing.T) {
+	if !strings.Contains(RoundsNote, fmt.Sprintf(" %d rounds", MaxToolRounds)) {
+		t.Fatalf("RoundsNote = %q, want it to name %d rounds", RoundsNote, MaxToolRounds)
 	}
 }
 
@@ -325,15 +405,19 @@ func TestRunTruncatesLargeToolResults(t *testing.T) {
 		toolReply("tu-1", "get_scorecard_view", `{"sc":"delivery"}`, 10, 5),
 		textReply("Narrowing down.", 10, 5),
 	)
-	e.disp.body = []byte(`{"rows":"` + strings.Repeat("x", mcp.ResultLimit+1000) + `"}`)
+	e.disp.body = []byte(`{"rows":"` + strings.Repeat("x", ToolResultLimit+1000) + `"}`)
 	e.run(t)
-	res := toolResults(e.provider.calls[1])[0]
-	if res.IsError || !strings.HasSuffix(res.Content, mcp.TruncatedNote) {
-		t.Fatalf("result does not end with the truncation note (len %d)", len(res.Content))
+	if ToolResultLimit != 64<<10 || ToolResultLimit >= mcp.ResultLimit {
+		t.Fatalf("ToolResultLimit = %d, want 64 KB, under MCP's %d", ToolResultLimit, mcp.ResultLimit)
 	}
-	head := strings.TrimSuffix(res.Content, "\n\n"+mcp.TruncatedNote)
-	if enc, _ := json.Marshal(head); len(enc) > mcp.ResultLimit {
-		t.Fatalf("truncated head encodes to %d bytes, over %d", len(enc), mcp.ResultLimit)
+	note := mcp.TruncationNote(ToolResultLimit)
+	res := toolResults(e.provider.calls[1])[0]
+	if res.IsError || !strings.HasSuffix(res.Content, note) || !strings.Contains(note, "64 KB") {
+		t.Fatalf("result does not end with the truncation note %q (len %d)", note, len(res.Content))
+	}
+	head := strings.TrimSuffix(res.Content, "\n\n"+note)
+	if enc, _ := json.Marshal(head); len(enc) > ToolResultLimit || len(enc) < ToolResultLimit-16 {
+		t.Fatalf("truncated head encodes to %d bytes, want just under %d", len(enc), ToolResultLimit)
 	}
 }
 
@@ -363,6 +447,10 @@ func TestRunFailures(t *testing.T) {
 		{name: "provider down", reply: errReply(fmt.Errorf("%w: HTTP 529", ErrUnavailable)), want: MsgUnavailable},
 		{name: "unknown model", reply: errReply(&APIError{Status: 404, Type: "not_found_error", Message: "model: nope"}),
 			want: "The model claude-haiku-5-5 was not accepted"},
+		{name: "model named in a 400", reply: errReply(&APIError{Status: 400, Type: "invalid_request_error", Message: "claude-haiku-5-5 is not available"}),
+			want: "The model claude-haiku-5-5 was not accepted"},
+		{name: "other 400", reply: errReply(&APIError{Status: 400, Type: "invalid_request_error", Message: "credit balance too low for " + runnerKey}),
+			want: "Claude did not accept the request: credit balance too low for [redacted]"},
 		{name: "empty answer", reply: textReply("", 1, 0), want: MsgNoAnswer},
 		{name: "no key", setup: func(t *testing.T, e *runnerEnv) {
 			if err := e.st.DeleteCredential(context.Background(), "t1", "u1"); err != nil {
@@ -421,6 +509,47 @@ func TestRunTimesOut(t *testing.T) {
 	got := e.run(t)
 	if got.Status != domain.AssistantStatusError || got.Error != MsgTimeout {
 		t.Fatalf("answer = %+v, want %q", got, MsgTimeout)
+	}
+}
+
+// blockingReply waits for the turn's deadline, recording how far off it was.
+func blockingReply(left *time.Duration) func(context.Context, MessagesRequest) (MessagesResponse, error) {
+	return func(ctx context.Context, _ MessagesRequest) (MessagesResponse, error) {
+		if dl, ok := ctx.Deadline(); ok {
+			*left = time.Until(dl)
+		}
+		<-ctx.Done()
+		return MessagesResponse{}, fmt.Errorf("%w: %w", ErrUnavailable, ctx.Err())
+	}
+}
+
+func TestRunNearlyStaleIsMarkedStale(t *testing.T) {
+	var left time.Duration
+	e := newRunnerEnv(t, blockingReply(&left))
+	// The message was asked 10 s before runnerNow: it is 2m50s old.
+	e.runner.Now = func() time.Time { return runnerNow.Add(2*time.Minute + 40*time.Second) }
+	got := e.run(t)
+	if got.Status != domain.AssistantStatusError || got.Error != MsgStale || len(e.provider.calls) != 0 {
+		t.Fatalf("answer = %+v, provider calls %d", got, len(e.provider.calls))
+	}
+}
+
+func TestRunBudgetEndsBeforeTheMessageReadsStale(t *testing.T) {
+	var left time.Duration
+	e := newRunnerEnv(t, func(ctx context.Context, req MessagesRequest) (MessagesResponse, error) {
+		if dl, ok := ctx.Deadline(); ok {
+			left = time.Until(dl)
+		}
+		return textReply("In time.", 1, 1)(ctx, req)
+	})
+	// 2m old: 3m stale - 2m - 10 s to finish leaves 50 s, under TurnBudget.
+	e.runner.Now = func() time.Time { return runnerNow.Add(110 * time.Second) }
+	got := e.run(t)
+	if got.Status != domain.AssistantStatusDone {
+		t.Fatalf("answer = %+v", got)
+	}
+	if left > 50*time.Second || left < 40*time.Second {
+		t.Fatalf("turn deadline %v away, want about 50s", left)
 	}
 }
 

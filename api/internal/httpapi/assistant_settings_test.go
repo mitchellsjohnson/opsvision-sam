@@ -198,7 +198,15 @@ func TestAssistantCredentialProviderFailures(t *testing.T) {
 		{"rate limited", fmt.Errorf("%w: HTTP 429", assistant.ErrRateLimited), http.StatusServiceUnavailable, codeAssistantUnavailable, ""},
 		{"unavailable", fmt.Errorf("%w: HTTP 503", assistant.ErrUnavailable), http.StatusServiceUnavailable, codeAssistantUnavailable, ""},
 		{"timeout", fmt.Errorf("%w: %w", assistant.ErrUnavailable, context.DeadlineExceeded), http.StatusServiceUnavailable, codeAssistantUnavailable, ""},
-		{"unknown model", &assistant.APIError{Status: 404, Type: "not_found_error", Message: "model: x"}, http.StatusBadRequest, codeInvalid, ""},
+		{"unknown model", &assistant.APIError{Status: 404, Type: "not_found_error", Message: "model: x"}, http.StatusBadRequest, codeInvalid,
+			"The provider did not accept a request for model " + domain.DefaultAssistantModel + "; a tenant admin can change the model in assistant settings."},
+		{"model named in a 400", &assistant.APIError{Status: 400, Type: "invalid_request_error", Message: "model " + domain.DefaultAssistantModel + " is not available"},
+			http.StatusBadRequest, codeInvalid,
+			"The provider did not accept a request for model " + domain.DefaultAssistantModel + "; a tenant admin can change the model in assistant settings."},
+		{"other 400", &assistant.APIError{Status: 400, Type: "invalid_request_error", Message: "credit balance too low for " + exampleAPIKey},
+			http.StatusBadRequest, codeInvalid, "The provider refused the request: credit balance too low for [redacted]"},
+		{"413", &assistant.APIError{Status: 413, Type: "request_too_large", Message: "Request exceeds the maximum size"},
+			http.StatusBadRequest, codeInvalid, "The provider refused the request: Request exceeds the maximum size"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -219,6 +227,45 @@ func TestAssistantCredentialProviderFailures(t *testing.T) {
 				t.Errorf("audit entries = %d, want 0", n)
 			}
 		})
+	}
+}
+
+// failingSealer fails every Seal, as an unreachable KMS would.
+type failingSealer struct{ assistant.Sealer }
+
+func (failingSealer) Seal(context.Context, []byte, map[string]string) ([]byte, error) {
+	return nil, errors.New("kms: AccessDeniedException")
+}
+
+func TestAssistantCredentialSealFailure(t *testing.T) {
+	sealer, err := assistant.NewAESSealer(bytes.Repeat([]byte{3}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := newTestEnvDeps(t, nil, func(d *Deps) { d.Sealer = failingSealer{sealer}; d.Provider = &fakeProvider{} })
+	got := env.expectError(t, http.StatusServiceUnavailable, codeAssistantUnavailable, env.tokens["t1-viewer"],
+		"PUT", "/me/assistant/credential", map[string]string{"apiKey": exampleAPIKey})
+	if got.Error.Message != "Couldn't save your key right now. Try again later." {
+		t.Fatalf("message = %q", got.Error.Message)
+	}
+	if _, err := env.store.GetCredential(context.Background(), "t1", "u-t1-viewer"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("a key was stored: %v", err)
+	}
+}
+
+func TestAssistantCredentialFirstSaveHasNoBefore(t *testing.T) {
+	env, _, _ := newAssistantEnv(t)
+	tok := env.tokens["t1-viewer"]
+	env.expect(t, http.StatusOK, tok, "PUT", "/me/assistant/credential", map[string]string{"apiKey": exampleAPIKey}, nil)
+	env.expect(t, http.StatusOK, tok, "PUT", "/me/assistant/credential", map[string]string{"apiKey": exampleAPIKey}, nil)
+	var befores []string
+	for _, e := range env.audits(t, "t1") {
+		if e.Action == "assistant_credential.put" {
+			befores = append(befores, string(e.Before))
+		}
+	}
+	if len(befores) != 2 || befores[0] != "" || befores[1] == "" || befores[1] == "null" {
+		t.Fatalf("before of the first and second save = %q", befores)
 	}
 }
 

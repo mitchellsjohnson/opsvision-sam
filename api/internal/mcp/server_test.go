@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -520,8 +521,20 @@ func TestToolResultIsNotCompressed(t *testing.T) {
 	}
 }
 
-// A two-year view through MCP fits the load balancer's response limit:
-// truncated with a note when it is over the budget, never an error.
+// albEncoded is the size of body once the load balancer's Lambda integration
+// has encoded it as a JSON string.
+func albEncoded(t *testing.T, body []byte) int {
+	t.Helper()
+	enc, err := json.Marshal(string(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return len(enc)
+}
+
+// A two-year view through MCP fits the load balancer's response limit, after
+// the load balancer encodes the response again: truncated with a note, never
+// an error.
 func TestLargeViewFitsTheResponseLimit(t *testing.T) {
 	e := newEnv(t)
 	var periods []string
@@ -539,8 +552,8 @@ func TestLargeViewFitsTheResponseLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.StatusCode != 200 || len(body) >= 1<<20 {
-		t.Fatalf("status %d, %d bytes", resp.StatusCode, len(body))
+	if resp.StatusCode != 200 || albEncoded(t, body) >= 1_000_000 {
+		t.Fatalf("status %d, %d bytes (%d through the load balancer)", resp.StatusCode, len(body), albEncoded(t, body))
 	}
 	var out rpcResponse
 	if err := json.Unmarshal(body, &out); err != nil || out.Error != nil {
@@ -553,13 +566,10 @@ func TestLargeViewFitsTheResponseLimit(t *testing.T) {
 	if res.IsError {
 		t.Fatalf("isError: %.300s", res.text())
 	}
-	if len(res.Content) == 2 && res.Content[1].Text != mcp.TruncatedNote {
-		t.Fatalf("second block = %q", res.Content[1].Text)
+	if len(res.Content) != 2 || res.Content[1].Text != mcp.TruncatedNote || res.StructuredContent != nil {
+		t.Fatalf("%d content blocks, structured %v: want the text truncated with the note", len(res.Content), res.StructuredContent != nil)
 	}
-	if len(res.Content) != 2 && len(res.Content) != 1 {
-		t.Fatalf("%d content blocks", len(res.Content))
-	}
-	t.Logf("24-month view: %d bytes over MCP, %d content blocks", len(body), len(res.Content))
+	t.Logf("24-month view: %d bytes over MCP, %d through the load balancer", len(body), albEncoded(t, body))
 }
 
 // ---- results (fake dispatcher) --------------------------------------------------
@@ -586,8 +596,8 @@ func callFake(t *testing.T, d mcp.Dispatcher) toolResult {
 	if rec.Code != 200 {
 		t.Fatalf("status %d: %s", rec.Code, rec.Body)
 	}
-	if rec.Body.Len() >= 1<<20 {
-		t.Fatalf("response is %d bytes", rec.Body.Len())
+	if n := albEncoded(t, rec.Body.Bytes()); n >= 1_000_000 {
+		t.Fatalf("response is %d bytes through the load balancer", n)
 	}
 	var out rpcResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
@@ -617,8 +627,36 @@ func TestResultOverLimitIsTruncated(t *testing.T) {
 		t.Fatal("truncated text is not a valid prefix of the result")
 	}
 	enc, _ := json.Marshal(head)
-	if len(enc) > mcp.ResultLimit {
-		t.Fatalf("encoded text is %d bytes, over the limit", len(enc))
+	if n := albEncoded(t, enc); n > mcp.ResultLimit {
+		t.Fatalf("text encoded twice is %d bytes, over the limit", n)
+	}
+}
+
+func TestResultOfQuotesFitsTheLoadBalancer(t *testing.T) {
+	// Every character a quote: each costs 4 bytes once encoded twice.
+	big := []byte(`{"rows":"` + strings.Repeat(`\"`, mcp.ResultLimit) + `"}`)
+	res := callFake(t, fakeDispatcher{status: 200, body: big})
+	if len(res.Content) != 2 {
+		t.Fatalf("%d content blocks, want truncated", len(res.Content))
+	}
+	enc, _ := json.Marshal(res.Content[0].Text)
+	if n := albEncoded(t, enc); n > mcp.ResultLimit {
+		t.Fatalf("text encoded twice is %d bytes, over the limit", n)
+	}
+}
+
+func TestStructuredContentOnlyWhenBothFit(t *testing.T) {
+	// About 200 KB of JSON, two quotes in five characters: the text fits,
+	// but the text and its structured copy together pass 600 KB through
+	// the load balancer.
+	rows := strings.Repeat(`{"a":"b"},`, 20_000)
+	body := []byte(`{"rows":[` + strings.TrimSuffix(rows, ",") + `]}`)
+	res := callFake(t, fakeDispatcher{status: 200, body: body})
+	if len(res.Content) != 1 || res.Content[0].Text != string(body) {
+		t.Fatalf("%d content blocks; want the whole text", len(res.Content))
+	}
+	if res.StructuredContent != nil {
+		t.Fatal("structuredContent sent although text and structured exceed the budget")
 	}
 }
 
@@ -665,18 +703,19 @@ func TestHTTPDispatcherBuildsTheRequest(t *testing.T) {
 	var got *http.Request
 	var gotBody []byte
 	var gotChannel string
+	var gotInteractive bool
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got = r
 		gotBody, _ = io.ReadAll(r.Body)
 		p, _ := auth.FromContext(r.Context())
-		gotChannel = p.Channel
+		gotChannel, gotInteractive = p.Channel, p.Interactive
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(201)
 		_, _ = w.Write([]byte(`{"ok":true}`))
 	})
 	tool := mcp.Tool{Name: "put_x", Method: "PUT", PathTemplate: "/scorecards/{sc}/reports/{period}/summary",
 		PathParams: []string{"sc", "period"}, QueryParams: []string{"tags", "full"}, HasBody: true}
-	ctx := auth.WithPrincipal(context.Background(), auth.Principal{UserID: "u1", Channel: auth.ChannelToken})
+	ctx := auth.WithPrincipal(context.Background(), auth.Principal{UserID: "u1", Channel: auth.ChannelToken, Interactive: true})
 	status, body, err := mcp.NewHTTPDispatcher(h, auth.ChannelMCP).Call(ctx, tool, map[string]any{
 		"sc": "a b/c", "period": "2026-M09", "tags": []any{"x", "y"}, "full": true, "body": map[string]any{"text": "hi"},
 	})
@@ -692,7 +731,50 @@ func TestHTTPDispatcherBuildsTheRequest(t *testing.T) {
 	if !bytes.Equal(bytes.TrimSpace(gotBody), []byte(`{"text":"hi"}`)) || got.Header.Get("Content-Type") != "application/json" {
 		t.Errorf("body %q type %q", gotBody, got.Header.Get("Content-Type"))
 	}
-	if gotChannel != auth.ChannelMCP {
-		t.Errorf("channel = %q", gotChannel)
+	if gotChannel != auth.ChannelMCP || gotInteractive {
+		t.Errorf("channel = %q, interactive %v", gotChannel, gotInteractive)
+	}
+}
+
+func TestHTTPDispatcherFillsThePathOnce(t *testing.T) {
+	var got *http.Request
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { got = r; w.WriteHeader(204) })
+	tool := mcp.Tool{Name: "get_x", Method: "GET", PathTemplate: "/scorecards/{sc}/reports/{period}",
+		PathParams: []string{"sc", "period"}}
+	ctx := auth.WithPrincipal(context.Background(), auth.Principal{UserID: "u1"})
+	if _, _, err := mcp.NewHTTPDispatcher(h, auth.ChannelMCP).Call(ctx, tool, map[string]any{
+		"sc": "{period}", "period": "2026-M09",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if p := got.URL.EscapedPath(); p != "/v1/scorecards/%7Bperiod%7D/reports/2026-M09" {
+		t.Fatalf("path = %s", p)
+	}
+	if p := got.URL.Path; p != "/v1/scorecards/{period}/reports/2026-M09" {
+		t.Fatalf("decoded path = %s", p)
+	}
+}
+
+type brokenBody struct{}
+
+func (brokenBody) Read([]byte) (int, error) { return 0, errors.New("connection reset") }
+
+func TestUnreadableRequestIs400(t *testing.T) {
+	h := mcp.NewHandler([]mcp.Tool{bigTool}, fakeDispatcher{status: 204}, nil)
+	req := httptest.NewRequest(http.MethodPost, "/v1/mcp", io.NopCloser(brokenBody{}))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status %d, want 400: %s", rec.Code, rec.Body)
+	}
+}
+
+func TestOversizedRequestIs413(t *testing.T) {
+	h := mcp.NewHandler([]mcp.Tool{bigTool}, fakeDispatcher{status: 204}, nil)
+	req := httptest.NewRequest(http.MethodPost, "/v1/mcp", strings.NewReader(strings.Repeat(" ", 5<<20)))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status %d, want 413", rec.Code)
 	}
 }

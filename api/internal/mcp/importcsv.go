@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"strings"
 	"time"
@@ -50,7 +51,7 @@ func ImportRecordsCSV(catalog []Tool, d Dispatcher, upload Uploader, today func(
 	answers := map[string]any{"type": "object"}
 	if body, ok := ops[opPreviewRecords].InputSchema["properties"].(map[string]any)[bodyArg].(map[string]any); ok {
 		if a, ok := body["properties"].(map[string]any)["answers"].(map[string]any); ok {
-			answers = a
+			answers = maps.Clone(a)
 		}
 	}
 	answers["description"] = "Answers to the preview's questions (unmatched product or team values, ignored values, value maps, date order), " +
@@ -78,7 +79,7 @@ func ImportRecordsCSV(catalog []Tool, d Dispatcher, upload Uploader, today func(
 			"required": []string{"recordType", "csv"},
 		},
 		Annotations: map[string]any{
-			"title": "Import records from CSV", "readOnlyHint": false, "destructiveHint": false,
+			"title": "Import records from CSV", "readOnlyHint": false,
 			"idempotentHint": false, "openWorldHint": false,
 		},
 	}
