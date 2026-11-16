@@ -1,63 +1,129 @@
 import * as Dialog from '@radix-ui/react-dialog'
 import { X } from 'lucide-react'
-import { useCallback, useMemo, useRef, useState } from 'react'
-import { Link, useParams, useSearchParams } from 'react-router'
-import { useMe, useOrgUnits, useScorecards, useVersions, useView } from '../../api/queries'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
+import { useNavigate, useParams, useSearchParams } from 'react-router'
+import { useMe, useOrgLevels, useOrgUnits, useScorecards, useVersions, useView } from '../../api/queries'
 import type { components } from '../../api/schema'
 import { parsePeriod } from '../../lib/period'
 import { usePeriodState } from '../../shell/usePeriodState'
-import { Sam } from '../../ui/Sam'
+import { StatusChip } from '../../ui/status'
 import { useAskSam } from '../assistant/useAssistant'
+import { Breakdown } from './Breakdown'
 import { defaultStatusScale, MOVE_CLASS } from './charts/chartTheme'
 import { FOCUS_CHART_HEIGHT, MetricChart } from './charts/MetricChart'
-import { RANGES, rangeChange, rangeMonths, type RangeChange, type RangeKey } from './charts/ranges'
+import { buildPoints, headerChange } from './charts/points'
+import { RANGES, rangeChange, rangeMonths, type RangeKey } from './charts/ranges'
+import { isSparse } from './charts/sparse'
 import { buildMonthTrendColumns, buildTrendColumns } from './columns'
-import { focusReturnRef } from './focusTrigger'
-import { worstChildren } from './logic/drivers'
-import { defaultLayout } from './logic/layout'
-import { cellReported, statusAtScope, type StatusScaleEntry } from './logic/statusAtScope'
-import { TablePage } from './TablePage'
+import { DefinitionLine } from './DefinitionLine'
 import { chartCsv, chartSvg, downloadBlob, metricPng } from './exports'
+import { focusBodyKind } from './focusBody'
+import { FocusHeader } from './FocusHeader'
+import { focusReturnRef } from './focusTrigger'
+import { formatMetricValue } from './format'
+import { defaultLayout } from './logic/layout'
+import { nounForms, type NounForms } from './logic/nouns'
+import { cellReported, statusAtScope, type StatusScaleEntry } from './logic/statusAtScope'
+import { buildBoardRow } from './logic/statusBoard'
+import { sinceText } from './logic/statusText'
+import { Kbd, MoreMenu } from './MoreMenu'
+import { RangeStrip } from './RangeStrip'
+import { TablePage } from './TablePage'
+import { useDialogShortcuts } from './useDialogShortcuts'
+import { useItemNoun, useLevelNoun } from './useNouns'
 import { cellKey, groupRows, metricScope } from './viewHelpers'
 import { useScorecardViewRequest } from './viewRequest'
 
-function metricKeysInLayout(view: components['schemas']['ScorecardView']): string[] {
+type ScorecardView = components['schemas']['ScorecardView']
+type Metric = components['schemas']['Metric']
+type StatusRule = components['schemas']['StatusRule']
+
+const HEADER = 'shrink-0 border-b border-ink/15 px-4 pt-3 pb-2 sm:px-6 sm:pt-4 sm:pb-3'
+const BODY = 'min-h-0 flex-1 overflow-y-auto bg-cream px-4 pt-4 pb-6 sm:px-6'
+
+interface LayoutMetric {
+  key: string
+  name: string
+  category: string
+}
+
+function metricsInLayout(view: ScorecardView): LayoutMetric[] {
   const groups = groupRows(view)
   const metricsByCategory: Record<string, { key: string }[]> = {}
+  const byKey = new Map<string, LayoutMetric>()
   for (const g of groups) {
     metricsByCategory[g.id] = g.metrics.map((m) => ({ key: m.key }))
+    for (const m of g.metrics) byKey.set(m.key, { key: m.key, name: m.name, category: g.name })
   }
   return defaultLayout(view.categories, metricsByCategory)
     .filter((i) => i.id.startsWith('metric:'))
-    .map((i) => i.id.slice('metric:'.length))
+    .flatMap((i) => byKey.get(i.id.slice('metric:'.length)) ?? [])
 }
 
 /** A metric's scope row in a view; null while loading or when it has none. */
-function scopeRowOf(view: components['schemas']['ScorecardView'] | undefined, metricKey: string) {
+function scopeRowOf(view: ScorecardView | undefined, metricKey: string) {
   const group = view ? groupRows(view).flatMap((g) => g.metrics).find((m) => m.key === metricKey) : undefined
   return group ? (metricScope(group.rows).scope ?? null) : null
 }
 
-function MetricFocusBody({
+/** The value of the best band of each subject with its own bands, for the definition's `held to` clause. */
+function ownTargets(rule: StatusRule | undefined, scale: StatusScaleEntry[], nameOf: (id: string) => string | undefined) {
+  const best = [...scale].sort((a, b) => a.rank - b.rank)[0]?.key
+  return (rule?.perSubject ?? []).flatMap((s) => {
+    const band = s.bands.find((b) => b.status === best && b.op !== '')
+    const name = nameOf(s.subjectId)
+    return band && name ? [{ name, value: band.value }] : []
+  })
+}
+
+/** The item kind's noun for a metric reported for tracked items; mounted only then, so other metrics never ask for item kinds. */
+function ItemNoun({ metric, children }: { metric: Metric; children: (noun: NounForms) => ReactNode }) {
+  return children(useItemNoun(metric))
+}
+
+/** One polite region for the dialog; repeating the same message still announces it. */
+function useAnnouncer(): [string, (message: string) => void] {
+  const [message, setMessage] = useState('')
+  const shown = useRef('')
+  const timer = useRef<ReturnType<typeof setTimeout>>(undefined)
+  useEffect(() => () => clearTimeout(timer.current), [])
+  const announce = useCallback((next: string) => {
+    clearTimeout(timer.current)
+    const show = () => {
+      shown.current = next
+      setMessage(next)
+    }
+    if (shown.current !== next) return show()
+    shown.current = ''
+    setMessage('')
+    timer.current = setTimeout(show, 50)
+  }, [])
+  return [message, announce]
+}
+
+function MetricFocus({
   metricKey,
-  metricIds,
-  onClose,
-  contentRef,
+  layout,
+  frameRef,
 }: {
   metricKey: string
-  metricIds: string[]
-  onClose: () => void
-  contentRef: React.RefObject<HTMLDivElement | null>
+  layout: LayoutMetric[]
+  frameRef: RefObject<HTMLDivElement | null>
 }) {
   const { sc } = useParams()
   const scorecardId = sc ?? ''
+  const navigate = useNavigate()
   const [period, updatePeriod] = usePeriodState()
   const [params, setParams] = useSearchParams()
   const [range, setRange] = useState<RangeKey>('12M')
   const [exportError, setExportError] = useState('')
+  const [announcement, announce] = useAnnouncer()
+  const [toast, setToast] = useState('')
+  const bodyRef = useRef<HTMLDivElement>(null)
   const sam = useAskSam()
   const me = useMe()
   const orgUnits = useOrgUnits()
+  const levels = useOrgLevels()
   const versions = useVersions(scorecardId)
   const fy = period.fiscalYearStartMonth
   const scale: StatusScaleEntry[] = useMemo(
@@ -111,6 +177,7 @@ function MetricFocusBody({
   const head = measured?.head
   const scope = measured?.scope ?? null
   const children = measured?.children ?? []
+  const bodyKind = metricGroup ? focusBodyKind(metricGroup.rows) : 'chart'
   // A metric with no org-unit row (item-only) has no scope value to chart.
   const chartRow = scope ?? (head ? { ...head, subjectId: '', subjectName: '', cells: [] } : undefined)
   const cell = scope?.cells.find((c) => cellKey(c) === columnKey)
@@ -123,7 +190,20 @@ function MetricFocusBody({
     ? statusAtScope({ scope: scope ?? { cells: [] }, children, columnKey, scale, noun })
     : null
 
-  const rankedChildren = worstChildren(children, columnKey, scale, head?.direction ?? 'higher_better').ranked
+  // The metric as defined in the version in force for the selected column.
+  const versionId = (cell ?? children.map((ch) => ch.cells.find((c) => cellKey(c) === columnKey)).find(Boolean))?.versionId
+  const metric = versions.data?.versions.find((v) => v.id === versionId)?.content.metrics.find((m) => m.key === metricKey)
+  const reported = metric?.reportedAt[0]
+  const reportedLevel = reported?.kind === 'level' ? levels.data?.find((l) => l.id === reported.id)?.name : undefined
+  const levelNoun = nounForms(reportedLevel, 'unit')
+  const childLevelNoun = useLevelNoun(children[0]?.depth ?? (scope ? scope.depth + 1 : 1))
+  const childrenAreItems = children.some((ch) => ch.subjectKind === 'item')
+  const withNouns = (render: (nouns: { reported: NounForms; children: NounForms }) => ReactNode) =>
+    metric && reported?.kind === 'item_kind' ? (
+      <ItemNoun metric={metric}>{(n) => render({ reported: n, children: n })}</ItemNoun>
+    ) : (
+      render({ reported: levelNoun, children: childrenAreItems ? nounForms(undefined, 'item') : childLevelNoun })
+    )
 
   const tableLink = useMemo(() => {
     const q = new URLSearchParams(params)
@@ -136,16 +216,18 @@ function MetricFocusBody({
     }
   }, [params, scorecardId, metricKey])
 
-  const idx = metricIds.indexOf(metricKey)
-  const prevId = metricIds[idx > 0 ? idx - 1 : metricIds.length - 1]
-  const nextId = metricIds[idx >= 0 && idx < metricIds.length - 1 ? idx + 1 : 0]
+  const idx = layout.findIndex((m) => m.key === metricKey)
+  const prevMetric = idx >= 0 ? layout[idx > 0 ? idx - 1 : layout.length - 1] : undefined
+  const nextMetric = idx >= 0 ? layout[idx < layout.length - 1 ? idx + 1 : 0] : undefined
 
-  const setFocus = (id: string) => {
+  const goTo = (target: LayoutMetric | undefined) => {
+    if (!target || target.key === metricKey) return
     setParams((prev) => {
       const next = new URLSearchParams(prev)
-      next.set('focus', id)
+      next.set('focus', target.key)
       return next
     })
+    announce(`${target.name}, ${layout.indexOf(target) + 1} of ${layout.length}`)
   }
 
   const exportCsv = () => {
@@ -165,12 +247,12 @@ function MetricFocusBody({
   const restatedName = period.restate
     ? (versions.data?.versions.find((v) => v.id === period.restate)?.name ?? 'the selected methodology version')
     : ''
-  const exportedChart = (metric: NonNullable<typeof head>) =>
+  const exportedChart = (m: NonNullable<typeof head>) =>
     chartSvg({
-      title: metric.metricName,
+      title: m.metricName,
       scope: exportScope,
       restatedUnder: restatedName,
-      format: metric.format,
+      format: m.format,
       columns: trendColumns,
       rows: chartRows,
       scale: statusColors,
@@ -191,20 +273,67 @@ function MetricFocusBody({
     }
   }
 
-  const copyLink = async () => {
+  useEffect(() => {
+    if (!toast) return
+    const t = setTimeout(() => setToast(''), 2500)
+    return () => clearTimeout(t)
+  }, [toast])
+
+  const copyLink = async (): Promise<boolean> => {
+    let ok = true
     try {
       await navigator.clipboard.writeText(window.location.href)
     } catch {
-      /* clipboard may be unavailable in tests */
+      ok = false
     }
+    const message = ok ? 'Link copied' : 'Couldn’t copy the link'
+    announce(message)
+    setToast(message)
+    return ok
   }
 
   const present = () => {
-    const el = contentRef.current
+    const el = bodyRef.current
     if (el?.requestFullscreen) void el.requestFullscreen()
   }
 
+  const openTable = () => void navigate(tableLink)
+
+  const points = chartRow ? buildPoints(chartRow, trendColumns, fy) : []
+  const sparse = head ? isSparse(head.chartKind, points.map((p) => p.kind)) : false
+  const rangeShown = monthGrain && (head?.frequency ?? 'monthly') === 'monthly' && !sparse
+
+  const shortcuts = useDialogShortcuts(frameRef, {
+    prev: () => goTo(prevMetric),
+    next: () => goTo(nextMetric),
+    range: rangeShown ? (n) => selectRange(RANGES[n - 1]!.key) : undefined,
+    table: openTable,
+    copyLink: () => void copyLink(),
+    present,
+  })
+
   const waiting = view.isPending || (view.isPlaceholderData && !metricGroup)
+  const busy = waiting || view.isPlaceholderData
+
+  const boardCells = head
+    ? buildBoardRow({
+        key: metricKey,
+        category: { id: head.categoryId, name: '' },
+        scope,
+        head,
+        children,
+        noun,
+        columns: trendColumns,
+        scale,
+        fyStart: fy,
+      }).cells
+    : []
+  const since = sinceText(boardCells, boardCells.length - 1, trendColumns, statusLabel)
+  const change = scope && cell?.display ? headerChange(scope, cell, fy) : null
+  const goal = head && cell?.target != null ? formatMetricValue(head.format, cell.target) : ''
+  const ytd = scope?.cells.find((c) => c.ytd && c.period === selectedColumn?.period)?.display ?? ''
+  const status = atScope?.status ?? ''
+
   let chartArea
   let details = null
   if (view.isError) {
@@ -221,96 +350,83 @@ function MetricFocusBody({
       </div>
     )
   } else if (waiting) {
-    chartArea = <div className={`mt-4 ${FOCUS_CHART_HEIGHT}`} aria-busy="true" />
-  } else if (!chartRow) {
+    chartArea = <div data-chart-region="" className={`mt-4 ${FOCUS_CHART_HEIGHT}`} aria-busy="true" />
+  } else if (!chartRow || !head) {
     chartArea = <p role="alert">This metric has no rows for this selection.</p>
   } else {
     chartArea = (
-      <div className="mt-4" aria-busy={view.isPlaceholderData || undefined}>
-        <MetricChart
-          size="focus"
-          row={chartRow}
-          chartRows={chartRows}
-          childRows={children}
-          columns={trendColumns}
-          currentColumnKey={columnKey}
-          currentDisplay={cell?.display ?? ''}
-          currentStatus={atScope?.status ?? ''}
-          statusLabel={statusLabel}
-          scale={statusColors}
-          tableTo={tableLink}
-          scopeNote={atScope?.caption || undefined}
-          fiscalYearStartMonth={fy}
-        />
-      </div>
-    )
-    details = (
       <>
-        {rankedChildren.length > 0 && (
-          <section aria-label="Org breakdown" className="mt-6">
-            <h3 className="text-sm font-semibold text-accent-deep">Breakdown</h3>
-            <ul className="mt-2 space-y-1">
-              {rankedChildren.map(({ row: ch, cell: c }) => {
-                const content = (
-                  <>
-                    <span className="font-medium">{ch.subjectName}</span>
-                    <span className="ml-2 tabular-nums">{c?.display || '—'}</span>
-                    {c?.status && <span className="ml-2">{c.status}</span>}
-                  </>
-                )
-                return (
-                  <li key={ch.subjectId}>
-                    {ch.subjectKind === 'item' ? (
-                      <p className="rounded border border-ink/20 px-3 py-2 text-sm">{content}</p>
-                    ) : (
-                      <button
-                        type="button"
-                        className="w-full rounded border border-ink/20 px-3 py-2 text-left text-sm hover:bg-cream"
-                        onClick={() => updatePeriod({ scope: ch.subjectId })}
-                      >
-                        {content}
-                      </button>
-                    )}
-                  </li>
-                )
-              })}
-            </ul>
-          </section>
-        )}
-
-        <p className="mt-4">
-          <Link to={tableLink} className="text-sm font-medium text-accent-deep hover:underline" onClick={onClose}>
-            View as table
-          </Link>
-        </p>
+        <div data-testid="focus-value-row" className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+          <span className="text-[28px] leading-9 font-semibold tabular-nums">{cell?.display || '—'}</span>
+          {status && (
+            <span role="img" aria-label={statusLabel(status) ?? status} title={statusLabel(status)} className="inline-flex self-center">
+              <StatusChip status={status} scale={statusColors} size="lg" />
+            </span>
+          )}
+          {change && (
+            <span data-tone={change.move.tone} className={`text-base font-medium tabular-nums ${MOVE_CLASS[change.move.tone]}`}>
+              {change.move.arrow && <span aria-hidden="true">{change.move.arrow} </span>}
+              <span>{change.text}</span>
+            </span>
+          )}
+          {atScope?.caption && <span className="text-sm text-ink/70">{atScope.caption}</span>}
+          {since && <span className="text-sm text-ink/70">{since}</span>}
+          {goal && <span className="text-sm text-ink/70">Goal {goal}</span>}
+          {ytd && <span className="text-sm text-ink/70">YTD {ytd}</span>}
+        </div>
+        {/* The value row above replaces the chart's own header in the dialog. */}
+        <div
+          data-chart-region=""
+          className="mt-2 [&_div:has(>[data-testid=header-value])]:hidden"
+          aria-busy={view.isPlaceholderData || undefined}
+        >
+          <MetricChart
+            size="focus"
+            row={chartRow}
+            chartRows={chartRows}
+            childRows={children}
+            columns={trendColumns}
+            currentColumnKey={columnKey}
+            currentDisplay={cell?.display ?? ''}
+            currentStatus={status}
+            statusLabel={statusLabel}
+            scale={statusColors}
+            tableTo={tableLink}
+            fiscalYearStartMonth={fy}
+          />
+        </div>
       </>
     )
+    details =
+      children.length > 0 &&
+      withNouns((nouns) => (
+        <Breakdown
+          head={head}
+          children={children}
+          columns={windowColumns.slice(-12)}
+          columnKey={columnKey}
+          scale={statusColors}
+          direction={head.direction}
+          noun={nouns.children}
+          onScope={(id) => updatePeriod({ scope: id })}
+        />
+      ))
   }
 
+  const nameOf = (id: string) => metricGroup?.rows.find((r) => r.subjectId === id)?.subjectName ?? unitName(id)
+  const title = layout[idx]?.name ?? head?.metricName ?? metricKey
+
   return (
-    <div className="min-h-0">
-      <div className="flex flex-wrap gap-2 border-b border-ink/15 pb-3">
-        <button type="button" className="rounded border border-ink/20 px-2 py-1 text-sm hover:bg-cream" onClick={() => void exportPng()}>
-          Export PNG
-        </button>
-        <button type="button" className="rounded border border-ink/20 px-2 py-1 text-sm hover:bg-cream" onClick={exportSvg}>
-          Export SVG
-        </button>
-        <button type="button" className="rounded border border-ink/20 px-2 py-1 text-sm hover:bg-cream" onClick={exportCsv}>
-          Export CSV
-        </button>
-        <button type="button" className="rounded border border-ink/20 px-2 py-1 text-sm hover:bg-cream" onClick={present}>
-          Present
-        </button>
-        <button type="button" className="rounded border border-ink/20 px-2 py-1 text-sm hover:bg-cream" onClick={() => void copyLink()}>
-          Copy link
-        </button>
-        <button
-          type="button"
-          aria-haspopup="dialog"
-          aria-expanded={sam.isOpen}
-          className="inline-flex items-center gap-1.5 rounded border border-accent/40 bg-white px-2 py-1 text-sm font-medium text-accent-deep hover:bg-cream"
-          onClick={() =>
+    <>
+      <header className={HEADER}>
+        <FocusHeader
+          eyebrow={layout[idx]?.category ?? ''}
+          title={title}
+          position={{ index: idx + 1, total: layout.length }}
+          prev={{ name: prevMetric?.name ?? '', onGo: () => goTo(prevMetric) }}
+          next={{ name: nextMetric?.name ?? '', onGo: () => goTo(nextMetric) }}
+          samOpen={sam.isOpen}
+          onAskSam={() =>
             sam.open({
               page: 'focus',
               scorecardId,
@@ -319,34 +435,43 @@ function MetricFocusBody({
               ...(period.scope ? { scope: period.scope } : {}),
             })
           }
-        >
-          <Sam className="size-5" />
-          Ask SAM
-        </button>
-      </div>
-      {exportError && (
-        <p role="alert" className="mt-2 text-sm text-status-r">
-          {exportError}
+          menu={
+            <MoreMenu
+              onCopyLink={copyLink}
+              onTable={openTable}
+              onPresent={present}
+              onExport={(format) => (format === 'png' ? void exportPng() : format === 'svg' ? exportSvg() : exportCsv())}
+            />
+          }
+        />
+        {head &&
+          withNouns((nouns) => (
+            <DefinitionLine
+              metric={metric}
+              rule={cell?.rule ?? metric?.rule}
+              row={head}
+              statusLabel={statusLabel}
+              isAdmin={me.data?.role === 'admin'}
+              noun={nouns.reported}
+              perSubject={ownTargets(metric?.rule, scale, nameOf)}
+            />
+          ))}
+      </header>
+      <div ref={bodyRef} data-body={bodyKind} className={BODY}>
+        <p role="status" data-testid="dialog-live" className="sr-only">
+          {announcement || (busy ? 'Loading chart' : '')}
         </p>
-      )}
-
-      <div className="mt-3 flex flex-wrap justify-end gap-2">
-        <button type="button" className="rounded border border-ink/20 px-2 py-1 text-sm hover:bg-cream" onClick={() => setFocus(prevId!)}>
-          Previous metric
-        </button>
-        <button type="button" className="rounded border border-ink/20 px-2 py-1 text-sm hover:bg-cream" onClick={() => setFocus(nextId!)}>
-          Next metric
-        </button>
-      </div>
-      <p role="status" className="mt-1 min-h-5 text-sm text-ink/80">
-        {waiting || view.isPlaceholderData ? 'Loading chart…' : ''}
-      </p>
-
-      {chartArea}
-      {monthGrain && (
+        {exportError && (
+          <p role="alert" className="mb-2 text-sm text-status-r">
+            {exportError}
+          </p>
+        )}
+        {chartArea}
         <RangeStrip
           selected={range}
           onSelect={selectRange}
+          hidden={!rangeShown}
+          caption={selectedColumn ? `Change from the first month in each range to ${selectedColumn.fullLabel}` : ''}
           changeFor={(key) => {
             const span = rangeMonths(key, period.period)
             if (span <= windowColumns.length) return scope ? rangeChange(scope, windowColumns.slice(-span)) : null
@@ -354,49 +479,49 @@ function MetricFocusBody({
             return longScope ? rangeChange(longScope, longColumns.slice(-span)) : null
           }}
         />
-      )}
-      {details}
-    </div>
-  )
-}
-
-/** Range tabs under the chart, each with the change over its range. */
-function RangeStrip({
-  selected,
-  onSelect,
-  changeFor,
-}: {
-  selected: RangeKey
-  onSelect: (key: RangeKey) => void
-  changeFor: (key: RangeKey) => RangeChange | null
-}) {
-  return (
-    <div role="group" aria-label="Range" className="mt-4 grid grid-cols-5 gap-1">
-      {RANGES.map(({ key, label }) => {
-        const change = changeFor(key)
-        const pressed = selected === key
-        return (
-          <button
-            key={key}
-            type="button"
-            aria-pressed={pressed}
-            aria-label={!change ? `${label}, change not available` : change.move.arrow ? `${label}, change ${change.text}` : `${label}, no change`}
-            className={`rounded-md px-2 py-1.5 text-center text-sm ${pressed ? 'bg-ink/[0.07] font-semibold' : 'hover:bg-ink/5'}`}
-            onClick={() => onSelect(key)}
-          >
-            <span className="block">{label}</span>
-            {change ? (
-              <span data-tone={change.move.tone} className={`block text-xs font-medium tabular-nums ${MOVE_CLASS[change.move.tone]}`}>
-                {change.move.arrow && <span className="mr-0.5">{change.move.arrow}</span>}
-                {change.text}
+        {details}
+        <div data-hints="" className="mt-6 hidden flex-wrap items-center gap-x-4 gap-y-1 text-[11px] leading-4 text-ink/70 sm:flex">
+          {shortcuts.enabled && (
+            <>
+              <span>
+                <Kbd>←</Kbd> <Kbd>→</Kbd> previous / next metric
               </span>
-            ) : (
-              <span className="block text-xs font-medium text-ink/70">—</span>
-            )}
+              {rangeShown && (
+                <span>
+                  <Kbd>1</Kbd>–<Kbd>5</Kbd> range
+                </span>
+              )}
+              <span>
+                <Kbd>T</Kbd> table
+              </span>
+              <span>
+                <Kbd>L</Kbd> copy link
+              </span>
+            </>
+          )}
+          <span>
+            <Kbd>Esc</Kbd> close
+          </span>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={shortcuts.enabled}
+            className="h-6 rounded-md px-1.5 font-medium text-ink/80 hover:bg-ink/5"
+            onClick={() => shortcuts.setEnabled(!shortcuts.enabled)}
+          >
+            Shortcuts: {shortcuts.enabled ? 'On' : 'Off'}
           </button>
-        )
-      })}
-    </div>
+        </div>
+      </div>
+      {toast && (
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute bottom-4 left-1/2 z-10 -translate-x-1/2 rounded-md bg-ink px-3 py-1.5 text-sm text-white shadow-lg"
+        >
+          {toast}
+        </div>
+      )}
+    </>
   )
 }
 
@@ -412,9 +537,9 @@ export function FocusDialog() {
 
   const { request: layoutRequest, ready } = useScorecardViewRequest()
   const layoutView = useView(ready && open && focusId !== 'table' ? scorecardId : undefined, layoutRequest)
-  const metricIds = layoutView.data ? metricKeysInLayout(layoutView.data) : []
+  const layout = useMemo(() => (layoutView.data ? metricsInLayout(layoutView.data) : []), [layoutView.data])
 
-  const contentRef = useRef<HTMLDivElement>(null)
+  const frameRef = useRef<HTMLDivElement>(null)
 
   const close = useCallback(() => {
     setParams((prev) => {
@@ -424,15 +549,18 @@ export function FocusDialog() {
     })
   }, [setParams])
 
-  const title =
-    focusId === 'table' ? `${scorecardName} table` : layoutView.data?.rows.find((r) => r.metricKey === focusId)?.metricName ?? focusId
-
   return (
     <Dialog.Root open={open} onOpenChange={(next) => !next && close()}>
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-40 bg-ink/50" />
         <Dialog.Content
+          ref={frameRef}
           aria-describedby={undefined}
+          // The dialog itself takes focus, so its name is read first and no control shows a ring before it is used.
+          onOpenAutoFocus={(e) => {
+            e.preventDefault()
+            frameRef.current?.focus()
+          }}
           onCloseAutoFocus={(e) => {
             if (focusReturnRef.current) {
               e.preventDefault()
@@ -440,26 +568,32 @@ export function FocusDialog() {
               focusReturnRef.current = null
             }
           }}
-          className="fixed inset-4 z-50 flex flex-col overflow-hidden rounded-lg bg-cream p-6 shadow-xl md:inset-8"
+          className="fixed inset-0 z-50 flex flex-col overflow-hidden rounded-none bg-cream shadow-xl outline-none md:inset-8 md:rounded-lg"
         >
-          <Dialog.Title className="pr-10 text-xl font-semibold text-accent-deep">{title}</Dialog.Title>
-          <Dialog.Close asChild>
-            <button type="button" aria-label="Close" className="absolute right-4 top-4 rounded-md p-1 hover:bg-white">
-              <X aria-hidden="true" className="size-5" />
-            </button>
-          </Dialog.Close>
-          <div ref={contentRef} className="mt-4 min-h-0 flex-1 overflow-y-auto">
-            {focusId === 'table' ? (
-              <TablePage
-                scorecardId={scorecardId}
-                scorecardName={scorecardName}
-                measureWidth={1600}
-                embeddedInFocus
-              />
-            ) : focusId ? (
-              <MetricFocusBody metricKey={focusId} metricIds={metricIds} onClose={close} contentRef={contentRef} />
-            ) : null}
-          </div>
+          {focusId === 'table' ? (
+            <>
+              <header className={HEADER}>
+                <div className="flex items-start gap-3">
+                  <Dialog.Title className="min-w-0 flex-1 text-xl font-semibold text-accent-deep">{scorecardName} table</Dialog.Title>
+                  <Dialog.Close asChild>
+                    <button
+                      type="button"
+                      aria-label="Close"
+                      title="Close (Esc)"
+                      className="inline-flex size-8 shrink-0 items-center justify-center rounded-md text-ink/80 hover:bg-ink/5"
+                    >
+                      <X aria-hidden="true" className="size-4" />
+                    </button>
+                  </Dialog.Close>
+                </div>
+              </header>
+              <div className={BODY}>
+                <TablePage scorecardId={scorecardId} scorecardName={scorecardName} measureWidth={1600} embeddedInFocus />
+              </div>
+            </>
+          ) : focusId ? (
+            <MetricFocus metricKey={focusId} layout={layout} frameRef={frameRef} />
+          ) : null}
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>
