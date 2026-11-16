@@ -177,6 +177,8 @@ describe('OverviewPage', () => {
     const card = metricCard('On-time delivery')
     const strip = within(card).getByTestId('uptime-strip-unit-a')
     expect(strip.children.length).toBe(12)
+    // Twelve markers wrap rather than push a phone-width page sideways.
+    expect(strip.className).toContain('flex-wrap')
   })
 
   it('needs-attention cards show status, value, change, a trend and Expand; Driver names an off-track child', async () => {
@@ -217,9 +219,9 @@ describe('OverviewPage', () => {
     const ribbon = screen.getByTestId('ribbon-on_time_pct')
     const cells = within(ribbon).getAllByRole('button')
     expect(cells).toHaveLength(12)
-    expect(cells.at(-1)!.textContent).toBe('◆R')
+    expect(cells.at(-1)!.textContent).toBe('R')
     expect(cells.at(-1)!.getAttribute('aria-label')).toBe('On-time delivery, Oct 2026: Red, worst of 2 segments')
-    expect(cells.at(-2)!.textContent).toBe('●G')
+    expect(cells.at(-2)!.textContent).toBe('G')
   })
 
   it('the status board is a grid of the trend window; a cell opens its metric full screen', async () => {
@@ -229,11 +231,13 @@ describe('OverviewPage', () => {
     expect(within(grid).getByRole('columnheader', { name: 'Oct' }).hasAttribute('data-selected')).toBe(true)
     expect(within(grid).getByRole('rowheader', { name: 'On-time delivery' })).toBeTruthy()
     const user = userEvent.setup()
-    const cell = within(grid).getByRole('button', { name: /^On-time delivery, Oct 2026: Yellow, 84\.3%$/ })
+    const cell = within(grid).getByRole('button', { name: 'On-time delivery, Oct 2026: Yellow, 84.3%, up 2.1 pts vs Sep' })
     await user.click(cell)
     expect(await screen.findByRole('dialog', { name: /On-time delivery/i })).toBeTruthy()
     await user.keyboard('{Escape}')
     await waitFor(() => expect(document.activeElement).toBe(cell))
+    // Focus handed back on close does not pop the cell's tooltip.
+    expect(screen.queryByRole('tooltip')).toBeNull()
   })
 
   it('the overview, status board included, has no axe violations', async () => {

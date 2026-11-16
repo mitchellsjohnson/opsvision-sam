@@ -1,7 +1,7 @@
 import type { components } from '../../../api/schema'
 import { parsePeriod } from '../../../lib/period'
 import type { Move } from '../charts/chartTheme'
-import { buildPoints, headerChange } from '../charts/MetricChart'
+import { buildPoints, headerChange } from '../charts/points'
 import type { Column } from '../columns'
 import { statusAtScope, type StatusScaleEntry } from './statusAtScope'
 import { cellKey } from '../viewHelpers'
@@ -11,8 +11,8 @@ type ViewRow = components['schemas']['ViewRow']
 export interface BoardCell {
   /** The column key. */
   key: string
-  /** A status (the scope's, or the worst child's), not applicable, or no data. */
-  kind: 'status' | 'na' | 'missing'
+  /** A status (the scope's, or the worst child's), a value with no status, not applicable, or no data. */
+  kind: 'status' | 'unrated' | 'na' | 'missing'
   status: string
   /** The scope's value; '' when the status comes from children or there is none. */
   display: string
@@ -34,41 +34,48 @@ export interface BoardRow {
   change: { text: string; move: Move } | null
 }
 
-/** The metric-name column never narrows below this, nor grows cells before reaching the comfortable width. */
+/** Inline rows keep at least this much for the metric name; cells grow only once it is comfortable. */
 const NAME_MIN = 100
 const NAME_COMFORT = 176
-/** Fixed width of the value column; below `VALUE_BREAK` the value moves under the name. */
+/** Fixed width of the value column in inline rows. */
 export const VALUE_WIDTH = 136
-const VALUE_BREAK = 440
-/** Cell column widths, including the 1px gutter each side: 24px is the smallest target WCAG 2.2 allows. */
-const CELL_MIN = 26
-const CELL_MAX = 50
+/** Below this width rows always stack: the name and value above, the cells below. */
+export const VALUE_BREAK = 440
+/** Cell column widths, including a 2px gutter each side (4px between cells): 24px is the smallest target WCAG 2.2 allows. */
+const CELL_MIN = 28
+const CELL_MAX = 40
 /** Four or fewer columns (halves, years) may grow wider, so `FY2026` fits its header. */
-const CELL_MAX_SHORT = 72
+const CELL_MAX_SHORT = 64
 
 export interface BoardLayout {
   /** How many of the latest columns to show. */
   count: number
   /** Each period column's width in px; null before the board is measured. */
   cellWidth: number | null
+  /** Inline rows (name, cells, value side by side); false when each metric stacks into two rows. */
   valueColumn: boolean
 }
 
+function cellWidthFor(room: number, count: number): number {
+  const max = count <= 4 ? CELL_MAX_SHORT : CELL_MAX
+  return Math.min(max, Math.max(CELL_MIN, Math.floor(room / count)))
+}
+
 /**
- * Fits the board to its width: every column when they fit at the minimum
- * size, else the latest half, quarter, and so on. Cells grow to a cap once
- * the name column is comfortable; the name column takes what is left.
+ * Fits the board to its width, preferring every column over the value
+ * column: inline rows when all columns fit beside the name and value; else
+ * stacked rows with all columns across the full width; else the latest half,
+ * quarter, and so on. A wider board never shows fewer columns.
  */
 export function boardLayout(width: number, total: number): BoardLayout {
-  if (width <= 0) return { count: total, cellWidth: null, valueColumn: true }
-  const valueColumn = width >= VALUE_BREAK
-  const value = valueColumn ? VALUE_WIDTH : 0
-  const room = width - NAME_MIN - value
-  let count = Math.max(total, 1)
-  while (count > 1 && count * CELL_MIN > room) count = Math.ceil(count / 2)
-  const grown = Math.floor((width - value - NAME_COMFORT) / count)
-  const max = count <= 4 ? CELL_MAX_SHORT : CELL_MAX
-  return { count, cellWidth: Math.min(max, Math.max(CELL_MIN, grown)), valueColumn }
+  const all = Math.max(total, 1)
+  if (width <= 0) return { count: all, cellWidth: null, valueColumn: true }
+  if (width >= VALUE_BREAK && all * CELL_MIN <= width - NAME_MIN - VALUE_WIDTH) {
+    return { count: all, cellWidth: cellWidthFor(width - VALUE_WIDTH - NAME_COMFORT, all), valueColumn: true }
+  }
+  let count = all
+  while (count > 1 && count * CELL_MIN > width) count = Math.ceil(count / 2)
+  return { count, cellWidth: cellWidthFor(width, count), valueColumn: false }
 }
 
 export interface FiscalGroup {
@@ -130,14 +137,14 @@ export function buildBoardRow({
   const cells = columns.map((col, i): BoardCell => {
     const point = points[i]!
     const at = statusAtScope({ scope: scope ?? { cells: [] }, children, columnKey: col.key, scale, noun })
-    const kind = at.status ? 'status' : point.kind === 'na' ? 'na' : 'missing'
+    const kind = at.status ? 'status' : point.kind === 'na' ? 'na' : point.kind === 'value' && point.display ? 'unrated' : 'missing'
     return {
       key: col.key,
       kind,
       status: at.status,
       display: point.kind === 'value' ? point.display : '',
       naReason: point.naReason,
-      change: point.change,
+      change: point.kind === 'value' ? point.change : null,
       caption: at.caption,
     }
   })
@@ -155,16 +162,25 @@ export function buildBoardRow({
   }
 }
 
-/** The cell's accessible name: `Uptime, Sep 2026: Red, 72%`. */
+/** A change phrase for speech: `-12 pts vs Sep` reads `down 12 pts vs Sep`. */
+function spokenChange(text: string): string {
+  const m = /^([+-])(.*)$/.exec(text)
+  return m ? `${m[1] === '+' ? 'up' : 'down'} ${m[2]}` : text
+}
+
+/** The cell's accessible name: `Uptime, Sep 2026: Red, 72%`, with the change when `withChange` (the selected period). */
 export function cellName(
   metricName: string,
   column: Column,
   cell: BoardCell,
   statusLabel: (key: string) => string | undefined,
+  withChange = false,
 ): string {
   const where = `${metricName}, ${column.fullLabel}`
   if (cell.kind === 'na') return `${where}: Not applicable${cell.naReason ? `, ${cell.naReason}` : ''}`
   if (cell.kind === 'missing') return `${where}: No data`
+  const change = withChange && cell.change ? `, ${spokenChange(cell.change)}` : ''
+  if (cell.kind === 'unrated') return `${where}: ${cell.display}, not rated${change}`
   const detail = cell.display || cell.caption
-  return `${where}: ${statusLabel(cell.status) ?? cell.status}${detail ? `, ${detail}` : ''}`
+  return `${where}: ${statusLabel(cell.status) ?? cell.status}${detail ? `, ${detail}` : ''}${change}`
 }

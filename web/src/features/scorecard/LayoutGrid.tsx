@@ -22,6 +22,7 @@ import { ApiError } from '../../api/errors'
 import { useLayout, usePutDefaultLayout, usePutLayout } from '../../api/queries'
 import type { components } from '../../api/schema'
 import { menuItemHighlight } from '../../ui/focus'
+import { useElementWidth } from '../../ui/useElementWidth'
 import { applyLayout, defaultLayout, type LayoutCategory, type LayoutMetric } from './logic/layout'
 import { moveBlock, reorderSectionDrop } from './logic/layoutReorder'
 
@@ -43,6 +44,8 @@ export interface LayoutGridProps {
 }
 
 const MOBILE_MAX_WIDTH = '(max-width: 767px)'
+/** The toolbar's inset from the tile edge (right-2) plus room between it and the header. */
+const TOOLBAR_GAP = 16
 
 function displayOrder(items: LayoutItem[]): LayoutItem[] {
   const needs = items.find((i) => i.id === 'widget:needs')
@@ -82,10 +85,13 @@ function SortableTile({ id, item, label, onUpdate, allItems, children }: Sortabl
   const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } = useSortable({
     id,
   })
+  // Published so a tile's header can keep clear of the toolbar over its top-right corner.
+  const [toolbarRef, toolbarWidth] = useElementWidth<HTMLDivElement>()
   const style = {
     transform: CSS.Transform.toString(transform),
     transition,
     opacity: isDragging ? 0.85 : 1,
+    ['--tile-toolbar' as string]: `${Math.ceil(toolbarWidth) + TOOLBAR_GAP}px`,
   }
 
   const index = allItems.findIndex((i) => i.id === item.id)
@@ -104,7 +110,7 @@ function SortableTile({ id, item, label, onUpdate, allItems, children }: Sortabl
       aria-label={isMetric ? undefined : label}
       className="relative rounded-lg border border-transparent"
     >
-      <div className="absolute right-2 top-2 z-10 flex items-center gap-1">
+      <div ref={toolbarRef} className="absolute right-2 top-2 z-10 flex items-center gap-1">
         <button
           type="button"
           ref={setActivatorNodeRef}

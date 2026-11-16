@@ -112,14 +112,32 @@ describe('MetricChart status ribbon', () => {
     expect(cells.map((c) => c.dataset.status).slice(-4)).toEqual(['G', 'R', 'missing', 'na'])
   })
 
-  it('letters each cell in white or ink, whichever reads better on its fill', () => {
+  it('fills cells exception-first: green a soft tint, yellow an outlined tint, as on the status board', () => {
+    const { container } = draw(rowOf('on_time_pct'))
+    const cells = ribbonCells(container)
+    expect(cells[0]!.dataset.tier).toBe('soft')
+    expect(cells[0]!.style.backgroundColor).toBe('var(--color-status-g-bg)')
+    expect(cells[0]!.style.color).toBe('rgb(19, 122, 58)')
+    expect(cells[11]!.dataset.tier).toBe('outline')
+    expect(cells[11]!.style.backgroundColor).toBe('var(--color-status-y-bg)')
+    expect(cells[11]!.style.boxShadow).toBe('inset 0 0 0 1px #8A5A00')
+  })
+
+  it('fills red solid, lettered white', () => {
+    const { container } = draw(rowOf('defect_rate', (r) => (r.chartKind = 'discrete')))
+    const red = ribbonCells(container).find((c) => c.dataset.status === 'R')!
+    expect(red.dataset.tier).toBe('solid')
+    expect(red.style.backgroundColor).toBe('rgb(180, 35, 24)')
+    expect(red.style.color).toBe('rgb(255, 255, 255)')
+  })
+
+  it('fills a tenant color solid, in white or ink, when its letter would not read on a tint', () => {
     const light: StatusLevel[] = [{ key: 'G', label: 'Green', color: '#F5D90A', rank: 1 }, ...defaultStatusScale().slice(1)]
     const { container } = draw(rowOf('on_time_pct'), { scale: light })
     const cells = ribbonCells(container)
+    expect(cells[0]!.dataset.tier).toBe('solid')
     expect(cells[0]!.style.backgroundColor).toBe('rgb(245, 217, 10)')
     expect(cells[0]!.style.color).toBe('var(--color-ink)')
-    expect(cells[11]!.style.backgroundColor).toBe('rgb(138, 90, 0)')
-    expect(cells[11]!.style.color).toBe('rgb(255, 255, 255)')
   })
 
   it.each(SIZES)('%s: cells line up with the plotted line points', (size) => {

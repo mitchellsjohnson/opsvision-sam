@@ -58,38 +58,40 @@ describe('boardLayout', () => {
     expect(boardLayout(0, 12)).toEqual({ count: 12, cellWidth: null, valueColumn: true })
   })
 
-  it('shows all 12 months with capped cells and the value column on a wide board', () => {
-    const layout = boardLayout(1150, 12)
-    expect(layout.count).toBe(12)
-    expect(layout.valueColumn).toBe(true)
-    expect(layout.cellWidth).toBe(50)
+  it('shows all 12 months inline with 40px cells (36px plus gutters) and the value column on a wide board', () => {
+    expect(boardLayout(1150, 12)).toEqual({ count: 12, cellWidth: 40, valueColumn: true })
   })
 
   it('lets a short window (halves, years) use wider cells so year labels fit', () => {
-    expect(boardLayout(1150, 3).cellWidth).toBe(72)
-    expect(boardLayout(1150, 8).cellWidth).toBe(50)
+    expect(boardLayout(1150, 3).cellWidth).toBe(64)
+    expect(boardLayout(1150, 8).cellWidth).toBe(40)
   })
 
-  it('keeps all 12 months on a half-width board at minimum cell size', () => {
-    expect(boardLayout(560, 12)).toEqual({ count: 12, cellWidth: 26, valueColumn: true })
+  it('prefers all columns over the value column: a half-width board stacks rather than drops months', () => {
+    expect(boardLayout(560, 12)).toEqual({ count: 12, cellWidth: 40, valueColumn: false })
   })
 
-  it('shows the latest 6 months on a phone, with the value under the name', () => {
-    expect(boardLayout(262, 12)).toEqual({ count: 6, cellWidth: 26, valueColumn: false })
+  it('stacks on a phone and shows the latest 6 months at full width', () => {
+    expect(boardLayout(262, 12)).toEqual({ count: 6, cellWidth: 40, valueColumn: false })
   })
 
-  it('halves again when 6 do not fit', () => {
-    expect(boardLayout(200, 12).count).toBe(3)
-  })
-
-  it('halves quarters and keeps short windows whole', () => {
-    expect(boardLayout(262, 8).count).toBe(4)
-    expect(boardLayout(262, 4).count).toBe(4)
-    expect(boardLayout(262, 3).count).toBe(3)
-  })
-
-  it('never shows fewer than one column', () => {
+  it('halves again when 6 do not fit, never below 24px targets', () => {
+    expect(boardLayout(150, 12).count).toBe(3)
+    expect(boardLayout(150, 12).cellWidth).toBeGreaterThanOrEqual(28)
     expect(boardLayout(40, 12).count).toBe(1)
+  })
+
+  it('keeps all 8 quarters on a phone', () => {
+    expect(boardLayout(262, 8)).toEqual({ count: 8, cellWidth: 32, valueColumn: false })
+  })
+
+  it.each([12, 8, 4, 3])('never shows fewer columns on a wider board (%i columns)', (total) => {
+    let prior = 0
+    for (let width = 200; width <= 1200; width++) {
+      const { count } = boardLayout(width, total)
+      expect(count, `width ${width}`).toBeGreaterThanOrEqual(prior)
+      prior = count
+    }
   })
 })
 
@@ -171,8 +173,27 @@ describe('buildBoardRow', () => {
       scale: SCALE,
       fyStart: 1,
     })
-    expect(board.cells[2]).toMatchObject({ kind: 'status', status: 'R', display: '', caption: 'worst of 2 services' })
+    expect(board.cells[2]).toMatchObject({ kind: 'status', status: 'R', display: '', caption: 'worst of 2 services', change: null })
     expect(board.caption).toBe('worst of 2 services')
+  })
+})
+
+describe('buildBoardRow unrated', () => {
+  it('a value with no status is unrated, not no data', () => {
+    const columns = buildTrendColumns('2026-M10', 1).slice(-1)
+    const scope = row([cell('2026-M10', { value: 12, display: '12', status: '' })])
+    const board = buildBoardRow({
+      key: 'm',
+      category: { id: 'delivery', name: 'Delivery' },
+      scope,
+      head: scope,
+      children: [],
+      noun: 'items',
+      columns,
+      scale: SCALE,
+      fyStart: 1,
+    })
+    expect(board.cells[0]).toMatchObject({ kind: 'unrated', display: '12' })
   })
 })
 
@@ -184,6 +205,18 @@ describe('cellName', () => {
     expect(cellName('% of epics delivered on time', column, { ...status('R'), display: '72%' }, label)).toBe(
       '% of epics delivered on time, Sep 2026: Red, 72%',
     )
+  })
+
+  it('adds the change, in words, for the selected period', () => {
+    const cell = { ...status('R'), display: '79%', change: '-12 pts vs Aug' }
+    expect(cellName('Epics', column, cell, label, true)).toBe('Epics, Sep 2026: Red, 79%, down 12 pts vs Aug')
+    expect(cellName('Epics', column, { ...cell, change: '+2 pts vs Aug' }, label, true)).toBe('Epics, Sep 2026: Red, 79%, up 2 pts vs Aug')
+    expect(cellName('Epics', column, { ...cell, change: '26% worse vs Aug' }, label, true)).toBe('Epics, Sep 2026: Red, 79%, 26% worse vs Aug')
+    expect(cellName('Epics', column, cell, label)).toBe('Epics, Sep 2026: Red, 79%')
+  })
+
+  it('names an unrated value', () => {
+    expect(cellName('Epics', column, { ...missing, kind: 'unrated', display: '12' }, label)).toBe('Epics, Sep 2026: 12, not rated')
   })
 
   it('says why there is no status', () => {

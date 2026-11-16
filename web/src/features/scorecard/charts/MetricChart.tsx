@@ -18,15 +18,17 @@ import {
 import type { components } from '../../../api/schema'
 import { usePrefersReducedMotion } from '../../../ui/Sparkline'
 import type { Column } from '../columns'
-import { changeText, formatMetricValue, metricDecimals, overrideSentence } from '../format'
+import { formatMetricValue, metricDecimals } from '../format'
 import { cellKey } from '../viewHelpers'
 import { statusIntervals } from './bands'
-import { chartTheme, LINE_COLORS, MOVE_CLASS, valueMove, type Move, type StatusTheme } from './chartTheme'
-import { isSparse, pointKind, type PointKind } from './sparse'
+import { chartTheme, LINE_COLORS, MOVE_CLASS, statusFill, type Move, type StatusTheme } from './chartTheme'
+import { buildPoints, headerChange, type ChartPoint } from './points'
+import { isSparse } from './sparse'
+
+export { buildPoints, type ChartPoint } from './points'
 
 type Schemas = components['schemas']
 type ViewRow = Schemas['ViewRow']
-type CellT = Schemas['Cell']
 type StatusLevel = Schemas['StatusLevel']
 
 /**
@@ -122,70 +124,6 @@ export interface MetricChartProps {
   size?: ChartSize
   /** Names the prior period in the change text. */
   fiscalYearStartMonth?: number
-}
-
-export interface ChartPoint {
-  key: string
-  label: string
-  fullLabel: string
-  value: number | null
-  display: string
-  status: string
-  naReason: string
-  overrideReason: string
-  /** The change as a phrase, e.g. `+2.1 pts vs Sep`; null when the cell has none. */
-  change: string | null
-  kind: PointKind
-}
-
-function cellsByKey(row: ViewRow): Map<string, CellT> {
-  return new Map(row.cells.map((c) => [cellKey(c), c]))
-}
-
-function cellChange(row: ViewRow, cell: CellT, fyStart: number): string | null {
-  return changeText({
-    period: cell.period,
-    ytd: cell.ytd,
-    format: row.format,
-    change: cell.change,
-    changeKind: cell.changeKind,
-    compare: cell.rule?.type === 'change' ? cell.rule.compare : undefined,
-    fyStart,
-  })
-}
-
-/** One point per column for a row, with everything the hover label and point buttons show. */
-export function buildPoints(row: ViewRow, columns: Column[], fyStart: number): ChartPoint[] {
-  const byKey = cellsByKey(row)
-  return columns.map((col) => {
-    const cell = byKey.get(col.key)
-    const kind = pointKind(cell)
-    return {
-      key: col.key,
-      label: col.label,
-      fullLabel: col.fullLabel,
-      value: kind === 'value' ? (cell?.value ?? null) : null,
-      display: cell?.display ?? '',
-      status: cell?.status ?? '',
-      naReason: cell?.naReason ?? '',
-      overrideReason: cell?.override ? overrideSentence(cell.override) : '',
-      change: cell ? cellChange(row, cell, fyStart) : null,
-      kind,
-    }
-  })
-}
-
-/** The current period's change and which way it moved the value, judged by the metric's direction. */
-export function headerChange(row: ViewRow, cell: CellT | undefined, fyStart: number): { text: string; move: Move } | null {
-  if (!cell || cell.change === null) return null
-  const text = cellChange(row, cell, fyStart)
-  if (!text) return null
-  const improvement = cell.changeKind === 'improvement_pct'
-  // changeText's rounding: tenths for an improvement, the format's decimals for a delta.
-  const shown = improvement ? Math.round(cell.change * 10) / 10 : Number(cell.change.toFixed(metricDecimals(row.format)))
-  // An improvement counts a move in the good direction as positive, whichever way the value went.
-  const delta = improvement && row.direction === 'lower_better' ? -shown : shown
-  return { text, move: valueMove(delta || 0, row.direction) }
 }
 
 function yDomain(points: ChartPoint[], target: number | null): [number, number] {
@@ -525,8 +463,19 @@ function StatusRibbon({ points, scale, size, inset }: { points: ChartPoint[]; sc
           )
         }
         const theme = chartTheme(scale, p.status)
+        const fill = statusFill(scale, p.status)
         return (
-          <span key={p.key} data-status={p.status} className={cell} style={{ backgroundColor: theme.color, color: theme.onColor }}>
+          <span
+            key={p.key}
+            data-status={p.status}
+            data-tier={fill.tier}
+            className={cell}
+            style={{
+              backgroundColor: fill.background,
+              color: fill.letter,
+              boxShadow: fill.border ? `inset 0 0 0 1px ${fill.border}` : undefined,
+            }}
+          >
             {focus && <span>{theme.shape}</span>}
             {theme.letter}
           </span>
@@ -907,7 +856,7 @@ function UptimeRows({
         return (
           <li key={child.subjectId} className="flex flex-wrap items-center justify-between gap-2">
             <span className="min-w-24">{child.subjectName}</span>
-            <span className="flex gap-0.5" data-testid={`uptime-strip-${child.subjectId}`}>
+            <span className="flex flex-wrap gap-0.5" data-testid={`uptime-strip-${child.subjectId}`}>
               {statuses.map((c, i) => {
                 const col = columns[i]!
                 const status = c?.status && c.naReason === '' ? c.status : ''
