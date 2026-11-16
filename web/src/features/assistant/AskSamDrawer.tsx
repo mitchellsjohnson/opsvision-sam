@@ -1,9 +1,10 @@
 import * as Dialog from '@radix-ui/react-dialog'
 import clsx from 'clsx'
 import { X } from 'lucide-react'
-import { lazy, Suspense, useCallback, useMemo, useRef, useState, type ReactNode } from 'react'
+import { Component, lazy, Suspense, useCallback, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { AssistantContext } from '../../api/queries'
 import { Sam } from '../../ui/Sam'
+import { primaryButton } from '../admin/formUi'
 import { AskSamContext, useWideScreen, type AskSam } from './useAssistant'
 
 const DrawerBody = lazy(() => import('./AskSamDrawerBody'))
@@ -86,16 +87,18 @@ export function AskSamProvider({ children }: { children: ReactNode }) {
                   ),
             )}
           >
-            <Suspense fallback={<DrawerLoading />}>
-              <DrawerBody
-                context={state.context}
-                threadId={state.threadId}
-                chat={state.chat}
-                selectThread={selectThread}
-                adoptThread={adoptThread}
-                closeIfModal={modal ? close : undefined}
-              />
-            </Suspense>
+            <DrawerLoadBoundary>
+              <Suspense fallback={<DrawerLoading />}>
+                <DrawerBody
+                  context={state.context}
+                  threadId={state.threadId}
+                  chat={state.chat}
+                  selectThread={selectThread}
+                  adoptThread={adoptThread}
+                  closeIfModal={modal ? close : undefined}
+                />
+              </Suspense>
+            </DrawerLoadBoundary>
           </Dialog.Content>
         </Dialog.Portal>
       </Dialog.Root>
@@ -103,12 +106,12 @@ export function AskSamProvider({ children }: { children: ReactNode }) {
   )
 }
 
-/** The drawer's frame while its content loads. */
-function DrawerLoading() {
+/** The drawer's header and close button, for while its content is not there. */
+function DrawerFrame({ pose, children }: { pose: 'mark' | 'concerned'; children: ReactNode }) {
   return (
     <>
       <div className="flex items-center gap-3 border-b border-ink/10 bg-white px-4 py-3">
-        <Sam pose="mark" className="size-10 shrink-0" />
+        <Sam pose={pose} className="size-10 shrink-0" />
         <Dialog.Title className="min-w-0 flex-1 text-lg font-semibold leading-tight text-accent-deep">Ask SAM</Dialog.Title>
         <Dialog.Close asChild>
           <button type="button" aria-label="Close" className="rounded-md p-1.5 text-ink hover:bg-cream">
@@ -116,9 +119,43 @@ function DrawerLoading() {
           </button>
         </Dialog.Close>
       </div>
-      <p role="status" className="px-4 py-4 text-sm text-ink/80">
-        Loading…
-      </p>
+      <div className="px-4 py-4 text-sm">{children}</div>
     </>
   )
+}
+
+function DrawerLoading() {
+  return (
+    <DrawerFrame pose="mark">
+      <p role="status" className="text-ink/80">
+        Loading…
+      </p>
+    </DrawerFrame>
+  )
+}
+
+/**
+ * Keeps a failure to load the drawer's code (a tab older than the last deploy
+ * asks for a chunk that is gone) inside the drawer, instead of the app's error page.
+ */
+class DrawerLoadBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false }
+
+  static getDerivedStateFromError() {
+    return { failed: true }
+  }
+
+  render() {
+    if (!this.state.failed) return this.props.children
+    return (
+      <DrawerFrame pose="concerned">
+        <p role="alert" className="font-medium text-ink">
+          Couldn’t load Ask SAM. Reload the page to get the latest version.
+        </p>
+        <button type="button" className={clsx(primaryButton, 'mt-3')} onClick={() => window.location.reload()}>
+          Reload
+        </button>
+      </DrawerFrame>
+    )
+  }
 }

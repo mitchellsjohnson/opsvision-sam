@@ -332,7 +332,6 @@ function RevokeConfirm({
   )
 }
 
-
 export function AccessTokensPage() {
   const tokens = useMyTokens()
   const remove = useDeleteToken()

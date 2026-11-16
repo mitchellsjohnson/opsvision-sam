@@ -163,6 +163,37 @@ describe('Ask SAM drawer', () => {
     expect(seen.threadCreates).toHaveLength(1)
   })
 
+  it('keeps a new question when a read of the empty chat lands after it', async () => {
+    const seen = renderWithSam()
+    let release = () => {}
+    const gate = new Promise<void>((r) => (release = r))
+    let readStarted = () => {}
+    const reading = new Promise<void>((r) => (readStarted = r))
+    let first = true
+    server.use(
+      // The new chat is read while still empty, and that read is slow.
+      http.get(`${API}/v1/assistant/threads/:id`, async ({ params }) => {
+        if (!first) return undefined
+        first = false
+        readStarted()
+        await gate
+        return HttpResponse.json(thread({ id: String(params.id) }))
+      }),
+      // The question is only posted once that read is on its way.
+      http.post(`${API}/v1/assistant/threads/:id/messages`, async () => {
+        await reading
+        return undefined
+      }),
+    )
+    const { user, drawer } = await openFromControlBar()
+    await user.type(await composer(drawer), 'Hello{Enter}')
+    await waitFor(() => expect(seen.posts).toHaveLength(1))
+    await within(drawer).findByText('SAM is looking into it')
+    release()
+    expect(await within(drawer).findByText('84.3%', {}, POLL)).toBeTruthy()
+    expect(within(drawer).getByText('Hello')).toBeTruthy()
+  })
+
   it('retries a failed first question in the chat it already started', async () => {
     const seen = renderWithSam()
     let refused = false

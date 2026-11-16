@@ -975,6 +975,8 @@ export function useAskSamQuestion({ onThread }: { onThread?: (id: string) => voi
       return unwrap(api.POST('/assistant/threads/{id}/messages', { params: { path: { id } }, body: { text, context } }))
     },
     onSuccess: async (thread) => {
+      // A read of the chat from before the question must not land on top of it.
+      await queryClient.cancelQueries({ queryKey: keys.assistantThread(thread.id) })
       queryClient.setQueryData(keys.assistantThread(thread.id), thread)
       await queryClient.invalidateQueries({ queryKey: keys.assistantThreads })
     },
