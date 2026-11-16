@@ -42,6 +42,9 @@ describe('TablePage sticky rows', () => {
     const grid = await screen.findByRole('grid')
     const delivery = within(grid).getByRole('rowheader', { name: 'Delivery' })
     expect(delivery.className).toContain('sticky')
+    // Below the control bar's published height, which is 0px on phones where the bar scrolls away.
+    expect(delivery.className).toContain('top-[calc(var(--control-bar-h,0px)+var(--table-header-height,2.5rem))]')
+    for (const header of within(grid).getAllByRole('columnheader')) expect(header.className).toContain('top-[var(--control-bar-h,0px)]')
     const group = delivery.closest('tbody')!
     expect(within(group).getByRole('row', { name: /On-time delivery, All units/ })).toBeTruthy()
     expect(within(group).queryByRole('row', { name: /Defect rate/ })).toBeNull()

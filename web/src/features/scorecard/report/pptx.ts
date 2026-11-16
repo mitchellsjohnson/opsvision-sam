@@ -3,6 +3,7 @@ import { letterUsesInkOnWhite } from '../../../ui/contrast'
 import {
   exportChart,
   goalSeries,
+  healthParts,
   metricFacts,
   metricNotes,
   noteSections,
@@ -120,10 +121,7 @@ function coverSlide(pres: PptxGenJS, model: ReportModel) {
 function summarySlide(pres: PptxGenJS, model: ReportModel) {
   const slide = pres.addSlide()
   header(slide, model, model.monthLabel, 'Executive summary')
-  const health = [
-    ...model.health.map((h) => `${h.key} ${h.label} ${h.count}`),
-    ...(model.notReported > 0 ? [`Not reported ${model.notReported}`] : []),
-  ].join('   ·   ')
+  const health = healthParts(model).join('   ·   ')
   slide.addText(health || 'No metrics reported', {
     x: M,
     y: 1.3,

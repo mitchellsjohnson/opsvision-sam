@@ -4,6 +4,7 @@ import { formatMetricValue } from '../format'
 import {
   exportChart,
   goalSeries,
+  healthParts,
   metricFacts,
   noteSections,
   statusTable,
@@ -180,10 +181,7 @@ function coverPage(ctx: Ctx) {
 function summaryPages(ctx: Ctx) {
   const { model } = ctx
   const page = newPage(ctx, model.monthLabel, 'Executive summary')
-  const health = [
-    ...model.health.map((h) => `${h.key} ${h.label} ${h.count}`),
-    ...(model.notReported > 0 ? [`Not reported ${model.notReported}`] : []),
-  ].join('   ·   ')
+  const health = healthParts(model).join('   ·   ')
   const summary = model.summary ?? model.summaryFor ?? ''
   flow(
     ctx,

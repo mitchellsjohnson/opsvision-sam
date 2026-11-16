@@ -188,6 +188,33 @@ describe('OverviewPage', () => {
     expect(screen.getByRole('article', { name: /Defect rate/ })).toBeTruthy()
   })
 
+  it('a Health filter shows where it was pressed: the board filters, empty sections go, and a Showing line clears it', async () => {
+    renderOverview(ROUTE, (view) => {
+      Object.assign(cellOf(view, 'on_time_pct', 'root', '2026-M10'), { value: 60, display: '60.0%', status: 'R', naReason: '' })
+    })
+    await screen.findByRole('heading', { name: 'Overview', level: 1 })
+    expect(screen.getByRole('heading', { name: 'Quality', level: 2 })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Show all' })).toBeNull()
+    const user = userEvent.setup()
+    const red = within(screen.getByRole('region', { name: 'Health this month' })).getByRole('button', { name: /^Red:/ })
+    await user.click(red)
+
+    const board = screen.getByRole('region', { name: '12-month status · Red only' })
+    expect(within(board).getAllByText('On-time delivery').length).toBeGreaterThan(0)
+    expect(within(board).queryByText('Defect rate')).toBeNull()
+    expect(screen.getByRole('heading', { name: 'Delivery', level: 2 })).toBeTruthy()
+    expect(screen.queryByRole('heading', { name: 'Quality', level: 2 })).toBeNull()
+
+    const showAll = screen.getByRole('button', { name: 'Show all' })
+    expect(showAll.parentElement!.textContent).toBe('Showing 1 Red metric·Show all')
+    await user.click(showAll)
+    expect(red.getAttribute('aria-pressed')).toBe('false')
+    expect(document.activeElement).toBe(red)
+    expect(screen.getByRole('region', { name: '12-month status' })).toBeTruthy()
+    expect(screen.getByRole('heading', { name: 'Quality', level: 2 })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Show all' })).toBeNull()
+  })
+
   it('Health counts each metric once in the scale’s labels, with a proportion bar and the change since the prior month', async () => {
     renderOverview()
     await screen.findByRole('heading', { name: 'Overview', level: 1 })
@@ -263,6 +290,37 @@ describe('OverviewPage', () => {
     expect(within(metricCard('On-time delivery')).getByTestId('header-value').textContent).toBe('84.3%')
   })
 
+  it('a money-plan tile reads the value as of plan, with what was spent of what was planned', async () => {
+    const spendVersions = versions.map((v) =>
+      v.id !== 'ver-1'
+        ? v
+        : {
+            ...v,
+            content: {
+              ...v.content,
+              measures: [...v.content.measures.map((m) => ({ ...m, unit: '$k' }))],
+              metrics: v.content.metrics.map((m) => (m.key === 'on_time_pct' ? { ...m, formula: 'closed / total * 100' } : m)),
+            },
+          },
+    )
+    server.use(
+      http.get(`${API}/v1/scorecards/sc-main/versions`, () => HttpResponse.json({ versions: spendVersions })),
+      ...viewHandlers({
+        respond: (u) => {
+          const view = buildView(u.searchParams)
+          for (const row of view.rows.filter((r) => r.metricKey === 'on_time_pct')) row.chartKind = 'money_plan'
+          Object.assign(cellOf(view, 'on_time_pct', 'root', '2026-M10'), { value: 104, display: '104%', components: { closed: 1150, total: 1000 } })
+          return HttpResponse.json(view)
+        },
+      }),
+    )
+    renderApp(<App />, { route: ROUTE })
+    await screen.findByRole('heading', { name: 'Overview', level: 1 })
+    const row = within(metricTile('On-time delivery')).getByTestId('header-value').parentElement!
+    expect(within(row).getByText('of plan')).toBeTruthy()
+    await waitFor(() => expect(within(row).getByText('$1,150k spent of $1,000k planned')).toBeTruthy())
+  })
+
   it('a metric card shows its change once, beside the value', async () => {
     renderOverview()
     await screen.findByRole('heading', { name: 'Overview', level: 1 })
@@ -309,7 +367,10 @@ describe('OverviewPage', () => {
 
   it('a tile marks a methodology change in its chart, and none when restated', async () => {
     const v1 = versions.find((v) => v.id === 'ver-1')!
-    const withJuly = [...versions, { ...v1, id: 'ver-3', name: 'FY26 v2', effectiveFrom: '2026-M07' }]
+    // A marker needs the metric's method to change: here its rule.
+    const rule = { type: 'bands' as const, bands: [{ status: 'G', op: '>=', value: 90 }, { status: 'R', op: '', value: 0 }] }
+    const content = { ...v1.content, metrics: v1.content.metrics.map((m) => (m.key === 'on_time_pct' ? { ...m, rule } : m)) }
+    const withJuly = [...versions, { ...v1, id: 'ver-3', name: 'FY26 v2', effectiveFrom: '2026-M07', content }]
     // Earlier handlers win, so these versions come before viewHandlers' own.
     server.use(http.get(`${API}/v1/scorecards/sc-main/versions`, () => HttpResponse.json({ versions: withJuly })), ...viewHandlers())
     const { unmount } = renderApp(<App />, { route: ROUTE })
@@ -551,6 +612,13 @@ describe('OverviewPage', () => {
       expect(
         screen.getByText('Reported less often and up to date: Concepts delivered expected value (Q3 FY2026; Q4 due by Jan).'),
       ).toBeTruthy()
+    })
+
+    it('the tile says which period counts, its months, and when the next one is due', async () => {
+      renderQuarterly()
+      await screen.findByRole('heading', { name: 'Overview', level: 1 })
+      const tile = metricTile('Concepts delivered expected value')
+      expect(within(tile).getByText('Latest: Q3 FY2026 (Jul–Sep) · Q4 due by Jan')).toBeTruthy()
     })
 
     it('overdue in Nov: listed as not reported with when it was due', async () => {

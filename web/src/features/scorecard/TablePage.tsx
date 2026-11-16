@@ -580,7 +580,7 @@ export function TablePage({
             <th
               scope="col"
               role="columnheader"
-              className="sticky top-[var(--scorecard-control-bar-height)] z-20 w-[clamp(13rem,24%,18rem)] border-b border-ink/30 bg-white px-3 py-2 text-left font-semibold"
+              className="sticky top-[var(--control-bar-h,0px)] z-20 w-[clamp(13rem,24%,18rem)] border-b border-ink/30 bg-white px-3 py-2 text-left font-semibold"
             >
               Metric and subject
             </th>
@@ -591,7 +591,7 @@ export function TablePage({
                 role="columnheader"
                 title={c.fullLabel}
                 className={clsx(
-                  'sticky top-[var(--scorecard-control-bar-height)] z-20 min-w-[4.5rem] border-b border-ink/30 bg-white px-2 py-2 text-center font-semibold',
+                  'sticky top-[var(--control-bar-h,0px)] z-20 min-w-[4.5rem] border-b border-ink/30 bg-white px-2 py-2 text-center font-semibold',
                   c.ytd && 'border-l-2 border-l-ink/30',
                   !c.ytd && c.period === period.period && 'border-t-2 border-t-accent',
                 )}
@@ -610,7 +610,7 @@ export function TablePage({
                     <th
                       scope="rowgroup"
                       colSpan={colSpan + 1}
-                      className="sticky top-[calc(var(--scorecard-control-bar-height)+var(--table-header-height,2.5rem))] z-10 bg-cream px-3 py-1.5 text-left text-xs font-semibold uppercase tracking-wide"
+                      className="sticky top-[calc(var(--control-bar-h,0px)+var(--table-header-height,2.5rem))] z-10 bg-cream px-3 py-1.5 text-left text-xs font-semibold uppercase tracking-wide"
                     >
                       {entry.category}
                     </th>

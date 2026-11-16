@@ -75,6 +75,23 @@ describe('ReportPage', () => {
     expect((await axe(container)).violations).toEqual([])
   })
 
+  it('a live report counts health from the Overview’s own request, in the tenant’s labels; a published one from its snapshot', async () => {
+    const views: URL[] = []
+    server.use(...viewHandlers({ onView: (u) => views.push(u) }), ...reportHandlers())
+    const { unmount } = renderApp(<App />, { route: ROUTE })
+    const health = await screen.findByRole('list', { name: 'Health this month' })
+    expect(within(health).getAllByRole('listitem').map((li) => li.textContent)).toEqual(['Y1 Yellow', '1 Not reported'])
+    expect(views).toHaveLength(1)
+    expect(views[0]!.searchParams.getAll('periods')).toHaveLength(12)
+    unmount()
+
+    views.length = 0
+    server.use(...viewHandlers({ onView: (u) => views.push(u) }), ...reportHandlers({ document: published, months: publishedMonths }))
+    renderApp(<App />, { route: ROUTE })
+    await screen.findByRole('list', { name: 'Health this month' })
+    expect(views).toEqual([])
+  })
+
   it('the revised banner links to the live report, which requests revision=live', async () => {
     const seen = newSeen()
     renderReport(ROUTE, { document: published, months: publishedMonths, seen })

@@ -65,6 +65,13 @@ describe('buildPptx', () => {
     expect(deck).toHaveLength(6)
   })
 
+  it('words health on the summary slide as the Overview does, in the tenant’s labels', async () => {
+    const deck = slides(storedZipEntries(await buildPptx(fixtureModel())), 'ppt/slides/slide')
+    const summary = deck.find((x) => x.includes('<a:t>Executive summary</a:t>'))!
+    expect(summary).toContain('<a:t>1 Yellow   ·   1 Not reported</a:t>')
+    expect(summary).not.toMatch(/On track|Watch|Off track/)
+  })
+
   it('draws line metrics as native charts and status kinds as a table of period, value, and letter', async () => {
     const entries = storedZipEntries(
       await buildPptx(

@@ -180,9 +180,10 @@ function AppShellBody() {
         Skip to main content
       </a>
 
-      <header className="flex items-center gap-4 bg-accent-deep px-4 py-2 text-white">
-        <span className="text-lg font-semibold tracking-tight">OpsVision</span>
-        <div className="ml-auto flex items-center gap-4">
+      {/* At 320px the bar must fit without scrolling the page sideways: tighter gaps, and the account name truncates. */}
+      <header className="flex items-center gap-2 bg-accent-deep px-3 py-2 text-white sm:gap-4 sm:px-4">
+        <span className="shrink-0 text-lg font-semibold tracking-tight">OpsVision</span>
+        <div className="ml-auto flex min-w-0 items-center gap-2 sm:gap-4">
           <button
             type="button"
             aria-label="Ask SAM"
@@ -190,7 +191,7 @@ function AppShellBody() {
             aria-expanded={sam.isOpen}
             onClick={() => sam.open(samContext)}
             className={clsx(
-              'flex size-9 items-center justify-center rounded-full bg-white p-0.5 hover:ring-2 hover:ring-white/60',
+              'flex size-9 shrink-0 items-center justify-center rounded-full bg-white p-0.5 hover:ring-2 hover:ring-white/60',
               focusOnDark,
             )}
           >
@@ -205,12 +206,12 @@ function AppShellBody() {
           <DropdownMenu.Root>
             <DropdownMenu.Trigger
               className={clsx(
-                'flex items-center gap-2 rounded-md px-2 py-1 text-sm hover:bg-white/10',
+                'flex min-w-0 items-center gap-2 rounded-md px-2 py-1 text-sm hover:bg-white/10',
                 focusOnDark,
               )}
             >
-              {me.data?.name ?? 'Account'}
-              <ChevronDown aria-hidden="true" size={16} />
+              <span className="truncate">{me.data?.name ?? 'Account'}</span>
+              <ChevronDown aria-hidden="true" size={16} className="shrink-0" />
             </DropdownMenu.Trigger>
             <DropdownMenu.Portal>
               <DropdownMenu.Content

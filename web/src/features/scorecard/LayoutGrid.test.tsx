@@ -1,7 +1,8 @@
 import { screen, within, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { HttpResponse, http } from 'msw'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { axe } from 'vitest-axe'
 import type { components } from '../../api/schema'
 import { App } from '../../App'
 import { API, server, state } from '../../test/server'
@@ -92,7 +93,21 @@ function renderOverviewWithLayout(
   mockDesktopPointer()
   server.use(...viewHandlers())
   server.use(...layoutHandlers({ initial: layoutItems, onPut }))
-  renderApp(<App />, { route: ROUTE })
+  return renderApp(<App />, { route: ROUTE })
+}
+
+/**
+ * Lays the grid's items out in one column, 100px apart, in document order:
+ * jsdom has no layout, and keyboard moves pick the nearest item by its box.
+ */
+function stackItems() {
+  const original = HTMLElement.prototype.getBoundingClientRect
+  vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+    if (!this.hasAttribute('data-layout-item')) return original.call(this)
+    const items = [...document.querySelectorAll('[data-layout-item]')]
+    const top = items.indexOf(this) * 100
+    return { x: 0, y: top, top, left: 0, right: 600, bottom: top + 90, width: 600, height: 90, toJSON: () => ({}) } as DOMRect
+  })
 }
 
 async function customize(user: ReturnType<typeof userEvent.setup>) {
@@ -108,6 +123,7 @@ async function openSectionMenu(user: ReturnType<typeof userEvent.setup>, name: s
 afterEach(() => {
   // @ts-expect-error matchMedia is absent in jsdom unless a test defines it.
   delete window.matchMedia
+  vi.restoreAllMocks()
 })
 
 describe('LayoutGrid', () => {
@@ -388,6 +404,63 @@ describe('Customize layout mode', () => {
     await waitFor(() => expect(puts.length).toBe(2))
     expect(puts[1]!.items.find((i) => i.id === 'section:quality')?.hidden).toBe(true)
     expect(puts[1]!.items.find((i) => i.id === 'metric:defect_rate')?.hidden).toBe(false)
+  })
+
+  it('the bar stays above a dragged tile, and on phones folds its actions into one menu beside Done', async () => {
+    await renderDefault()
+    const user = userEvent.setup()
+    const bar = await customize(user)
+    expect(bar.className).toContain('z-40')
+    expect(within(bar).getByRole('button', { name: 'Reset layout' }).className).toContain('max-sm:hidden')
+    expect(within(bar).getByRole('button', { name: 'Done' }).className).not.toContain('hidden')
+    const more = within(bar).getByRole('button', { name: 'More layout actions' })
+    expect(more.className).toContain('sm:hidden')
+    await user.click(more)
+    const menu = await screen.findByRole('menu')
+    expect(within(menu).getAllByRole('menuitem').map((i) => i.textContent)).toEqual(['Reset layout', 'Save as default'])
+  })
+
+  it('has no axe violations in the mode', async () => {
+    const { container } = renderOverviewWithLayout([])
+    await screen.findAllByRole('article', { name: /On-time delivery/ })
+    await customize(userEvent.setup())
+    expect((await axe(container)).violations).toEqual([])
+  })
+
+  it('moves a tile with the keyboard: Space picks up, an arrow moves, Space drops and saves', async () => {
+    const puts: Array<{ items: LayoutItem[]; expectedRevision: number }> = []
+    renderOverviewWithLayout(baseFallback(), (body) => puts.push(body))
+    await screen.findAllByRole('article', { name: /On-time delivery/ })
+    stackItems()
+    const user = userEvent.setup()
+    await customize(user)
+    screen.getByRole('button', { name: 'Move On-time delivery. Space to pick up' }).focus()
+    await user.keyboard(' ')
+    await user.keyboard('{ArrowDown}')
+    await user.keyboard(' ')
+    await waitFor(() => expect(puts).toHaveLength(1))
+    const ids = puts[0]!.items.map((i) => i.id)
+    expect(ids.indexOf('metric:on_time_pct')).toBe(ids.indexOf('section:quality') + 1)
+    expect(screen.getByRole('region', { name: 'Customize layout' })).toBeTruthy()
+  })
+
+  it('Esc cancels a keyboard move without leaving the mode; a second Esc leaves', async () => {
+    const puts: Array<{ items: LayoutItem[]; expectedRevision: number }> = []
+    renderOverviewWithLayout(baseFallback(), (body) => puts.push(body))
+    await screen.findAllByRole('article', { name: /On-time delivery/ })
+    stackItems()
+    const user = userEvent.setup()
+    await customize(user)
+    const handle = screen.getByRole('button', { name: 'Move On-time delivery. Space to pick up' })
+    handle.focus()
+    await user.keyboard(' ')
+    await user.keyboard('{ArrowDown}')
+    await user.keyboard('{Escape}')
+    expect(screen.getByRole('region', { name: 'Customize layout' })).toBeTruthy()
+    expect(puts).toEqual([])
+    await user.keyboard('{Escape}')
+    expect(screen.queryByRole('region', { name: 'Customize layout' })).toBeNull()
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Customize layout' }))
   })
 
   it('pins Health, then Needs attention, to the top', async () => {

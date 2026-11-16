@@ -86,10 +86,6 @@ describe('ControlBar', () => {
     try {
       renderScorecard('/scorecards/sc-main/overview?period=2026-M10')
       await screen.findByRole('heading', { name: 'Overview', level: 1 })
-      const bar = screen.getByRole('region', { name: 'Scorecard controls' })
-      await waitFor(() =>
-        expect(bar.parentElement!.style.getPropertyValue('--scorecard-control-bar-height')).toBe('112px'),
-      )
       await waitFor(() => expect(document.documentElement.style.getPropertyValue('--control-bar-h')).toBe('112px'))
     } finally {
       vi.restoreAllMocks()
@@ -128,6 +124,7 @@ describe('ControlBar', () => {
       expect(within(bar).queryByRole('toolbar')).toBeNull()
       expect(bar.className).not.toContain('sticky')
       const summary = within(bar).getByRole('button', { name: /^Oct 2026 · All of Example Co · Filters$/ })
+      expect(within(summary).getByText('Filters')).toBeTruthy()
       expect(within(bar).getAllByRole('button')).toEqual([summary])
       expect(summary.className).toContain('h-10')
       expect(summary.getAttribute('aria-haspopup')).toBe('dialog')
@@ -157,7 +154,15 @@ describe('ControlBar', () => {
       phone()
       renderScorecard('/scorecards/sc-main/overview?period=2026-M10&scope=unit-a')
       await screen.findByRole('heading', { name: 'Overview', level: 1 })
-      expect(await screen.findByRole('button', { name: 'Oct 2026 · Unit A · Filters' })).toBeTruthy()
+      expect(await screen.findByRole('button', { name: 'Oct 2026 · Unit A · Filters, 1 active' })).toBeTruthy()
+    })
+
+    it('the summary counts the filters set in the sheet: scope, year to date, methodology and structure', async () => {
+      phone()
+      renderScorecard('/scorecards/sc-main/overview?period=2026-M10&scope=unit-a&ytd=1&restate=ver-1&structure=current')
+      await screen.findByRole('heading', { name: 'Overview', level: 1 })
+      const summary = await screen.findByRole('button', { name: 'Oct 2026 · Unit A · Filters, 4 active' })
+      expect(within(summary).getByText('Filters · 4')).toBeTruthy()
     })
   })
 

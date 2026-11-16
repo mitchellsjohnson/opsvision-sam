@@ -187,7 +187,10 @@ describe('NeedsAttention', () => {
     expect(within(region).getByRole('heading', { level: 2, name: 'Needs attention' })).toBeTruthy()
     expect(within(region).getByText('3 of 5 Red')).toBeTruthy()
     expect(within(region).getAllByRole('article')).toHaveLength(3)
-    await userEvent.setup().click(within(region).getByRole('button', { name: 'Show all 5 Red' }))
+    const showAll = within(region).getByRole('button', { name: 'Show all 5 Red' })
+    // At least 24px tall (WCAG 2.5.8).
+    expect(showAll.className).toContain('min-h-6')
+    await userEvent.setup().click(showAll)
     expect(onShowAll).toHaveBeenCalled()
   })
 

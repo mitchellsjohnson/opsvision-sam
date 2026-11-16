@@ -376,7 +376,7 @@ export function NeedsAttention({ shown, totals, worstLabel, onShowAll }: NeedsAt
         </h2>
         <span className="text-xs text-ink/70">{shownText(shown, totals, worstLabel)}</span>
         {totals.red > reds && (
-          <button type="button" onClick={onShowAll} className="text-xs font-medium text-accent-deep hover:underline">
+          <button type="button" onClick={onShowAll} className="inline-flex min-h-6 items-center text-xs font-medium text-accent-deep hover:underline">
             Show all {totals.red} {worstLabel} <span aria-hidden="true">›</span>
           </button>
         )}

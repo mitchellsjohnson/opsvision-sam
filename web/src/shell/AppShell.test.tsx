@@ -378,6 +378,16 @@ describe('AppShell focus indicators', () => {
     }
   })
 
+  it('fits a 320px screen: Ask SAM keeps its size and the account name truncates instead of widening the page', async () => {
+    shell()
+    const header = screen.getByRole('banner')
+    const userMenu = await within(header).findByRole('button', { name: /Test admin/ })
+    expect(userMenu.classList.contains('min-w-0')).toBe(true)
+    expect(within(userMenu).getByText(/Test admin/).classList.contains('truncate')).toBe(true)
+    expect(userMenu.parentElement!.classList.contains('min-w-0')).toBe(true)
+    expect(within(header).getByRole('button', { name: 'Ask SAM' }).classList.contains('shrink-0')).toBe(true)
+  })
+
   it('shows a skip link ring that is visible on the header', () => {
     shell()
     const skip = screen.getByRole('link', { name: 'Skip to main content' })

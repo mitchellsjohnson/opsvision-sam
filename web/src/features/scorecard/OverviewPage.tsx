@@ -5,20 +5,19 @@ import { LayoutDashboard } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { useItemKinds, useMe, useOrgLevels, useOrgUnits, useVersions, useView } from '../../api/queries'
 import type { components } from '../../api/schema'
-import { monthLabel, parsePeriod, periodLabel, type Grain } from '../../lib/period'
+import { lastMonth, monthLabel, monthsOf, parent, parsePeriod, periodLabel, type Grain, type Period } from '../../lib/period'
 import { StatusChip } from '../../ui/status'
 import { usePeriodState } from '../../shell/usePeriodState'
 import { NeedsAttention, type AttentionMeta } from './AttentionCard'
-import { buildTrendColumns, COARSE_SPAN, coarseColumns, type CoarseGrain, type Column } from './columns'
+import { buildTrendColumns, shortLabel, type Column } from './columns'
 import { formatMetricValue } from './format'
-import { needsAttention, streakMonths, type NeedsAttentionItem } from './logic/needsAttention'
+import { needsAttention } from './logic/needsAttention'
 import { chartTheme, defaultStatusScale, MOVE_CLASS } from './charts/chartTheme'
 import { MetricChart } from './charts/MetricChart'
 import { headerChange } from './charts/points'
 import { multiSeriesHeader, noTotalNote } from './charts/seriesLayout'
 import { versionBoundaries } from './charts/versionMarkers'
 import { LAYOUT_BUTTON } from './CustomizeBar'
-import { focusBodyKind } from './focusBody'
 import { focusReturnRef } from './focusTrigger'
 import { HealthSummary, NOT_REPORTED } from './HealthSummary'
 import { ItemSummaryTile } from './ItemSummaryTile'
@@ -26,13 +25,20 @@ import { LayoutGrid } from './LayoutGrid'
 import { NotReportedCard } from './NotReportedCard'
 import { SectionHeader } from './SectionHeader'
 import { TileFrame } from './TileFrame'
-import { periodStatus } from './logic/coarse'
 import { worstChildren } from './logic/drivers'
-import { buildItemRows, ITEM_PARAM, itemSummary, sortItems } from './logic/itemGrid'
+import { ITEM_PARAM, itemSummary, sortItems } from './logic/itemGrid'
 import { countNoun, nounForms, type NounForms } from './logic/nouns'
-import { columnUnit, sinceText, thresholdText } from './logic/statusText'
+import {
+  absentItemMetrics,
+  attentionInputs,
+  healthTally,
+  itemRowsOf,
+  metricStandings,
+  type MetricStanding,
+} from './logic/standings'
+import { columnUnit, thresholdText } from './logic/statusText'
 import { cellReported, type StatusScaleEntry } from './logic/statusAtScope'
-import { cellKey, columnsFor, groupRows, metricScope } from './viewHelpers'
+import { cellKey, groupRows, plainNumber, ratioParts } from './viewHelpers'
 import { useScorecardViewRequest } from './viewRequest'
 import { StatusBoard } from './StatusBoard'
 import { buildBoardRow } from './logic/statusBoard'
@@ -70,12 +76,6 @@ const MEASURED: Record<Frequency, string> = {
   quarterly: 'quarterly',
   biannual: 'twice a year',
   annual: 'yearly',
-}
-
-function metricNoun(chartKind: string, scope: ViewRow | null, children: ViewRow[]): 'segments' | 'services' | 'items' {
-  if (chartKind === 'uptime') return 'services'
-  if (scope && children.length > 0) return 'segments'
-  return 'items'
 }
 
 /** Stands in for the scope row of a metric that has none: no cells. */
@@ -152,6 +152,29 @@ function OverviewHeader({ parts, actions, loading = false }: { parts: string[]; 
 /** Remembers the control that opened the dialog, so focus goes back to it on close. */
 function rememberTrigger(trigger: HTMLElement) {
   focusReturnRef.current = trigger
+}
+
+/** The month after `p` closes. */
+function monthAfter(p: Period): Period {
+  const last = lastMonth(p)
+  return last.index < 12 ? { ...last, index: last.index + 1 } : { ...last, fy: last.fy + 1, index: 1 }
+}
+
+const shortMonth = (month: Period, fy: number) => monthLabel(month, fy).split(' ')[0] ?? ''
+
+/** `Latest: Q3 FY2026 (Jul–Sep) · Q4 due by Jan`: a coarse metric's counted period and the one due next (§5.5). */
+function coarseContext(counted: Column, fy: number): string {
+  const p = parsePeriod(counted.period)
+  if (!p) return counted.fullLabel
+  const months = monthsOf(p)
+  const span = `${shortMonth(months[0]!, fy)}–${shortMonth(months[months.length - 1]!, fy)}`
+  const next = parent(monthAfter(p), p.grain)
+  return `Latest: ${counted.fullLabel} (${span}) · ${shortLabel(next, fy)} due by ${shortMonth(monthAfter(next), fy)}`
+}
+
+/** `$1,150k` for a `$k` measure, else `1,150 hours`. */
+function amount(value: number, unit: string): string {
+  return unit.startsWith('$') ? `$${plainNumber(value)}${unit.slice(1)}` : `${plainNumber(value)} ${unit}`.trim()
 }
 
 /** The last column with a value in `row`, for a metric that stopped reporting. */
@@ -234,130 +257,35 @@ export function OverviewPage() {
 
   const groups = groupRows(view.data)
   const selectedGrain = parsed?.grain ?? 'month'
-  // The coarse periods the shared request added (the version in force decides which).
-  const responded = new Set(view.data.periods)
-  const coarseByGrain: Partial<Record<CoarseGrain, Column[]>> = {}
-  for (const grain of ['quarter', 'half', 'year'] as const) {
-    const cols = coarseColumns(period.period, grain, COARSE_SPAN[grain], fy)
-    if (cols.length > 0 && cols.every((c) => responded.has(c.period))) coarseByGrain[grain] = cols
-  }
-
-  const priorTrend = trendColumns[trendColumns.length - 2]
-  const metricDefOf = (metricKey: string, versionId: string) =>
-    versions.data?.versions.find((v) => v.id === versionId)?.content.metrics.find((x) => x.key === metricKey)
-
-  const metrics = groups.flatMap((g) =>
-    g.metrics.map((m) => {
-      const { scope, children, head } = metricScope(m.rows)
-      const noun = metricNoun(head.chartKind, scope, children)
-      const columns = columnsFor(head.frequency, selectedGrain, trendColumns, coarseByGrain)
-      const coarse = columns === trendColumns ? [] : columns
-      const status = selectedColumn
-        ? periodStatus({ scope, children, frequency: head.frequency, selected: selectedColumn, coarse, scale, noun, fy })
-        : null
-      const prior = priorTrend
-        ? periodStatus({ scope, children, frequency: head.frequency, selected: priorTrend, coarse, scale, noun, fy })
-        : null
-      const columnKey = status?.counted.key ?? ''
-      const cell = scopeCell(scope, columnKey)
-      const metricDef = metricDefOf(head.metricKey, cell?.versionId || view.data.versionByPeriod[columnKey] || '')
-      // The metric over its own columns (quarters for a quarterly metric), for streaks and the attention ribbon.
-      const own = buildBoardRow({
-        key: m.key,
-        category: { id: g.id, name: g.name },
-        scope,
-        head,
-        children,
-        noun,
-        columns,
-        scale,
-        fyStart: fy,
-      })
-      return {
-        category: g,
-        metric: m,
-        scope,
-        head,
-        children,
-        noun,
-        columns,
-        coarse,
-        status,
-        prior,
-        cell,
-        rule: cell?.rule ?? metricDef?.rule,
-        // Uptime and metrics reported only for items get the item tile (§6.1).
-        isItems: focusBodyKind(m.rows) === 'items' && m.rows.some((r) => r.subjectKind === 'item'),
-        kindId: metricDef?.reportedAt.find((s) => s.kind === 'item_kind')?.id,
-        own,
-      }
-    }),
-  )
-  type MetricMeta = (typeof metrics)[number]
+  const { metrics, priorTrend } = metricStandings({
+    view: view.data,
+    period: period.period,
+    fy,
+    scale,
+    versions: versions.data?.versions,
+  })
 
   const byRank = [...statusColors].sort((a, b) => a.rank - b.rank)
   const bestKey = byRank[0]?.key ?? ''
   const worstLevel = byRank[byRank.length - 1]
   const worstKey = worstLevel?.key ?? ''
   const worstLabel = worstLevel?.label || worstKey
-  // A metric reported only for tracked items has no rows when no item is in
-  // view (a scope with no services): it is not reported, not gone.
-  const shownKeys = new Set(metrics.map((m) => m.metric.key))
-  const absentItemMetrics = (
-    versions.data?.versions.find((v) => v.id === view.data.versionByPeriod[selectedColumn?.key ?? ''])?.content.metrics ?? []
-  ).filter((m) => !shownKeys.has(m.key) && m.reportedAt.length > 0 && m.reportedAt.every((s) => s.kind === 'item_kind'))
-  const tally = (statuses: string[]) => {
-    const counts = new Map<string, number>([[NOT_REPORTED, absentItemMetrics.length]])
-    for (const s of statuses) {
-      const key = s || NOT_REPORTED
-      counts.set(key, (counts.get(key) ?? 0) + 1)
-    }
-    return counts
-  }
-  const healthCounts = tally(metrics.map((m) => m.status?.status ?? ''))
-  const priorCounts = priorTrend ? tally(metrics.map((m) => m.prior?.status ?? '')) : null
+  const absent = absentItemMetrics(view.data, versions.data?.versions, selectedColumn, metrics)
+  const healthCounts = healthTally(metrics.map((m) => m.status?.status ?? ''), absent.length, NOT_REPORTED)
+  const priorCounts = priorTrend ? healthTally(metrics.map((m) => m.prior?.status ?? ''), absent.length, NOT_REPORTED) : null
   const healthTitle = HEALTH_TITLE[selectedGrain]
 
-  const itemRowsOf = (m: MetricMeta) => buildItemRows(m.metric.rows, m.columns, scale, () => '', fy)
   const levelNoun = (children: ViewRow[]) =>
     nounForms(orgLevels.data?.find((l) => l.depth === (children[0]?.depth ?? -1))?.name, 'unit')
 
-  const attentionInputs = (kindName: (id: string | undefined) => string | undefined): NeedsAttentionItem[] =>
-    metrics.flatMap((m): NeedsAttentionItem[] => {
-      const { category, head, status, columns, own, cell } = m
-      if (!status?.status) return []
-      const index = columns.findIndex((c) => c.key === status.counted.key)
-      const before = index > 0 ? own.cells[index - 1] : undefined
-      const priorStatus = before?.kind === 'status' ? before.status : ''
-      const label = statusLabel(status.status) ?? status.status
-      const items = m.isItems ? itemRowsOf(m) : null
-      const worst = items ? itemSummary(items, scale).worst : null
-      const count = items ? items.filter((r) => r.reported && r.status === status.status).length : 0
-      return [
-        {
-          metricKey: head.metricKey,
-          name: head.metricName,
-          categoryOrder: view.data.categories.find((c) => c.id === category.id)?.order ?? 0,
-          status: status.status,
-          value: worst ? worst.value : (cell?.value ?? null),
-          change: worst ? (worst.cell?.change ?? null) : (cell?.change ?? null),
-          direction: head.direction,
-          rule: (worst ? worst.cell?.rule : undefined) ?? m.rule ?? { type: 'bands' },
-          priorStatus,
-          streakMonths: index >= 0 ? streakMonths(own.cells, index, columns) : 0,
-          priorLabel: priorStatus ? (statusLabel(priorStatus) ?? priorStatus) : '',
-          label,
-          since: index >= 0 ? sinceText(own.cells, index, columns, statusLabel) : '',
-          countReason: items ? `${countNoun(count, nounForms(kindName(m.kindId), 'item'))} ${label}` : undefined,
-        },
-      ]
-    })
+  const attentionOf = (kindName: (id: string | undefined) => string | undefined) =>
+    needsAttention(attentionInputs(metrics, { categories: view.data.categories, scale, fy, statusLabel, kindName }), scale)
   const itemCandidates = metrics.some((m) => m.isItems && m.kindId && m.status?.status && m.status.status !== bestKey)
 
-  const boardRows = metrics.map(({ category, metric, scope, head, children, noun, coarse }) =>
+  const boardRows = metrics.map(({ category, key, scope, head, children, noun, coarse }) =>
     buildBoardRow({
-      key: metric.key,
-      category: { id: category.id, name: category.name },
+      key,
+      category,
       scope,
       head,
       children,
@@ -382,10 +310,10 @@ export function OverviewPage() {
   const windowText = `No reports in the last ${trendColumns.length} ${columnUnit(selectedColumn, trendColumns.length)}`
   const categoryName = (id: string) => view.data.categories.find((c) => c.id === id)?.name ?? ''
   const unreported = [
-    ...metrics.flatMap(({ category, metric, head, status }) =>
-      status?.notReported ? [{ key: metric.key, name: head.metricName, why: status.notReported.text, category: category.name }] : [],
+    ...metrics.flatMap(({ category, key, head, status }) =>
+      status?.notReported ? [{ key, name: head.metricName, why: status.notReported.text, category: category.name }] : [],
     ),
-    ...absentItemMetrics.map((m) => ({ key: m.key, name: m.name, why: windowText, category: categoryName(m.categoryId) })),
+    ...absent.map((m) => ({ key: m.key, name: m.name, why: windowText, category: categoryName(m.categoryId) })),
   ]
   const quiet = metrics.flatMap(({ status }) => (status?.quiet ? [status.quiet] : []))
   const selectedLabel = parsed ? periodLabel(parsed, fy) : period.period
@@ -410,14 +338,14 @@ export function OverviewPage() {
     metricsByCategory[g.id] = g.metrics.map((m) => ({ key: m.key }))
     itemLabels[`section:${g.id}`] = g.name
     for (const m of g.metrics) {
-      const meta = metrics.find((x) => x.metric.key === m.key)
+      const meta = metrics.find((x) => x.key === m.key)
       itemLabels[`metric:${m.key}`] = meta?.head.metricName ?? m.name
       metricCategories[m.key] = g.name
     }
   }
 
   /** The tile's threshold and direction line (§3.5), with how many children have their own target. */
-  const thresholdOf = (m: MetricMeta, noun: NounForms): string => {
+  const thresholdOf = (m: MetricStanding, noun: NounForms): string => {
     const { head, children, rule } = m
     if (!rule) return ''
     const ownTargets = (rule.perSubject ?? []).flatMap((p) => {
@@ -446,12 +374,16 @@ export function OverviewPage() {
 
   const shownByHealth = (status: string) =>
     !healthFilter || (healthFilter === NOT_REPORTED ? status === '' : status === healthFilter)
+  const statusOf = new Map(metrics.map((m) => [m.key, m.status?.status ?? '']))
+  const metricShown = (key: string) => shownByHealth(statusOf.get(key) ?? '')
+  const filterLabel = healthFilter === NOT_REPORTED ? 'not reported' : (statusLabel(healthFilter) ?? healthFilter)
+  const filterCount = healthCounts.get(healthFilter) ?? 0
 
   const renderMetricCard = (metricKey: string) => {
-    const meta = metrics.find((m) => m.metric.key === metricKey)
+    const meta = metrics.find((m) => m.key === metricKey)
     const shownStatus = meta?.status?.status ?? ''
     if (!meta || !shownByHealth(shownStatus)) return null
-    const { metric, scope, head, children, noun, columns, status, cell } = meta
+    const { key, scope, head, children, noun, columns, status, cell } = meta
     const columnKey = status?.counted.key ?? ''
     const scopeReported = cellReported(cell)
     const reportedChildren = children.filter((ch) => cellReported(scopeCell(ch, columnKey)))
@@ -464,13 +396,24 @@ export function OverviewPage() {
       ? noTotalNote(reportedChildren.length, seriesNoun, head.definition ?? '')
       : chartChildren && scope
         ? `Company total not reported; ${reportedChildren.length} ${noun} reported`
-        : (shownStatus && status?.caption) || undefined
+        : shownStatus && status && meta.coarse.length > 0
+          ? [coarseContext(status.counted, fy), ...status.caption.split(' · ').slice(1)].join(' · ')
+          : (shownStatus && status?.caption) || undefined
     const chartRow = scope ?? emptyScope(head)
     const chartRows = chartChildren ? reportedChildren : [chartRow]
     const worstSeries =
       chartRows.length > 1 ? multiSeriesHeader(chartRows, columnKey, statusColors, (k) => statusLabel(k) ?? k, seriesNoun) : null
     const ytdCell = scope ? ytdCellFor(scope) : undefined
     const ytdDisplay = ytdCell?.display ? `YTD ${ytdCell.display}` : null
+    const moneyPlan = head.chartKind === 'money_plan'
+    // `$1,150k spent of $1,000k planned`, when the formula is a ratio of the cell's two measures (§7.4).
+    const version = versions.data?.versions.find((v) => v.id === (cell?.versionId || view.data.versionByPeriod[columnKey]))
+    const parts = moneyPlan && cell ? ratioParts(version?.content.metrics.find((x) => x.key === key)?.formula, cell.components) : null
+    const unitOf = (measure: string) => version?.content.measures.find((x) => x.key === measure)?.unit ?? ''
+    const planned = parts
+      ? `${amount(cell!.components[parts[0]]!, unitOf(parts[0]))} spent of ${amount(cell!.components[parts[1]]!, unitOf(parts[1]))} planned`
+      : null
+    const extras = [ytdDisplay, planned].filter(Boolean).join(' · ') || null
     const threshold = thresholdOf(meta, noun === 'services' ? nounForms('services', 'item') : nounForms(levelName, 'unit'))
     const kind = status?.notReported?.kind
     const state = kind === 'window' ? 'window' : kind === 'stopped' ? 'stopped' : 'normal'
@@ -492,7 +435,7 @@ export function OverviewPage() {
               </Link>
             ) : undefined
           }
-          onExpand={(trigger) => openFocus(metric.key, trigger)}
+          onExpand={(trigger) => openFocus(key, trigger)}
           state="window"
         >
           {null}
@@ -504,14 +447,14 @@ export function OverviewPage() {
       const tile = (kindName: (id: string | undefined) => string | undefined) => (
         <ItemSummaryTile
           head={head}
-          rows={itemRowsOf(meta)}
+          rows={itemRowsOf(meta, scale, fy)}
           columns={columns}
           scale={statusColors}
           direction={head.direction}
           noun={nounForms(kindName(meta.kindId), 'item')}
           rule={meta.rule}
-          onExpand={(trigger) => openFocus(metric.key, trigger)}
-          onOpenItem={(itemId, trigger) => openItem(metric.key, itemId, trigger)}
+          onExpand={(trigger) => openFocus(key, trigger)}
+          onOpenItem={(itemId, trigger) => openItem(key, itemId, trigger)}
         />
       )
       return meta.kindId ? <WithItemKinds>{tile}</WithItemKinds> : tile(NO_KINDS)
@@ -558,6 +501,7 @@ export function OverviewPage() {
           <span data-testid="header-value" className="text-[28px] font-semibold leading-9 tabular-nums">
             {cell?.display || '—'}
           </span>
+          {moneyPlan && cell?.display && <span className="text-sm text-ink/80">of plan</span>}
           {shownStatus && (
             <span title={statusLabel(shownStatus)}>
               <StatusChip status={shownStatus} scale={statusColors} size="lg" />
@@ -582,9 +526,9 @@ export function OverviewPage() {
         head={head}
         threshold={threshold}
         value={value}
-        extras={state === 'normal' ? ytdDisplay : undefined}
+        extras={state === 'normal' ? extras : undefined}
         context={scopeNote}
-        onExpand={(trigger) => openFocus(metric.key, trigger)}
+        onExpand={(trigger) => openFocus(key, trigger)}
         state={state}
       >
         <MetricChart
@@ -598,7 +542,7 @@ export function OverviewPage() {
           scale={statusColors}
           fiscalYearStartMonth={fy}
           framed
-          markers={versionBoundaries(versions.data?.versions ?? [], columns, metric.key, period.restate)}
+          markers={versionBoundaries(versions.data?.versions ?? [], columns, key, period.restate)}
         />
       </TileFrame>
     )
@@ -619,7 +563,7 @@ export function OverviewPage() {
   }
 
   /** What a needs-attention card shows besides its reason (§4.3). */
-  const attentionMeta = (m: MetricMeta): AttentionMeta => {
+  const attentionMeta = (m: MetricStanding): AttentionMeta => {
     const { category, scope, head, children, columns, status, cell, own } = m
     const columnKey = status?.counted.key ?? ''
     const base = {
@@ -632,7 +576,7 @@ export function OverviewPage() {
       ribbon: { cells: own.cells, labels: columns.map(initialOf) },
     }
     if (m.isItems) {
-      const rows = itemRowsOf(m)
+      const rows = itemRowsOf(m, scale, fy)
       const summary = itemSummary(rows, scale)
       const worst = summary.worst
       const others = [...byRank]
@@ -702,13 +646,13 @@ export function OverviewPage() {
   }
 
   const renderAttention = (kindName: (id: string | undefined) => string | undefined) => {
-    const { shown, totals } = needsAttention(attentionInputs(kindName), scale)
+    const { shown, totals } = attentionOf(kindName)
     if (shown.length === 0) return null
     return (
       <NeedsAttention
         shown={shown.flatMap((item) => {
           const m = metrics.find((x) => x.head.metricKey === item.metricKey)
-          return m ? [{ item, meta: attentionMeta(m), href: focusHref(m.metric.key) }] : []
+          return m ? [{ item, meta: attentionMeta(m), href: focusHref(m.key) }] : []
         })}
         totals={totals}
         worstLabel={worstLabel}
@@ -731,33 +675,59 @@ export function OverviewPage() {
         itemLabels={itemLabels}
         metricCategories={metricCategories}
         renderHealth={() => (
-          <HealthSummary
-            title={healthTitle}
-            period={selectedLabel}
-            total={metrics.length + absentItemMetrics.length}
-            counts={healthCounts}
-            prior={priorCounts}
-            priorLabel={priorTrend?.label ?? ''}
-            selected={healthFilter}
-            onSelect={selectHealth}
-            scale={statusColors}
-          />
+          <div>
+            <HealthSummary
+              title={healthTitle}
+              period={selectedLabel}
+              total={metrics.length + absent.length}
+              counts={healthCounts}
+              prior={priorCounts}
+              priorLabel={priorTrend?.label ?? ''}
+              selected={healthFilter}
+              onSelect={selectHealth}
+              scale={statusColors}
+            />
+            {healthFilter && (
+              <p className="mt-2 flex flex-wrap items-center gap-x-2 text-sm">
+                <span>{`Showing ${filterCount} ${filterLabel} ${filterCount === 1 ? 'metric' : 'metrics'}`}</span>
+                <span aria-hidden="true">·</span>
+                <button
+                  type="button"
+                  className="min-h-6 font-medium text-accent-deep hover:underline"
+                  onClick={() => {
+                    // The pressed toggle stays in the page, so focus goes back to it rather than to the body.
+                    const pressed = document.querySelector<HTMLElement>('[role="group"][aria-label="Show metrics by status"] [aria-pressed="true"]')
+                    selectHealth('')
+                    pressed?.focus()
+                  }}
+                >
+                  Show all
+                </button>
+              </p>
+            )}
+          </div>
         )}
-        renderRibbon={() => (
-          <StatusBoard
-            label={ribbonLabel}
-            columns={trendColumns}
-            rows={boardRows}
-            scale={statusColors}
-            onOpen={openFocus}
-          />
-        )}
-        renderNeeds={() =>
-          itemCandidates ? <WithItemKinds>{renderAttention}</WithItemKinds> : renderAttention(NO_KINDS)
-        }
+        renderRibbon={() => {
+          const rows = healthFilter ? boardRows.filter((r) => metricShown(r.key)) : boardRows
+          if (rows.length === 0) return null
+          return (
+            <StatusBoard
+              label={healthFilter ? `${ribbonLabel} · ${healthFilter === NOT_REPORTED ? 'Not reported' : filterLabel} only` : ribbonLabel}
+              columns={trendColumns}
+              rows={rows}
+              scale={statusColors}
+              onOpen={openFocus}
+            />
+          )
+        }}
+        renderNeeds={() => {
+          // Which metrics show never depends on the item kinds' names, only their reasons do.
+          if (attentionOf(NO_KINDS).shown.length === 0) return null
+          return itemCandidates ? <WithItemKinds>{renderAttention}</WithItemKinds> : renderAttention(NO_KINDS)
+        }}
         renderSection={(categoryId) => {
           const g = groups.find((x) => x.id === categoryId)
-          if (!g) return null
+          if (!g || !g.metrics.some((m) => metricShown(m.key))) return null
           return (
             <SectionHeader
               id={`overview-cat-${g.id}`}
@@ -768,14 +738,16 @@ export function OverviewPage() {
           )
         }}
         renderMetric={renderMetricCard}
-        renderUnreported={() => (
-          <NotReportedCard
-            period={period.period}
-            items={unreported}
-            quiet={quiet.length > 0 ? `Reported less often and up to date: ${quiet.join(' · ')}.` : null}
-            canEnter={canEnter}
-          />
-        )}
+        renderUnreported={() =>
+          unreported.length > 0 || quiet.length > 0 ? (
+            <NotReportedCard
+              period={period.period}
+              items={unreported}
+              quiet={quiet.length > 0 ? `Reported less often and up to date: ${quiet.join(' · ')}.` : null}
+              canEnter={canEnter}
+            />
+          ) : null
+        }
       />
     </div>
   )

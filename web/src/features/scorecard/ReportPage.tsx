@@ -14,6 +14,8 @@ import {
   useReportMonths,
   useReportSummary,
   useScorecards,
+  useVersions,
+  useView,
   type AssistantUsage,
 } from '../../api/queries'
 import { ApiError } from '../../api/errors'
@@ -36,7 +38,8 @@ import {
   type ReportMetric,
   type ReportModel,
 } from './report/model'
-import { subtreeSubjects } from './viewRequest'
+import { coarseGrains } from './logic/coarse'
+import { scorecardViewRequest, subtreeSubjects, versionInForce } from './viewRequest'
 
 type ReportSummary = components['schemas']['ReportSummary']
 
@@ -418,10 +421,26 @@ export function ReportPage() {
       })
     : ''
 
+  // A live report counts each metric from the Overview's own request (its trend window and coarse periods), so
+  // the two agree; a published report counts from its snapshot.
+  const versions = useVersions(isMonth ? scorecardId : undefined)
+  const live = doc.data?.live === true
+  const overviewRequest = useMemo(() => {
+    const version = versionInForce(versions.data?.versions ?? [], period.period, '')
+    const coarse = version ? coarseGrains(version.content.metrics.map((m) => m.frequency), 'month') : []
+    return scorecardViewRequest(
+      { period: period.period, ytd: false, subjects: [], scope: period.scope, restate: '', structure: 'as_of', fiscalYearStartMonth: fy },
+      { units: orgUnits.data?.units, items: items.data },
+      { coarse },
+    )
+  }, [versions.data?.versions, period.period, period.scope, fy, orgUnits.data?.units, items.data])
+  const overview = useView(isMonth && live && !versions.isPending && !scopeLoading ? scorecardId : undefined, overviewRequest)
+  const overviewSettled = !live || (!versions.isPending && !overview.isPending)
+
   const layoutItems = useMemo(() => (useMyLayout ? (layout.data?.items ?? []) : null), [useMyLayout, layout.data?.items])
   const model = useMemo(
     () =>
-      doc.data && !scopeLoading && !scopeError
+      doc.data && !scopeLoading && !scopeError && overviewSettled
         ? buildReportModel({
             doc: doc.data,
             scorecardName,
@@ -434,9 +453,29 @@ export function ReportPage() {
             scale,
             layout: layoutItems,
             statusLine,
+            overview: live ? (overview.data ?? null) : null,
+            versions: versions.data?.versions,
           })
         : null,
-    [doc.data, scopeLoading, scopeError, scorecardName, companyName, period.scope, scopeName, scopeSubjects, period.period, fy, scale, layoutItems, statusLine],
+    [
+      doc.data,
+      scopeLoading,
+      scopeError,
+      overviewSettled,
+      scorecardName,
+      companyName,
+      period.scope,
+      scopeName,
+      scopeSubjects,
+      period.period,
+      fy,
+      scale,
+      layoutItems,
+      statusLine,
+      live,
+      overview.data,
+      versions.data?.versions,
+    ],
   )
 
   const search = (patch: (next: URLSearchParams) => void) => {
@@ -600,12 +639,12 @@ export function ReportPage() {
             <ul aria-label="Health this month" className="mt-2 flex flex-wrap gap-2">
               {model.health.map((h) => (
                 <li key={h.key} className="flex items-center gap-2 rounded-md border border-ink/20 bg-white px-3 py-1.5 text-sm">
-                  <StatusBadge status={h.key} label={scale.find((s) => s.key === h.key)?.label} />
-                  {h.label} {h.count}
+                  <StatusBadge status={h.key} label={h.label} />
+                  {h.count} {h.label}
                 </li>
               ))}
               {model.notReported > 0 && (
-                <li className="rounded-md border border-ink/20 bg-white px-3 py-1.5 text-sm">Not reported {model.notReported}</li>
+                <li className="rounded-md border border-ink/20 bg-white px-3 py-1.5 text-sm">{model.notReported} Not reported</li>
               )}
             </ul>
             {model.summaryFor !== null ? (

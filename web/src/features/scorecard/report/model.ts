@@ -4,7 +4,8 @@ import { groupedOverrideLabel, shortLabel, type Column } from '../columns'
 import { changeText, formatMetricValue } from '../format'
 import { isSparse, pointKind, type PointKind } from '../charts/sparse'
 import { applyLayout, defaultLayout, type LayoutItem } from '../logic/layout'
-import { needsAttention, type NeedsAttentionItem } from '../logic/needsAttention'
+import { needsAttention } from '../logic/needsAttention'
+import { absentItemMetrics, attentionInputs, healthTally, metricNoun, metricStandings } from '../logic/standings'
 import { cellReported, statusAtScope, type StatusScaleEntry } from '../logic/statusAtScope'
 import { cellKey, groupRows, metricScope } from '../viewHelpers'
 
@@ -14,6 +15,7 @@ type ScorecardView = Schemas['ScorecardView']
 type ViewRow = Schemas['ViewRow']
 type Cell = Schemas['Cell']
 type StatusLevel = Schemas['StatusLevel']
+type MethodologyVersion = Schemas['MethodologyVersion']
 
 export interface ReportModelInput {
   doc: ReportDocument
@@ -32,6 +34,14 @@ export interface ReportModelInput {
   layout: LayoutItem[] | null
   /** Published, month to date, or live: see `reportStatusLine`. */
   statusLine: string
+  /**
+   * The Overview's view of the same month and scope (its trend window and
+   * coarse periods), so the report counts, labels and ranks each metric as
+   * the Overview does; null or absent to count from the report's own months.
+   */
+  overview?: ScorecardView | null
+  /** The scorecard's methodology versions: rules, item kinds and item-only metrics with no rows. */
+  versions?: MethodologyVersion[]
 }
 
 export interface ReportPoint {
@@ -187,6 +197,14 @@ export function statusTable(metric: ReportMetric): { header: string[]; rows: { c
   }
 }
 
+/** Health as the Overview words it: `5 Red`, `4 Yellow`, ..., `2 Not reported`. */
+export function healthParts(model: Pick<ReportModel, 'health' | 'notReported'>): string[] {
+  return [
+    ...model.health.map((h) => `${h.count} ${h.label}`),
+    ...(model.notReported > 0 ? [`${model.notReported} Not reported`] : []),
+  ]
+}
+
 /** The facts under a metric's value: status caption, change, YTD, goal, and driver. */
 export function metricFacts(metric: ReportMetric): string[] {
   return [
@@ -289,25 +307,12 @@ function reportColumns(view: ScorecardView, fy: number): Column[] {
   return out
 }
 
-function metricNoun(chartKind: string, scope: ViewRow | null, children: ViewRow[]): 'segments' | 'services' | 'items' {
-  if (chartKind === 'uptime') return 'services'
-  if (scope && children.length > 0) return 'segments'
-  return 'items'
-}
-
-function healthLabels(scale: StatusScaleEntry[]): Map<string, string> {
-  const sorted = [...scale].sort((a, b) => a.rank - b.rank)
-  const labels = new Map<string, string>()
-  if (sorted[0]) labels.set(sorted[0].key, 'On track')
-  for (const mid of sorted.slice(1, -1)) labels.set(mid.key, 'Watch')
-  const worst = sorted[sorted.length - 1]
-  if (worst && sorted.length > 1) labels.set(worst.key, 'Off track')
-  return labels
-}
-
 function cellAt(row: ViewRow | null, key: string): Cell | undefined {
   return row?.cells.find((c) => cellKey(c) === key)
 }
+
+/** How the facts (the API's and `scopeFacts`) start the not-reported sentence. */
+const NOT_REPORTED_FACT = 'not reported: '
 
 /**
  * The API's fact sentences for one scope's rows (one per metric): metrics that
@@ -345,7 +350,7 @@ export function scopeFacts(rows: ViewRow[], period: string, scale: StatusScaleEn
   const out: string[] = []
   if (turned.length > 0) out.push(`${turned.length} metric${turned.length === 1 ? '' : 's'} turned red: ${turned.join(', ')}`)
   out.push(...firstGreen)
-  if (notReported.length > 0) out.push(`not reported: ${notReported.join(', ')}`)
+  if (notReported.length > 0) out.push(`${NOT_REPORTED_FACT}${notReported.join(', ')}`)
   return out
 }
 
@@ -392,7 +397,6 @@ export function buildReportModel(input: ReportModelInput): ReportModel {
     : { ...doc.view, rows: doc.view.rows.filter((r) => inScope.has(r.subjectId)) }
   const columns = reportColumns(view, fy)
   const monthColumns = columns.filter((c) => !c.ytd)
-  const priorKey = monthColumns[monthColumns.length - 2]?.key
   const scaleEntries: StatusScaleEntry[] = scale.map((s) => ({ key: s.key, rank: s.rank }))
   const worstRank = Math.max(...scaleEntries.map((s) => s.rank))
   const rankOf = (status: string) => scaleEntries.find((s) => s.key === status)?.rank ?? 0
@@ -407,16 +411,27 @@ export function buildReportModel(input: ReportModelInput): ReportModel {
   }))
   if (input.layout && input.layout.length > 0) groups = orderByLayout(groups, input.layout)
 
+  // Counted as the Overview counts: the period's status (a coarse metric at its own grain), streaks and ranking.
+  const standingView = input.overview
+    ? companyScope
+      ? input.overview
+      : { ...input.overview, rows: input.overview.rows.filter((r) => inScope.has(r.subjectId)) }
+    : view
+  const standings = metricStandings({ view: standingView, period, fy, scale: scaleEntries, versions: input.versions })
+  const standingOf = new Map(standings.metrics.map((s) => [s.key, s]))
+
   const metrics = groups.flatMap((g) => g.metrics).map((m) => {
     const { scope, children, head } = metricScope(m.rows)
     const noun = metricNoun(head.chartKind, scope, children)
     const atScope = (key: string) => statusAtScope({ scope: scope ?? { cells: [] }, children, columnKey: key, scale: scaleEntries, noun })
-    return { ...m, scope, children, head, noun, atScope, current: atScope(period) }
+    const standing = standingOf.get(m.key)
+    return { ...m, scope, children, head, noun, atScope, standing, status: standing?.status?.status ?? '' }
   })
 
   const reportMetric = (m: (typeof metrics)[number]): ReportMetric => {
-    const { scope, children, head, current } = m
-    const cell = cellAt(scope, period)
+    const { scope, children, head, standing } = m
+    // A coarse metric's value is its counted quarter, half or year, which the report's months do not hold.
+    const cell = standing && standing.coarse.length > 0 ? standing.cell : cellAt(scope, period)
     const reportedChildren = children.filter((ch) => cellReported(cellAt(ch, period)))
     const seriesRows = scope && (cellReported(cell) || reportedChildren.length === 0) ? [scope] : reportedChildren.length > 0 ? reportedChildren : children
     const driver = children
@@ -437,9 +452,9 @@ export function buildReportModel(input: ReportModelInput): ReportModel {
       definition: m.rows.find((r) => r.definition?.trim())?.definition?.trim() || head.metricName,
       versionId: cell?.versionId || doc.view.versionByPeriod[period] || '',
       display: cell && cell.naReason === '' ? cell.display : '',
-      status: current.status,
-      statusLabel: current.status ? statusLabel(current.status) : '',
-      caption: current.caption,
+      status: m.status,
+      statusLabel: m.status ? statusLabel(m.status) : '',
+      caption: m.status ? (standing?.status?.caption ?? '') : '',
       change: cell
         ? changeText({
             period: cell.period,
@@ -480,35 +495,16 @@ export function buildReportModel(input: ReportModelInput): ReportModel {
 
   const byKey = new Map(metrics.map((m) => [m.key, reportMetric(m)]))
 
-  const attentionItems: NeedsAttentionItem[] = []
-  for (const m of metrics) {
-    if (!m.current.status) continue
-    const cell = cellAt(m.scope, period)
-    attentionItems.push({
-      metricKey: m.key,
-      name: m.head.metricName,
-      categoryOrder: view.categories.find((c) => c.id === m.categoryId)?.order ?? 0,
-      status: m.current.status,
-      value: cell?.value ?? null,
-      change: cell?.change ?? null,
-      direction: m.head.direction,
-      rule: cell?.rule ?? { type: 'bands' },
-      priorStatus: priorKey ? (cellAt(m.scope, priorKey)?.status ?? '') : '',
-      // The report ranks by distance and prints no reasons.
-      streakMonths: 0,
-      priorLabel: '',
-      label: '',
-      since: '',
-    })
-  }
+  const shown = metrics.flatMap((m) => (m.standing ? [m.standing] : []))
+  const attentionItems = attentionInputs(shown, { categories: view.categories, scale: scaleEntries, fy, statusLabel })
 
-  const labels = healthLabels(scaleEntries)
-  const counts = new Map<string, number>()
-  for (const m of metrics) if (m.current.status) counts.set(m.current.status, (counts.get(m.current.status) ?? 0) + 1)
-  const health = [...counts]
-    .sort((a, b) => rankOf(a[0]) - rankOf(b[0]))
-    .map(([key, count]) => ({ key, label: labels.get(key) ?? statusLabel(key), count }))
-  const unreported = metrics.filter((m) => !m.current.status)
+  // As the Overview's Health: every metric once, in the tenant's labels, worst first.
+  const absent = absentItemMetrics(standingView, input.versions, standings.selected, standings.metrics)
+  const health = [...healthTally(metrics.map((m) => m.status), 0, '')]
+    .filter(([key, count]) => key !== '' && count > 0)
+    .sort((a, b) => rankOf(b[0]) - rankOf(a[0]))
+    .map(([key, count]) => ({ key, label: statusLabel(key), count }))
+  const unreported = [...metrics.filter((m) => !m.status).map((m) => m.head.metricName), ...absent.map((m) => m.name)]
 
   const overrideGroups = new Map<string, string[]>()
   const naGroups = new Map<string, Map<string, string[]>>()
@@ -550,13 +546,10 @@ export function buildReportModel(input: ReportModelInput): ReportModel {
     summaryFor: companyScope ? null : `Summary is written for ${input.companyName}`,
     health,
     notReported: unreported.length,
-    facts: companyScope
-      ? doc.facts
-      : scopeFacts(
-          metrics.flatMap((m) => (m.scope ? [m.scope] : [])),
-          period,
-          scaleEntries,
-        ),
+    // The facts name what is not reported from the months alone; restate that one from the count above.
+    facts: (companyScope ? doc.facts : scopeFacts(metrics.flatMap((m) => (m.scope ? [m.scope] : [])), period, scaleEntries)).flatMap(
+      (f) => (!f.startsWith(NOT_REPORTED_FACT) ? [f] : unreported.length > 0 ? [`${NOT_REPORTED_FACT}${unreported.join(', ')}`] : []),
+    ),
     needsAttention: needsAttention(attentionItems, scaleEntries).shown.map((item) => byKey.get(item.metricKey)!),
     categories: groups.map((g) => ({ id: g.id, name: g.name, metrics: g.metrics.map((m) => byKey.get(m.key)!) })),
     columns,
@@ -578,7 +571,7 @@ export function buildReportModel(input: ReportModelInput): ReportModel {
         ([reason, byMetric]) =>
           `${reason}: ${[...byMetric].map(([name, months]) => `${name} (${months.join(', ')})`).join('; ')}`,
       ),
-      notReported: unreported.map((m) => m.head.metricName),
+      notReported: unreported,
       versionIds: [...new Set(Object.values(doc.view.versionByPeriod).filter(Boolean))].sort(),
     },
   }

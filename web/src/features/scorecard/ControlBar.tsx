@@ -2,7 +2,7 @@ import * as Dialog from '@radix-ui/react-dialog'
 import * as Popover from '@radix-ui/react-popover'
 import clsx from 'clsx'
 import { ChevronDown, ChevronLeft, ChevronRight, SlidersHorizontal } from 'lucide-react'
-import { useCallback, useEffect, useId, useMemo, useState, useSyncExternalStore } from 'react'
+import { useEffect, useId, useMemo, useState, useSyncExternalStore } from 'react'
 import { NavLink, useLocation, useParams } from 'react-router'
 import { useMe, useOrgUnits, useVersions } from '../../api/queries'
 import {
@@ -73,7 +73,7 @@ function phoneSnapshot(): boolean {
  * controls in a bottom sheet. Publishes its sticky height as `--control-bar-h`
  * on the document root (`0px` on phones, where it scrolls away).
  */
-export function ControlBar({ scorecardId, barRef }: { scorecardId: string; barRef?: (el: HTMLElement | null) => void }) {
+export function ControlBar({ scorecardId }: { scorecardId: string }) {
   const { sc } = useParams()
   const { search } = useLocation()
   const id = useId()
@@ -85,14 +85,7 @@ export function ControlBar({ scorecardId, barRef }: { scorecardId: string; barRe
   const samContext = usePageAssistantContext()
   const phone = useSyncExternalStore(subscribePhone, phoneSnapshot, () => false)
   const [sheetOpen, setSheetOpen] = useState(false)
-  const [measureRef, height] = useElementHeight<HTMLElement>()
-  const ref = useCallback(
-    (el: HTMLElement | null) => {
-      measureRef(el)
-      barRef?.(el)
-    },
-    [measureRef, barRef],
-  )
+  const [ref, height] = useElementHeight<HTMLElement>()
 
   useEffect(() => {
     const root = document.documentElement
@@ -315,7 +308,9 @@ export function ControlBar({ scorecardId, barRef }: { scorecardId: string; barRe
   const scopeName = view.scope
     ? (orgUnits.data?.units.find((u) => u.id === view.scope)?.name ?? 'Selected unit')
     : `All of ${me.data?.tenant?.name ?? 'Company'}`
-  const summary = `${periodLabel(parsed, start)} · ${scopeName} · Filters`
+  // What the sheet sets away from its defaults.
+  const active = [view.scope !== '', view.ytd, view.restate !== '', view.structure === 'current'].filter(Boolean).length
+  const summary = `${periodLabel(parsed, start)} · ${scopeName} · Filters${active > 0 ? `, ${active} active` : ''}`
 
   return (
   <section
@@ -331,7 +326,7 @@ export function ControlBar({ scorecardId, barRef }: { scorecardId: string; barRe
         >
           <span className="min-w-0 flex-1 truncate">{`${periodLabel(parsed, start)} · ${scopeName}`}</span>
           <span className="flex shrink-0 items-center gap-1.5 font-medium text-accent-deep">
-            Filters
+            {active > 0 ? `Filters · ${active}` : 'Filters'}
             <SlidersHorizontal aria-hidden="true" size={16} />
           </span>
         </Dialog.Trigger>
