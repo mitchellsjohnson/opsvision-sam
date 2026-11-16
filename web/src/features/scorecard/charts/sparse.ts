@@ -28,3 +28,39 @@ export function isSparse(chartKind: string, kinds: PointKind[]): boolean {
   }
   return na > valued
 }
+
+interface SparsePoint {
+  kind: PointKind
+  naReason: string
+}
+
+/**
+ * The sparse context line: `5 months reported in the last 12; the rest are n/a`
+ * when every other period is n/a for one reason, else the n/a count
+ * (`7 months n/a`) and any periods with no data. `unit` names `n` periods.
+ */
+export function sparseContext(points: SparsePoint[], unit: (n: number) => string): string {
+  const valued = points.filter((p) => p.kind === 'value').length
+  const na = points.filter((p) => p.kind === 'na')
+  const missing = points.filter((p) => p.kind === 'missing').length
+  const head = `${valued} ${unit(valued)} reported in the last ${points.length}`
+  const agree = new Set(na.map((p) => p.naReason)).size <= 1
+  if (missing === 0 && agree && na.length > 0) return `${head}; the rest are n/a`
+  const parts = [na.length > 0 && `${na.length} ${unit(na.length)} n/a`, missing > 0 && `${missing} no data`].filter(Boolean)
+  return parts.length > 0 ? `${head}; ${parts.join(' · ')}` : head
+}
+
+/** What n/a means here, from the most common reason: `n/a: No major incident this month`; '' with none. */
+export function sparseKey(points: SparsePoint[]): string {
+  const counts = new Map<string, number>()
+  for (const p of points) if (p.kind === 'na' && p.naReason) counts.set(p.naReason, (counts.get(p.naReason) ?? 0) + 1)
+  let best = ''
+  let most = 0
+  for (const [reason, n] of counts) {
+    if (n > most) {
+      best = reason
+      most = n
+    }
+  }
+  return best ? `n/a: ${best}` : ''
+}

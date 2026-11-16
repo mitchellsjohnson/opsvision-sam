@@ -1,7 +1,8 @@
 import type { components } from '../../api/schema'
 import { letterUsesInkOnWhite } from '../../ui/contrast'
 import { statusIntervals } from './charts/bands'
-import { LINE_COLORS } from './charts/chartTheme'
+import { barFill, LINE_COLORS } from './charts/chartTheme'
+import { deviationText, moneyPlanDomain, PLAN } from './charts/moneyPlan'
 import type { Column } from './columns'
 import { formatMetricValue, metricDecimals } from './format'
 import { cellKey } from './viewHelpers'
@@ -163,6 +164,64 @@ function valueAxis(values: number[], format: string): { lo: number; hi: number; 
   return { lo, hi, ticks }
 }
 
+/** The money-plan axis: the app's domain, centred on 100%, with ticks on an even step out from 100. */
+function planAxis(values: number[]): { lo: number; hi: number; ticks: number[] } {
+  const [lo, hi] = moneyPlanDomain(values)
+  const half = hi - PLAN
+  const raw = half / 3
+  const magnitude = 10 ** Math.floor(Math.log10(raw))
+  const step = [1, 2, 5, 10].map((m) => m * magnitude).find((s) => s >= raw * (1 - 1e-9)) ?? 10 * magnitude
+  const ticks: number[] = []
+  for (let k = -Math.floor(half / step); k * step <= half; k++) ticks.push(PLAN + k * step)
+  return { lo, hi, ticks }
+}
+
+interface PlanGeometry {
+  xAt: (i: number) => number
+  yAt: (v: number) => number
+  slot: number
+  plotLeft: number
+  plotRight: number
+  format: string
+  scale: StatusLevel[]
+  dense: boolean
+}
+
+/**
+ * Diverging bars from a solid 100% line: up when over plan, down when under,
+ * filled by status tier, each with its deviation and status letter past its end.
+ */
+function planMarks(points: { value: number | null; status: string }[], g: PlanGeometry): string[] {
+  const out: string[] = []
+  const planY = g.yAt(PLAN)
+  const width = Math.min(g.slot * 0.6, 72)
+  const size = g.dense ? 14 : 18
+  points.forEach((p, i) => {
+    if (p.value === null) return
+    const top = g.yAt(Math.max(PLAN, p.value))
+    const bottom = g.yAt(Math.min(PLAN, p.value))
+    const over = p.value > PLAN
+    const x = g.xAt(i)
+    const { fill, stroke } = barFill(g.scale, p.status)
+    const parts = [
+      `<rect data-role="bar" data-status="${xmlEscape(p.status)}" x="${n1(x - width / 2)}" y="${n1(top)}" width="${n1(width)}" height="${n1(bottom - top)}" fill="${fill}" stroke="${stroke}" stroke-width="2" />`,
+    ]
+    const labelY = over ? top - 10 : bottom + size + 6
+    parts.push(svgText(x, labelY, deviationText(p.value, g.format), { size, weight: 600, fill: TITLE, anchor: 'middle', halo: true, role: 'deviation' }))
+    if (p.status) {
+      const color = statusColor(g.scale, p.status)
+      const letterY = over ? labelY - size - 4 : labelY + size + 4
+      parts.push(svgText(x, letterY, p.status, { size, weight: 700, fill: letterColor(color), anchor: 'middle', halo: true, role: 'point-letter' }))
+    }
+    out.push(`<g data-role="point">${parts.join('')}</g>`)
+  })
+  out.push(
+    `<line data-role="plan-line" x1="${n1(g.plotLeft)}" x2="${n1(g.plotRight)}" y1="${n1(planY)}" y2="${n1(planY)}" stroke="${INK}" stroke-opacity="0.55" stroke-width="2" />`,
+  )
+  out.push(svgText(g.plotRight - 8, planY + 24, 'Plan', { size: 16, weight: 600, fill: MUTED, anchor: 'end', halo: true, role: 'plan-label' }))
+  return out
+}
+
 /** `yyyy-mm-dd` in local time. */
 function localDate(d: Date): string {
   const pad2 = (v: number) => String(v).padStart(2, '0')
@@ -191,7 +250,9 @@ export function chartSvg(input: ChartSvgInput): string {
     }),
   )
   const values = series.flatMap((s) => s.map((p) => p.value).filter((v): v is number => v !== null))
-  const { lo, hi, ticks } = valueAxis(target === null ? values : [...values, target], format)
+  // Money plan: diverging bars from the 100% line, as in the app (§7.4).
+  const plan = rows.length === 1 && rows[0]!.chartKind === 'money_plan'
+  const { lo, hi, ticks } = plan ? planAxis(values) : valueAxis(target === null ? values : [...values, target], format)
   const tickLabels = ticks.map((t) => formatMetricValue(format, t))
 
   const plotLeft = PAD + Math.max(...tickLabels.map((t) => textWidth(t, 18)), 40) + 20
@@ -245,7 +306,8 @@ export function chartSvg(input: ChartSvgInput): string {
   const single = rows.length === 1
   // Two years of months leaves about 54 units a point: smaller marks keep the labels apart.
   const dense = columns.length > 14
-  const goalY = target === null ? null : yAt(target)
+  const goalY = target === null || plan ? null : yAt(target)
+  if (plan) out.push(...planMarks(series[0] ?? [], { xAt, yAt, slot, plotLeft, plotRight, format, scale, dense }))
   if (goalY !== null) {
     out.push(
       `<line data-role="goal" x1="${n1(plotLeft)}" x2="${n1(plotRight)}" y1="${n1(goalY)}" y2="${n1(goalY)}" stroke="${INK}" stroke-width="2" stroke-dasharray="10 8" />`,
@@ -255,7 +317,7 @@ export function chartSvg(input: ChartSvgInput): string {
   // Lines, broken where a month has no value.
   const taken: Box[] = []
   const pointMarks: string[] = []
-  series.forEach((points, s) => {
+  if (!plan) series.forEach((points, s) => {
     const color = LINE_COLORS[s % LINE_COLORS.length]!
     const placed: Point[] = []
     points.forEach((p, i) => {
@@ -342,14 +404,24 @@ export function chartSvg(input: ChartSvgInput): string {
     x += 44 + textWidth(label, 18) + 36
   }
   const swatchY = LEGEND_Y - 6
-  rows.forEach((r, s) => {
+  if (plan) {
+    item(
+      `<rect x="${n1(x + 8)}" y="${swatchY - 12}" width="16" height="24" fill="${INK}" fill-opacity="0.08" stroke="${INK}" stroke-width="2" />`,
+      'Percent of plan',
+    )
+    item(
+      `<line x1="${n1(x)}" x2="${n1(x + 32)}" y1="${swatchY}" y2="${swatchY}" stroke="${INK}" stroke-opacity="0.55" stroke-width="2" />`,
+      `Plan ${formatMetricValue(format, PLAN)}`,
+    )
+  }
+  if (!plan) rows.forEach((r, s) => {
     const color = LINE_COLORS[s % LINE_COLORS.length]!
     item(
       `<line x1="${n1(x)}" x2="${n1(x + 32)}" y1="${swatchY}" y2="${swatchY}" stroke="${color}" stroke-width="4" stroke-linecap="round" />`,
       single ? 'Value' : r.subjectName,
     )
   })
-  if (target !== null) {
+  if (target !== null && !plan) {
     item(
       `<line x1="${n1(x)}" x2="${n1(x + 32)}" y1="${swatchY}" y2="${swatchY}" stroke="${INK}" stroke-width="2" stroke-dasharray="8 5" />`,
       `Goal ${formatMetricValue(format, target)}`,

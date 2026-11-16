@@ -3,10 +3,11 @@ import { cloneElement, isValidElement, type ReactNode } from 'react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { components } from '../../../api/schema'
-import { buildView } from '../../../test/viewFixtures'
-import { buildMonthTrendColumns, buildTrendColumns } from '../columns'
+import { addQuarterly, buildView } from '../../../test/viewFixtures'
+import { buildMonthTrendColumns, buildTrendColumns, coarseColumns, windowColumns, type Column } from '../columns'
 import { defaultStatusScale, LINE_COLORS } from './chartTheme'
 import { buildPoints, ChartHoverCard, MetricChart, type ChartSize } from './MetricChart'
+import { moneyPlanDomain } from './moneyPlan'
 
 type ViewRow = components['schemas']['ViewRow']
 type StatusLevel = components['schemas']['StatusLevel']
@@ -53,21 +54,32 @@ function rowOf(metric: string, edit?: (row: ViewRow) => void, subjectId = 'root'
   return row
 }
 
-function draw(row: ViewRow, opts: { size?: ChartSize; chartRows?: ViewRow[]; scale?: StatusLevel[] } = {}) {
-  const current = row.cells.at(-1)!
+interface DrawOptions {
+  size?: ChartSize
+  chartRows?: ViewRow[]
+  scale?: StatusLevel[]
+  columns?: Column[]
+  header?: boolean
+}
+
+function draw(row: ViewRow, opts: DrawOptions = {}) {
+  const cols = opts.columns ?? columns
+  const currentKey = cols.at(-1)!.key
+  const current = row.cells.find((c) => c.period === currentKey && !c.ytd) ?? row.cells.at(-1)!
   return render(
     <MemoryRouter>
       <MetricChart
         size={opts.size}
         row={row}
         chartRows={opts.chartRows}
-        columns={columns}
-        currentColumnKey="2026-M10"
+        columns={cols}
+        currentColumnKey={currentKey}
         currentDisplay={current.display}
         currentStatus={current.status}
         statusLabel={() => undefined}
         scale={opts.scale ?? defaultStatusScale()}
         tableTo="/table"
+        header={opts.header}
       />
     </MemoryRouter>,
   )
@@ -157,7 +169,7 @@ describe('MetricChart status ribbon', () => {
     if (size === 'focus') expect(right).toBeGreaterThan(left + 20)
   })
 
-  it.each(['discrete', 'money_plan'])('%s: cells line up with the bars', (kind) => {
+  it.each(['discrete', 'money_plan'])('%s: cells line up with the plotted columns', (kind) => {
     hover.index = 3
     draw(rowOf('on_time_pct', (r) => (r.chartKind = kind)), { size: 'focus' })
     const ribbon = screen.getByTestId('status-ribbon')
@@ -208,12 +220,12 @@ describe('MetricChart 24 months', () => {
     expect(labels.every((l) => /^[A-Z][a-z]{2}$/.test(l ?? ''))).toBe(true)
   })
 
-  it.each(['discrete', 'money_plan'])('%s: 24 bars, each in its own column over its ribbon cell', (kind) => {
+  it('money plan: 24 bars, each in its own column over its ribbon cell', () => {
     hover.index = 23
-    const { container } = draw24(kind)
-    const bars = [...container.querySelectorAll('.recharts-bar-rectangle path')]
+    const { container } = draw24('money_plan')
+    const bars = [...container.querySelectorAll('rect[data-bar]')]
     expect(bars).toHaveLength(24)
-    const lefts = bars.map((b) => Number(/^M\s*([\d.]+)/.exec(b.getAttribute('d') ?? '')?.[1]))
+    const lefts = bars.map((b) => Number(b.getAttribute('x')))
     expect(new Set(lefts).size).toBe(24)
     const ribbon = screen.getByTestId('status-ribbon')
     const left = parseFloat(ribbon.style.marginLeft)
@@ -367,40 +379,279 @@ describe('MetricChart line', () => {
   })
 })
 
-describe('MetricChart bars', () => {
-  it.each(['discrete', 'money_plan'])('%s: one accent color with rounded tops, and no letters on the bars', (kind) => {
-    const { container } = draw(rowOf('on_time_pct', (r) => (r.chartKind = kind)))
-    const bars = [...container.querySelectorAll('.recharts-bar-rectangle path')]
-    expect(bars).toHaveLength(12)
-    for (const bar of bars) {
-      expect(bar.getAttribute('fill')).toBe('var(--color-accent)')
-      expect(bar.getAttribute('fill-opacity')).toBe('0.85')
-      expect(bar.getAttribute('d')).toMatch(/A/)
+const xTicks = (root: ParentNode) =>
+  [...root.querySelectorAll('.recharts-xAxis-tick-labels .recharts-cartesian-axis-tick-value')].map((t) => t.textContent)
+
+describe('MetricChart coarse points', () => {
+  const quarters = coarseColumns('2026-M10', 'quarter', 4, 1)
+
+  function quarterlyRow(edit?: (row: ViewRow) => void): ViewRow {
+    const q = new URLSearchParams()
+    for (const c of quarters) q.append('periods', c.period)
+    const row = addQuarterly(buildView(q)).rows.find((r) => r.metricKey === 'concepts_value')!
+    edit?.(row)
+    return row
+  }
+
+  it.each(SIZES)('%s: a discrete quarterly metric is a line with a visible point and value per quarter, not bars', (size) => {
+    const { container } = draw(quarterlyRow(), { columns: quarters, size })
+    const chart = screen.getByTestId('metric-chart')
+    const dots = [...chart.querySelectorAll('circle[data-point]')]
+    expect(dots).toHaveLength(4)
+    expect(dots.map((d) => d.getAttribute('r'))).toEqual(['3', '3', '3', '4'])
+    expect(chart.querySelectorAll('[data-current-dot]')).toHaveLength(1)
+    expect([...chart.querySelectorAll('[data-role="value-label"]')].map((t) => t.textContent)).toEqual(['70%', '75%', '85%', '90%'])
+    for (const label of chart.querySelectorAll('[data-role="value-label"]')) {
+      expect(label.getAttribute('font-size')).toBe('11')
+      expect(label.getAttribute('font-weight')).toBe('600')
     }
-    expect(container.querySelector('.recharts-label-list')).toBeNull()
+    expect(xTicks(container)).toEqual(['Q4 FY25', 'Q1 FY26', 'Q2 FY26', 'Q3 FY26'])
+    expect(chart.querySelector('rect[data-bar], .recharts-bar-rectangle')).toBeNull()
+    expect(chart.querySelector('.recharts-line-curve')).toBeTruthy()
+    expect(ribbonCells(container)).toHaveLength(4)
   })
 
-  it.each(['discrete', 'money_plan'])('%s: the value axis is on the right in focus and hidden in tiles', (kind) => {
-    const tile = draw(rowOf('on_time_pct', (r) => (r.chartKind = kind)))
-    expect(tile.container.querySelector('.recharts-yAxis')).toBeNull()
-    expect(tile.container.querySelector('.recharts-cartesian-axis-line, .recharts-cartesian-axis-tick-line')).toBeNull()
+  it('a quarterly ratio metric in a month view gets points too', () => {
+    draw(quarterlyRow((r) => (r.chartKind = 'ratio')), { columns: quarters })
+    expect(screen.getByTestId('metric-chart').querySelectorAll('circle[data-point]')).toHaveLength(4)
+  })
+
+  it('a monthly ratio line keeps its single current dot', () => {
+    const { container } = draw(rowOf('on_time_pct'))
+    expect(container.querySelectorAll('circle[data-point]')).toHaveLength(0)
+  })
+
+  it('a discrete monthly metric gets a point per month', () => {
+    draw(rowOf('on_time_pct', (r) => (r.chartKind = 'discrete')))
+    expect(screen.getByTestId('metric-chart').querySelectorAll('circle[data-point]')).toHaveLength(12)
+  })
+
+  it('the hover label names the months a quarter covers', () => {
+    hover.index = 3
+    draw(quarterlyRow(), { columns: quarters })
+    expect(within(screen.getByTestId('chart-hover')).getByText('Jul–Sep 2026')).toBeTruthy()
+  })
+
+  it('point buttons name the full period when quarters repeat, as eight do', () => {
+    const tile = draw(quarterlyRow(), { columns: quarters })
+    expect(screen.getByRole('button', { name: 'Q3: 90%' })).toBeTruthy()
     tile.unmount()
-    const { container } = draw(rowOf('on_time_pct', (r) => (r.chartKind = kind)), { size: 'focus' })
-    const ticks = [...container.querySelectorAll('.recharts-yAxis-tick-labels .recharts-cartesian-axis-tick-value')]
-    expect(ticks.length).toBeGreaterThan(1)
-    for (const t of ticks) expect(Number(t.getAttribute('x'))).toBeGreaterThan(CHART_WIDTH / 2)
+    const eight = coarseColumns('2026-M10', 'quarter', 8, 1)
+    const q = new URLSearchParams()
+    for (const c of eight) q.append('periods', c.period)
+    const row = addQuarterly(buildView(q)).rows.find((r) => r.metricKey === 'concepts_value')!
+    draw(row, { columns: eight, size: 'focus' })
+    expect(screen.getByRole('button', { name: 'Q3 FY2026: 90%' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Q3 FY2025: no data' })).toBeTruthy()
   })
 
-  it('money plan: the 100% line is dotted like the goal, labelled in focus only', () => {
-    const focus = draw(rowOf('on_time_pct', (r) => (r.chartKind = 'money_plan')), { size: 'focus' })
-    expect(focus.container.querySelector('[data-role="goal-pill"]')!.textContent).toBe('100%')
-    const line = focus.container.querySelector('.goal-line .recharts-reference-line-line')!
-    expect(line.getAttribute('stroke-dasharray')).toBeTruthy()
-    expect(line.getAttribute('stroke-opacity')).toBe('0.4')
-    focus.unmount()
-    const tile = draw(rowOf('on_time_pct', (r) => (r.chartKind = 'money_plan')))
-    expect(tile.container.querySelector('[data-role="goal-pill"]')).toBeNull()
-    expect(tile.container.querySelector('.goal-line .recharts-reference-line-line')).toBeTruthy()
+  it('half and year columns are labelled with a short fiscal year', () => {
+    const halves = windowColumns('2026-M10', 'half', 2, 1)
+    const { container, unmount } = draw(quarterlyRow((r) => (r.frequency = 'biannual')), { columns: halves })
+    expect(xTicks(container)).toEqual(['H2 FY25', 'H1 FY26'])
+    unmount()
+    const years = windowColumns('2026-M10', 'year', 3, 1)
+    const y = draw(quarterlyRow((r) => (r.frequency = 'annual')), { columns: years })
+    expect(xTicks(y.container)).toEqual(['FY23', 'FY24', 'FY25'])
+  })
+})
+
+describe('MetricChart money plan', () => {
+  const sepOct = columns.slice(-2)
+
+  /** Spend vs plan with Sep at `sep`% and Oct at `oct`%, Green under 110%, Yellow to 120%. */
+  function planRow(sep = 96, oct = 104): ViewRow {
+    return rowOf('on_time_pct', (r) => {
+      r.metricName = 'Spend vs plan'
+      r.chartKind = 'money_plan'
+      r.format = 'percent0'
+      r.direction = 'lower_better'
+      const status = (v: number) => (v <= 110 ? 'G' : v <= 120 ? 'Y' : 'R')
+      r.cells = r.cells.map((c) => {
+        const v = c.period === '2026-M09' ? sep : c.period === '2026-M10' ? oct : null
+        return {
+          ...c,
+          value: v,
+          display: v === null ? '' : `${v}%`,
+          status: v === null ? '' : status(v),
+          change: null,
+          target: null,
+          rule: {
+            type: 'bands',
+            bands: [
+              { status: 'G', op: '<=', value: 110 },
+              { status: 'Y', op: '<=', value: 120 },
+              { status: 'R', op: '', value: 0 },
+            ],
+          },
+        }
+      })
+    })
+  }
+
+  const planY = (root: ParentNode) => Number(root.querySelector('.plan-line .recharts-reference-line-line')!.getAttribute('y1'))
+  const barAt = (root: ParentNode, key: string) => root.querySelector<SVGRectElement>(`rect[data-bar][data-key="${key}"]`)!
+
+  it.each(SIZES)('%s: bars diverge from the 100%% line: under plan below it, over plan above it', (size) => {
+    const { container } = draw(planRow(), { columns: sepOct, size })
+    const y100 = planY(container)
+    const under = barAt(container, '2026-M09')
+    const over = barAt(container, '2026-M10')
+    const top = (b: Element) => Number(b.getAttribute('y'))
+    const bottom = (b: Element) => top(b) + Number(b.getAttribute('height'))
+    expect(top(under)).toBeCloseTo(y100)
+    expect(bottom(under)).toBeGreaterThan(y100)
+    expect(bottom(over)).toBeCloseTo(y100)
+    expect(top(over)).toBeLessThan(y100)
+    expect([...container.querySelectorAll('[data-role="deviation"]')].map((t) => t.textContent)).toEqual(['-4%', '+4%'])
+  })
+
+  it('labels every other bar, counted back from the current one, when the labels would overlap', () => {
+    const row = planRow()
+    row.cells = row.cells.map((c, i) => ({ ...c, value: 104 + (i % 3), display: `${104 + (i % 3)}%`, status: 'G' }))
+    const { container } = draw(row)
+    const labelled = [...container.querySelectorAll('rect[data-bar]')]
+      .filter((b) => b.parentElement!.querySelector('[data-role="deviation"]'))
+      .map((b) => b.getAttribute('data-key'))
+    expect(labelled).toEqual(columns.filter((_, i) => (11 - i) % 2 === 0).map((c) => c.key))
+  })
+
+  it('the 100% line is solid ink at 55%', () => {
+    const { container } = draw(planRow(), { columns: sepOct })
+    const line = container.querySelector('.plan-line .recharts-reference-line-line')!
+    expect(line.getAttribute('stroke')).toBe('var(--color-ink)')
+    expect(line.getAttribute('stroke-opacity')).toBe('0.55')
+    expect(line.getAttribute('stroke-dasharray')).toBeNull()
+  })
+
+  it('fills each bar by its status tier: Green soft with a Green edge, Yellow outlined, Red solid', () => {
+    const { container } = draw(planRow(115, 125), { columns: sepOct })
+    expect(barAt(container, '2026-M09').getAttribute('fill')).toBe('#FFF3D6')
+    expect(barAt(container, '2026-M09').getAttribute('stroke')).toBe('#8A5A00')
+    expect(barAt(container, '2026-M10').getAttribute('fill')).toBe('#B42318')
+  })
+
+  it('a tile labels the line Plan at its right end; focus pins a Plan pill on the axis', () => {
+    const tile = draw(planRow(), { columns: sepOct })
+    const label = tile.container.querySelector('[data-role="plan-label"]')!
+    expect(label.textContent).toBe('Plan')
+    expect(Number(label.getAttribute('y'))).toBeGreaterThan(planY(tile.container))
+    expect(tile.container.querySelector('[data-role="plan-pill"]')).toBeNull()
+    expect(tile.container.querySelector('.recharts-yAxis')).toBeNull()
+    tile.unmount()
+    const focus = draw(planRow(), { columns: sepOct, size: 'focus' })
+    expect(focus.container.querySelector('[data-role="plan-pill"]')!.textContent).toBe('Plan')
+    expect(focus.container.querySelector('[data-role="plan-label"]')).toBeNull()
+  })
+
+  it('focus ticks sit only at band edges', () => {
+    const { container } = draw(planRow(), { columns: sepOct, size: 'focus' })
+    const ticks = [...container.querySelectorAll('.recharts-yAxis-tick-labels .recharts-cartesian-axis-tick-value')].map((t) => t.textContent)
+    expect(ticks).toEqual(['110%'])
+  })
+
+  it('bands are zones at 7% around the line', () => {
+    const { container } = draw(planRow(), { columns: sepOct })
+    const bands = [...container.querySelectorAll('[data-role="band"]')]
+    expect(bands.length).toBeGreaterThan(0)
+    for (const b of bands) expect(b.getAttribute('fill-opacity')).toBe('0.07')
+  })
+
+  it('summarizes how often spend ran over plan, then the current period', () => {
+    draw(planRow(), { columns: sepOct })
+    expect(screen.getByText('Spend vs plan: over plan in 1 of 2 months; Oct 104% of plan, Green')).toBeTruthy()
+  })
+
+  it('keeps the point buttons', () => {
+    draw(planRow(), { columns: sepOct })
+    expect(screen.getByRole('button', { name: 'Oct: 104%' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Sep: 96%' })).toBeTruthy()
+  })
+
+  it('moneyPlanDomain centres on 100%, padded by the largest deviation plus 3, at least ±15', () => {
+    expect(moneyPlanDomain([96, 111])).toEqual([85, 115])
+    expect(moneyPlanDomain([80, 130])).toEqual([67, 133])
+    expect(moneyPlanDomain([])).toEqual([85, 115])
+  })
+})
+
+describe('MetricChart sparse', () => {
+  const REASON = 'No major incident needed a postmortem this month'
+  const VALUED = [1, 4, 7, 10]
+
+  function sparseRow(): ViewRow {
+    return rowOf('on_time_pct', (r) => {
+      r.cells = r.cells.map((c, i) =>
+        VALUED.includes(i)
+          ? { ...c, value: 80, display: '80%', status: 'Y' }
+          : { ...c, value: null, display: '', status: '', naReason: REASON, change: null },
+      )
+    })
+  }
+
+  it.each(SIZES)('%s: a board ribbon with the value above each valued month and month labels below', (size) => {
+    const { container } = draw(sparseRow(), { size })
+    const ribbon = screen.getByTestId('sparse-ribbon')
+    expect(ribbon.getAttribute('aria-hidden')).toBe('true')
+    const cells = [...ribbon.querySelectorAll<HTMLElement>('[data-kind]')]
+    expect(cells).toHaveLength(12)
+    expect(cells.map((c) => c.dataset.kind)).toEqual(columns.map((_, i) => (VALUED.includes(i) ? 'status' : 'na')))
+    expect(cells[0]!.className).toContain(size === 'focus' ? 'h-6' : 'h-[18px]')
+    const values = [...ribbon.querySelectorAll('[data-role="value-label"]')]
+    expect(values.map((v) => v.textContent)).toEqual(['80%', '80%', '80%', '80%'])
+    expect([...ribbon.querySelectorAll('[data-role="month-label"]')].map((m) => m.textContent)).toEqual(columns.map((c) => c.label))
+    // No bordered chips: nothing in the chart is a chip, and no button reads only n/a.
+    expect(container.querySelector('span.rounded.border')).toBeNull()
+    for (const button of screen.getAllByRole('button')) expect(within(button).queryAllByText(/n\/a$/)).toHaveLength(0)
+  })
+
+  it('says how many months reported and what n/a means', () => {
+    draw(sparseRow())
+    expect(screen.getByText('4 months reported in the last 12; the rest are n/a')).toBeTruthy()
+    expect(screen.getByText(`n/a: ${REASON}`)).toBeTruthy()
+  })
+
+  it('counts n/a months when their reasons differ', () => {
+    const row = sparseRow()
+    row.cells[0] = { ...row.cells[0]!, naReason: 'Team paused' }
+    draw(row)
+    expect(screen.getByText('4 months reported in the last 12; 8 months n/a')).toBeTruthy()
+    expect(screen.getByText(`n/a: ${REASON}`)).toBeTruthy()
+  })
+
+  it('focus adds a table of the valued months', () => {
+    draw(sparseRow(), { size: 'focus' })
+    const table = screen.getByRole('table')
+    expect(within(table).getAllByRole('columnheader').map((h) => h.textContent)).toEqual(['Month', 'Value', 'Status', 'Change'])
+    const rows = within(table).getAllByRole('row').slice(1)
+    expect(rows.map((r) => within(r).getByRole('rowheader').textContent)).toEqual(VALUED.map((i) => columns[i]!.fullLabel))
+    expect(within(rows[0]!).getByText('80%')).toBeTruthy()
+    expect(within(rows[0]!).getByText('Yellow')).toBeTruthy()
+  })
+
+  it('the tile has no table', () => {
+    draw(sparseRow())
+    expect(screen.queryByRole('table')).toBeNull()
+  })
+
+  it('keeps a point button per month, with the reason for n/a months', () => {
+    draw(sparseRow())
+    expect(screen.getByRole('button', { name: `Nov: n/a: ${REASON}` })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Dec: 80%' })).toBeTruthy()
+  })
+})
+
+describe('MetricChart header prop', () => {
+  it('header={false} drops the value row and keeps the chart', () => {
+    draw(rowOf('on_time_pct'), { size: 'focus', header: false })
+    expect(screen.queryByTestId('header-value')).toBeNull()
+    expect(screen.queryByTestId('header-change')).toBeNull()
+    expect(screen.getByTestId('metric-chart')).toBeTruthy()
+  })
+
+  it('shows the value row by default', () => {
+    draw(rowOf('on_time_pct'), { size: 'focus' })
+    expect(screen.getByTestId('header-value')).toBeTruthy()
   })
 })
 

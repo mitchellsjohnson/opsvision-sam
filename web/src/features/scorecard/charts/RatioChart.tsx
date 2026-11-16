@@ -20,10 +20,13 @@ import {
   ActiveDot,
   ANIMATION,
   AxisPill,
+  axisLabel,
   BAND_PILL,
   BandPill,
   BandRect,
+  coarseColumnsShown,
   CurrentDot,
+  monthSpan,
   GUIDE,
   GuidePill,
   hoverTooltip,
@@ -35,6 +38,7 @@ import {
   StatusRibbon,
   tickStyle,
   valueAxis,
+  ValueDot,
   yDomain,
   type BandShapeProps,
   type ChartSize,
@@ -59,6 +63,7 @@ export function RatioChart({
   size,
   fyStart,
   framed = false,
+  valuePoints = false,
 }: {
   row: ViewRow
   chartRows: ViewRow[]
@@ -72,14 +77,25 @@ export function RatioChart({
   fyStart: number
   /** Inside a tile frame, whose value row already states the current value. */
   framed?: boolean
+  /** Coarse and discrete metrics: a visible point and value on every period (§5.5). */
+  valuePoints?: boolean
 }) {
-  const spec = sizeSpec(size, 120)
+  const base = sizeSpec(size, 120)
+  // Room above the highest point for its value label.
+  const spec = valuePoints ? { ...base, margin: { ...base.margin, top: base.margin.top + 14 } } : base
   const focus = size === 'focus'
+  const coarse = coarseColumnsShown(columns)
+  // Eight quarters show Q3 twice: name each point by its full period then.
+  const fullNames = coarse && new Set(columns.map((c) => c.label)).size < columns.length
   const gradientId = `area-${useId().replace(/[^\w-]/g, '')}`
   const [tip, setTip] = useState<ChartPoint | null>(null)
   const series = useMemo(
     () => chartRows.map((r) => ({ row: r, points: buildPoints(r, columns, fyStart) })),
     [chartRows, columns, fyStart],
+  )
+  const hoverColumns = useMemo(
+    () => (coarse ? columns.map((c) => ({ ...c, fullLabel: monthSpan(c, fyStart) })) : columns),
+    [coarse, columns, fyStart],
   )
   const single = series.length === 1
   const hoverSeries = useMemo(
@@ -97,7 +113,7 @@ export function RatioChart({
   const rects = statusIntervals(bands, domain)
   const inset = { left: spec.margin.left, right: spec.margin.right + (axis?.width ?? 0) }
   const showRibbon = single || points.some((p) => p.kind !== 'missing')
-  const labels = new Map(columns.map((c) => [c.key, c.label]))
+  const labels = new Map(columns.map((c) => [c.key, axisLabel(c)]))
 
   const data = columns.map((col, i) => {
     const entry: Record<string, string | number | null> = { i, label: col.label, key: col.key }
@@ -196,7 +212,7 @@ export function RatioChart({
                 label={(props: LabelViewBox) => <AxisPill viewBox={props.viewBox} text={currentPoint!.display} axisWidth={axis.width} />}
               />
             )}
-            {hoverTooltip(columns, hoverSeries, scale, animated, spec.margin.top)}
+            {hoverTooltip(hoverColumns, hoverSeries, scale, animated, spec.margin.top)}
             {single && (
               <Area
                 type="monotoneX"
@@ -211,7 +227,7 @@ export function RatioChart({
                 {...ANIMATION}
               />
             )}
-            {series.map(({ row: r }, s) => {
+            {series.map(({ row: r, points: p }, s) => {
               const color = seriesColor(s, single)
               const dataKey = single ? 'plot' : `plot_${r.subjectId}`
               return (
@@ -221,9 +237,20 @@ export function RatioChart({
                   dataKey={dataKey}
                   stroke={color}
                   strokeWidth={spec.stroke}
-                  dot={(props: DotProps) => (
-                    <CurrentDot {...props} key={`dot-${r.subjectId}-${props.index}`} dataKey={dataKey} last={lastIndex} r={spec.dot} color={color} />
-                  )}
+                  dot={(props: DotProps) =>
+                    valuePoints ? (
+                      <ValueDot
+                        {...props}
+                        key={`dot-${r.subjectId}-${props.index}`}
+                        dataKey={dataKey}
+                        last={lastIndex}
+                        color={color}
+                        text={single ? (p[props.index ?? -1]?.display ?? null) : null}
+                      />
+                    ) : (
+                      <CurrentDot {...props} key={`dot-${r.subjectId}-${props.index}`} dataKey={dataKey} last={lastIndex} r={spec.dot} color={color} />
+                    )
+                  }
                   activeDot={(props: DotProps) => <ActiveDot cx={props.cx} cy={props.cy} r={spec.activeDot} color={color} />}
                   isAnimationActive={animated}
                   {...ANIMATION}
@@ -255,7 +282,7 @@ export function RatioChart({
         {series.map(({ row: r, points: p }) => (
           <Fragment key={r.subjectId}>
             {!single && <p className="mt-2 text-xs font-medium text-ink/80">{r.subjectName}</p>}
-            <PointButtons points={p} onSelect={setTip} prefix={single ? undefined : `${r.subjectName} `} />
+            <PointButtons points={p} onSelect={setTip} prefix={single ? undefined : `${r.subjectName} `} full={fullNames} />
           </Fragment>
         ))}
       </PointControls>

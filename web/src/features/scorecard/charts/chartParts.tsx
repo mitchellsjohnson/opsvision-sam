@@ -1,6 +1,8 @@
 import type { ReactNode } from 'react'
 import { useYAxisScale } from 'recharts'
 import type { components } from '../../../api/schema'
+import { monthLabel, monthsOf, parsePeriod } from '../../../lib/period'
+import type { Column } from '../columns'
 import { formatMetricValue, metricDecimals } from '../format'
 import { chartTheme, LINE_COLORS, MOVE_CLASS, statusFill, type Move, type StatusTheme } from './chartTheme'
 import type { ChartPoint } from './points'
@@ -95,12 +97,6 @@ export function yDomain(points: ChartPoint[], target: number | null): [number, n
   return [min - pad, max + pad]
 }
 
-export function barDomain(points: ChartPoint[], plan: boolean): [number, number] {
-  const values = points.map((p) => p.value).filter((v): v is number => v !== null)
-  const max = Math.max(plan ? 100 : 1, ...values)
-  return [0, max * 1.05]
-}
-
 export interface ValueAxis {
   domain: [number, number]
   ticks: number[]
@@ -174,6 +170,50 @@ export function CurrentDot({ cx, cy, index, payload, dataKey, last, r, color }: 
   return <circle key={key} data-current-dot="" cx={cx} cy={cy} r={r} fill={color} stroke="#FFFFFF" strokeWidth={2} />
 }
 
+/**
+ * Coarse and discrete charts: a visible dot on every period (`r` 3, the
+ * current one 4) with its value above it. Only the current dot carries
+ * `data-current-dot`; `label` is off for all but a single series.
+ */
+export function ValueDot({
+  cx,
+  cy,
+  index,
+  payload,
+  dataKey,
+  last,
+  color,
+  text,
+}: DotProps & { dataKey: string; last: number; color: string; text: string | null }) {
+  const key = `dot-${dataKey}-${index}`
+  if (cx == null || cy == null || payload?.[dataKey] == null) return <g key={key} />
+  const current = index === last
+  const r = current ? 4 : 3
+  return (
+    <g key={key}>
+      <circle data-point="" data-current-dot={current ? '' : undefined} cx={cx} cy={cy} r={r} fill={color} stroke="#FFFFFF" strokeWidth={1.5} />
+      {text && (
+        <text
+          data-role="value-label"
+          x={cx}
+          y={cy - r - 6}
+          textAnchor="middle"
+          fontSize={11}
+          fontWeight={600}
+          fill="var(--color-ink)"
+          fillOpacity={0.8}
+          stroke="#FFFFFF"
+          strokeWidth={3}
+          strokeLinejoin="round"
+          paintOrder="stroke"
+        >
+          {text}
+        </text>
+      )}
+    </g>
+  )
+}
+
 export function ActiveDot({ cx, cy, r, color }: { cx?: number; cy?: number; r: number; color: string }) {
   if (cx == null || cy == null) return null
   return <circle data-role="active-dot" cx={cx} cy={cy} r={r} fill={color} stroke="#FFFFFF" strokeWidth={2} />
@@ -191,9 +231,9 @@ export interface BandShapeProps {
 }
 
 /** A band's faint tint, without a border. */
-export function BandRect({ x = 0, y = 0, width = 0, height = 0, color }: BandShapeProps & { color: string }) {
+export function BandRect({ x = 0, y = 0, width = 0, height = 0, color, opacity = 0.06 }: BandShapeProps & { color: string; opacity?: number }) {
   return (
-    <rect data-role="band" x={x} y={y} width={Math.max(width, 0)} height={Math.max(height, 0)} fill={color} fillOpacity={0.06} stroke="none" />
+    <rect data-role="band" x={x} y={y} width={Math.max(width, 0)} height={Math.max(height, 0)} fill={color} fillOpacity={opacity} stroke="none" />
   )
 }
 
@@ -324,13 +364,25 @@ export function StatusRibbon({ points, scale, size, inset }: { points: ChartPoin
   )
 }
 
-export function pointLabel(p: ChartPoint, prefix = ''): string {
-  if (p.kind === 'na') return `${prefix}${p.label}: n/a: ${p.naReason || 'Not applicable'}`
-  if (p.kind === 'missing') return `${prefix}${p.label}: no data`
-  return `${prefix}${p.label}: ${p.display}${p.overrideReason ? ' †' : ''}`
+/** `Oct: 84.3%`; with `full`, the unambiguous period (`Q3 FY2026: 83%`), as eight quarters repeat `Q3`. */
+export function pointLabel(p: ChartPoint, prefix = '', full = false): string {
+  const label = full ? p.fullLabel : p.label
+  if (p.kind === 'na') return `${prefix}${label}: n/a: ${p.naReason || 'Not applicable'}`
+  if (p.kind === 'missing') return `${prefix}${label}: no data`
+  return `${prefix}${label}: ${p.display}${p.overrideReason ? ' †' : ''}`
 }
 
-export function PointButtons({ points, onSelect, prefix }: { points: ChartPoint[]; onSelect: (p: ChartPoint) => void; prefix?: string }) {
+export interface PointButtonsProps {
+  points: ChartPoint[]
+  onSelect: (p: ChartPoint) => void
+  prefix?: string
+  /** Name each button by the full period. */
+  full?: boolean
+  /** The visible text of an n/a button; `n/a` when absent. */
+  naText?: (p: ChartPoint) => string
+}
+
+export function PointButtons({ points, onSelect, prefix, full = false, naText }: PointButtonsProps) {
   return (
     <div className="mt-2 flex flex-wrap gap-1">
       {points.map((p) => (
@@ -339,9 +391,9 @@ export function PointButtons({ points, onSelect, prefix }: { points: ChartPoint[
           type="button"
           className="rounded border border-ink/20 px-1.5 py-0.5 text-xs hover:bg-cream"
           onClick={() => onSelect(p)}
-          aria-label={pointLabel(p, prefix)}
+          aria-label={pointLabel(p, prefix, full)}
         >
-          {p.kind === 'na' ? 'n/a' : p.kind === 'missing' ? 'no data' : p.display || '—'}
+          {p.kind === 'na' ? (naText?.(p) ?? 'n/a') : p.kind === 'missing' ? 'no data' : p.display || '—'}
           {p.overrideReason && <span aria-hidden="true"> †</span>}
           {p.kind === 'value' && p.status && <span className="sr-only">, status {p.status}</span>}
         </button>
@@ -363,6 +415,29 @@ export function PointSummary({ point, scale }: { point: ChartPoint | null; scale
       {point.overrideReason && <p>† {point.overrideReason}</p>}
     </div>
   )
+}
+
+/** Whether the columns are quarters, halves or years rather than months. */
+export function coarseColumnsShown(columns: Column[]): boolean {
+  const grain = parsePeriod(columns[0]?.period)?.grain
+  return grain !== undefined && grain !== 'month'
+}
+
+/** A coarse period on an axis: `Q3 FY26`, `H1 FY26`, `FY26`; months keep their label. */
+export function axisLabel(column: Column): string {
+  if (!coarseColumnsShown([column])) return column.label
+  return column.fullLabel.replace(/FY\d{2}(\d{2})$/, 'FY$1')
+}
+
+/** The months a coarse period covers, for the hover label: `Jul–Sep 2026`, `Nov 2025–Apr 2026`. */
+export function monthSpan(column: Column, fyStart: number): string {
+  const p = parsePeriod(column.period)
+  if (!p || p.grain === 'month') return column.fullLabel
+  const months = monthsOf(p)
+  const first = monthLabel(months[0]!, fyStart)
+  const last = monthLabel(months[months.length - 1]!, fyStart)
+  const [firstName, firstYear] = first.split(' ')
+  return firstYear === last.split(' ')[1] ? `${firstName}–${last}` : `${first}–${last}`
 }
 
 /**

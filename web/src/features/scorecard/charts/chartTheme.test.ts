@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { contrastRatio } from '../../../ui/contrast'
 import tokensCss from '../../../ui/tokens.css?raw'
-import { chartTheme, MOVE_CLASS, statusFill, TOKEN_TINTS, valueMove } from './chartTheme'
+import { barFill, chartTheme, defaultStatusScale, MOVE_CLASS, statusFill, TOKEN_TINTS, valueMove } from './chartTheme'
 
 const level = (color: string) => [{ key: 'X', label: 'Custom', color, rank: 1 }]
 
@@ -68,6 +68,37 @@ describe('statusFill: exception-first tiers', () => {
 
   it('fills an unknown status solid', () => {
     expect(statusFill(undefined, 'Q').tier).toBe('solid')
+  })
+})
+
+describe('barFill: bars by tier', () => {
+  const scale = defaultStatusScale()
+
+  it('Green is its soft tint with a 1px Green edge; Yellow its tint with a Yellow edge; Red solid', () => {
+    expect(barFill(scale, 'G')).toEqual({ fill: '#E3F6EA', stroke: '#137A3A' })
+    expect(barFill(scale, 'Y')).toEqual({ fill: '#FFF3D6', stroke: '#8A5A00' })
+    expect(barFill(scale, 'R')).toEqual({ fill: '#B42318', stroke: '#B42318' })
+  })
+
+  it('every edge reads at 3:1 or more on white, a light tenant color and a bar with no status included', () => {
+    const light = [
+      { key: 'A', label: 'Fine', color: '#F5D90A', rank: 1 },
+      { key: 'B', label: 'Watch', color: '#7DD3FC', rank: 2 },
+      { key: 'C', label: 'Bad', color: '#FDA4AF', rank: 3 },
+    ]
+    for (const [s, status] of [
+      [scale, 'G'],
+      [scale, 'Y'],
+      [scale, 'R'],
+      [scale, ''],
+      [light, 'A'],
+      [light, 'B'],
+      [light, 'C'],
+    ] as const) {
+      const { fill, stroke } = barFill([...s], status)
+      expect(fill, status).toMatch(/^#[0-9A-Fa-f]{6}$/)
+      expect(contrastRatio(stroke, '#FFFFFF'), `${status} edge`).toBeGreaterThanOrEqual(3)
+    }
   })
 })
 

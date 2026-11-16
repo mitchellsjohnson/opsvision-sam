@@ -1,16 +1,18 @@
 import { useMemo } from 'react'
 import { Link, type To } from 'react-router'
 import type { components } from '../../../api/schema'
+import { parsePeriod } from '../../../lib/period'
 import { usePrefersReducedMotion } from '../../../ui/Sparkline'
-import type { Column } from '../columns'
+import { FREQUENCY_GRAIN, type Column } from '../columns'
 import { cellKey } from '../viewHelpers'
-import { BarsChart } from './BarsChart'
 import { ChangeLabel, StatusMarker, type ChartSize } from './chartParts'
 import { chartTheme } from './chartTheme'
-import { LetteredChips } from './LetteredChips'
+import { moneyPlanSummary } from './moneyPlan'
+import { MoneyPlanChart } from './MoneyPlanChart'
 import { buildPoints, headerChange } from './points'
 import { RatioChart } from './RatioChart'
 import { isSparse } from './sparse'
+import { SparseRibbon } from './SparseRibbon'
 import { UptimeRows } from './UptimeRows'
 
 export { buildPoints, type ChartPoint } from './points'
@@ -45,6 +47,8 @@ export interface MetricChartProps {
   fiscalYearStartMonth?: number
   /** Inside a tile frame: the frame shows the value row, so only the chart region renders. */
   framed?: boolean
+  /** The chart's own value row; off where the surface draws one (the dialog). */
+  header?: boolean
 }
 
 /** Renders the chart for one metric row and encodings required by the UX spec. */
@@ -64,17 +68,25 @@ export function MetricChart({
   size = 'tile',
   fiscalYearStartMonth = 1,
   framed = false,
+  header = true,
 }: MetricChartProps) {
   const reduced = usePrefersReducedMotion()
   const animated = !reduced
   const lines = chartRows ?? [row]
   const points = useMemo(() => buildPoints(row, columns, fiscalYearStartMonth), [row, columns, fiscalYearStartMonth])
   const kind = isSparse(row.chartKind, points.map((p) => p.kind)) ? 'sparse' : row.chartKind
+  // A quarterly, biannual or annual metric charted at its own grain (§5.5); the columns already are that grain.
+  const shownGrain = parsePeriod(columns[0]?.period)?.grain ?? 'month'
+  const coarse = shownGrain !== 'month' && FREQUENCY_GRAIN[row.frequency] === shownGrain
   const currentCell = row.cells.find((c) => cellKey(c) === currentColumnKey)
   const target = currentCell?.target ?? null
   const theme = chartTheme(scale, currentStatus)
   const change = headerChange(row, currentCell, fiscalYearStartMonth)
-  const summary = `${row.metricName}: ${currentDisplay || 'no data'}, status ${currentStatus || 'none'}`
+  const nameOf = (key: string) => statusLabel(key) || chartTheme(scale, key).label || key
+  const summary =
+    kind === 'money_plan'
+      ? moneyPlanSummary(row.metricName, points, columns, nameOf)
+      : `${row.metricName}: ${currentDisplay || 'no data'}, status ${currentStatus || 'none'}`
 
   return (
     <div>
@@ -82,30 +94,24 @@ export function MetricChart({
       {!framed && (
         <>
           {scopeNote && <p className="text-xs text-ink/80">{scopeNote}</p>}
-          <div className="mt-1 flex flex-wrap items-baseline gap-x-2 gap-y-1">
-            <span data-testid="header-value" className={`${size === 'focus' ? 'text-[28px] leading-9' : 'text-xl'} font-semibold tabular-nums`}>
-              {currentDisplay || '—'}
-            </span>
-            {currentStatus && <StatusMarker theme={theme} title={statusLabel(currentStatus)} />}
-            {change && <ChangeLabel change={change} size={size} />}
-            {ytdDisplay && <span className="text-sm text-ink/80">{ytdDisplay}</span>}
-          </div>
+          {header && (
+            <div className="mt-1 flex flex-wrap items-baseline gap-x-2 gap-y-1">
+              <span data-testid="header-value" className={`${size === 'focus' ? 'text-[28px] leading-9' : 'text-xl'} font-semibold tabular-nums`}>
+                {currentDisplay || '—'}
+              </span>
+              {currentStatus && <StatusMarker theme={theme} title={statusLabel(currentStatus)} />}
+              {change && <ChangeLabel change={change} size={size} />}
+              {ytdDisplay && <span className="text-sm text-ink/80">{ytdDisplay}</span>}
+            </div>
+          )}
         </>
       )}
       {kind === 'uptime' ? (
         <UptimeRows childRows={childRows} columns={columns} currentColumnKey={currentColumnKey} scale={scale} />
       ) : kind === 'sparse' ? (
-        <LetteredChips points={points} scale={scale} />
-      ) : kind === 'discrete' || kind === 'money_plan' ? (
-        <BarsChart
-          points={points}
-          columns={columns}
-          format={row.format}
-          scale={scale}
-          animated={animated}
-          size={size}
-          plan={kind === 'money_plan'}
-        />
+        <SparseRibbon points={points} columns={columns} scale={scale} size={size} statusLabel={statusLabel} />
+      ) : kind === 'money_plan' ? (
+        <MoneyPlanChart row={row} points={points} columns={columns} scale={scale} animated={animated} size={size} />
       ) : (
         <RatioChart
           row={row}
@@ -118,6 +124,7 @@ export function MetricChart({
           size={size}
           fyStart={fiscalYearStartMonth}
           framed={framed}
+          valuePoints={kind === 'discrete' || coarse}
         />
       )}
       {/* In focus, the dialog's own table link sits below its breakdown. */}

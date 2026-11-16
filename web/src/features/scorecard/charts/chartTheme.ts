@@ -106,6 +106,24 @@ export function statusFill(scale: StatusLevel[] | undefined, status: string): St
   }
 }
 
+/** A bar with no status: the n/a tint with its edge, both from the tokens. */
+const UNRATED_BAR = { fill: '#EEF0F4', stroke: '#8A93A6' }
+
+/**
+ * A bar's fill and 1px edge by status tier, as hex so the slide export can use
+ * them: the best status its tint with a status-colored edge, a middle one the
+ * same, the worst solid. An edge that would fall under 3:1 on white is ink.
+ */
+export function barFill(scale: StatusLevel[], status: string): { fill: string; stroke: string } {
+  const entries = scale.length ? scale : DEFAULT_SCALE
+  const color = entries.find((s) => s.key === status)?.color
+  if (!color || !/^#[0-9a-f]{6}$/i.test(color)) return UNRATED_BAR
+  const edge = contrastRatio(color, WHITE) >= 3 ? color : INK
+  const tier = statusFill(entries, status)
+  if (tier.tier === 'solid') return { fill: color, stroke: edge }
+  return { fill: TOKEN_TINTS[color.toUpperCase()]?.hex ?? mixWithWhite(color, TINT_PERCENT / 100), stroke: edge }
+}
+
 export function defaultStatusScale(): StatusLevel[] {
   return DEFAULT_SCALE
 }

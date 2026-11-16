@@ -229,6 +229,74 @@ describe('SVG', () => {
     expect(lines[0]!.getAttribute('points')!.trim().split(/\s+/)).toHaveLength(2)
   })
 
+  describe('money plan', () => {
+    const planBands = [
+      { status: 'G', op: '<=', value: 110 },
+      { status: 'Y', op: '<=', value: 120 },
+      { status: 'R', op: '', value: 0 },
+    ]
+
+    function spend(values: (number | null)[]): ViewRow {
+      const base = row('All units', [0])
+      const status = (v: number) => (v <= 110 ? 'G' : v <= 120 ? 'Y' : 'R')
+      return {
+        ...base,
+        metricName: 'Spend vs plan',
+        format: 'percent0',
+        direction: 'lower_better',
+        chartKind: 'money_plan',
+        cells: values.map((value, i) => ({
+          ...base.cells[0]!,
+          period: months[i]!.period,
+          value,
+          display: value === null ? '' : `${value}%`,
+          status: value === null ? '' : status(value),
+          rule: { type: 'bands' as const, bands: planBands },
+        })),
+      }
+    }
+
+    const draw = (values: (number | null)[]) =>
+      render({ title: 'Spend vs plan', format: 'percent0', rows: [spend(values)] })
+
+    it('draws diverging bars on both sides of the 100% line', () => {
+      const { doc, num } = draw([96, 104, 112, null])
+      const planY = num(doc.querySelector('[data-role="plan-line"]'), 'y1')
+      const bars = [...doc.querySelectorAll('[data-role="bar"]')]
+      expect(bars.map((b) => b.getAttribute('data-status'))).toEqual(['G', 'G', 'Y'])
+      const [under, over, yellow] = bars
+      expect(num(under!, 'y')).toBeCloseTo(planY)
+      expect(num(under!, 'y') + num(under!, 'height')).toBeGreaterThan(planY)
+      expect(num(over!, 'y') + num(over!, 'height')).toBeCloseTo(planY)
+      expect(num(over!, 'y')).toBeLessThan(planY)
+      expect(num(yellow!, 'y')).toBeLessThan(num(over!, 'y'))
+      expect(under!.getAttribute('fill')).toBe('#E3F6EA')
+      expect(under!.getAttribute('stroke')).toBe('#137A3A')
+      expect(yellow!.getAttribute('stroke')).toBe('#8A5A00')
+    })
+
+    it('labels each bar with its deviation and status letter, and the line Plan', () => {
+      const { texts } = draw([96, 104, 112, null])
+      expect(texts('deviation')).toEqual(['-4%', '+4%', '+12%'])
+      expect(texts('point-letter')).toEqual(['G', 'G', 'Y'])
+      expect(texts('plan-label')).toEqual(['Plan'])
+      expect(texts('value-label')).toEqual([])
+    })
+
+    it('centres the value axis on 100%', () => {
+      const { texts } = draw([96, 104, 112, null])
+      const ticks = texts('y-tick').map((t) => parseFloat(t ?? ''))
+      expect(ticks).toContain(100)
+      expect(Math.min(...ticks) + Math.max(...ticks)).toBe(200)
+    })
+
+    it('draws no polyline, and the legend names the bars and the plan', () => {
+      const { doc, texts } = draw([96, 104, 112, null])
+      expect(doc.querySelector('[data-role="series"] polyline')).toBeNull()
+      expect(texts('legend-item').slice(0, 2)).toEqual(['Percent of plan', 'Plan 100%'])
+    })
+  })
+
   it('is loaded as a data: URL, which the CSP allows for images', () => {
     const url = svgDataUrl('<svg>#</svg>')
     expect(url.startsWith('data:image/svg+xml;charset=utf-8,')).toBe(true)
