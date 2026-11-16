@@ -8,7 +8,7 @@ import {
 } from '../../api/queries'
 import { NO_ERRORS, errorsFrom, fieldError, forField, unclaimed, type FormErrors } from '../admin/adminModel'
 import { FormError, QueryState, TextField, primaryButton, secondaryButton, useFocusOnError } from '../admin/formUi'
-import { PRIVACY_LINE } from '../assistant/AskSamDrawer'
+import { PRIVACY_LINE } from '../assistant/useAssistant'
 import { formatDate } from '../scorecard/format'
 import { Sam } from '../../ui/Sam'
 
@@ -45,7 +45,7 @@ function KeyForm({ onSaved, onCancel }: { onSaved: () => void; onCancel?: () => 
         label="Claude API key"
         hint="Create a key in your Claude account’s console, then paste it here. SAM checks it with one small request."
         type="password"
-        autoComplete="off"
+        autoComplete="new-password"
         spellCheck={false}
         maxLength={512}
         value={apiKey}

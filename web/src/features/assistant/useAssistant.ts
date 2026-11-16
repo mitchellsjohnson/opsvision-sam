@@ -3,6 +3,8 @@ import { useLocation, useSearchParams } from 'react-router'
 import type { AssistantContext } from '../../api/queries'
 import { usePeriodState } from '../../shell/usePeriodState'
 
+export const PRIVACY_LINE = 'Your questions and the data SAM reads are sent to the model provider using your key.'
+
 export interface AskSam {
   /** Opens the drawer about what the user is looking at. */
   open: (context: AssistantContext) => void

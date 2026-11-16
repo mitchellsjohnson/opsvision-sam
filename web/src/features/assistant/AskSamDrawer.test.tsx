@@ -1,4 +1,4 @@
-import { screen, waitFor, within } from '@testing-library/react'
+import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -51,7 +51,7 @@ describe('Ask SAM drawer', () => {
     const { drawer } = await openFromControlBar()
     expect(drawer.querySelector('img[data-sam]')).toBeTruthy()
     expect(await within(drawer).findByText('Oct 2026 · Unit A')).toBeTruthy()
-    expect(within(drawer).getByRole('button', { name: 'What needs attention in Unit A?' })).toBeTruthy()
+    expect(await within(drawer).findByRole('button', { name: 'What needs attention in Unit A?' })).toBeTruthy()
     expect(within(drawer).getByRole('button', { name: 'Summarize Oct 2026' })).toBeTruthy()
     expect(document.activeElement).toBe(await composer(drawer))
   })
@@ -117,6 +117,116 @@ describe('Ask SAM drawer', () => {
     const reads = seen.threadGets
     await sleep(1800)
     expect(seen.threadGets).toBe(reads)
+  })
+
+  it('keeps the chat on screen when a background poll fails, and recovers', async () => {
+    renderWithSam(OVERVIEW, { pendingReads: 99 })
+    const { user, drawer } = await openFromControlBar()
+    await user.type(await composer(drawer), 'Hello{Enter}')
+    await within(drawer).findByText('SAM is looking into it')
+    let failing = true
+    server.use(
+      http.get(`${API}/v1/assistant/threads/:id`, () =>
+        failing ? HttpResponse.json({ error: { code: 'internal', message: 'boom' } }, { status: 500 }) : undefined,
+      ),
+    )
+    expect(await within(drawer).findByText('Lost connection to SAM. Retrying…', {}, POLL)).toBeTruthy()
+    expect(within(drawer).getByText('Hello')).toBeTruthy()
+    expect(within(drawer).getByText('SAM is looking into it')).toBeTruthy()
+    expect(within(drawer).queryByText(/Could not load this chat/)).toBeNull()
+    failing = false
+    await waitFor(() => expect(within(drawer).queryByText('Lost connection to SAM. Retrying…')).toBeNull(), POLL)
+    expect(within(drawer).getByText('Hello')).toBeTruthy()
+  })
+
+  it('keeps a first question asked just before closing, and shows it on reopening', async () => {
+    const seen = renderWithSam()
+    let release = () => {}
+    const gate = new Promise<void>((r) => (release = r))
+    server.use(
+      http.post(`${API}/v1/assistant/threads/:id/messages`, async () => {
+        await gate
+        return undefined
+      }),
+    )
+    const { user, drawer } = await openFromControlBar()
+    await user.type(await composer(drawer), 'Hello{Enter}')
+    await waitFor(() => expect(seen.threadCreates).toHaveLength(1))
+    await user.click(within(drawer).getByRole('button', { name: 'Close' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Ask SAM' })).toBeNull())
+    release()
+    await waitFor(() => expect(seen.posts).toHaveLength(1))
+    await openFromControlBar()
+    const reopened = screen.getByRole('dialog', { name: 'Ask SAM' })
+    expect(await within(reopened).findByText('Hello')).toBeTruthy()
+    expect(await within(reopened).findByText('84.3%', {}, POLL)).toBeTruthy()
+    expect(seen.threadCreates).toHaveLength(1)
+  })
+
+  it('retries a failed first question in the chat it already started', async () => {
+    const seen = renderWithSam()
+    let refused = false
+    server.use(
+      http.post(`${API}/v1/assistant/threads/:id/messages`, () => {
+        if (refused) return undefined
+        refused = true
+        return HttpResponse.json(
+          { error: { code: 'unavailable', message: 'The provider could not be reached; try again later.' } },
+          { status: 503 },
+        )
+      }),
+    )
+    const { user, drawer } = await openFromControlBar()
+    const box = await composer(drawer)
+    await user.type(box, 'Hello{Enter}')
+    expect((await within(drawer).findByRole('alert')).textContent).toContain('The provider could not be reached')
+    await user.type(box, '{Enter}')
+    await waitFor(() => expect(seen.posts).toHaveLength(1))
+    expect(seen.threadCreates).toHaveLength(1)
+    expect(seen.posts[0]!.threadId).toBe('th-new-1')
+    expect(await within(drawer).findByText('84.3%', {}, POLL)).toBeTruthy()
+  })
+
+  it('stops polling a pending chat once you switch away from it', async () => {
+    const seen = renderWithSam(OVERVIEW, {
+      threads: [
+        thread({
+          id: 'th-busy',
+          title: 'Busy',
+          messages: [message({ id: 'q', text: 'Earlier' }), message({ id: 'a', role: 'assistant', status: 'pending' })],
+        }),
+        thread({
+          id: 'th-old',
+          title: 'Settled',
+          messages: [message({ id: 'q1', text: 'Before' }), message({ id: 'a1', role: 'assistant', text: 'Done.' })],
+        }),
+      ],
+      pendingReads: 99,
+    })
+    const { user, drawer } = await openFromControlBar()
+    await user.click(within(drawer).getByRole('button', { name: 'Recent chats' }))
+    await user.click(await screen.findByRole('menuitem', { name: /Busy/ }))
+    await within(drawer).findByText('SAM is looking into it')
+    const busyReads = () => seen.threadGetIds.filter((id) => id === 'th-busy').length
+    await waitFor(() => expect(busyReads()).toBeGreaterThanOrEqual(2), POLL)
+    await user.click(within(drawer).getByRole('button', { name: 'Recent chats' }))
+    await user.click(await screen.findByRole('menuitem', { name: /Settled/ }))
+    expect(await within(drawer).findByText('Done.')).toBeTruthy()
+    const reads = busyReads()
+    await sleep(1800)
+    expect(busyReads()).toBe(reads)
+  })
+
+  it('stays open beside the page when Escape is pressed outside it', async () => {
+    renderWithSam()
+    const { user, drawer } = await openFromControlBar()
+    const bar = screen.getByRole('toolbar', { name: 'Scorecard controls' })
+    act(() => within(bar).getByRole('button', { name: 'Ask SAM' }).focus())
+    await user.keyboard('{Escape}')
+    expect(screen.getByRole('dialog', { name: 'Ask SAM' })).toBe(drawer)
+    act(() => within(drawer).getByRole('textbox', { name: 'Ask SAM a question' }).focus())
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Ask SAM' })).toBeNull())
   })
 
   it('uses Shift+Enter for a new line and starters to ask', async () => {

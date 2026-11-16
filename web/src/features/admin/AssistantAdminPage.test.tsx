@@ -70,7 +70,8 @@ describe('AssistantAdminPage', () => {
     renderPage()
     const nav = await screen.findByRole('navigation', { name: 'Main' })
     const admin = await within(nav).findByRole('list', { name: 'Admin' })
-    expect(within(admin).getByRole('link', { name: 'Ask SAM' }).getAttribute('href')).toBe('/admin/assistant')
+    expect(within(admin).getByRole('link', { name: 'Ask SAM settings' }).getAttribute('href')).toBe('/admin/assistant')
+    expect(within(nav).getAllByRole('button', { name: 'Ask SAM' })).toHaveLength(1)
   })
 
   it('is for admins only', async () => {

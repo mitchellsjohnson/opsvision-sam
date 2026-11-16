@@ -22,7 +22,7 @@ import { parsePeriod, periodLabel } from '../../lib/period'
 import { usePeriodState } from '../../shell/usePeriodState'
 import { Sam } from '../../ui/Sam'
 import { StatusBadge } from '../../ui/StatusBadge'
-import { usageText } from '../assistant/AssistantMessage'
+import { usageText } from '../assistant/usage'
 import { inputClass, primaryButton, secondaryButton } from '../admin/formUi'
 import { defaultStatusScale } from './charts/chartTheme'
 import { downloadBlob } from './exports'
@@ -77,7 +77,7 @@ function SummaryEditor({ scorecardId, period, summary, reload, onDirtyChange }: 
     abortDraft.current?.abort()
     const controller = new AbortController()
     abortDraft.current = controller
-    const before = draft.text
+    const before = fromSam?.before ?? draft.text
     drafting.mutate(
       { signal: controller.signal },
       {

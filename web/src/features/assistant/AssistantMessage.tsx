@@ -1,8 +1,9 @@
 import { AlertCircle, RotateCcw } from 'lucide-react'
 import type { ReactNode } from 'react'
 import Markdown, { type Components } from 'react-markdown'
-import type { AssistantMessage, AssistantUsage } from '../../api/queries'
+import type { AssistantMessage } from '../../api/queries'
 import { Sam } from '../../ui/Sam'
+import { UsageLine } from './usage'
 
 function Heading({ children }: { children?: ReactNode }) {
   // Answers sit inside the drawer's own heading outline, so their headings are bold text.
@@ -10,12 +11,16 @@ function Heading({ children }: { children?: ReactNode }) {
 }
 
 const COMPONENTS: Components = {
-  a: ({ href, children }) => (
-    <a href={href} target="_blank" rel="noopener noreferrer" className="font-medium text-accent-deep underline">
-      {children}
-      <span className="sr-only"> (opens in a new tab)</span>
-    </a>
-  ),
+  // An unsafe URL arrives as an empty href; the link text stays, without the link.
+  a: ({ href, children }) =>
+    href ? (
+      <a href={href} target="_blank" rel="noopener noreferrer" className="font-medium text-accent-deep underline">
+        {children}
+        <span className="sr-only"> (opens in a new tab)</span>
+      </a>
+    ) : (
+      <>{children}</>
+    ),
   p: ({ children }) => <p className="my-2 first:mt-0 last:mb-0">{children}</p>,
   ul: ({ children }) => <ul className="my-2 list-disc space-y-1 pl-5 first:mt-0 last:mb-0">{children}</ul>,
   ol: ({ children }) => <ol className="my-2 list-decimal space-y-1 pl-5 first:mt-0 last:mb-0">{children}</ol>,
@@ -47,18 +52,6 @@ export function AssistantMarkdown({ text }: { text: string }) {
       {text}
     </Markdown>
   )
-}
-
-const count = new Intl.NumberFormat('en-US')
-
-/** `claude-haiku-5-5 · 1,234 in · 56 out tokens` */
-export function usageText(usage: AssistantUsage): string {
-  return `${usage.model} · ${count.format(usage.inputTokens)} in · ${count.format(usage.outputTokens)} out tokens`
-}
-
-/** What an answer cost: the model and its tokens. */
-export function UsageLine({ usage }: { usage: AssistantUsage }) {
-  return <p className="mt-1 px-1 text-xs text-ink/70">{usageText(usage)}</p>
 }
 
 /** One message in a chat: the person's question, or SAM's answer, pending reply or error. */

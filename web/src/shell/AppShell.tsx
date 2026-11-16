@@ -42,7 +42,7 @@ const ADMIN_LINKS: { to: string; label: string; icon: LucideIcon }[] = [
   { to: '/admin/import', label: 'Import', icon: Upload },
   { to: '/admin/record-types', label: 'Record types', icon: Tags },
   { to: '/admin/templates', label: 'Templates', icon: FileText },
-  { to: '/admin/assistant', label: 'Ask SAM', icon: MessageCircleQuestion },
+  { to: '/admin/assistant', label: 'Ask SAM settings', icon: MessageCircleQuestion },
 ]
 
 const NAV_LINKS_ID = 'main-nav-links'
@@ -253,7 +253,7 @@ function AppShellBody() {
                   >
                     <Link to="/settings/ask-sam">
                       <MessageCircleQuestion aria-hidden="true" size={14} />
-                      Ask SAM
+                      Ask SAM key
                     </Link>
                   </DropdownMenu.Item>
                 </DropdownMenu.Group>

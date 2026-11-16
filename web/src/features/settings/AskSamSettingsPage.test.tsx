@@ -24,6 +24,7 @@ describe('AskSamSettingsPage', () => {
     expect(await screen.findByText('claude-haiku-5-5')).toBeTruthy()
     expect(await screen.findByText('No key saved.')).toBeTruthy()
     expect((await keyField()).type).toBe('password')
+    expect((await keyField()).getAttribute('autocomplete')).toBe('new-password')
     expect((await axe(container)).violations).toEqual([])
   })
 
@@ -105,7 +106,7 @@ describe('AskSamSettingsPage', () => {
     const user = userEvent.setup()
     await user.click(await screen.findByRole('button', { name: /Test admin/ }))
     const group = await screen.findByRole('group', { name: 'My settings' })
-    const item = await screen.findByRole('menuitem', { name: 'Ask SAM' })
+    const item = await screen.findByRole('menuitem', { name: 'Ask SAM key' })
     expect(group.contains(item)).toBe(true)
     expect(item.getAttribute('href')).toBe('/settings/ask-sam')
   })

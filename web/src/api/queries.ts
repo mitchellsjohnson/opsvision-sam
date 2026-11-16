@@ -93,6 +93,7 @@ export const keys = {
   assistantSettings: ['assistantSettings'] as const,
   assistantThreads: ['assistantThreads'] as const,
   assistantThread: (id: string) => ['assistantThread', id] as const,
+  askSam: ['askSam'] as const,
 }
 
 /** How often the client asks for SAM's answer (or draft) while one is pending. */
@@ -947,11 +948,16 @@ export function useAssistantThread(id: string | null) {
   })
 }
 
-/** Asks SAM a question, starting a chat first when there is none; resolves with the chat, its answer pending. */
-export function useAskSamQuestion() {
+/**
+ * Asks SAM a question, starting a chat first when there is none; resolves with the chat, its answer pending.
+ * `onThread` gets a new chat's id as soon as it exists, so a question that then fails, or outlives the
+ * drawer that asked it, still belongs to that chat.
+ */
+export function useAskSamQuestion({ onThread }: { onThread?: (id: string) => void } = {}) {
   const api = useApi()
   const queryClient = useQueryClient()
   return useMutation({
+    mutationKey: keys.askSam,
     mutationFn: async ({
       threadId,
       text,
@@ -961,7 +967,11 @@ export function useAskSamQuestion() {
       text: string
       context: AssistantContext
     }) => {
-      const id = threadId ?? (await unwrap(api.POST('/assistant/threads', { body: { context } }))).id
+      let id = threadId
+      if (id === null) {
+        id = (await unwrap(api.POST('/assistant/threads', { body: { context } }))).id
+        onThread?.(id)
+      }
       return unwrap(api.POST('/assistant/threads/{id}/messages', { params: { path: { id } }, body: { text, context } }))
     },
     onSuccess: async (thread) => {

@@ -364,6 +364,19 @@ describe('ReportPage: Draft with SAM', () => {
     expect(screen.queryByText('Draft from SAM — review before saving')).toBeNull()
   })
 
+  it('discards a second draft back to the text before the first', async () => {
+    renderDraft()
+    const box = (await screen.findByRole('textbox', { name: 'Summary' })) as HTMLTextAreaElement
+    await waitFor(() => expect(box.value).toBe(REPORT_SUMMARY))
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: 'Draft with SAM' }))
+    await screen.findByRole('button', { name: 'Discard draft' }, { timeout: 4000 })
+    await user.click(await screen.findByRole('button', { name: 'Draft with SAM' }, { timeout: 4000 }))
+    await waitFor(() => expect(screen.queryByText('SAM is drafting the summary…')).toBeNull(), { timeout: 4000 })
+    await user.click(screen.getByRole('button', { name: 'Discard draft' }))
+    expect(box.value).toBe(REPORT_SUMMARY)
+  })
+
   it('shows why SAM could not draft, with the way to fix it', async () => {
     renderDraft()
     server.use(

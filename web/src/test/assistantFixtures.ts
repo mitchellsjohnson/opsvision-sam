@@ -17,6 +17,8 @@ export interface AssistantSeen {
   posts: { threadId: string; body: unknown }[]
   threadCreates: unknown[]
   threadGets: number
+  /** The id of each thread read, in order. */
+  threadGetIds: string[]
   credentialPuts: unknown[]
   credentialDeletes: number
   settingsPuts: unknown[]
@@ -29,6 +31,7 @@ export function newAssistantSeen(): AssistantSeen {
     posts: [],
     threadCreates: [],
     threadGets: 0,
+    threadGetIds: [],
     credentialPuts: [],
     credentialDeletes: 0,
     settingsPuts: [],
@@ -142,6 +145,7 @@ export function assistantHandlers(options: AssistantFakeOptions = {}) {
     }),
     http.get(`${API}/v1/assistant/threads/:id`, ({ params }) => {
       seen.threadGets += 1
+      seen.threadGetIds.push(String(params.id))
       const t = threads.get(String(params.id))
       if (!t) return HttpResponse.json({ error: { code: 'not_found', message: 'no such thread' } }, { status: 404 })
       resolve(t)

@@ -50,6 +50,16 @@ describe('AssistantMarkdown', () => {
     expect(container.innerHTML).not.toContain('javascript:')
   })
 
+  it.each([
+    ['a script URL', 'javascript:alert(1)'],
+    ['a data URL', 'data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg=='],
+  ])('shows a link with %s as plain text', (_, url) => {
+    const { container } = render(<AssistantMarkdown text={`Open [this page](${url}) now.`} />)
+    expect(screen.queryByRole('link')).toBeNull()
+    expect(container.querySelector('a')).toBeNull()
+    expect(container.textContent).toBe('Open this page now.')
+  })
+
   it('renders headings as bold text, keeping the page outline', () => {
     render(<AssistantMarkdown text={'# Big\n\n## Smaller'} />)
     expect(screen.queryByRole('heading')).toBeNull()
