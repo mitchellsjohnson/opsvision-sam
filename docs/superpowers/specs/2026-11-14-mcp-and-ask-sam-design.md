@@ -1,6 +1,6 @@
 # API tokens, MCP server, and Ask SAM — design
 
-Date: 2026-11-14. Status: awaiting maintainer review of the plan (maintainer opted to skip the question round; calls marked *builder's call* are the agent's and can be revisited).
+Date: 2026-11-14. Status: approved 2026-11-15 and built (maintainer opted to skip the question round; calls marked *builder's call* are the agent's and can be revisited).
 
 ## Intent
 
