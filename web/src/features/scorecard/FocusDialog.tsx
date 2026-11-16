@@ -13,6 +13,7 @@ import { FOCUS_CHART_HEIGHT, MetricChart } from './charts/MetricChart'
 import { RANGES, rangeChange, rangeMonths, type RangeChange, type RangeKey } from './charts/ranges'
 import { buildMonthTrendColumns, buildTrendColumns } from './columns'
 import { focusReturnRef } from './focusTrigger'
+import { worstChildren } from './logic/drivers'
 import { defaultLayout } from './logic/layout'
 import { cellReported, statusAtScope, type StatusScaleEntry } from './logic/statusAtScope'
 import { TablePage } from './TablePage'
@@ -122,14 +123,7 @@ function MetricFocusBody({
     ? statusAtScope({ scope: scope ?? { cells: [] }, children, columnKey, scale, noun })
     : null
 
-  const rankedChildren = children
-    .map((ch) => {
-      const c = ch.cells.find((x) => cellKey(x) === columnKey)
-      const rank = scale.find((s) => s.key === c?.status)?.rank ?? -1
-      return { row: ch, cell: c, rank }
-    })
-    .filter((x) => x.cell && cellReported(x.cell))
-    .sort((a, b) => b.rank - a.rank)
+  const rankedChildren = worstChildren(children, columnKey, scale, head?.direction ?? 'higher_better').ranked
 
   const tableLink = useMemo(() => {
     const q = new URLSearchParams(params)

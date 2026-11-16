@@ -1,127 +1,15 @@
-import * as Tooltip from '@radix-ui/react-tooltip'
 import clsx from 'clsx'
-import { Fragment, useId, useRef, useState, type CSSProperties, type FocusEvent, type KeyboardEvent } from 'react'
-import type { components } from '../../api/schema'
-import { parsePeriod, type Grain } from '../../lib/period'
+import { Fragment, useId, useRef, type FocusEvent } from 'react'
 import { useElementWidth } from '../../ui/useElementWidth'
-import { chartTheme, MOVE_CLASS, statusFill } from './charts/chartTheme'
+import { Legend, RollUp, StatusCell, StatusCellTip, StatusChip, useGridNavigation, type StatusLevel } from '../../ui/status'
+import { MOVE_CLASS } from './charts/chartTheme'
 import type { Column } from './columns'
-import { boardLayout, cellName, fiscalGroups, streakAt, type BoardCell, type BoardRow } from './logic/statusBoard'
+import { boardLayout, cellName, fiscalGroups, streakAt, type BoardRow } from './logic/statusBoard'
+import { columnUnit } from './logic/statusText'
 
-type StatusLevel = components['schemas']['StatusLevel']
+export { StatusCellTip, type StatusCellTipProps } from '../../ui/status'
 
-const UNITS: Record<Grain, [string, string]> = {
-  month: ['month', 'months'],
-  quarter: ['quarter', 'quarters'],
-  half: ['half', 'halves'],
-  year: ['year', 'years'],
-}
-
-function unitOf(column: Column | undefined, n: number): string {
-  const grain = parsePeriod(column?.period)?.grain ?? 'month'
-  return UNITS[grain][n === 1 ? 0 : 1]
-}
-
-/** Diagonal hairlines: not applicable, quieter than any status and unlike the no-data dot. */
-const HATCH: CSSProperties = {
-  backgroundImage: 'repeating-linear-gradient(135deg, color-mix(in srgb, var(--color-ink) 18%, transparent) 0 1px, transparent 1px 5px)',
-}
-
-const CHIP = 'inline-flex h-4 w-7 shrink-0 items-center justify-center gap-px rounded-[3px] border text-[11px] font-semibold leading-none'
-const UNRATED_CLASS = 'border-transparent bg-ink/[0.06]'
 const ROW_HOVER = 'hover:bg-ink/[0.035] focus-within:bg-ink/[0.035]'
-
-function fillStyle(scale: StatusLevel[], status: string): CSSProperties {
-  const fill = statusFill(scale, status)
-  return { backgroundColor: fill.background, color: fill.letter, borderColor: fill.border ?? 'transparent' }
-}
-
-/** A status chip with its shape and letter, filled as the cells are: for the legend and the value column. */
-function StatusChip({ status, scale }: { status: string; scale: StatusLevel[] }) {
-  const theme = chartTheme(scale, status)
-  return (
-    <span className={CHIP} style={fillStyle(scale, status)}>
-      <span aria-hidden="true">{theme.shape}</span>
-      {theme.letter}
-    </span>
-  )
-}
-
-function NoDataDot() {
-  return <span data-dot="" aria-hidden="true" className="size-1 rounded-full bg-ink/35" />
-}
-
-function Legend({ scale, unrated }: { scale: StatusLevel[]; unrated: boolean }) {
-  return (
-    <ul aria-label="Status key" className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-ink/80">
-      {[...scale]
-        .sort((a, b) => a.rank - b.rank)
-        .map((s) => (
-          <li key={s.key} className="inline-flex items-center gap-1.5">
-            <span aria-hidden="true" className="inline-flex">
-              <StatusChip status={s.key} scale={scale} />
-            </span>
-            {s.label}
-          </li>
-        ))}
-      <li className="inline-flex items-center gap-1.5">
-        <span aria-hidden="true" className={clsx(CHIP, 'border-transparent')}>
-          <NoDataDot />
-        </span>
-        No data
-      </li>
-      <li className="inline-flex items-center gap-1.5">
-        <span aria-hidden="true" className={clsx(CHIP, 'border-ink/15 bg-white')} style={HATCH} />
-        n/a
-      </li>
-      {unrated && (
-        <li className="inline-flex items-center gap-1.5">
-          <span aria-hidden="true" className={clsx(CHIP, UNRATED_CLASS)} />
-          Not rated
-        </li>
-      )}
-    </ul>
-  )
-}
-
-function capitalize(s: string): string {
-  return s ? s[0]!.toUpperCase() + s.slice(1) : s
-}
-
-export interface StatusCellTipProps {
-  column: Column
-  cell: BoardCell
-  /** Periods in a row with this status, ending here. */
-  streak: number
-  scale: StatusLevel[]
-}
-
-/** The hover label for one cell, in the chart hover label's language: bold value, period, status, change. */
-export function StatusCellTip({ column, cell, streak, scale }: StatusCellTipProps) {
-  const theme = cell.kind === 'status' ? chartTheme(scale, cell.status) : null
-  const lead =
-    cell.kind === 'na'
-      ? 'n/a'
-      : cell.kind === 'missing'
-        ? 'No data'
-        : cell.display || capitalize(cell.caption) || theme?.label || cell.status
-  return (
-    <div data-testid="board-tip" className="w-max max-w-64 rounded-md bg-ink px-2 py-1.5 text-[11px] leading-4 text-white shadow-md">
-      <p className="text-sm font-semibold tabular-nums">{lead}</p>
-      <p className="text-white/75">{column.fullLabel}</p>
-      {cell.kind === 'na' && <p>{cell.naReason || 'Not applicable'}</p>}
-      {cell.kind === 'unrated' && <p>Not rated</p>}
-      {theme && (
-        <p data-testid="tip-status">
-          <span aria-hidden="true">{theme.shape}</span> {theme.label || theme.letter}
-          {streak >= 2 && ` · ${streak} ${unitOf(column, streak)}`}
-        </p>
-      )}
-      {theme && cell.display && cell.caption && <p className="text-white/75">{capitalize(cell.caption)}</p>}
-      {cell.change && <p className="text-white/75">{cell.change}</p>}
-    </div>
-  )
-}
 
 function CurrentValue({ row, scale, compact }: { row: BoardRow; scale: StatusLevel[]; compact: boolean }) {
   const last = row.cells[row.cells.length - 1]
@@ -163,51 +51,6 @@ function CurrentValue({ row, scale, compact }: { row: BoardRow; scale: StatusLev
   return <span className={clsx('text-[11px] text-ink/70', !compact && 'block')}>{last?.kind === 'na' ? 'n/a' : 'No data'}</span>
 }
 
-const BLANK_LABELS: Record<Exclude<BoardCell['kind'], 'status'>, string> = { missing: 'no data', na: 'n/a', unrated: 'not rated' }
-
-/**
- * The selected period's exceptions as quiet text, `◆ 1 Red · ▲ 1 Yellow`, or
- * `All Green` when nothing is off; rows with no status are counted too
- * (`· 1 no data`), so a category is never called all green over a gap.
- * Nothing when no row has a status.
- */
-function RollUp({ rows, scale }: { rows: BoardRow[]; scale: StatusLevel[] }) {
-  const counts = new Map<string, number>()
-  const blanks = new Map<string, number>()
-  for (const row of rows) {
-    const last = row.cells[row.cells.length - 1]
-    if (last?.kind === 'status') counts.set(last.status, (counts.get(last.status) ?? 0) + 1)
-    else {
-      const label = BLANK_LABELS[last?.kind ?? 'missing']
-      blanks.set(label, (blanks.get(label) ?? 0) + 1)
-    }
-  }
-  if (counts.size === 0) return null
-  const ranked = [...scale].sort((a, b) => b.rank - a.rank)
-  const best = ranked[ranked.length - 1]
-  const exceptions = ranked.filter((s) => s !== best && counts.has(s.key))
-  const parts = [
-    ...(exceptions.length === 0
-      ? [<Fragment key="all">All {best?.label ?? ''}</Fragment>]
-      : exceptions.map((s) => (
-          <Fragment key={s.key}>
-            <span aria-hidden="true">{chartTheme(scale, s.key).shape}</span> {counts.get(s.key)} {s.label}
-          </Fragment>
-        ))),
-    ...[...blanks].map(([label, n]) => <Fragment key={label}>{`${n} ${label}`}</Fragment>),
-  ]
-  return (
-    <span className="ml-2 text-[11px] font-normal text-ink/70">
-      {parts.map((part, i) => (
-        <Fragment key={i}>
-          {i > 0 && ' · '}
-          {part}
-        </Fragment>
-      ))}
-    </span>
-  )
-}
-
 export interface StatusBoardProps {
   /** `12-month status`, `8-quarter status`, ... */
   label: string
@@ -231,9 +74,7 @@ export function StatusBoard({ label, columns, rows, scale, onOpen }: StatusBoard
   const tableRef = useRef<HTMLTableElement>(null)
   const hoveredHeader = useRef<HTMLElement | null>(null)
   // The cell whose dialog is open: its tooltip stays shut when focus comes back on close.
-  const reopening = useRef<string | null>(null)
-  // Position as (row, periods back from the selected one), so a narrower board keeps the same period.
-  const [active, setActive] = useState({ row: 0, back: 0 })
+  const reopening = useRef<HTMLElement | null>(null)
   const statusLabel = (key: string) => scale.find((s) => s.key === key)?.label
 
   const layout = boardLayout(width, columns.length)
@@ -244,39 +85,27 @@ export function StatusBoard({ label, columns, rows, scale, onOpen }: StatusBoard
   const fyStarts = new Set(groups.slice(1).map((g) => g.start))
   const reduced = layout.count < columns.length
   const lastIndex = shown.length - 1
-  const activeRow = Math.min(active.row, Math.max(rows.length - 1, 0))
-  const activeBack = Math.min(active.back, lastIndex)
-
-  const categories: { id: string; name: string; rows: { row: BoardRow; index: number }[] }[] = []
-  rows.forEach((row, index) => {
-    const group = categories.find((c) => c.id === row.category.id)
-    if (group) group.rows.push({ row, index })
-    else categories.push({ id: row.category.id, name: row.category.name, rows: [{ row, index }] })
+  const open = (metricKey: string, el: HTMLElement) => {
+    reopening.current = el
+    onOpen(metricKey, el)
+  }
+  // Anchored at the end, so a narrower board keeps the same period.
+  const { cellProps } = useGridNavigation({
+    rowIds: rows.map((r) => r.key),
+    colCount: shown.length,
+    anchor: 'end',
+    onOpen: (rowId, _col, el) => open(rowId, el),
   })
+
+  const categories: { id: string; name: string; rows: BoardRow[] }[] = []
+  for (const row of rows) {
+    const group = categories.find((c) => c.id === row.category.id)
+    if (group) group.rows.push(row)
+    else categories.push({ id: row.category.id, name: row.category.name, rows: [row] })
+  }
   const grouped = categories.length > 1
   // Inline: name, cells, value. Stacked: a zero-width row-header column, then the cells.
   const colSpan = shown.length + (inline ? 2 : 1)
-
-  const moveTo = (row: number, back: number) => {
-    const next = { row: Math.max(0, Math.min(rows.length - 1, row)), back: Math.max(0, Math.min(lastIndex, back)) }
-    setActive(next)
-    tableRef.current?.querySelector<HTMLElement>(`[data-pos="${next.row}:${next.back}"]`)?.focus()
-  }
-
-  const onKeyDown = (row: number, back: number) => (e: KeyboardEvent<HTMLButtonElement>) => {
-    const moves: Record<string, [number, number]> = {
-      ArrowLeft: [row, back + 1],
-      ArrowRight: [row, back - 1],
-      ArrowUp: [row - 1, back],
-      ArrowDown: [row + 1, back],
-      Home: [row, lastIndex],
-      End: [row, 0],
-    }
-    const to = moves[e.key]
-    if (!to) return
-    e.preventDefault()
-    moveTo(to[0], to[1])
-  }
 
   // The hovered column's header, marked in the DOM so hovering never re-renders the board.
   const markColumn = (back: number | null) => {
@@ -286,58 +115,35 @@ export function StatusBoard({ label, columns, rows, scale, onOpen }: StatusBoard
     hoveredHeader.current = th
   }
 
-  const onCellFocus = (row: number, back: number) => (e: FocusEvent<HTMLButtonElement>) => {
-    setActive({ row, back })
-    if (reopening.current === `${row}:${back}`) {
-      reopening.current = null
-      // Relies on Radix's Trigger skipping its open-on-focus handler when the event is defaultPrevented.
-      e.preventDefault()
-    }
-  }
-
-  const renderCells = (row: BoardRow, index: number) =>
+  const renderCells = (row: BoardRow) =>
     row.cells.slice(offset).map((cell, i) => {
       const back = lastIndex - i
       const column = shown[i]!
-      const fill = cell.kind === 'status' ? statusFill(scale, cell.status) : null
+      const grid = cellProps(row.key, i)
       return (
-        <td key={cell.key} className={clsx('px-0.5 py-1 align-middle', fyStarts.has(i) && 'border-l border-ink/20')}>
-          <Tooltip.Root delayDuration={150}>
-            <Tooltip.Trigger asChild>
-              <button
-                type="button"
-                data-pos={`${index}:${back}`}
-                data-kind={cell.kind}
-                data-tier={fill?.tier}
-                tabIndex={index === activeRow && back === activeBack ? 0 : -1}
-                aria-label={cellName(row.name, column, cell, statusLabel, back === 0)}
-                className={clsx(
-                  'flex h-6 w-full items-center justify-center rounded-[3px] border border-transparent text-[11px] font-semibold leading-none',
-                  'transition-shadow hover:ring-2 hover:ring-ink/40',
-                  'focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ink focus-visible:inset-ring-1 focus-visible:inset-ring-white',
-                  cell.kind === 'na' && 'border-ink/15 bg-white',
-                  cell.kind === 'unrated' && UNRATED_CLASS,
-                )}
-                style={fill ? { backgroundColor: fill.background, color: fill.letter, borderColor: fill.border ?? 'transparent' } : cell.kind === 'na' ? HATCH : undefined}
-                onFocus={onCellFocus(index, back)}
-                onMouseEnter={() => markColumn(back)}
-                onKeyDown={onKeyDown(index, back)}
-                onClick={(e) => {
-                  reopening.current = `${index}:${back}`
-                  onOpen(row.key, e.currentTarget)
-                }}
-              >
-                {fill && chartTheme(scale, cell.status).letter}
-                {cell.kind === 'missing' && <NoDataDot />}
-              </button>
-            </Tooltip.Trigger>
-            <Tooltip.Portal>
-              <Tooltip.Content side="top" sideOffset={6} collisionPadding={8} className="z-50">
-                <StatusCellTip column={column} cell={cell} streak={streakAt(row.cells, offset + i)} scale={scale} />
-                <Tooltip.Arrow width={10} height={5} className="fill-ink" />
-              </Tooltip.Content>
-            </Tooltip.Portal>
-          </Tooltip.Root>
+        <td
+          key={cell.key}
+          className={clsx('px-0.5 py-1 align-middle', fyStarts.has(i) && 'border-l border-ink/20')}
+          onMouseEnter={() => markColumn(back)}
+        >
+          <StatusCell
+            cell={cell}
+            name={cellName(row.name, column, cell, statusLabel, back === 0)}
+            scale={scale}
+            tip={<StatusCellTip column={column} cell={cell} streak={streakAt(row.cells, offset + i)} scale={scale} />}
+            grid={{
+              ...grid,
+              onFocus: (e: FocusEvent<HTMLElement>) => {
+                grid.onFocus(e)
+                if (reopening.current === e.currentTarget) {
+                  reopening.current = null
+                  // Relies on Radix's Trigger skipping its open-on-focus handler when the event is defaultPrevented.
+                  e.preventDefault()
+                }
+              },
+            }}
+            onOpen={(el) => open(row.key, el)}
+          />
         </td>
       )
     })
@@ -352,7 +158,7 @@ export function StatusBoard({ label, columns, rows, scale, onOpen }: StatusBoard
           </h2>
           {reduced && (
             <span id={noteId} className="text-xs text-ink/70">
-              Last {layout.count} of {columns.length} {unitOf(columns[0], columns.length)}
+              Last {layout.count} of {columns.length} {columnUnit(columns[0], columns.length)}
             </span>
           )}
         </div>
@@ -450,11 +256,11 @@ export function StatusBoard({ label, columns, rows, scale, onOpen }: StatusBoard
                   <tr>
                     <th scope="rowgroup" colSpan={colSpan} className="border-b border-ink/10 pb-1 pt-3 text-left">
                       <span className="text-[11px] font-semibold uppercase tracking-wide text-ink/70">{category.name}</span>
-                      <RollUp rows={category.rows.map((r) => r.row)} scale={scale} />
+                      <RollUp rows={category.rows} scale={scale} />
                     </th>
                   </tr>
                 )}
-                {category.rows.map(({ row, index }) => {
+                {category.rows.map((row) => {
                   const muted = row.cells.slice(offset).every((c) => c.kind === 'missing')
                   if (inline) {
                     return (
@@ -462,7 +268,7 @@ export function StatusBoard({ label, columns, rows, scale, onOpen }: StatusBoard
                         <th scope="row" title={row.name} className={clsx('py-1 pr-3 text-left align-middle font-medium', muted && 'text-ink/70')}>
                           <span className="line-clamp-2 break-words">{row.name}</span>
                         </th>
-                        {renderCells(row, index)}
+                        {renderCells(row)}
                         <td className="py-1 pl-3 text-right align-middle">
                           <CurrentValue row={row} scale={scale} compact={false} />
                         </td>
@@ -489,7 +295,7 @@ export function StatusBoard({ label, columns, rows, scale, onOpen }: StatusBoard
                         <th scope="row" className="w-0 max-w-0 overflow-hidden p-0">
                           <span className="sr-only">{row.name}</span>
                         </th>
-                        {renderCells(row, index)}
+                        {renderCells(row)}
                       </tr>
                     </Fragment>
                   )
