@@ -328,7 +328,7 @@ export function LayoutGrid({
       </div>
       <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
         <SortableContext items={visible.map((i) => i.id)} strategy={rectSortingStrategy}>
-          <div className="grid gap-4 sm:grid-cols-2">
+          <div className="grid grid-cols-[minmax(0,1fr)] gap-4 sm:grid-cols-2">
             {visible.map((item) => {
               const label = labelFor(item.id, itemLabels)
               const node = renderNode(item)

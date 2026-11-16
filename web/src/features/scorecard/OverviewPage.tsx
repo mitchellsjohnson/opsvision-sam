@@ -23,6 +23,8 @@ import { LayoutGrid } from './LayoutGrid'
 import { cellReported, statusAtScope, type StatusScaleEntry } from './logic/statusAtScope'
 import { cellKey, groupRows, metricScope } from './viewHelpers'
 import { useScorecardViewRequest } from './viewRequest'
+import { StatusBoard } from './StatusBoard'
+import { buildBoardRow } from './logic/statusBoard'
 
 type Schemas = components['schemas']
 type ViewRow = Schemas['ViewRow']
@@ -194,6 +196,20 @@ export function OverviewPage() {
   }
   const attention = needsAttention(attentionItems, scale)
 
+  const boardRows = metrics.map(({ category, metric, scope, head, children, noun }) =>
+    buildBoardRow({
+      key: metric.key,
+      category: { id: category.id, name: category.name },
+      scope,
+      head,
+      children,
+      noun,
+      columns: trendColumns,
+      scale,
+      fyStart: fy,
+    }),
+  )
+
   const ribbonLabel =
     parsed?.grain === 'quarter'
       ? '8-quarter status'
@@ -346,34 +362,18 @@ export function OverviewPage() {
       </section>
         )}
         renderRibbon={() => (
-      <section aria-label={ribbonLabel}>
-        <h2 className="text-base font-semibold text-accent-deep">{ribbonLabel}</h2>
-        <ul className="mt-2 space-y-1 text-sm">
-          {metrics.map(({ metric, scope, head, children, noun, atScope }) => {
-            const statuses = trendColumns.map(
-              (col) => statusAtScope({ scope: scope ?? { cells: [] }, children, columnKey: col.key, scale, noun }).status,
-            )
-            const current = scopeCell(scope, columnKey)
-            return (
-              <li key={metric.key} className="flex flex-wrap items-center gap-2">
-                <span className="min-w-40 font-medium">{head.metricName}</span>
-                <span className="flex gap-0.5" data-testid={`ribbon-${metric.key}`}>
-                  {statuses.map((status, i) => (
-                    <StatusBadge
-                      key={trendColumns[i]!.key}
-                      status={status}
-                      label={`${trendColumns[i]!.fullLabel} ${statusLabel(status) ?? status}`}
-                      className="min-w-6 px-1"
-                    />
-                  ))}
-                </span>
-                <span className="tabular-nums">{current?.display || '—'}</span>
-                {atScope.caption && <span className="text-ink/70">{atScope.caption}</span>}
-              </li>
-            )
-          })}
-        </ul>
-      </section>
+          <StatusBoard
+            label={ribbonLabel}
+            columns={trendColumns}
+            rows={boardRows}
+            scale={statusColors}
+            onOpen={(metricKey, trigger) => {
+              focusReturnRef.current = trigger
+              const next = new URLSearchParams(params)
+              next.set('focus', metricKey)
+              setParams(next)
+            }}
+          />
         )}
         renderNeeds={() =>
           attention.length > 0 ? (

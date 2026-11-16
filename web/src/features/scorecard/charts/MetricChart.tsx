@@ -176,7 +176,7 @@ export function buildPoints(row: ViewRow, columns: Column[], fyStart: number): C
 }
 
 /** The current period's change and which way it moved the value, judged by the metric's direction. */
-function headerChange(row: ViewRow, cell: CellT | undefined, fyStart: number): { text: string; move: Move } | null {
+export function headerChange(row: ViewRow, cell: CellT | undefined, fyStart: number): { text: string; move: Move } | null {
   if (!cell || cell.change === null) return null
   const text = cellChange(row, cell, fyStart)
   if (!text) return null

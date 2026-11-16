@@ -2,6 +2,7 @@ import { screen, within, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { afterEach, describe, expect, it } from 'vitest'
+import { axe } from 'vitest-axe'
 import type { components } from '../../api/schema'
 import { App } from '../../App'
 import { monthLabel, parsePeriod } from '../../lib/period'
@@ -27,7 +28,7 @@ function renderOverview(route = ROUTE, edit?: (view: ScorecardView) => void) {
         : undefined,
     }),
   )
-  renderApp(<App />, { route })
+  return renderApp(<App />, { route })
 }
 
 function cellOf(view: ScorecardView, metric: string, subject: string, period: string): Cell {
@@ -214,11 +215,31 @@ describe('OverviewPage', () => {
     })
     await screen.findByRole('heading', { name: 'Overview', level: 1 })
     const ribbon = screen.getByTestId('ribbon-on_time_pct')
-    const badges = within(ribbon).getAllByRole('img')
-    expect(badges).toHaveLength(12)
-    expect(badges.at(-1)!.textContent).toBe('R')
-    expect(badges.at(-1)!.getAttribute('aria-label')).toMatch(/Oct 2026/)
-    expect(badges.at(-2)!.textContent).toBe('G')
+    const cells = within(ribbon).getAllByRole('button')
+    expect(cells).toHaveLength(12)
+    expect(cells.at(-1)!.textContent).toBe('◆R')
+    expect(cells.at(-1)!.getAttribute('aria-label')).toBe('On-time delivery, Oct 2026: Red, worst of 2 segments')
+    expect(cells.at(-2)!.textContent).toBe('●G')
+  })
+
+  it('the status board is a grid of the trend window; a cell opens its metric full screen', async () => {
+    renderOverview()
+    await screen.findByRole('heading', { name: 'Overview', level: 1 })
+    const grid = screen.getByRole('grid', { name: '12-month status' })
+    expect(within(grid).getByRole('columnheader', { name: 'Oct' }).hasAttribute('data-selected')).toBe(true)
+    expect(within(grid).getByRole('rowheader', { name: 'On-time delivery' })).toBeTruthy()
+    const user = userEvent.setup()
+    const cell = within(grid).getByRole('button', { name: /^On-time delivery, Oct 2026: Yellow, 84\.3%$/ })
+    await user.click(cell)
+    expect(await screen.findByRole('dialog', { name: /On-time delivery/i })).toBeTruthy()
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(document.activeElement).toBe(cell))
+  })
+
+  it('the overview, status board included, has no axe violations', async () => {
+    const { container } = renderOverview()
+    await screen.findByRole('grid', { name: '12-month status' })
+    expect((await axe(container)).violations).toEqual([])
   })
 
   it('an item-only metric shows the worst of its services, not one service as the company', async () => {
