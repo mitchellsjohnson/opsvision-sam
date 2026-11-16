@@ -733,6 +733,30 @@ describe('FocusDialog', () => {
     expect(within(dialog).getByText('Change from the first month in each range to Jul 2026')).toBeTruthy()
   })
 
+  it('stopped reporting: each range’s change ends at the last reported month, not at the empty months after it', async () => {
+    server.use(
+      ...viewHandlers({
+        respond: (u) => {
+          const view = buildView(u.searchParams)
+          for (const r of view.rows.filter((x) => x.metricKey === 'on_time_pct')) {
+            for (const c of r.cells) {
+              if (c.period > '2026-M07') Object.assign(c, { value: null, display: '', status: '', naReason: '', components: {}, change: null })
+              else if (r.subjectId === 'root' && ['2025-M08', '2026-M05'].includes(c.period) && !c.ytd) Object.assign(c, { value: 90, display: '90.0%', status: 'G' })
+            }
+          }
+          return HttpResponse.json(view)
+        },
+      }),
+    )
+    renderApp(<App />, { route: `${OVERVIEW}&focus=on_time_pct` })
+    const dialog = await screen.findByRole('dialog', { name: /On-time delivery/i })
+    const strip = await within(dialog).findByRole('group', { name: 'Range' })
+    // May to Jul: 90.0% to 95.0%. Ending at Oct, Aug–Oct hold nothing to compare.
+    await waitFor(() => expect(within(strip).getByRole('button', { name: '3M, change +5.0 pts' })).toBeTruthy())
+    // Twelve months to Jul reach back past the months shown, to Aug 2025 (90.0%); ending at Oct they would start at Nov 2025 (95.0%).
+    await waitFor(() => expect(within(strip).getByRole('button', { name: '12M, change +5.0 pts' })).toBeTruthy())
+  })
+
   it('closing after a card background click returns focus to that card’s Expand button', async () => {
     renderOverview()
     await screen.findByRole('heading', { name: 'Overview', level: 1 })

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { components } from '../../../api/schema'
 import { buildMonthTrendColumns } from '../columns'
-import { RANGES, rangeChange, rangeMonths } from './ranges'
+import { RANGES, rangeChange, rangeColumns, rangeMonths } from './ranges'
 
 type ViewRow = components['schemas']['ViewRow']
 
@@ -63,6 +63,24 @@ describe('rangeMonths', () => {
     expect(rangeMonths('YTD', '2027-M04')).toBe(4)
     const july = buildMonthTrendColumns('2027-M04', 12, 7).slice(-rangeMonths('YTD', '2027-M04'))
     expect(july.map((c) => c.label)).toEqual(['Jul', 'Aug', 'Sep', 'Oct'])
+  })
+})
+
+describe('rangeColumns', () => {
+  const twelve = columns.slice(-12)
+  it('ends at the last column by default', () => {
+    expect(rangeColumns(twelve, 3).map((c) => c.label)).toEqual(['Aug', 'Sep', 'Oct'])
+  })
+
+  it('ends at a stopped metric’s last reported month', () => {
+    expect(rangeColumns(twelve, 3, '2026-M07').map((c) => c.label)).toEqual(['May', 'Jun', 'Jul'])
+    // Short of the span when the range starts before the columns given.
+    expect(rangeColumns(twelve, 12, '2026-M07')).toHaveLength(9)
+    expect(rangeColumns(columns, 12, '2026-M07').map((c) => c.period)).toEqual(columns.slice(-15, -3).map((c) => c.period))
+  })
+
+  it('ends at the last column when the key is not among them', () => {
+    expect(rangeColumns(twelve, 2, '2024-M01').map((c) => c.label)).toEqual(['Sep', 'Oct'])
   })
 })
 

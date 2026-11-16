@@ -734,8 +734,24 @@ describe('MetricChart sparse', () => {
     VALUED.forEach((i, k) => Object.assign(row.cells[i]!, { value: values[k], display: `${values[k]}%`, change: null, changeKind: '' }))
     draw(row, { size: 'focus' })
     const rows = within(screen.getByRole('table')).getAllByRole('row').slice(1)
-    // In the metric's format: on-time delivery shows tenths.
-    expect(rows.map((r) => r.lastElementChild!.textContent)).toEqual(['—', '+5.0 pts vs Dec', '-15.0 pts vs Mar', 'No change vs Jun'])
+    // In the metric's format: on-time delivery shows tenths. An arrow and good or bad colour, as the other change cells.
+    const cells = rows.map((r) => r.lastElementChild!)
+    expect(cells.map((c) => c.textContent)).toEqual(['—', '▲ +5.0 pts vs Dec', '▼ -15.0 pts vs Mar', 'No change vs Jun'])
+    expect(cells.map((c) => c.querySelector('[data-tone]')?.getAttribute('data-tone') ?? null)).toEqual([null, 'good', 'bad', 'neutral'])
+    expect(cells[1]!.querySelector('[data-tone]')!.className).toContain('text-status-g')
+    expect(cells[2]!.querySelector('[data-tone]')!.className).toContain('text-status-r')
+    expect(cells[1]!.querySelector('[aria-hidden="true"]')!.textContent).toBe('▲ ')
+  })
+
+  it('a lower-is-better metric’s rise in the focus table is bad; a cell’s own change keeps its tone', () => {
+    const row = sparseRow()
+    row.direction = 'lower_better'
+    const values = [80, 85, 70, 70]
+    VALUED.forEach((i, k) => Object.assign(row.cells[i]!, { value: values[k], display: `${values[k]}%`, change: null, changeKind: '' }))
+    Object.assign(row.cells[VALUED[2]!]!, { change: -15, changeKind: 'delta' })
+    draw(row, { size: 'focus' })
+    const cells = within(screen.getByRole('table')).getAllByRole('row').slice(1).map((r) => r.lastElementChild!)
+    expect(cells.map((c) => c.querySelector('[data-tone]')?.getAttribute('data-tone') ?? null)).toEqual([null, 'bad', 'good', 'neutral'])
   })
 
   it('drops the Change column when only one month reported', () => {

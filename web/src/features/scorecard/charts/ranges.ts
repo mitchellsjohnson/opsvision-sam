@@ -30,6 +30,13 @@ export function rangeMonths(key: RangeKey, period: string): number {
   return p?.grain === 'month' ? p.index : 12
 }
 
+/** The last `span` of `columns` that end at `endKey`; at the last column when `endKey` is absent or not among them. */
+export function rangeColumns(columns: Column[], span: number, endKey?: string): Column[] {
+  const at = endKey ? columns.findIndex((c) => c.key === endKey) : -1
+  const end = at >= 0 ? at + 1 : columns.length
+  return columns.slice(Math.max(0, end - span), end)
+}
+
 export interface RangeChange {
   /** `+2.1 pts`, `-0.5`, `+$12k`, or `No change`. */
   text: string

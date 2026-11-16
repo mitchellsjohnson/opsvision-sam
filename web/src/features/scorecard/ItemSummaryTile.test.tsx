@@ -142,6 +142,26 @@ describe('ItemSummaryTile', () => {
     expect(within(line).getByText('18 Green').tagName).toBe('STRONG')
   })
 
+  it('names n/a services apart from not reported, in words, the bar and its spoken summary', () => {
+    width.value = 560
+    const retired = service('svc-retired', 'Retired service', null)
+    retired.cells[retired.cells.length - 1]!.naReason = 'Retired in Oct'
+    renderTile([...SERVICES, retired])
+    expect(screen.getByTestId('item-tile-distribution').textContent).toBe('18 Green · 2 Yellow · 1 Red · 3 not reported · 1 n/a')
+    expect(
+      screen.getByRole('img', { name: '18 Green, 2 Yellow, 1 Red, 3 not reported, 1 not applicable, of 25 services' }).children,
+    ).toHaveLength(5)
+    // Not an exception: no row, and not counted among those not reported.
+    expect(screen.queryByRole('button', { name: /^Open Retired service/ })).toBeNull()
+    expect(screen.getByTestId('item-tile-rest').textContent).toBe('1 more not reported · All other 18 services Green')
+  })
+
+  it('states the threshold as an item metric’s: the best band only, whatever its chart kind', () => {
+    width.value = 560
+    renderTile(SERVICES.map((s) => ({ ...s, chartKind: 'ratio' })))
+    expect(screen.getByText('24 services · Green at 99.90% or better')).toBeTruthy()
+  })
+
   it('rows only for services not at the best status and those not reported, at most five, each one button', () => {
     width.value = 560
     renderTile()

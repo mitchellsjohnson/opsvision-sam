@@ -118,7 +118,7 @@ export function MetricChart({
         </>
       )}
       {kind === 'sparse' ? (
-        <SparseRibbon points={points} columns={columns} scale={scale} size={size} statusLabel={statusLabel} format={row.format} />
+        <SparseRibbon points={points} columns={columns} scale={scale} size={size} statusLabel={statusLabel} row={row} fyStart={fiscalYearStartMonth} />
       ) : kind === 'money_plan' ? (
         <MoneyPlanChart row={row} points={points} columns={columns} scale={scale} animated={animated} size={size} />
       ) : lines.length > 1 ? (

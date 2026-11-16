@@ -32,6 +32,7 @@ import {
   buildReportModel,
   dateLabel,
   metricFacts,
+  metricValue,
   noteSections,
   reportFileName,
   reportStatusLine,
@@ -229,7 +230,7 @@ function MetricBlock({ metric }: { metric: ReportMetric }) {
       </h3>
       <p className="mt-2 flex flex-wrap items-center gap-2">
         <StatusBadge status={metric.status} label={metric.statusLabel || undefined} />
-        <span className="text-2xl font-semibold tabular-nums">{metric.display || '—'}</span>
+        <span className="text-2xl font-semibold tabular-nums">{metricValue(metric) || '—'}</span>
       </p>
       <ul className="mt-2 space-y-0.5 text-sm text-ink/80">
         {metricFacts(metric).map((f) => (

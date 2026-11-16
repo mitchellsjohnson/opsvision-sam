@@ -7,6 +7,7 @@ import { applyLayout, defaultLayout, type LayoutItem } from '../logic/layout'
 import { needsAttention } from '../logic/needsAttention'
 import { absentItemMetrics, attentionInputs, healthTally, metricNoun, metricStandings } from '../logic/standings'
 import { cellReported, statusAtScope, type StatusScaleEntry } from '../logic/statusAtScope'
+import { worstChildValue } from '../logic/statusBoard'
 import { cellKey, groupRows, metricScope } from '../viewHelpers'
 
 type Schemas = components['schemas']
@@ -79,6 +80,8 @@ export interface ReportMetric {
   statusLabel: string
   /** `worst of 2 segments` when the status comes from children. */
   caption: string
+  /** With no value at the scope, the worst reported child or item, which the value leads with (as the board's Current column). */
+  worst: { name: string; display: string } | null
   change: string | null
   ytd: string | null
   /** The month's target, as text. */
@@ -205,10 +208,15 @@ export function healthParts(model: Pick<ReportModel, 'health' | 'notReported'>):
   ]
 }
 
-/** The facts under a metric's value: status caption, change, YTD, goal, and driver. */
+/** The value a metric answers with: the scope's, else the worst child's; '' when neither has one. */
+export function metricValue(metric: Pick<ReportMetric, 'display' | 'worst'>): string {
+  return metric.display || metric.worst?.display || ''
+}
+
+/** The facts under a metric's value: status caption (led by the worst child's name), change, YTD, goal, and driver. */
 export function metricFacts(metric: ReportMetric): string[] {
   return [
-    metric.caption,
+    [metric.worst?.name ?? '', metric.caption].filter(Boolean).join(' · '),
     metric.change ?? '',
     metric.ytd ? `Year to date ${metric.ytd}` : '',
     metric.goal ? `Goal ${metric.goal}` : '',
@@ -442,6 +450,11 @@ export function buildReportModel(input: ReportModelInput): ReportModel {
       .filter((d): d is { name: string; rank: number } => d !== null)
       .sort((a, b) => b.rank - a.rank)[0]
     const ytdCell = scope?.cells.find((c) => c.ytd && c.display !== '')
+    const display = cell && cell.naReason === '' ? cell.display : ''
+    const worst =
+      m.status && !display && standing?.status && !cellReported(standing.cell)
+        ? (worstChildValue(standing.children, standing.status.counted.key, scaleEntries, head.direction) ?? null)
+        : null
     return {
       key: m.key,
       name: head.metricName,
@@ -451,10 +464,11 @@ export function buildReportModel(input: ReportModelInput): ReportModel {
       direction: head.direction,
       definition: m.rows.find((r) => r.definition?.trim())?.definition?.trim() || head.metricName,
       versionId: cell?.versionId || doc.view.versionByPeriod[period] || '',
-      display: cell && cell.naReason === '' ? cell.display : '',
+      display,
       status: m.status,
       statusLabel: m.status ? statusLabel(m.status) : '',
       caption: m.status ? (standing?.status?.caption ?? '') : '',
+      worst,
       change: cell
         ? changeText({
             period: cell.period,
@@ -472,7 +486,8 @@ export function buildReportModel(input: ReportModelInput): ReportModel {
         head.chartKind,
         monthColumns.map((col) => pointKind(cellAt(scope, col.key))),
       ),
-      driver: driver && driver.rank >= worstRank ? driver.name : null,
+      // The worst child already names who drives the status.
+      driver: !worst && driver && driver.rank >= worstRank ? driver.name : null,
       series: seriesRows.map((row) => ({
         subject: row.subjectName,
         points: monthColumns.map((col) => {

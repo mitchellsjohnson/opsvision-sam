@@ -6,6 +6,7 @@ import {
   goalSeries,
   healthParts,
   metricFacts,
+  metricValue,
   noteSections,
   statusTable,
   tableCellText,
@@ -340,7 +341,7 @@ function metricPage(ctx: Ctx, metric: ReportMetric, attention: boolean) {
   const rx = 510
   const rw = PAGE_W - M - rx
   let y = CONTENT_TOP - 28
-  text(ctx, page, rx, y, metric.display || 'No value', { size: 28, font: ctx.bold, maxWidth: rw })
+  text(ctx, page, rx, y, metricValue(metric) || 'No value', { size: 28, font: ctx.bold, maxWidth: rw })
   y -= 24
   if (metric.status) {
     text(ctx, page, rx, y, metric.status, { size: 14, font: ctx.bold, color: letterHex(ctx, metric.status) })

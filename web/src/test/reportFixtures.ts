@@ -3,7 +3,7 @@ import type { components } from '../api/schema'
 import { formatPeriod, parsePeriod, prev, type Period } from '../lib/period'
 import { member } from './adminFixtures'
 import { API } from './server'
-import { buildView } from './viewFixtures'
+import { addServiceUptime, buildView } from './viewFixtures'
 
 type Schemas = components['schemas']
 type ReportDocument = Schemas['ReportDocument']
@@ -22,6 +22,27 @@ export function reportView(period = '2026-M10'): ScorecardView {
   for (const m of months) q.append('periods', formatPeriod(m))
   q.append('ytd', period)
   return buildView(q)
+}
+
+/**
+ * The report's view with Service uptime (item-only, no company value) and a
+ * third service, Batch service, silent in Oct 2026: Web service is the worst,
+ * at 99.20% Red, of 2 services reported.
+ */
+export function reportViewWithUptime(period = '2026-M10'): ScorecardView {
+  const view = addServiceUptime(reportView(period))
+  const web = view.rows.find((r) => r.metricKey === 'svc_uptime' && r.subjectId === 'svc-web')!
+  view.rows.push({
+    ...web,
+    subjectId: 'svc-batch',
+    subjectName: 'Batch service',
+    cells: web.cells.map((c) => ({
+      ...c,
+      subjectId: 'svc-batch',
+      ...(c.period === period && !c.ytd ? { value: null, display: '', status: '', coverage: [0, 1] } : {}),
+    })),
+  })
+  return view
 }
 
 export const REPORT_SUMMARY = 'Delivery held near goal; defect reporting resumes next month.'

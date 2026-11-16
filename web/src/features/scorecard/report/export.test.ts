@@ -1,7 +1,7 @@
 import { PDFDocument } from 'pdf-lib'
 import { describe, expect, it } from 'vitest'
 import { tenant } from '../../../test/fixtures'
-import { reportDocument, reportView } from '../../../test/reportFixtures'
+import { reportDocument, reportView, reportViewWithUptime } from '../../../test/reportFixtures'
 import { buildReportModel, type ReportModel } from './model'
 import { buildPdf } from './pdf'
 import { buildPptx } from './pptx'
@@ -40,6 +40,28 @@ function storedZipEntries(bytes: Uint8Array): Map<string, string> {
     if (method !== 0) throw new Error(`${name} is compressed`)
     out.set(name, decoder.decode(bytes.subarray(start, start + size)))
     at = start + size
+  }
+  return out
+}
+
+/** Every string a PDF draws (`<hex> Tj`), from its deflated content streams, in order. */
+async function pdfStrings(bytes: Uint8Array): Promise<string[]> {
+  const raw = new TextDecoder('latin1').decode(bytes)
+  const out: string[] = []
+  for (const m of raw.matchAll(/stream\r?\n/g)) {
+    const start = m.index + m[0].length
+    let end = raw.indexOf('endstream', start)
+    while (end > start && (raw[end - 1] === '\n' || raw[end - 1] === '\r')) end--
+    let content: string
+    try {
+      const inflated = new Response(bytes.slice(start, end)).body!.pipeThrough(new DecompressionStream('deflate'))
+      content = new TextDecoder('latin1').decode(await new Response(inflated).arrayBuffer())
+    } catch {
+      continue
+    }
+    for (const t of content.matchAll(/<([0-9A-Fa-f]*)> Tj/g)) {
+      out.push(String.fromCharCode(...(t[1]!.match(/../g) ?? []).map((h) => parseInt(h, 16))))
+    }
   }
   return out
 }
@@ -188,6 +210,26 @@ describe('buildPptx', () => {
     expect(deck.filter((x) => /<a:t>Notes( \(continued\))?<\/a:t>/.test(x)).length).toBeGreaterThanOrEqual(2)
   })
 
+  it('answers an item metric with no company value with the worst service’s value and name, not "No value"', async () => {
+    const deck = slides(
+      storedZipEntries(
+        await buildPptx(
+          fixtureModel((doc) => {
+            doc.view = reportViewWithUptime()
+          }),
+        ),
+      ),
+      'ppt/slides/slide',
+    )
+    const uptime = deck.filter((x) => x.includes('<a:t>Service uptime</a:t>') && !x.includes('Scorecard table'))
+    // Red, so its one slide is in Needs attention.
+    expect(uptime).toHaveLength(1)
+    expect(uptime[0]).toContain('Needs attention')
+    expect(uptime[0]).toContain('<a:t>99.20%</a:t>')
+    expect(uptime[0]).toContain('Web service · worst of 2 services · 1 not reported')
+    expect(uptime[0]).not.toContain('<a:t>No value</a:t>')
+  })
+
   it('splits the table after 12 metric rows', async () => {
     const entries = storedZipEntries(
       await buildPptx(
@@ -213,6 +255,21 @@ describe('buildPdf', () => {
     expect(pdf.getPageCount()).toBeGreaterThanOrEqual(4)
     const { width, height } = pdf.getPage(0).getSize()
     expect([width, height]).toEqual([792, 612])
+  })
+
+  it('answers an item metric with no company value with the worst service’s value and name, not "No value"', async () => {
+    const strings = await pdfStrings(
+      await buildPdf(
+        fixtureModel((doc) => {
+          doc.view = reportViewWithUptime()
+        }),
+      ),
+    )
+    // The 28pt value on its one page, in Needs attention; the status table's cells read `99.20% R`.
+    expect(strings.filter((s) => s === '99.20%')).toHaveLength(1)
+    expect(strings).toContain('Web service · worst of 2 services · 1 not reported')
+    // Only Defect rate, not measured in Oct, has no value.
+    expect(strings.filter((s) => s === 'No value')).toHaveLength(1)
   })
 
   it('keeps going when text has characters the standard font cannot draw', async () => {

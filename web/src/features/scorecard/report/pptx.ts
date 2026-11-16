@@ -6,6 +6,7 @@ import {
   healthParts,
   metricFacts,
   metricNotes,
+  metricValue,
   noteSections,
   statusTable,
   tableCellText,
@@ -218,7 +219,7 @@ function metricSlide(pres: PptxGenJS, model: ReportModel, metric: ReportMetric, 
     })
   }
 
-  slide.addText(metric.display || 'No value', {
+  slide.addText(metricValue(metric) || 'No value', {
     x: right.x,
     y: 1.3,
     w: right.w,

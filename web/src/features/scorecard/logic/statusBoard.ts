@@ -131,6 +131,22 @@ export function fiscalLabel(group: FiscalGroup, cellWidth: number | null): strin
   return room >= FY_SHORT ? `FY${yy}` : `’${yy}`
 }
 
+/**
+ * The child a metric with no scope value answers with: the worst reported in
+ * the column (by `worstChildren`), its name and value; undefined when none
+ * reported a value. The board's Current column and the report lead with it.
+ */
+export function worstChildValue(
+  children: ViewRow[],
+  columnKey: string,
+  scale: StatusScaleEntry[],
+  direction: ViewRow['direction'],
+): { name: string; display: string } | undefined {
+  if (children.length === 0) return undefined
+  const { worst } = worstChildren(children, columnKey, scale, direction)
+  return worst?.cell.display ? { name: worst.row.subjectName, display: worst.cell.display } : undefined
+}
+
 /** How many columns in a row, ending at `index`, share its status; 0 when it has none. */
 export function streakAt(cells: BoardCell[], index: number): number {
   const at = cells[index]
@@ -193,9 +209,8 @@ export function buildBoardRow({
 
   // With no scope value, the worst reported child and its value; none when the status is the scope's own.
   const worstAt = (columnKey: string, at: BoardCell | undefined): BoardRow['worst'] => {
-    if (!at || at.kind !== 'status' || at.display || children.length === 0) return undefined
-    const { worst } = worstChildren(children, columnKey, scale, head.direction)
-    return worst?.cell.display ? { name: worst.row.subjectName, display: worst.cell.display } : undefined
+    if (!at || at.kind !== 'status' || at.display) return undefined
+    return worstChildValue(children, columnKey, scale, head.direction)
   }
 
   const last = columns[columns.length - 1]

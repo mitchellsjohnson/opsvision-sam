@@ -39,6 +39,7 @@ export interface ItemSummaryTileProps {
 function segmentStyle(scale: StatusLevel[], key: string): CSSProperties {
   if (key === 'none') return { ...HATCH, backgroundColor: 'white', boxShadow: 'inset 0 0 0 1px color-mix(in srgb, var(--color-ink) 15%, transparent)' }
   if (key === 'unrated') return {}
+  if (key === 'na') return { backgroundColor: 'var(--color-status-na-bg)', boxShadow: 'inset 0 0 0 1px var(--color-status-na)' }
   const fill = statusFill(scale, key)
   const color = scale.find((s) => s.key === key)?.color ?? 'var(--color-ink)'
   if (fill.tier === 'solid') return { backgroundColor: fill.background }
@@ -78,6 +79,7 @@ export function ItemSummaryTile({ head, rows, columns, scale, direction, noun, r
         statusLabel,
         perSubject: ownTargets,
         noun,
+        items: true,
         surface: 'tile',
       })
     : ''
@@ -87,13 +89,16 @@ export function ItemSummaryTile({ head, rows, columns, scale, direction, noun, r
   const since = worst ? sinceText(worst.cells, worst.cells.length - 1, columns, statusLabel) : ''
 
   // Best first in words; worst first in the bar, as Health draws it.
-  const parts = [
+  const parts: { key: string; text: string; spoken?: string }[] = [
     ...byRank.flatMap((s) => {
       const n = summary.counts.get(s.key) ?? 0
       return n > 0 ? [{ key: s.key, text: `${n} ${s.label || s.key}` }] : []
     }),
     ...(unrated > 0 ? [{ key: 'unrated', text: `${unrated} not rated` }] : []),
     ...(summary.notReported > 0 ? [{ key: 'none', text: `${summary.notReported} not reported` }] : []),
+    ...(summary.notApplicable > 0
+      ? [{ key: 'na', text: `${summary.notApplicable} n/a`, spoken: `${summary.notApplicable} not applicable` }]
+      : []),
   ]
   const barParts = [...byRank]
     .reverse()
@@ -101,6 +106,7 @@ export function ItemSummaryTile({ head, rows, columns, scale, direction, noun, r
     .concat([
       { key: 'unrated', n: unrated },
       { key: 'none', n: summary.notReported },
+      { key: 'na', n: summary.notApplicable },
     ])
     .filter((p) => p.n > 0)
 
@@ -177,7 +183,7 @@ export function ItemSummaryTile({ head, rows, columns, scale, direction, noun, r
       <div>
         <div
           role="img"
-          aria-label={`${parts.map((p) => p.text).join(', ')}, of ${countNoun(summary.total, noun)}`}
+          aria-label={`${parts.map((p) => p.spoken ?? p.text).join(', ')}, of ${countNoun(summary.total, noun)}`}
           className="flex h-2 gap-0.5 overflow-hidden rounded"
         >
           {barParts.map((p) => (

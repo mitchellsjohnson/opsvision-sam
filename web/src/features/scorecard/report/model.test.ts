@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import type { components } from '../../../api/schema'
 import { tenant } from '../../../test/fixtures'
-import { REPORT_SUMMARY, reportDocument, reportView } from '../../../test/reportFixtures'
+import { REPORT_SUMMARY, reportDocument, reportView, reportViewWithUptime } from '../../../test/reportFixtures'
 import { addQuarterly, buildView, quarterlyVersions } from '../../../test/viewFixtures'
-import { buildReportModel, exportChart, goalSeries, reportStatusLine, type ReportModelInput } from './model'
+import { buildReportModel, exportChart, goalSeries, metricFacts, metricValue, reportStatusLine, type ReportModelInput } from './model'
 
 type ScorecardView = components['schemas']['ScorecardView']
 
@@ -195,6 +195,44 @@ describe('counting as the Overview does', () => {
       'deep_red',
       'on_time_pct',
     ])
+  })
+})
+
+describe('metrics with no value at the scope answer with the worst child, as the board does', () => {
+  it('an item metric leads with the worst service’s value and names it before the board’s caption', () => {
+    const doc = reportDocument({ view: reportViewWithUptime() })
+    const model = buildReportModel(input({ doc }))
+    const uptime = model.categories[0]!.metrics.find((m) => m.key === 'svc_uptime')!
+    expect(uptime).toMatchObject({
+      display: '',
+      status: 'R',
+      worst: { name: 'Web service', display: '99.20%' },
+      caption: 'worst of 2 services · 1 not reported',
+      driver: null,
+    })
+    expect(metricValue(uptime)).toBe('99.20%')
+    expect(metricFacts(uptime)[0]).toBe('Web service · worst of 2 services · 1 not reported')
+    // Needs attention's card is the same block.
+    const card = model.needsAttention.find((m) => m.key === 'svc_uptime')!
+    expect(metricValue(card)).toBe('99.20%')
+    expect(metricFacts(card)[0]).toBe('Web service · worst of 2 services · 1 not reported')
+  })
+
+  it('a segment metric with no company value leads with its worst segment', () => {
+    const doc = reportDocument({ view: reportView() })
+    const root = doc.view.rows.find((r) => r.metricKey === 'on_time_pct' && r.subjectId === 'root')!
+    for (const c of root.cells) if (c.period === '2026-M10' && !c.ytd) Object.assign(c, { value: null, display: '', status: '', change: null, changeKind: '', target: null })
+    const onTime = buildReportModel(input({ doc })).categories[0]!.metrics[0]!
+    expect(onTime).toMatchObject({ display: '', status: 'R', worst: { name: 'Unit A', display: '70.0%' }, caption: 'worst of 2 segments' })
+    expect(metricValue(onTime)).toBe('70.0%')
+    expect(metricFacts(onTime)[0]).toBe('Unit A · worst of 2 segments')
+  })
+
+  it('a metric with its own value has no worst child', () => {
+    const onTime = buildReportModel(input()).needsAttention[0]!
+    expect(onTime.worst).toBeNull()
+    expect(metricValue(onTime)).toBe('84.3%')
+    expect(metricFacts(onTime)).not.toContain('Unit A')
   })
 })
 

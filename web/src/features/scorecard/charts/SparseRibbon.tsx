@@ -4,15 +4,17 @@ import type { components } from '../../../api/schema'
 import { StatusCell, StatusChip } from '../../../ui/status'
 import { useElementWidth } from '../../../ui/useElementWidth'
 import type { Column } from '../columns'
-import { changeText } from '../format'
+import { changeText, metricDecimals } from '../format'
 import { columnUnit } from '../logic/statusText'
 import type { BoardCell } from '../logic/statusBoard'
+import { cellKey } from '../viewHelpers'
 import { pointLabel, PointButtons, PointControls, type ChartSize } from './chartParts'
-import { chartTheme } from './chartTheme'
-import type { ChartPoint } from './points'
+import { chartTheme, MOVE_CLASS, valueMove, type Move } from './chartTheme'
+import { headerChange, type ChartPoint } from './points'
 import { sparseContext, sparseKey } from './sparse'
 
 type StatusLevel = components['schemas']['StatusLevel']
+type ViewRow = components['schemas']['ViewRow']
 
 function boardCell(p: ChartPoint): BoardCell {
   const kind = p.kind === 'value' ? (p.status ? 'status' : 'unrated') : p.kind
@@ -21,17 +23,24 @@ function boardCell(p: ChartPoint): BoardCell {
 
 /**
  * Each valued point's change since the last valued one before it, which the
- * n/a periods between may put several back (`-15 pts vs Mar`); the cell's
- * own change when it has one, and null for the first.
+ * n/a periods between may put several back (`-15 pts vs Mar`), with its arrow
+ * and tone by the metric's direction; the cell's own change when it has one,
+ * and null for the first.
  */
-export function changesSinceReported(valued: ChartPoint[], format: string): (string | null)[] {
+export function changesSinceReported(valued: ChartPoint[], row: ViewRow, fyStart: number): ({ text: string; move: Move } | null)[] {
+  const cells = new Map(row.cells.map((c) => [cellKey(c), c]))
   return valued.map((p, i) => {
-    if (p.change) return p.change
+    if (p.change) return headerChange(row, cells.get(p.key), fyStart)
     const prior = valued[i - 1]
     if (!prior || p.value === null || prior.value === null) return null
-    const text = changeText({ period: '', ytd: false, format, change: p.value - prior.value, changeKind: 'delta', fyStart: 1 })
+    const delta = p.value - prior.value
+    const text = changeText({ period: '', ytd: false, format: row.format, change: delta, changeKind: 'delta', fyStart })
+    if (!text) return null
     // With no period, the phrase is `vs prior period`; name the period compared with instead.
-    return text?.replace(/vs prior period$/, `vs ${prior.label}`) ?? null
+    return {
+      text: text.replace(/vs prior period$/, `vs ${prior.label}`),
+      move: valueMove(Number(delta.toFixed(metricDecimals(row.format))) || 0, row.direction),
+    }
   })
 }
 
@@ -46,15 +55,17 @@ export function SparseRibbon({
   scale,
   size,
   statusLabel,
-  format,
+  row,
+  fyStart,
 }: {
   points: ChartPoint[]
   columns: Column[]
   scale: StatusLevel[]
   size: ChartSize
   statusLabel: (key: string) => string | undefined
-  /** The metric's value format, for the focus table's changes. */
-  format: string
+  /** The metric's row: its format and direction, and each cell's own change, for the focus table's changes. */
+  row: ViewRow
+  fyStart: number
 }) {
   const focus = size === 'focus'
   const [tip, setTip] = useState<ChartPoint | null>(null)
@@ -65,7 +76,7 @@ export function SparseRibbon({
   const key = sparseKey(points)
   const last = points.length - 1
   const valued = points.filter((p) => p.kind === 'value')
-  const changes = changesSinceReported(valued, format)
+  const changes = changesSinceReported(valued, row, fyStart)
   const showChange = changes.some((c) => c !== null)
   const nameOf = (status: string) => statusLabel(status) || chartTheme(scale, status).label || status
 
@@ -144,7 +155,18 @@ export function SparseRibbon({
                     'Not rated'
                   )}
                 </td>
-                {showChange && <td className="py-1.5 text-ink/80 tabular-nums">{changes[i] ?? '—'}</td>}
+                {showChange && (
+                  <td className="py-1.5 tabular-nums">
+                    {changes[i] ? (
+                      <span data-tone={changes[i].move.tone} className={clsx('font-medium', MOVE_CLASS[changes[i].move.tone])}>
+                        {changes[i].move.arrow && <span aria-hidden="true">{changes[i].move.arrow} </span>}
+                        {changes[i].text}
+                      </span>
+                    ) : (
+                      <span className="text-ink/70">—</span>
+                    )}
+                  </td>
+                )}
               </tr>
             ))}
           </tbody>

@@ -12,7 +12,7 @@ import { Breakdown } from './Breakdown'
 import { defaultStatusScale, MOVE_CLASS } from './charts/chartTheme'
 import { FOCUS_CHART_HEIGHT, MetricChart } from './charts/MetricChart'
 import { buildPoints, headerChange } from './charts/points'
-import { RANGES, rangeChange, rangeMonths, type RangeKey } from './charts/ranges'
+import { RANGES, rangeChange, rangeColumns, rangeMonths, type RangeKey } from './charts/ranges'
 import { multiSeriesHeader } from './charts/seriesLayout'
 import { isSparse } from './charts/sparse'
 import { useVersionMarkers } from './charts/versionMarkers'
@@ -504,6 +504,8 @@ function MetricFocus({
   const lastShown = lastShownAt >= 0 ? trendColumns[lastShownAt] : undefined
   // A stopped metric's range change runs to its last value, not to the empty months after it.
   const stripTo = lastShown ?? selectedColumn
+  // Ending earlier, its longer ranges reach back past the months shown.
+  if (lastShown && longFor !== metricKey) setLongFor(metricKey)
 
   const rangeShown = monthly && !sparse && !gridShown && !multiSeries && !noReports
   const itemRangeShown = monthly && gridShown
@@ -817,15 +819,17 @@ function MetricFocus({
           hidden={!rangeShown}
           caption={stripTo ? `Change from the first month in each range to ${stripTo.fullLabel}` : ''}
           changeFor={(key) => {
-            const span = rangeMonths(key, period.period)
+            // Each range ends at the strip's last month; YTD is that month's year to date.
+            const span = rangeMonths(key, stripTo?.period ?? period.period)
             // In a drill-in, the change is the item's own.
             const row = drillRow?.row ?? scope
-            if (span <= shownColumns.length) return row ? rangeChange(row, shownColumns.slice(-span)) : null
+            const shown = rangeColumns(shownColumns, span, stripTo?.key)
+            if (shown.length === span) return row ? rangeChange(row, shown) : null
             // Longer than the window shown: known once 24 months have loaded.
             const longRow = drillRow
               ? longView.data?.rows.find((r) => r.metricKey === metricKey && r.subjectId === drillRow.id)
               : longScope
-            return longRow ? rangeChange(longRow, longColumns.slice(-span)) : null
+            return longRow ? rangeChange(longRow, rangeColumns(longColumns, span, stripTo?.key)) : null
           }}
         />
         {!isItems && details}
