@@ -1,7 +1,7 @@
 import * as Dialog from '@radix-ui/react-dialog'
 import { X } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
-import { useNavigate, useParams, useSearchParams } from 'react-router'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
+import { useLocation, useNavigate, useParams, useSearchParams } from 'react-router'
 import { useMe, useOrgLevels, useOrgUnits, useScorecards, useVersions, useView } from '../../api/queries'
 import type { components } from '../../api/schema'
 import { parsePeriod } from '../../lib/period'
@@ -14,13 +14,18 @@ import { FOCUS_CHART_HEIGHT, MetricChart } from './charts/MetricChart'
 import { buildPoints, headerChange } from './charts/points'
 import { RANGES, rangeChange, rangeMonths, type RangeKey } from './charts/ranges'
 import { isSparse } from './charts/sparse'
-import { buildMonthTrendColumns, buildTrendColumns } from './columns'
+import { buildMonthTrendColumns, windowColumns } from './columns'
 import { DefinitionLine } from './DefinitionLine'
 import { chartCsv, chartSvg, downloadBlob, metricPng } from './exports'
 import { focusBodyKind } from './focusBody'
 import { FocusHeader } from './FocusHeader'
+import { focusRequestOptions, focusWindow } from './focusRequest'
 import { focusReturnRef } from './focusTrigger'
 import { formatMetricValue } from './format'
+import { ItemDrillIn } from './ItemDrillIn'
+import { itemGridCsv, itemGridSvg } from './itemExports'
+import { ItemGrid, SegmentedControl, useItemGroups } from './ItemGrid'
+import { buildItemRows, ITEM_PARAM, parseItemSort, SORT_PARAM, sortItems, type ItemSort } from './logic/itemGrid'
 import { defaultLayout } from './logic/layout'
 import { nounForms, type NounForms } from './logic/nouns'
 import { cellReported, statusAtScope, type StatusScaleEntry } from './logic/statusAtScope'
@@ -37,14 +42,25 @@ import { useScorecardViewRequest } from './viewRequest'
 type ScorecardView = components['schemas']['ScorecardView']
 type Metric = components['schemas']['Metric']
 type StatusRule = components['schemas']['StatusRule']
+type Frequency = components['schemas']['Frequency']
 
 const HEADER = 'shrink-0 border-b border-ink/15 px-4 pt-3 pb-2 sm:px-6 sm:pt-4 sm:pb-3'
 const BODY = 'min-h-0 flex-1 overflow-y-auto bg-cream px-4 pt-4 pb-6 sm:px-6'
+
+/** The item grid's ranges, keys `1`–`3`. */
+const ITEM_RANGES = ['6M', '12M', '24M'] as const satisfies readonly RangeKey[]
+type ItemRangeKey = (typeof ITEM_RANGES)[number]
+
+/** The dialog range as an item grid range: 3M and 6M show 6, YTD and 12M show 12, 24M 24. */
+function itemRangeOf(range: RangeKey): ItemRangeKey {
+  return range === '3M' || range === '6M' ? '6M' : range === '24M' ? '24M' : '12M'
+}
 
 interface LayoutMetric {
   key: string
   name: string
   category: string
+  frequency: Frequency
 }
 
 function metricsInLayout(view: ScorecardView): LayoutMetric[] {
@@ -53,7 +69,9 @@ function metricsInLayout(view: ScorecardView): LayoutMetric[] {
   const byKey = new Map<string, LayoutMetric>()
   for (const g of groups) {
     metricsByCategory[g.id] = g.metrics.map((m) => ({ key: m.key }))
-    for (const m of g.metrics) byKey.set(m.key, { key: m.key, name: m.name, category: g.name })
+    for (const m of g.metrics) {
+      byKey.set(m.key, { key: m.key, name: m.name, category: g.name, frequency: m.rows[0]?.frequency ?? 'monthly' })
+    }
   }
   return defaultLayout(view.categories, metricsByCategory)
     .filter((i) => i.id.startsWith('metric:'))
@@ -114,12 +132,21 @@ function MetricFocus({
   const scorecardId = sc ?? ''
   const navigate = useNavigate()
   const [period, updatePeriod] = usePeriodState()
+  const location = useLocation()
   const [params, setParams] = useSearchParams()
   const [range, setRange] = useState<RangeKey>('12M')
   const [exportError, setExportError] = useState('')
   const [announcement, announce] = useAnnouncer()
   const [toast, setToast] = useState('')
   const bodyRef = useRef<HTMLDivElement>(null)
+  // Item views: the filter and the grid's scroll position live here, so they survive the drill-in.
+  const [filter, setFilter] = useState('')
+  const [restoreId, setRestoreId] = useState('')
+  const gridScroll = useRef(0)
+  const focusHeading = useRef(false)
+  const shownSubject = useRef('')
+  const headingRef = useRef<HTMLHeadingElement>(null)
+  const groupOf = useItemGroups()
   const sam = useAskSam()
   const me = useMe()
   const orgUnits = useOrgUnits()
@@ -135,38 +162,44 @@ function MetricFocus({
   const statusColors = me.data?.tenant?.statusScale ?? defaultStatusScale()
   const statusLabel = (key: string) => statusColors.find((s) => s.key === key)?.label
 
-  // Ranges are months; other grains keep their usual trend window.
+  // Ranges are months; other grains, and metrics coarser than the selected grain, keep their own trend window.
   const monthGrain = parsePeriod(period.period)?.grain === 'month'
   const rangeSpan = rangeMonths(range, period.period)
-  const windowMonths = monthGrain && rangeSpan > 12 ? 24 : 12
-  // 24 months asks for this metric's rows only, which keeps the request well
-  // inside the API's limits; 12 shares the Overview's request and cache.
-  const { request, ready } = useScorecardViewRequest(
-    windowMonths === 24 ? { months: 24, metrics: [metricKey] } : {},
-  )
+  const frequency = layout.find((m) => m.key === metricKey)?.frequency ?? 'monthly'
+  const requested = focusWindow(range, period.period, frequency)
+  // 12 months share the Overview's request and cache; 24 months, and a coarse
+  // metric's own grain, ask for this metric's rows only.
+  const { request, ready } = useScorecardViewRequest(focusRequestOptions(requested, metricKey))
   const view = useView(ready ? scorecardId : undefined, request, { keepPrevious: true })
+  // The window of the data on screen: while another window loads, the chart keeps the one it has data for.
+  const [shownWindow, setShownWindow] = useState(requested)
+  if (view.data && !view.isPlaceholderData && (shownWindow.grain !== requested.grain || shownWindow.count !== requested.count)) {
+    setShownWindow(requested)
+  }
+  const monthWindow = shownWindow.grain === 'month'
+  const asked24 = requested.grain === 'month' && requested.count === 24
   // After 24 months have been asked for this metric, read them from the cache so the 24M change stays shown.
   const [longFor, setLongFor] = useState('')
   const long = useScorecardViewRequest({ months: 24, metrics: [metricKey] })
-  const longView = useView(long.ready && (windowMonths === 24 || longFor === metricKey) ? scorecardId : undefined, long.request)
+  const longView = useView(long.ready && (asked24 || longFor === metricKey) ? scorecardId : undefined, long.request)
   const longColumns = useMemo(() => buildMonthTrendColumns(period.period, 24, fy), [period.period, fy])
   const longScope = scopeRowOf(longView.data, metricKey)
   const selectRange = (key: RangeKey) => {
-    if (windowMonths === 24 || rangeMonths(key, period.period) > 12) setLongFor(metricKey)
+    if (asked24 || rangeMonths(key, period.period) > 12) setLongFor(metricKey)
     setRange(key)
   }
-  // While the other window loads, the chart keeps the window it has data for.
-  const shownMonths = view.isPlaceholderData && view.data ? (view.data.periods.length > 12 ? 24 : 12) : windowMonths
-  const windowColumns = useMemo(
-    () =>
-      shownMonths === 24
-        ? buildMonthTrendColumns(period.period, 24, fy)
-        : buildTrendColumns(period.period, fy),
-    [period.period, fy, shownMonths],
+  const shownColumns = useMemo(
+    () => windowColumns(period.period, shownWindow.grain, shownWindow.count, fy),
+    [period.period, fy, shownWindow.grain, shownWindow.count],
   )
   const trendColumns = useMemo(
-    () => (monthGrain ? windowColumns.slice(-rangeSpan) : windowColumns),
-    [monthGrain, windowColumns, rangeSpan],
+    () => (monthWindow ? shownColumns.slice(-rangeSpan) : shownColumns),
+    [monthWindow, shownColumns, rangeSpan],
+  )
+  const itemRange = itemRangeOf(range)
+  const itemColumns = useMemo(
+    () => (monthWindow ? shownColumns.slice(-rangeMonths(itemRange, period.period)) : shownColumns),
+    [monthWindow, shownColumns, itemRange, period.period],
   )
   const selectedColumn = trendColumns[trendColumns.length - 1]
   const columnKey = selectedColumn?.key ?? ''
@@ -178,13 +211,100 @@ function MetricFocus({
   const scope = measured?.scope ?? null
   const children = measured?.children ?? []
   const bodyKind = metricGroup ? focusBodyKind(metricGroup.rows) : 'chart'
+  const isItems = bodyKind === 'items'
+
+  // Item views: the sort and the item drilled into live in the URL (`item`, not the view's `subject` filter); stale values fall back (and are cleaned below).
+  const subject = params.get(ITEM_PARAM) ?? ''
+  const sortParam = params.get(SORT_PARAM)
+  const sort = parseItemSort(sortParam)
+  const itemRows = isItems && metricGroup ? buildItemRows(metricGroup.rows, itemColumns, scale, groupOf, fy) : []
+  const subjectRow = isItems && subject ? metricGroup?.rows.find((r) => r.subjectKind === 'item' && r.subjectId === subject) : undefined
+  const drillRow = subjectRow ? buildItemRows([subjectRow], trendColumns, scale, groupOf, fy)[0] : undefined
+  const drilling = drillRow !== undefined
+  const gridShown = isItems && !drilling
+  const settled = view.data !== undefined && !view.isPlaceholderData && metricGroup !== undefined
+  const hasSubjectRow = subjectRow !== undefined
+
+  useEffect(() => {
+    if (!settled) return
+    const staleSubject = subject !== '' && !hasSubjectRow
+    const staleSort = sortParam !== null && (!isItems || parseItemSort(sortParam) === 'worst')
+    if (!staleSubject && !staleSort) return
+    setParams(
+      (prev) => {
+        const next = new URLSearchParams(prev)
+        if (staleSubject) next.delete(ITEM_PARAM)
+        if (staleSort) next.delete(SORT_PARAM)
+        return next
+      },
+      { replace: true },
+    )
+  }, [settled, subject, hasSubjectRow, sortParam, isItems, setParams])
+
+  // Into a drill-in: focus its heading. Back to the grid: the scroll position it had (the grid refocuses the item).
+  useLayoutEffect(() => {
+    const was = shownSubject.current
+    shownSubject.current = drilling ? subject : ''
+    const body = bodyRef.current
+    if (drilling && focusHeading.current && headingRef.current) {
+      focusHeading.current = false
+      if (body) body.scrollTop = 0
+      headingRef.current.focus()
+    } else if (!drilling && was !== '' && body) {
+      body.scrollTop = gridScroll.current
+    }
+  })
+
+  const openItem = (id: string) => {
+    gridScroll.current = bodyRef.current?.scrollTop ?? 0
+    focusHeading.current = true
+    setRestoreId(id)
+    setParams(
+      (prev) => {
+        const next = new URLSearchParams(prev)
+        next.set(ITEM_PARAM, id)
+        return next
+      },
+      { state: { itemGrid: true } },
+    )
+  }
+  const backToGrid = () => {
+    // Opened from the grid: the same as browser Back. Opened from a link: drop the subject in place.
+    if ((location.state as { itemGrid?: boolean } | null)?.itemGrid) {
+      void navigate(-1)
+      return
+    }
+    setParams(
+      (prev) => {
+        const next = new URLSearchParams(prev)
+        next.delete(ITEM_PARAM)
+        return next
+      },
+      { replace: true },
+    )
+  }
+  const changeSort = (next: ItemSort) =>
+    setParams(
+      (prev) => {
+        const q = new URLSearchParams(prev)
+        if (next === 'worst') q.delete(SORT_PARAM)
+        else q.set(SORT_PARAM, next)
+        return q
+      },
+      { replace: true },
+    )
+  const sortedItems = () => {
+    const s = sortItems(itemRows, sort, head?.direction ?? 'higher_better', scale)
+    return [...s.reported, ...s.notReported]
+  }
+
   // A metric with no org-unit row (item-only) has no scope value to chart.
   const chartRow = scope ?? (head ? { ...head, subjectId: '', subjectName: '', cells: [] } : undefined)
   const cell = scope?.cells.find((c) => cellKey(c) === columnKey)
   const scopeReported = cellReported(cell)
   const reportedChildren = children.filter((ch) => cellReported(ch.cells.find((c) => cellKey(c) === columnKey)))
   const chartChildren = !scopeReported && reportedChildren.length > 0
-  const chartRows = chartChildren ? reportedChildren : chartRow ? [chartRow] : []
+  const chartRows = drillRow ? [drillRow.row] : chartChildren ? reportedChildren : chartRow ? [chartRow] : []
   const noun = head?.chartKind === 'uptime' ? 'services' : scope && children.length > 0 ? 'segments' : 'items'
   const atScope = head
     ? statusAtScope({ scope: scope ?? { cells: [] }, children, columnKey, scale, noun })
@@ -225,13 +345,20 @@ function MetricFocus({
     setParams((prev) => {
       const next = new URLSearchParams(prev)
       next.set('focus', target.key)
+      next.delete(ITEM_PARAM)
+      next.delete(SORT_PARAM)
       return next
     })
+    setFilter('')
+    setRestoreId('')
+    focusHeading.current = false
     announce(`${target.name}, ${layout.indexOf(target) + 1} of ${layout.length}`)
   }
 
   const exportCsv = () => {
-    if (!head || chartRows.length === 0) return
+    if (!head) return
+    if (gridShown) return downloadBlob(`${head.metricKey}.csv`, 'text/csv', itemGridCsv(sortedItems(), itemColumns))
+    if (chartRows.length === 0) return
     downloadBlob(`${head.metricKey}.csv`, 'text/csv', chartCsv(trendColumns, chartRows))
   }
 
@@ -247,24 +374,34 @@ function MetricFocus({
   const restatedName = period.restate
     ? (versions.data?.versions.find((v) => v.id === period.restate)?.name ?? 'the selected methodology version')
     : ''
+  // The item grid exports as the grid; a drill-in, as the item's chart.
   const exportedChart = (m: NonNullable<typeof head>) =>
-    chartSvg({
-      title: m.metricName,
-      scope: exportScope,
-      restatedUnder: restatedName,
-      format: m.format,
-      columns: trendColumns,
-      rows: chartRows,
-      scale: statusColors,
-    })
+    gridShown
+      ? itemGridSvg({
+          title: m.metricName,
+          scope: [exportScope, restatedName ? `restated under ${restatedName}` : ''].filter(Boolean).join(' · '),
+          rows: sortedItems(),
+          columns: itemColumns,
+          scale: statusColors,
+        })
+      : chartSvg({
+          title: drillRow ? `${m.metricName}: ${drillRow.name}` : m.metricName,
+          scope: exportScope,
+          restatedUnder: restatedName,
+          format: m.format,
+          columns: trendColumns,
+          rows: chartRows,
+          scale: statusColors,
+        })
+  const exportable = gridShown ? itemRows.length > 0 : chartRows.length > 0
 
   const exportSvg = () => {
-    if (!head || chartRows.length === 0) return
+    if (!head || !exportable) return
     downloadBlob(`${head.metricKey}.svg`, 'image/svg+xml', exportedChart(head))
   }
 
   const exportPng = async () => {
-    if (!head || chartRows.length === 0) return
+    if (!head || !exportable) return
     setExportError('')
     try {
       await metricPng(exportedChart(head), `${head.metricKey}.png`)
@@ -299,18 +436,33 @@ function MetricFocus({
 
   const openTable = () => void navigate(tableLink)
 
-  const points = chartRow ? buildPoints(chartRow, trendColumns, fy) : []
+  const stripRow = drillRow?.row ?? chartRow
+  const points = stripRow ? buildPoints(stripRow, trendColumns, fy) : []
   const sparse = head ? isSparse(head.chartKind, points.map((p) => p.kind)) : false
-  const rangeShown = monthGrain && (head?.frequency ?? 'monthly') === 'monthly' && !sparse
+  const monthly = monthGrain && (head?.frequency ?? 'monthly') === 'monthly'
+  // The range strip goes with a chart (a drill-in included); the item grid has its own 6M · 12M · 24M control.
+  const rangeShown = monthly && !sparse && !gridShown
+  const itemRangeShown = monthly && gridShown
 
-  const shortcuts = useDialogShortcuts(frameRef, {
-    prev: () => goTo(prevMetric),
-    next: () => goTo(nextMetric),
-    range: rangeShown ? (n) => selectRange(RANGES[n - 1]!.key) : undefined,
-    table: openTable,
-    copyLink: () => void copyLink(),
-    present,
-  })
+  const shortcuts = useDialogShortcuts(
+    frameRef,
+    {
+      prev: () => goTo(prevMetric),
+      next: () => goTo(nextMetric),
+      range: itemRangeShown
+        ? (n) => {
+            const key = ITEM_RANGES[n - 1]
+            if (key) selectRange(key)
+          }
+        : rangeShown
+          ? (n) => selectRange(RANGES[n - 1]!.key)
+          : undefined,
+      table: openTable,
+      copyLink: () => void copyLink(),
+      present,
+    },
+    { rangeKeys: gridShown ? 3 : 5 },
+  )
 
   const waiting = view.isPending || (view.isPlaceholderData && !metricGroup)
   const busy = waiting || view.isPlaceholderData
@@ -353,6 +505,53 @@ function MetricFocus({
     chartArea = <div data-chart-region="" className={`mt-4 ${FOCUS_CHART_HEIGHT}`} aria-busy="true" />
   } else if (!chartRow || !head) {
     chartArea = <p role="alert">This metric has no rows for this selection.</p>
+  } else if (isItems) {
+    const total = itemRows.length
+    chartArea = (
+      <div data-chart-region="" aria-busy={view.isPlaceholderData || undefined}>
+        {withNouns(({ children: itemNoun }) =>
+          drillRow ? (
+            <ItemDrillIn
+              head={head}
+              row={drillRow}
+              columns={trendColumns}
+              scale={statusColors}
+              noun={itemNoun}
+              total={total}
+              onBack={backToGrid}
+              headingRef={headingRef}
+              fy={fy}
+            />
+          ) : (
+            <ItemGrid
+              head={scope ?? head}
+              rows={itemRows}
+              columns={itemColumns}
+              scale={statusColors}
+              direction={head.direction}
+              noun={itemNoun}
+              sort={sort}
+              onSort={changeSort}
+              filter={filter}
+              onFilter={setFilter}
+              onOpenItem={openItem}
+              restoreId={restoreId}
+              announce={announce}
+              range={
+                itemRangeShown ? (
+                  <SegmentedControl
+                    label="Range"
+                    options={ITEM_RANGES.map((key) => ({ value: key, label: key }))}
+                    value={itemRange}
+                    onChange={selectRange}
+                  />
+                ) : undefined
+              }
+            />
+          ),
+        )}
+      </div>
+    )
   } else {
     chartArea = (
       <>
@@ -403,7 +602,7 @@ function MetricFocus({
         <Breakdown
           head={head}
           children={children}
-          columns={windowColumns.slice(-12)}
+          columns={shownColumns.slice(-12)}
           columnKey={columnKey}
           scale={statusColors}
           direction={head.direction}
@@ -474,21 +673,26 @@ function MetricFocus({
           caption={selectedColumn ? `Change from the first month in each range to ${selectedColumn.fullLabel}` : ''}
           changeFor={(key) => {
             const span = rangeMonths(key, period.period)
-            if (span <= windowColumns.length) return scope ? rangeChange(scope, windowColumns.slice(-span)) : null
+            // In a drill-in, the change is the item's own.
+            const row = drillRow?.row ?? scope
+            if (span <= shownColumns.length) return row ? rangeChange(row, shownColumns.slice(-span)) : null
             // Longer than the window shown: known once 24 months have loaded.
-            return longScope ? rangeChange(longScope, longColumns.slice(-span)) : null
+            const longRow = drillRow
+              ? longView.data?.rows.find((r) => r.metricKey === metricKey && r.subjectId === drillRow.id)
+              : longScope
+            return longRow ? rangeChange(longRow, longColumns.slice(-span)) : null
           }}
         />
-        {details}
+        {!isItems && details}
         <div data-hints="" className="mt-6 hidden flex-wrap items-center gap-x-4 gap-y-1 text-[11px] leading-4 text-ink/70 sm:flex">
           {shortcuts.enabled && (
             <>
               <span>
                 <Kbd>←</Kbd> <Kbd>→</Kbd> previous / next metric
               </span>
-              {rangeShown && (
+              {(rangeShown || itemRangeShown) && (
                 <span>
-                  <Kbd>1</Kbd>–<Kbd>5</Kbd> range
+                  <Kbd>1</Kbd>–<Kbd>{itemRangeShown ? '3' : '5'}</Kbd> range
                 </span>
               )}
               <span>

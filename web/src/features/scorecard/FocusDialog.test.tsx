@@ -1,20 +1,39 @@
-import { screen, waitFor, within } from '@testing-library/react'
+import { QueryClientProvider } from '@tanstack/react-query'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
+import { createMemoryRouter, RouterProvider } from 'react-router'
 import { describe, expect, it, vi } from 'vitest'
 import { axe } from 'vitest-axe'
 import { App } from '../../App'
 import type { components } from '../../api/schema'
-import { meFor, tenant } from '../../test/fixtures'
+import { AuthContext } from '../../auth/context'
+import { meFor, orgUnits, tenant } from '../../test/fixtures'
 import { API, server, state } from '../../test/server'
-import { renderApp } from '../../test/utils'
-import { addServiceUptime, buildView, versions, viewHandlers } from '../../test/viewFixtures'
+import { newQueryClient, renderApp, testAuth } from '../../test/utils'
+import {
+  addQuarterly,
+  addServiceUptime,
+  buildView,
+  QUARTERLY_METRIC,
+  quarterlyVersions,
+  UPTIME_ITEMS,
+  versions,
+  viewHandlers,
+} from '../../test/viewFixtures'
 import { FOCUS_CHART_HEIGHT } from './charts/MetricChart'
 
 type MethodologyVersion = components['schemas']['MethodologyVersion']
 type Metric = components['schemas']['Metric']
+type ScorecardView = components['schemas']['ScorecardView']
+type StatusRule = components['schemas']['StatusRule']
 
 const OVERVIEW = '/scorecards/sc-main/overview?period=2026-M10'
+
+/** The item names of an item grid, in row order. */
+function rowNames(grid: HTMLElement): (string | null)[] {
+  return [...grid.querySelectorAll('tbody th[scope=row] [data-name]')].map((n) => n.textContent)
+}
 
 function renderOverview(route = OVERVIEW) {
   server.use(...viewHandlers())
@@ -491,15 +510,16 @@ describe('FocusDialog', () => {
     expect(within(dialog).getByRole('button', { name: /^12M/ })).toBeTruthy()
   })
 
-  it('an item-only metric shows the worst of its services and lists them without scope buttons', async () => {
+  it('an item-only metric shows its items as a grid, with no chart, breakdown or scope buttons', async () => {
     server.use(...viewHandlers({ respond: (u) => HttpResponse.json(addServiceUptime(buildView(u.searchParams))) }))
     renderApp(<App />, { route: `${OVERVIEW}&focus=svc_uptime` })
     const dialog = await screen.findByRole('dialog', { name: /Service uptime/i })
-    expect(await within(dialog).findByText('worst of 2 services')).toBeTruthy()
-    const breakdown = within(dialog).getByRole('region', { name: 'Org breakdown' })
-    expect(within(breakdown).getByText('Web service')).toBeTruthy()
-    expect(within(breakdown).queryByRole('button', { name: 'Web service' })).toBeNull()
-    expect(within(breakdown).queryByRole('button', { name: 'API service' })).toBeNull()
+    const grid = await within(dialog).findByRole('grid', { name: 'Service uptime by item and month' })
+    expect(rowNames(grid)).toEqual(['Web service', 'API service'])
+    expect(within(dialog).getByText('1 of 2 items Green')).toBeTruthy()
+    expect(within(dialog).queryByRole('region', { name: 'Org breakdown' })).toBeNull()
+    expect(within(dialog).queryByTestId('metric-chart')).toBeNull()
+    expect(within(dialog).queryByRole('button', { name: 'Web service' })).toBeNull()
   })
 
   it('exports a slide-ready SVG that names the metric, scope, period range and version', async () => {
@@ -559,6 +579,273 @@ describe('FocusDialog', () => {
     await screen.findByRole('dialog', { name: /On-time delivery/i })
     await user.keyboard('{Escape}')
     expect(screen.queryByRole('dialog')).toBeNull()
-    expect(document.activeElement).toBe(within(metricCard('On-time delivery')).getByRole('button', { name: 'Expand' }))
+    expect(document.activeElement).toBe(within(metricCard('On-time delivery')).getByRole('button', { name: /^Expand( On-time delivery)?$/ }))
+  })
+})
+
+/** Uptime's rule after per-service bands: Green at 99.90% or better, Yellow above 99.80%. */
+const UPTIME_RULE: StatusRule = {
+  type: 'bands',
+  bands: [
+    { status: 'G', op: '>=', value: 99.9 },
+    { status: 'Y', op: '>', value: 99.8 },
+    { status: 'R', op: '', value: 0 },
+  ],
+}
+
+/** ver-1 with `svc_uptime`, reported for the Services item kind. */
+const uptimeVersions: MethodologyVersion[] = versions.map((v) =>
+  v.id !== 'ver-1'
+    ? v
+    : {
+        ...v,
+        content: {
+          ...v.content,
+          metrics: [
+            ...v.content.metrics,
+            {
+              ...v.content.metrics[0]!,
+              key: 'svc_uptime',
+              name: 'Service uptime',
+              format: 'percent2',
+              reportedAt: [{ kind: 'item_kind', id: 'service' }],
+              rule: UPTIME_RULE,
+              definition: 'Share of the period a service was available.',
+            },
+          ],
+        },
+      },
+)
+
+/** Fourteen services: Webhooks Red and Search Yellow now; Ledger Green now but Red for three months before. */
+const MANY = [
+  'Admin Console', 'Audit Log', 'Auth Service', 'Billing Worker', 'Checkout API', 'Data Export', 'Email Relay',
+  'Feature Flags', 'Ledger', 'Media CDN', 'Notifications', 'Scheduler', 'Search', 'Webhooks',
+]
+
+function addManyServices(view: ScorecardView): ScorecardView {
+  const template = addServiceUptime(buildView(new URLSearchParams('periods=2026-M10'))).rows.find((r) => r.metricKey === 'svc_uptime')!
+  for (const name of MANY) {
+    const id = `svc-${name.toLowerCase().replace(/\W+/g, '-')}`
+    const valueFor = (period: string): [number, string] => {
+      if (name === 'Webhooks' && period === '2026-M10') return [99.06, 'R']
+      if (name === 'Search' && period === '2026-M10') return [99.85, 'Y']
+      if (name === 'Ledger' && ['2026-M04', '2026-M05', '2026-M06'].includes(period)) return [99.5, 'R']
+      return [99.99, 'G']
+    }
+    view.rows.push({
+      ...template,
+      subjectId: id,
+      subjectName: name,
+      cells: [
+        ...view.periods.map((period) => {
+          const [value, status] = valueFor(period)
+          return { ...template.cells[0]!, subjectId: id, period, ytd: false, value, display: `${value.toFixed(2)}%`, status }
+        }),
+      ],
+    })
+  }
+  return view
+}
+
+function itemHandlers({ many = false, onView }: { many?: boolean; onView?: (u: URL) => void } = {}) {
+  // Earlier handlers win, so these versions come before viewHandlers' own.
+  return [
+    http.get(`${API}/v1/scorecards/sc-main/versions`, () => HttpResponse.json({ versions: uptimeVersions })),
+    ...viewHandlers({
+      onView,
+      respond: (u) => {
+        const view = many ? addManyServices(buildView(u.searchParams)) : addServiceUptime(buildView(u.searchParams))
+        for (const r of view.rows) if (r.metricKey === 'svc_uptime') for (const c of r.cells) c.rule = UPTIME_RULE
+        return HttpResponse.json(view)
+      },
+    }),
+    http.get(`${API}/v1/item-kinds`, () => HttpResponse.json({ itemKinds: [{ id: 'service', name: 'Services' }] })),
+    http.get(`${API}/v1/items`, () => HttpResponse.json({ items: UPTIME_ITEMS })),
+    http.get(`${API}/v1/org/units`, () =>
+      HttpResponse.json({ units: [...orgUnits, { id: 'team-a1', name: 'Platform', levelId: 'l2', parentId: 'unit-a', sourceKeys: [] }] }),
+    ),
+  ]
+}
+
+/** As `renderApp`, returning the router so a test can read history and go back. */
+function renderRouted(route: string) {
+  const router = createMemoryRouter([{ path: '*', element: <App /> }], { initialEntries: [route] })
+  render(
+    <AuthContext.Provider value={testAuth()}>
+      <QueryClientProvider client={newQueryClient()}>
+        <RouterProvider router={router} />
+      </QueryClientProvider>
+    </AuthContext.Provider>,
+  )
+  return router
+}
+
+const search = (router: ReturnType<typeof renderRouted>) => new URLSearchParams(router.state.location.search)
+
+describe('FocusDialog: item metrics', () => {
+  it('opening a service pushes item, focuses its heading and states its own rule; Back returns to its cell', async () => {
+    const seen: URL[] = []
+    server.use(...itemHandlers({ onView: (u) => seen.push(u) }))
+    const router = renderRouted(`${OVERVIEW}&focus=svc_uptime`)
+    const dialog = await screen.findByRole('dialog', { name: 'Service uptime' })
+    const grid = await within(dialog).findByRole('grid', { name: 'Service uptime by service and month' })
+    expect(within(dialog).getByText('1 of 2 services Green')).toBeTruthy()
+    const user = userEvent.setup()
+    await user.click(within(grid).getByRole('button', { name: 'Web service, Oct 2026: Red, 99.20%' }))
+
+    const heading = await within(dialog).findByRole('heading', { level: 3, name: 'Web service' })
+    expect(document.activeElement).toBe(heading)
+    expect(router.state.historyAction).toBe('PUSH')
+    expect(search(router).get('item')).toBe('svc-web')
+    // The drill-in is the dialog's own state: the view (and the Overview behind) keep their subjects.
+    expect(search(router).getAll('subject')).toEqual([])
+    expect(seen.some((u) => u.searchParams.has('subjects'))).toBe(false)
+    const drill = within(dialog).getByTestId('item-drill-in')
+    expect(within(drill).getByRole('navigation', { name: 'Breadcrumb' }).textContent).toContain('· Platform · Green at 99.90% or better')
+    expect(within(drill).getByRole('link', { name: 'All 2 services' })).toBeTruthy()
+    expect(within(drill).getByTestId('metric-chart').dataset.size).toBe('focus')
+    expect(within(dialog).queryByRole('grid')).toBeNull()
+    // The drill-in is the item's chart, so the range strip applies.
+    expect(within(dialog).getByRole('group', { name: 'Range' })).toBeTruthy()
+
+    await act(() => router.navigate(-1))
+    const back = await within(dialog).findByRole('grid')
+    await waitFor(() => expect(document.activeElement?.getAttribute('aria-label')).toBe('Web service, Oct 2026: Red, 99.20%'))
+    expect(back.contains(document.activeElement)).toBe(true)
+  })
+
+  it('All services restores the sort and filter and focuses the same service by id', async () => {
+    server.use(...itemHandlers({ many: true }))
+    const router = renderRouted(`${OVERVIEW}&focus=svc_uptime&sort=reds`)
+    const dialog = await screen.findByRole('dialog', { name: 'Service uptime' })
+    const grid = await within(dialog).findByRole('grid')
+    // Most Red months puts Ledger first; Worst now would put Webhooks first.
+    expect(rowNames(grid).slice(0, 3)).toEqual(['Ledger', 'Webhooks', 'Search'])
+    const user = userEvent.setup()
+    await user.type(within(dialog).getByRole('searchbox', { name: 'Filter services' }), 'se')
+    expect(rowNames(within(dialog).getByRole('grid'))).toEqual(['Search', 'Auth Service'])
+    within(dialog).getByRole('button', { name: 'Search, Oct 2026: Yellow, 99.85%' }).focus()
+    await user.keyboard('{Enter}')
+    await within(dialog).findByRole('heading', { level: 3, name: 'Search' })
+
+    await user.click(within(dialog).getByRole('link', { name: 'All 14 services' }))
+    const again = await within(dialog).findByRole('grid')
+    expect(search(router).get('sort')).toBe('reds')
+    expect(search(router).get('item')).toBeNull()
+    expect((within(dialog).getByRole('searchbox', { name: 'Filter services' }) as HTMLInputElement).value).toBe('se')
+    expect(within(dialog).getByRole('radio', { name: 'Most Red months' }).getAttribute('aria-checked')).toBe('true')
+    await waitFor(() => expect(document.activeElement?.getAttribute('aria-label')).toBe('Search, Oct 2026: Yellow, 99.85%'))
+    expect(again.contains(document.activeElement)).toBe(true)
+  })
+
+  it('an item not in view shows the grid and drops item from the URL', async () => {
+    server.use(...itemHandlers())
+    const router = renderRouted(`${OVERVIEW}&focus=svc_uptime&item=nope`)
+    const dialog = await screen.findByRole('dialog', { name: 'Service uptime' })
+    await within(dialog).findByRole('grid')
+    await waitFor(() => expect(search(router).get('item')).toBeNull())
+    expect(router.state.historyAction).toBe('REPLACE')
+    expect(search(router).get('focus')).toBe('svc_uptime')
+    expect(within(dialog).queryByTestId('item-drill-in')).toBeNull()
+  })
+
+  it('an unknown sort behaves as Worst now and leaves the URL', async () => {
+    server.use(...itemHandlers({ many: true }))
+    const router = renderRouted(`${OVERVIEW}&focus=svc_uptime&sort=bogus`)
+    const dialog = await screen.findByRole('dialog', { name: 'Service uptime' })
+    const grid = await within(dialog).findByRole('grid')
+    expect(within(dialog).getByRole('radio', { name: 'Worst now' }).getAttribute('aria-checked')).toBe('true')
+    expect(rowNames(grid).slice(0, 2)).toEqual(['Webhooks', 'Search'])
+    await waitFor(() => expect(search(router).get('sort')).toBeNull())
+    expect(router.state.historyAction).toBe('REPLACE')
+  })
+
+  it('previous and next metric clear item, sort and the filter', async () => {
+    server.use(...itemHandlers())
+    const router = renderRouted(`${OVERVIEW}&focus=svc_uptime&item=svc-web&sort=name`)
+    const dialog = await screen.findByRole('dialog', { name: 'Service uptime' })
+    await within(dialog).findByTestId('item-drill-in')
+    const user = userEvent.setup()
+    await user.click(await within(dialog).findByRole('button', { name: 'Next metric: Defect rate' }))
+    await screen.findByRole('dialog', { name: 'Defect rate' })
+    expect(search(router).get('item')).toBeNull()
+    expect(search(router).get('sort')).toBeNull()
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Previous metric: Service uptime' }))
+    const grid = await within(await screen.findByRole('dialog', { name: 'Service uptime' })).findByRole('grid')
+    expect(rowNames(grid)).toEqual(['Web service', 'API service'])
+  })
+
+  it('Export CSV on the grid writes one row per service', async () => {
+    const blobs: Blob[] = []
+    vi.spyOn(URL, 'createObjectURL').mockImplementation((b) => {
+      blobs.push(b as Blob)
+      return 'blob:csv'
+    })
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {})
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    try {
+      server.use(...itemHandlers())
+      renderRouted(`${OVERVIEW}&focus=svc_uptime`)
+      const dialog = await screen.findByRole('dialog', { name: 'Service uptime' })
+      await within(dialog).findByRole('grid')
+      const { user, menu } = await openMore(dialog)
+      await user.click(within(menu).getByRole('menuitem', { name: 'Export CSV' }))
+      await waitFor(() => expect(blobs).toHaveLength(1))
+      const lines = (await blobs[0]!.text()).replace(/^\uFEFF/, '').trim().split('\r\n')
+      expect(lines).toHaveLength(3)
+      expect(lines[0]).toMatch(/^"name","group","2025-M11",.*"2026-M10","status"$/)
+      expect(lines[1]).toMatch(/^"Web service","Platform",.*"99.2","R"$/)
+      expect(lines[2]).toMatch(/^"API service","Unassigned",.*"99.95","G"$/)
+    } finally {
+      vi.restoreAllMocks()
+    }
+  })
+
+  it('the item range control offers 6M, 12M and 24M; key 3 picks 24M for this metric only', async () => {
+    const seen: URL[] = []
+    server.use(...itemHandlers({ onView: (u) => seen.push(u) }))
+    renderRouted(`${OVERVIEW}&focus=svc_uptime`)
+    const dialog = await screen.findByRole('dialog', { name: 'Service uptime' })
+    await within(dialog).findByRole('grid')
+    const range = within(dialog).getByRole('radiogroup', { name: 'Range' })
+    expect(within(range).getAllByRole('radio').map((r) => [r.textContent, r.getAttribute('aria-checked')])).toEqual([
+      ['6M', 'false'],
+      ['12M', 'true'],
+      ['24M', 'false'],
+    ])
+    expect(within(dialog).queryByRole('group', { name: 'Range' })).toBeNull()
+    expect(within(dialog).getByText((_, el) => el?.tagName === 'SPAN' && el.textContent === '1–3 range')).toBeTruthy()
+    ;(await within(dialog).findByRole('button', { name: /^Previous metric/ })).focus()
+    await userEvent.setup().keyboard('3')
+    expect(within(range).getByRole('radio', { name: '24M' }).getAttribute('aria-checked')).toBe('true')
+    await waitFor(() => expect(within(dialog).getAllByRole('columnheader', { name: 'Nov' })).toHaveLength(2))
+    const req = seen.find((u) => u.searchParams.has('metrics'))
+    expect(req?.searchParams.getAll('metrics')).toEqual(['svc_uptime'])
+    expect(req?.searchParams.getAll('periods')).toHaveLength(24)
+  })
+
+  it('the item dialog has no axe violations', async () => {
+    server.use(...itemHandlers())
+    renderRouted(`${OVERVIEW}&focus=svc_uptime`)
+    const dialog = await screen.findByRole('dialog', { name: 'Service uptime' })
+    await within(dialog).findByRole('grid', { name: 'Service uptime by service and month' })
+    await within(dialog).findByRole('navigation', { name: 'Metrics' })
+    expect((await axe(dialog)).violations).toEqual([])
+  })
+
+  it('a quarterly metric asks for its own quarters only', async () => {
+    const seen: URL[] = []
+    server.use(
+      http.get(`${API}/v1/scorecards/sc-main/versions`, () => HttpResponse.json({ versions: quarterlyVersions })),
+      ...viewHandlers({ onView: (u) => seen.push(u), respond: (u) => HttpResponse.json(addQuarterly(buildView(u.searchParams))) }),
+    )
+    renderRouted(`${OVERVIEW}&focus=${QUARTERLY_METRIC.key}`)
+    await screen.findByRole('dialog', { name: QUARTERLY_METRIC.name })
+    await waitFor(() => expect(seen.some((u) => u.searchParams.getAll('metrics').includes(QUARTERLY_METRIC.key))).toBe(true))
+    const req = seen.find((u) => u.searchParams.getAll('metrics').includes(QUARTERLY_METRIC.key))!
+    expect(req.searchParams.getAll('metrics')).toEqual([QUARTERLY_METRIC.key])
+    expect(req.searchParams.getAll('periods')).toEqual(['2024-Q4', '2025-Q1', '2025-Q2', '2025-Q3', '2025-Q4', '2026-Q1', '2026-Q2', '2026-Q3'])
+    expect(req.searchParams.getAll('ytd')).toEqual([])
   })
 })
