@@ -86,7 +86,9 @@ func NewServer(d Deps) *Server {
 
 // NewHandler mounts the generated strict handler under /v1 behind authMW, with
 // gzip compression of large JSON responses outermost, and serves GET /healthz
-// outside both. It
+// outside both. The MCP endpoint, /v1/mcp, sits behind the same two; its tool
+// calls go straight to the router (see DispatchHandler), so they are neither
+// authenticated again nor compressed. It
 // panics if authMW is nil: an API without authentication must be a deliberate
 // act, not a missing argument.
 //
@@ -96,16 +98,14 @@ func NewHandler(s *Server, authMW func(http.Handler) http.Handler) http.Handler 
 	if authMW == nil {
 		panic("httpapi: authentication middleware is required")
 	}
-	si := NewStrictHandlerWithOptions(s, nil, StrictHTTPServerOptions{
-		RequestErrorHandlerFunc:  requestErrorHandler,
-		ResponseErrorHandlerFunc: responseErrorHandler,
-	})
-	api := HandlerWithOptions(si, StdHTTPServerOptions{
-		BaseURL:          "/v1",
-		ErrorHandlerFunc: requestErrorHandler,
-	})
+	api := DispatchHandler(s)
+	mcpHandler := s.mcpHandler(api)
 	secured := gzipMiddleware(authMW(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+		if r.URL.Path == mcpPath {
+			r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+			mcpHandler.ServeHTTP(w, r)
+			return
+		}
 		api.ServeHTTP(w, r)
 	})))
 	// An exact-path check rather than a ServeMux: a mux would redirect
@@ -116,6 +116,26 @@ func NewHandler(s *Server, authMW func(http.Handler) http.Handler) http.Handler 
 			return
 		}
 		secured.ServeHTTP(w, r)
+	})
+}
+
+// DispatchHandler is the generated router under /v1 with the request body
+// limit, and nothing else: no authentication and no compression. Every
+// request must already carry its caller in the context (auth.WithPrincipal).
+// It serves in-process calls such as MCP tool calls; NewHandler wraps it for
+// the network.
+func DispatchHandler(s *Server) http.Handler {
+	si := NewStrictHandlerWithOptions(s, nil, StrictHTTPServerOptions{
+		RequestErrorHandlerFunc:  requestErrorHandler,
+		ResponseErrorHandlerFunc: responseErrorHandler,
+	})
+	api := HandlerWithOptions(si, StdHTTPServerOptions{
+		BaseURL:          "/v1",
+		ErrorHandlerFunc: requestErrorHandler,
+	})
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+		api.ServeHTTP(w, r)
 	})
 }
 
