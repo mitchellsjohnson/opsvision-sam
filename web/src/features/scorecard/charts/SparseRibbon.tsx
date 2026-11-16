@@ -4,6 +4,7 @@ import type { components } from '../../../api/schema'
 import { StatusCell, StatusChip } from '../../../ui/status'
 import { useElementWidth } from '../../../ui/useElementWidth'
 import type { Column } from '../columns'
+import { changeText } from '../format'
 import { columnUnit } from '../logic/statusText'
 import type { BoardCell } from '../logic/statusBoard'
 import { pointLabel, PointButtons, PointControls, type ChartSize } from './chartParts'
@@ -19,6 +20,22 @@ function boardCell(p: ChartPoint): BoardCell {
 }
 
 /**
+ * Each valued point's change since the last valued one before it, which the
+ * n/a periods between may put several back (`-15 pts vs Mar`); the cell's
+ * own change when it has one, and null for the first.
+ */
+export function changesSinceReported(valued: ChartPoint[], format: string): (string | null)[] {
+  return valued.map((p, i) => {
+    if (p.change) return p.change
+    const prior = valued[i - 1]
+    if (!prior || p.value === null || prior.value === null) return null
+    const text = changeText({ period: '', ytd: false, format, change: p.value - prior.value, changeKind: 'delta', fyStart: 1 })
+    // With no period, the phrase is `vs prior period`; name the period compared with instead.
+    return text?.replace(/vs prior period$/, `vs ${prior.label}`) ?? null
+  })
+}
+
+/**
  * A metric with more n/a than values: one board cell per period, the value
  * above each valued one and the period below, with a context line and what
  * n/a means. Focus adds a table of the valued periods (§7.5).
@@ -29,12 +46,15 @@ export function SparseRibbon({
   scale,
   size,
   statusLabel,
+  format,
 }: {
   points: ChartPoint[]
   columns: Column[]
   scale: StatusLevel[]
   size: ChartSize
   statusLabel: (key: string) => string | undefined
+  /** The metric's value format, for the focus table's changes. */
+  format: string
 }) {
   const focus = size === 'focus'
   const [tip, setTip] = useState<ChartPoint | null>(null)
@@ -45,6 +65,8 @@ export function SparseRibbon({
   const key = sparseKey(points)
   const last = points.length - 1
   const valued = points.filter((p) => p.kind === 'value')
+  const changes = changesSinceReported(valued, format)
+  const showChange = changes.some((c) => c !== null)
   const nameOf = (status: string) => statusLabel(status) || chartTheme(scale, status).label || status
 
   return (
@@ -96,13 +118,15 @@ export function SparseRibbon({
               <th scope="col" className="py-1.5 pr-4 font-medium">
                 Status
               </th>
-              <th scope="col" className="py-1.5 font-medium">
-                Change
-              </th>
+              {showChange && (
+                <th scope="col" className="py-1.5 font-medium">
+                  Change
+                </th>
+              )}
             </tr>
           </thead>
           <tbody>
-            {valued.map((p) => (
+            {valued.map((p, i) => (
               <tr key={p.key} className="border-b border-ink/10">
                 <th scope="row" className="py-1.5 pr-4 font-normal">
                   {p.fullLabel}
@@ -120,7 +144,7 @@ export function SparseRibbon({
                     'Not rated'
                   )}
                 </td>
-                <td className="py-1.5 text-ink/80 tabular-nums">{p.change ?? '—'}</td>
+                {showChange && <td className="py-1.5 text-ink/80 tabular-nums">{changes[i] ?? '—'}</td>}
               </tr>
             ))}
           </tbody>

@@ -51,6 +51,7 @@ import {
   type DotProps,
   type LabelViewBox,
   type TickProps,
+  type ValueLabel,
 } from './chartParts'
 import { chartTheme } from './chartTheme'
 import type { ChartPoint } from './points'
@@ -120,6 +121,9 @@ export function RatioChart({
   const labels = new Map(columns.map((c) => [c.key, axisLabel(c)]))
 
   const data = columns.map((col, i) => ({ i, label: col.label, key: col.key, plot: points[i]?.kind === 'value' ? points[i]!.value : null }))
+  const valueLabels: ValueLabel[] = valuePoints
+    ? points.flatMap((p, index) => (p.kind === 'value' && p.value !== null && p.display ? [{ index, value: p.value, text: p.display }] : []))
+    : []
 
   return (
     <div>
@@ -173,7 +177,8 @@ export function RatioChart({
                 width={axis.width}
               />
             ) : (
-              <YAxis hide domain={domain} allowDataOverflow />
+              // The domain holds every value; letting data overflow would clip the points and their labels to the plot.
+              <YAxis hide domain={domain} />
             )}
             {rects.map((r, i) => {
               const theme = chartTheme(scale, r.status)
@@ -187,7 +192,7 @@ export function RatioChart({
                 />
               )
             })}
-            {markerLines(markers, columns)}
+            {markerLines(markers, columns, { text: focus, values: valueLabels })}
             {target !== null && (
               <ReferenceLine
                 className="goal-line"

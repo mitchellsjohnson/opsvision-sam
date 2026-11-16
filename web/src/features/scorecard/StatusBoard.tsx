@@ -4,7 +4,7 @@ import { useElementWidth } from '../../ui/useElementWidth'
 import { Legend, RollUp, StatusCell, StatusCellTip, StatusChip, useGridNavigation, type StatusLevel } from '../../ui/status'
 import { MOVE_CLASS } from './charts/chartTheme'
 import type { Column } from './columns'
-import { boardLayout, cellName, fiscalGroups, streakAt, type BoardRow } from './logic/statusBoard'
+import { boardLayout, cellName, fiscalGroups, fiscalLabel, streakAt, type BoardRow } from './logic/statusBoard'
 import { columnUnit } from './logic/statusText'
 
 export { StatusCellTip, type StatusCellTipProps } from '../../ui/status'
@@ -13,6 +13,32 @@ const ROW_HOVER = 'hover:bg-ink/[0.035] focus-within:bg-ink/[0.035]'
 
 function CurrentValue({ row, scale, compact }: { row: BoardRow; scale: StatusLevel[]; compact: boolean }) {
   const last = row.counted ?? row.cells[row.cells.length - 1]
+  if (!row.current && row.worst && compact) {
+    return (
+      <span className="flex min-w-0 items-baseline justify-end gap-1">
+        <span title={row.worst.name} className="min-w-0 truncate text-[11px] text-ink/70">
+          {row.worst.name}
+        </span>
+        <span className="shrink-0 text-sm font-semibold tabular-nums">{row.worst.display}</span>
+      </span>
+    )
+  }
+  if (!row.current && row.worst) {
+    return (
+      <>
+        <span className="block text-sm font-semibold tabular-nums">{row.worst.display}</span>
+        <span title={[row.worst.name, row.caption].filter(Boolean).join(' · ')} className="block truncate text-[11px] text-ink/70">
+          <span className="font-medium text-ink/80">{row.worst.name}</span>
+          {row.caption && (
+            <>
+              {' · '}
+              <span>{row.caption}</span>
+            </>
+          )}
+        </span>
+      </>
+    )
+  }
   if (row.current && compact) {
     return (
       <span className="text-sm font-semibold tabular-nums">
@@ -206,20 +232,31 @@ export function StatusBoard({ label, columns, rows, scale, onOpen }: StatusBoard
               {groups.length > 0 && (
                 <tr>
                   <td className={inline ? undefined : 'p-0'} />
-                  {groups.map((g) => (
-                    <th
-                      key={g.fy}
-                      scope="colgroup"
-                      colSpan={g.span}
-                      data-fy-start={g.start > 0 ? '' : undefined}
-                      className={clsx(
-                        'truncate pb-0.5 pl-1 text-left text-[11px] font-semibold uppercase tracking-wide text-ink/70',
-                        g.start > 0 && 'border-l border-ink/20',
-                      )}
-                    >
-                      {g.label}
-                    </th>
-                  ))}
+                  {groups.map((g) => {
+                    const short = fiscalLabel(g, layout.cellWidth)
+                    return (
+                      <th
+                        key={g.fy}
+                        scope="colgroup"
+                        colSpan={g.span}
+                        title={short === g.label ? undefined : g.label}
+                        data-fy-start={g.start > 0 ? '' : undefined}
+                        className={clsx(
+                          'truncate pb-0.5 pl-1 text-left text-[11px] font-semibold uppercase tracking-wide text-ink/70',
+                          g.start > 0 && 'border-l border-ink/20',
+                        )}
+                      >
+                        {short === g.label ? (
+                          g.label
+                        ) : (
+                          <>
+                            <span aria-hidden="true">{short}</span>
+                            <span className="sr-only">{g.label}</span>
+                          </>
+                        )}
+                      </th>
+                    )
+                  })}
                   {inline && <td />}
                 </tr>
               )}

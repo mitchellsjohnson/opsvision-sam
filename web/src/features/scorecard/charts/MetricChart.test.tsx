@@ -493,6 +493,17 @@ describe('MetricChart coarse points', () => {
     expect(ribbonCells(container)).toHaveLength(4)
   })
 
+  it('a tile never clips its points or their value labels to the plot, so the highest one shows', () => {
+    draw(quarterlyRow(), { columns: quarters })
+    const chart = screen.getByTestId('metric-chart')
+    const labels = [...chart.querySelectorAll<SVGTextElement>('[data-role="value-label"]')]
+    expect(labels.map((l) => l.textContent)).toEqual(['70%', '75%', '85%', '90%'])
+    for (const label of labels) {
+      expect(label.closest('[clip-path]')).toBeNull()
+      expect(Number(label.getAttribute('y'))).toBeGreaterThan(0)
+    }
+  })
+
   it('a quarterly ratio metric in a month view gets points too', () => {
     draw(quarterlyRow((r) => (r.chartKind = 'ratio')), { columns: quarters })
     expect(screen.getByTestId('metric-chart').querySelectorAll('circle[data-point]')).toHaveLength(4)
@@ -613,11 +624,17 @@ describe('MetricChart money plan', () => {
     expect(barAt(container, '2026-M10').getAttribute('fill')).toBe('#B42318')
   })
 
-  it('a tile labels the line Plan at its right end; focus pins a Plan pill on the axis', () => {
+  it('a tile labels the line Plan past its right end, clear of every bar and deviation label; focus pins a Plan pill on the axis', () => {
     const tile = draw(planRow(), { columns: sepOct })
     const label = tile.container.querySelector('[data-role="plan-label"]')!
     expect(label.textContent).toBe('Plan')
-    expect(Number(label.getAttribute('y'))).toBeGreaterThan(planY(tile.container))
+    expect(label.getAttribute('text-anchor')).toBe('start')
+    expect(Number(label.getAttribute('y'))).toBeCloseTo(planY(tile.container))
+    const lineEnd = Number(tile.container.querySelector('.plan-line .recharts-reference-line-line')!.getAttribute('x2'))
+    expect(Number(label.getAttribute('x'))).toBeGreaterThan(lineEnd)
+    for (const bar of tile.container.querySelectorAll('rect[data-bar]')) {
+      expect(Number(bar.getAttribute('x')) + Number(bar.getAttribute('width'))).toBeLessThanOrEqual(lineEnd)
+    }
     expect(tile.container.querySelector('[data-role="plan-pill"]')).toBeNull()
     expect(tile.container.querySelector('.recharts-yAxis')).toBeNull()
     tile.unmount()
@@ -709,6 +726,23 @@ describe('MetricChart sparse', () => {
     expect(rows.map((r) => within(r).getByRole('rowheader').textContent)).toEqual(VALUED.map((i) => columns[i]!.fullLabel))
     expect(within(rows[0]!).getByText('80%')).toBeTruthy()
     expect(within(rows[0]!).getByText('Yellow')).toBeTruthy()
+  })
+
+  it('the focus table compares each valued month with the last one reported, skipping the n/a months between', () => {
+    const row = sparseRow()
+    const values = [80, 85, 70, 70]
+    VALUED.forEach((i, k) => Object.assign(row.cells[i]!, { value: values[k], display: `${values[k]}%`, change: null, changeKind: '' }))
+    draw(row, { size: 'focus' })
+    const rows = within(screen.getByRole('table')).getAllByRole('row').slice(1)
+    // In the metric's format: on-time delivery shows tenths.
+    expect(rows.map((r) => r.lastElementChild!.textContent)).toEqual(['—', '+5.0 pts vs Dec', '-15.0 pts vs Mar', 'No change vs Jun'])
+  })
+
+  it('drops the Change column when only one month reported', () => {
+    const row = sparseRow()
+    for (const i of VALUED.slice(1)) Object.assign(row.cells[i]!, { value: null, display: '', status: '', naReason: REASON })
+    draw(row, { size: 'focus' })
+    expect(within(screen.getByRole('table')).getAllByRole('columnheader').map((h) => h.textContent)).toEqual(['Month', 'Value', 'Status'])
   })
 
   it('the tile has no table', () => {
@@ -876,6 +910,16 @@ describe('MetricChart on a phone', () => {
     expect(ribbonCells(container).at(-1)!.textContent).toBe('Y')
   })
 
+  it('money plan focus: the phone plot height, every other month labelled, and an 18px letter-only ribbon', () => {
+    const row = rowOf('on_time_pct', (r) => (r.chartKind = 'money_plan'))
+    const { container } = draw(row, { size: 'focus' })
+    expect(screen.getByTestId('metric-chart').className).toContain('h-[max(280px,45vh)]')
+    expect(xTicks(container).filter(Boolean)).toEqual(['Dec', 'Feb', 'Apr', 'Jun', 'Aug', 'Oct'])
+    const ribbon = screen.getByTestId('status-ribbon')
+    expect(ribbon.className).toContain('h-[18px]')
+    expect(ribbonCells(container).at(-1)!.textContent).toBe('Y')
+  })
+
   it('tiles keep their geometry', () => {
     const { container } = draw(rowOf('on_time_pct'))
     expect(screen.getByTestId('metric-chart').style.height).toBe('120px')
@@ -886,8 +930,8 @@ describe('MetricChart on a phone', () => {
 describe('MetricChart methodology markers', () => {
   const markers: VersionMarker[] = [{ index: 8, label: 'From records', title: 'Methodology changed: 2026 v2 from Jul 2026' }]
 
-  it.each(SIZES)('%s: a dashed ink/55 line at the boundary with a 10px ink/70 label', (size) => {
-    const { container } = draw(rowOf('on_time_pct'), { size, markers })
+  it('focus: a dashed ink/55 line at the boundary with a 10px ink/70 label', () => {
+    const { container } = draw(rowOf('on_time_pct'), { size: 'focus', markers })
     const marker = container.querySelector('[data-role="version-marker"]')!
     const line = marker.querySelector('line')!
     expect(line.getAttribute('stroke-dasharray')).toBeTruthy()
@@ -897,6 +941,43 @@ describe('MetricChart methodology markers', () => {
     expect(label.getAttribute('font-size')).toBe('10')
     expect(label.getAttribute('fill-opacity')).toBe('0.7')
     expect(marker.querySelector('title')!.textContent).toBe('Methodology changed: 2026 v2 from Jul 2026')
+  })
+
+  it('a tile draws the dashed line only, its hover title saying what changed', () => {
+    const { container } = draw(rowOf('on_time_pct'), { markers })
+    const marker = container.querySelector('[data-role="version-marker"]')!
+    expect(marker.querySelector('line[stroke-dasharray]')).toBeTruthy()
+    expect(marker.querySelector('text')).toBeNull()
+    expect(marker.querySelector('title')!.textContent).toBe('Methodology changed: 2026 v2 from Jul 2026')
+  })
+
+  it('focus: a label that would sit over a point’s value label drops its text, keeping the line and its title', () => {
+    const quarters = coarseColumns('2026-M10', 'quarter', 4, 1)
+    const q = new URLSearchParams()
+    for (const c of quarters) q.append('periods', c.period)
+    const row = addQuarterly(buildView(q)).rows.find((r) => r.metricKey === 'concepts_value')!
+    const atQ2: VersionMarker[] = [{ index: 2, label: 'From records', title: 'Methodology changed: 2026 v2 from Apr 2026' }]
+    const { container } = draw(row, { columns: quarters, size: 'focus', markers: atQ2 })
+    const marker = container.querySelector('[data-role="version-marker"]')!
+    expect(marker.querySelector('line')).toBeTruthy()
+    expect(marker.querySelector('title')!.textContent).toBe('Methodology changed: 2026 v2 from Apr 2026')
+    const text = marker.querySelector('text')
+    const values = [...container.querySelectorAll<SVGTextElement>('[data-role="value-label"]')]
+    expect(values).toHaveLength(4)
+    // Either no text, or text that clears every value label's box.
+    if (text) {
+      const ty = Number(text.getAttribute('y'))
+      for (const v of values) expect(Math.abs(Number(v.getAttribute('y')) - ty)).toBeGreaterThanOrEqual(12)
+    }
+  })
+
+  it('small multiples draw the lines without text and name the change once under the panels', () => {
+    const four = ['Data', 'Mobile', 'Payments', 'Platform'].map((n, i) => segment(n.toLowerCase(), n, 74 + i * 6, i === 0 ? 'R' : 'G'))
+    const { container } = draw(rowOf('on_time_pct', (r) => (r.cells = [])), { chartRows: four, size: 'focus', markers })
+    const marks = [...container.querySelectorAll('[data-role="version-marker"]')]
+    expect(marks).toHaveLength(4)
+    for (const m of marks) expect(m.querySelector('text')).toBeNull()
+    expect(screen.getByTestId('multiples-caption').textContent).toMatch(/ · worst first · dashed line: methodology changed from Jul 2026$/)
   })
 
   it('the summary and the hover label say the methodology changed', () => {
@@ -918,7 +999,7 @@ describe('MetricChart methodology markers', () => {
       { index: 2, label: '2026 v1.0', title: 'Methodology changed: 2026 v1.0 from Jan 2026' },
       { index: 3, label: 'From records', title: 'Methodology changed: 2026 v2 from Feb 2026' },
     ]
-    const { container } = draw(rowOf('on_time_pct'), { markers: close })
+    const { container } = draw(rowOf('on_time_pct'), { size: 'focus', markers: close })
     const marks = [...container.querySelectorAll('[data-role="version-marker"]')]
     expect(marks).toHaveLength(2)
     expect(marks[0]!.querySelector('text')).toBeNull()

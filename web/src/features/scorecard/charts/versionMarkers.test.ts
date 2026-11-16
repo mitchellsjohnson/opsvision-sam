@@ -59,22 +59,53 @@ const versions = [
   version('v2026-2', '2026 v2', '2026-M07', ['epics_on_time', 'epics_committed']),
 ]
 
+/** `v` with metric `key`'s definition edited. */
+function editMetric(v: MethodologyVersion, key: string, edit: (m: components['schemas']['Metric']) => void): MethodologyVersion {
+  const metrics = v.content.metrics.map((m) => {
+    if (m.key !== key) return m
+    const copy = structuredClone(m)
+    edit(copy)
+    return copy
+  })
+  return { ...v, content: { ...v.content, metrics } }
+}
+
 describe('versionBoundaries', () => {
-  it('marks each column where the version in force changes: the version name, or From records when it newly derives a measure of the metric', () => {
+  it('marks a change of version only where the metric changed: From records when it newly derives a measure of the metric', () => {
+    // 2026 v1.0 restates 2025 v1.0 unchanged for this metric, so January is no boundary.
     expect(versionBoundaries(versions, columns, 'on_time')).toEqual([
-      { index: 2, label: '2026 v1.0', title: 'Methodology changed: 2026 v1.0 from Jan 2026' },
       { index: 8, label: 'From records', title: 'Methodology changed: 2026 v2 from Jul 2026' },
     ])
   })
 
-  it('names the version when the newer one derives no measure of this metric', () => {
-    expect(versionBoundaries(versions, columns, 'tickets_closed').map((m) => m.label)).toEqual(['2026 v1.0', '2026 v2'])
+  it('skips every boundary where the metric’s rule, formula and measures did not change', () => {
+    expect(versionBoundaries(versions, columns, 'tickets_closed')).toEqual([])
+  })
+
+  it('names the version when the metric’s rule or formula changed', () => {
+    const ruled = [versions[0]!, editMetric(versions[1]!, 'tickets_closed', (m) => (m.rule = { type: 'bands', bands: [{ status: 'G', op: '>=', value: 10 }] })), versions[2]!]
+    // Only 2026 v1.0 has the new rule, so July changes it back.
+    expect(versionBoundaries(ruled, columns, 'tickets_closed').map((m) => [m.index, m.label])).toEqual([
+      [2, '2026 v1.0'],
+      [8, '2026 v2'],
+    ])
+    const formula = [versions[0]!, versions[1]!, editMetric(versions[2]!, 'tickets_closed', (m) => (m.formula = 'tickets * 2'))]
+    expect(versionBoundaries(formula, columns, 'tickets_closed').map((m) => [m.index, m.label])).toEqual([[8, '2026 v2']])
+  })
+
+  it('a change to a measure the formula names counts; other measures do not', () => {
+    const other = (v: MethodologyVersion): MethodologyVersion => ({
+      ...v,
+      content: { ...v.content, measures: v.content.measures.map((m) => (m.key === 'tickets' ? { ...m, timeAgg: 'average' as const } : m)) },
+    })
+    const changed = [versions[0]!, other(versions[1]!), other(versions[2]!)]
+    expect(versionBoundaries(changed, columns, 'tickets_closed').map((m) => m.index)).toEqual([2])
+    expect(versionBoundaries(changed, columns, 'on_time').map((m) => m.index)).toEqual([8])
   })
 
   it('a measure already derived before the change is not news', () => {
-    const later = [...versions, version('v2026-3', '2026 v3', '2026-M09', ['epics_on_time', 'epics_committed'])]
+    const later = [...versions, editMetric(version('v2026-3', '2026 v3', '2026-M09', ['epics_on_time', 'epics_committed']), 'on_time', (m) => (m.formula = 'epics_on_time / epics_committed'))]
     expect(versionBoundaries(later, columns, 'on_time').map((m) => [m.index, m.label])).toEqual([
-      [2, '2026 v1.0'],
       [8, 'From records'],
       [10, '2026 v3'],
     ])
@@ -91,9 +122,6 @@ describe('versionBoundaries', () => {
 
   it('works on coarse columns: the quarter whose last month runs under the new version', () => {
     const quarters = coarseColumns('2026-M10', 'quarter', 4, 1)
-    expect(versionBoundaries(versions, quarters, 'on_time').map((m) => [quarters[m.index]!.label, m.label])).toEqual([
-      ['Q1', '2026 v1.0'],
-      ['Q3', 'From records'],
-    ])
+    expect(versionBoundaries(versions, quarters, 'on_time').map((m) => [quarters[m.index]!.label, m.label])).toEqual([['Q3', 'From records']])
   })
 })

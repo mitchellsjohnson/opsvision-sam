@@ -394,9 +394,37 @@ export function GuidePill({ viewBox, text, gap, avoid = null }: LabelViewBox & {
   )
 }
 
-/** A methodology change: a dashed ink/55 line on the column's left edge, its 10px ink/70 label at the top, and the hover text as a title. */
-function MarkerLabel({ viewBox, marker, columns, prev, next }: LabelViewBox & { marker: VersionMarker; columns: number; prev?: number; next?: number }) {
+/** A point's value label (`ValueDot`), which marker text must not cover. */
+export interface ValueLabel {
+  index: number
+  value: number
+  text: string
+}
+
+/** The box `ValueDot` draws a label in: 11px semibold text, its baseline 6px above the dot. */
+function valueLabelBox(label: ValueLabel, cx: number, cy: number, last: number) {
+  const r = label.index === last ? 4 : 3
+  const half = (label.text.length * 6.6) / 2
+  const baseline = cy - r - 6
+  return { x0: cx - half, x1: cx + half, y0: baseline - 10, y1: baseline + 3 }
+}
+
+/**
+ * A methodology change: a dashed ink/55 line on the column's left edge and
+ * the hover text as a title; with `text`, its 10px ink/70 label at the top of
+ * the plot, or the bottom when a value label is in the way, or none.
+ */
+function MarkerLabel({
+  viewBox,
+  marker,
+  columns,
+  prev,
+  next,
+  text,
+  values,
+}: LabelViewBox & { marker: VersionMarker; columns: number; prev?: number; next?: number; text: boolean; values: ValueLabel[] }) {
   const plot = usePlotArea()
+  const yScale = useYAxisScale()
   const { x = 0, y = 0, height = 0 } = viewBox ?? {}
   const column = plot ? plot.width / Math.max(columns, 1) : Infinity
   const width = marker.label.length * 5.6 + 8
@@ -404,14 +432,21 @@ function MarkerLabel({ viewBox, marker, columns, prev, next }: LabelViewBox & { 
   const flip = (plot ? plot.x + plot.width : Infinity) - x < width
   // The text goes when it would run into the neighbouring marker's line; the line and title stay.
   const room = flip ? (prev === undefined ? Infinity : (marker.index - prev) * column) : next === undefined ? Infinity : (next - marker.index) * column
+  const x0 = flip ? x - 4 - width : x + 4
+  const x1 = x0 + width
+  const boxes = plot && yScale ? values.map((v) => valueLabelBox(v, plot.x + (v.index + 0.5) * column, yScale(v.value) ?? 0, columns - 1)) : []
+  const clear = (baseline: number) => boxes.every((b) => b.x1 <= x0 || b.x0 >= x1 || b.y1 <= baseline - 9 || b.y0 >= baseline + 3)
+  const baseline = !text || room < width ? null : [y + 10, y + height - 4].find(clear) ?? null
   return (
     <g data-role="version-marker">
       <title>{marker.title}</title>
       <line x1={x} x2={x} y1={y} y2={y + height} stroke="var(--color-ink)" strokeOpacity={0.55} strokeDasharray="3 3" strokeWidth={1} />
-      {room >= width && (
+      {/* A wider transparent stroke, so the 1px line's title is easy to hover. */}
+      <line x1={x} x2={x} y1={y} y2={y + height} stroke="transparent" strokeWidth={8} />
+      {baseline !== null && (
         <text
           x={flip ? x - 4 : x + 4}
-          y={y + 10}
+          y={baseline}
           textAnchor={flip ? 'end' : 'start'}
           fontSize={10}
           fill="var(--color-ink)"
@@ -433,8 +468,12 @@ export function markerNotes(markers: VersionMarker[]): Record<number, string> {
   return Object.fromEntries(markers.map((m) => [m.index, m.title]))
 }
 
-/** One reference line per methodology change, on the boundary before its column (§7.2); a direct child of the chart. */
-export function markerLines(markers: VersionMarker[], columns: Column[]) {
+/**
+ * One reference line per methodology change, on the boundary before its
+ * column (§7.2); a direct child of the chart. Text only with `text` (focus),
+ * kept off `values`' labels; tiles draw the line and its hover title alone.
+ */
+export function markerLines(markers: VersionMarker[], columns: Column[], { text = false, values = [] }: { text?: boolean; values?: ValueLabel[] } = {}) {
   const shown = markers.filter((m) => columns[m.index]).sort((a, b) => a.index - b.index)
   return shown.map((m, k) => (
     <ReferenceLine
@@ -443,10 +482,25 @@ export function markerLines(markers: VersionMarker[], columns: Column[]) {
       position="start"
       stroke="none"
       label={(props: LabelViewBox) => (
-        <MarkerLabel viewBox={props.viewBox} marker={m} columns={columns.length} prev={shown[k - 1]?.index} next={shown[k + 1]?.index} />
+        <MarkerLabel
+          viewBox={props.viewBox}
+          marker={m}
+          columns={columns.length}
+          prev={shown[k - 1]?.index}
+          next={shown[k + 1]?.index}
+          text={text}
+          values={values}
+        />
       )}
     />
   ))
+}
+
+/** Under small multiples, which draw marker lines without text: `dashed line: methodology changed from Jul 2026`. */
+export function markerCaption(markers: VersionMarker[], columns: Column[]): string {
+  const when = markers.flatMap((m) => (columns[m.index] ? [columns[m.index]!.fullLabel] : []))
+  if (when.length === 0) return ''
+  return `${when.length === 1 ? 'dashed line' : 'dashed lines'}: methodology changed from ${when.join(', ')}`
 }
 
 /** The current value in an accent pill on the right axis, at the line's last point. */

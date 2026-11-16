@@ -25,6 +25,7 @@ import {
   capPercent,
   CurrentDot,
   hoverTooltip,
+  markerCaption,
   markerLines,
   markerNotes,
   PeriodTick,
@@ -249,7 +250,7 @@ function Overlaid({ series, columns, scale, animated, size, statusLabel, markers
                 />
               )
             })}
-            {markerLines(markers, columns)}
+            {markerLines(markers, columns, { text: focus })}
             {hoverTooltip(columns, hoverSeries, scale, animated, margin.top, markerNotes(markers))}
             {series.map((s) => {
               const dataKey = `plot_${s.row.subjectId}`
@@ -377,7 +378,9 @@ function SmallMultiples({ series, columns, scale, animated, statusLabel, markers
         })}
       </div>
       <p data-testid="multiples-caption" className="mt-2 text-[11px] leading-4 text-ink/70">
-        Shared y-axis {rangeText(axis.format(axis.domain[0]), axis.format(axis.domain[1]))} · worst first
+        {[`Shared y-axis ${rangeText(axis.format(axis.domain[0]), axis.format(axis.domain[1]))}`, 'worst first', markerCaption(markers, columns)]
+          .filter(Boolean)
+          .join(' · ')}
       </p>
       <PointControls tip={tip} scale={scale}>
         {ordered.map((s) => (

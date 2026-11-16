@@ -4,6 +4,7 @@ import type { Move } from '../charts/chartTheme'
 import { buildPoints, headerChange, type ChartPoint } from '../charts/points'
 import { coarserGrain, endOrdinal, FREQUENCY_GRAIN, type Column } from '../columns'
 import { notDueCaption, periodStatus } from './coarse'
+import { worstChildren } from './drivers'
 import { statusAtScope, type StatusScaleEntry } from './statusAtScope'
 import { cellKey } from '../viewHelpers'
 
@@ -40,6 +41,8 @@ export interface BoardRow {
   change: { text: string; move: Move } | null
   /** A coarse metric's counted period, which the Current column and roll-up read instead of the last cell. */
   counted?: BoardCell
+  /** With no scope value, the child whose status the row shows: the Current column leads with its value. */
+  worst?: { name: string; display: string }
 }
 
 /** Inline rows keep at least this much for the metric name; cells grow only once it is comfortable. */
@@ -116,6 +119,18 @@ export function fiscalGroups(columns: Column[]): FiscalGroup[] {
   return groups
 }
 
+/** Narrowest room, in px, for `FY2026` and `FY26` in an 11px uppercase header with its 4px inset. */
+const FY_FULL = 52
+const FY_SHORT = 34
+
+/** A fiscal year header that fits `cellWidth` per column: `FY2026`, `FY26`, then `’26`; in full before measuring. */
+export function fiscalLabel(group: FiscalGroup, cellWidth: number | null): string {
+  const room = cellWidth === null ? Infinity : group.span * cellWidth
+  if (room >= FY_FULL) return group.label
+  const yy = String(group.fy).slice(-2)
+  return room >= FY_SHORT ? `FY${yy}` : `’${yy}`
+}
+
 /** How many columns in a row, ending at `index`, share its status; 0 when it has none. */
 export function streakAt(cells: BoardCell[], index: number): number {
   const at = cells[index]
@@ -176,6 +191,13 @@ export function buildBoardRow({
     }
   }
 
+  // With no scope value, the worst reported child and its value; none when the status is the scope's own.
+  const worstAt = (columnKey: string, at: BoardCell | undefined): BoardRow['worst'] => {
+    if (!at || at.kind !== 'status' || at.display || children.length === 0) return undefined
+    const { worst } = worstChildren(children, columnKey, scale, head.direction)
+    return worst?.cell.display ? { name: worst.row.subjectName, display: worst.cell.display } : undefined
+  }
+
   const last = columns[columns.length - 1]
   const own = FREQUENCY_GRAIN[frequency]
   const selectedGrain = parsePeriod(last?.period)?.grain
@@ -197,6 +219,7 @@ export function buildBoardRow({
     const i = coarse.findIndex((c) => c.key === ps.counted.key)
     const counted = i >= 0 ? cellAt(ps.counted, coarsePoints[i]!) : undefined
     const countedCell = scope?.cells.find((c) => cellKey(c) === ps.counted.key)
+    const worst = ps.status ? worstAt(ps.counted.key, counted) : undefined
     return {
       key,
       name: head.metricName,
@@ -206,6 +229,7 @@ export function buildBoardRow({
       caption: ps.caption,
       change: scope && ps.status && counted?.display ? headerChange(scope, countedCell, fyStart) : null,
       counted: counted && { ...counted, caption: ps.caption },
+      ...(worst && { worst }),
     }
   }
 
@@ -213,6 +237,7 @@ export function buildBoardRow({
   const cells = columns.map((col, i): BoardCell => cellAt(col, points[i]!))
   const currentCell = scope && last ? scope.cells.find((c) => cellKey(c) === last.key) : undefined
   const current = cells[cells.length - 1]
+  const worst = last ? worstAt(last.key, current) : undefined
   return {
     key,
     name: head.metricName,
@@ -221,6 +246,7 @@ export function buildBoardRow({
     current: current?.display ?? '',
     caption: current?.caption ?? '',
     change: scope && current?.display ? headerChange(scope, currentCell, fyStart) : null,
+    ...(worst && { worst }),
   }
 }
 

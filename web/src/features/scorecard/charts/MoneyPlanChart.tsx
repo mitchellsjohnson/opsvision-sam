@@ -10,14 +10,17 @@ import {
   ANIMATION,
   BandRect,
   hoverTooltip,
+  PeriodTick,
   PointButtons,
   PointControls,
   sizeSpec,
   StatusRibbon,
   tickStyle,
+  usePhone,
   type BandShapeProps,
   type ChartSize,
   type LabelViewBox,
+  type TickProps,
 } from './chartParts'
 import { barFill, chartTheme } from './chartTheme'
 import { deviationText, moneyPlanContext, moneyPlanDomain, PLAN } from './moneyPlan'
@@ -47,12 +50,25 @@ interface BarShapeProps {
   index?: number
 }
 
-/** The plan's label: `Plan` under the line's right end on a tile, a pill on the axis in focus. */
+/** A tile's right margin: room for `Plan` past the line's end, where no bar or deviation label reaches. */
+const TILE_PLAN_ROOM = 28
+
+/** The plan's label: `Plan` past the line's right end on a tile, a pill on the axis in focus. */
 function PlanLabel({ viewBox, focus, axisWidth }: LabelViewBox & { focus: boolean; axisWidth: number }) {
   const { x = 0, y = 0, width = 0 } = viewBox ?? {}
   if (!focus) {
     return (
-      <text data-role="plan-label" x={x + width - 2} y={y + 11} textAnchor="end" fontSize={10} fontWeight={600} fill="var(--color-ink)" fillOpacity={0.7}>
+      <text
+        data-role="plan-label"
+        x={x + width + 4}
+        y={y}
+        dy="0.35em"
+        textAnchor="start"
+        fontSize={10}
+        fontWeight={600}
+        fill="var(--color-ink)"
+        fillOpacity={0.7}
+      >
         Plan
       </text>
     )
@@ -146,10 +162,14 @@ export function MoneyPlanChart({
   animated: boolean
   size: ChartSize
 }) {
-  const base = sizeSpec(size, 120)
-  // Room above and below the plot for the deviation labels at the bar ends.
-  const spec = { ...base, margin: { ...base.margin, top: base.margin.top + 10, bottom: 12 } }
   const focus = size === 'focus'
+  const phone = usePhone() && focus
+  const base = sizeSpec(size, 120, phone)
+  // Room above and below the plot for the deviation labels at the bar ends.
+  const spec = {
+    ...base,
+    margin: { ...base.margin, top: base.margin.top + 10, bottom: 12, right: focus ? base.margin.right : TILE_PLAN_ROOM },
+  }
   const [tip, setTip] = useState<ChartPoint | null>(null)
   const hoverSeries = useMemo(() => [{ name: '', color: ACCENT, points }], [points])
   const values = points.flatMap((p) => (p.kind === 'value' && p.value !== null ? [p.value] : []))
@@ -199,7 +219,13 @@ export function MoneyPlanChart({
               tickFormatter={(key: string) => labels.get(key) ?? ''}
               axisLine={false}
               tickLine={false}
-              tick={tickStyle(spec)}
+              // Phones label every other period, counted back from the current one, as the line chart does.
+              interval={phone ? 0 : undefined}
+              tick={
+                phone
+                  ? (props: TickProps) => <PeriodTick {...props} labels={labels} last={columns.length - 1} fontSize={spec.tick} every={2} />
+                  : tickStyle(spec)
+              }
               height={spec.xAxisHeight}
             />
             {focus ? (
@@ -236,7 +262,7 @@ export function MoneyPlanChart({
           </BarChart>
         </ResponsiveContainer>
       </div>
-      <StatusRibbon points={points} scale={scale} size={size} inset={inset} />
+      <StatusRibbon points={points} scale={scale} size={size} inset={inset} phone={phone} />
       <PointControls tip={tip} scale={scale}>
         <PointButtons points={points} onSelect={setTip} />
       </PointControls>

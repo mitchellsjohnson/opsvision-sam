@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { components } from '../../../api/schema'
 import { buildTrendColumns, coarseColumns } from '../columns'
-import { boardLayout, buildBoardRow, cellName, fiscalGroups, streakAt, type BoardCell } from './statusBoard'
+import { boardLayout, buildBoardRow, cellName, fiscalGroups, fiscalLabel, streakAt, type BoardCell } from './statusBoard'
 
 type ViewRow = components['schemas']['ViewRow']
 type Cell = components['schemas']['Cell']
@@ -183,6 +183,59 @@ describe('buildBoardRow', () => {
     expect(board.cells[2]).toMatchObject({ kind: 'status', status: 'R', display: '', caption: 'worst of 2 services', change: null })
     expect(board.caption).toBe('worst of 2 services')
   })
+
+  it('with no company value, the Current column answers with the worst child: its name and value', () => {
+    const scope = row([], { subjectId: 'root' })
+    const web = row([cell('2026-M10', { status: 'G', value: 99.9, display: '99.90%' })], { subjectId: 'web', subjectName: 'Web', subjectKind: 'item' })
+    const hooks = row([cell('2026-M10', { status: 'R', value: 99.06, display: '99.06%' })], { subjectId: 'hooks', subjectName: 'Webhooks', subjectKind: 'item' })
+    const ledger = row([cell('2026-M10', { status: 'R', value: 99.5, display: '99.50%' })], { subjectId: 'ledger', subjectName: 'Ledger', subjectKind: 'item' })
+    const silent = row([], { subjectId: 'silent', subjectName: 'Silent', subjectKind: 'item' })
+    const board = buildBoardRow({
+      key: 'uptime',
+      category: { id: 'eng', name: 'Engineering' },
+      scope,
+      head: scope,
+      children: [web, hooks, ledger, silent],
+      noun: 'services',
+      columns,
+      scale: SCALE,
+      fyStart: 1,
+    })
+    // Two are Red; the lower value is worse for a higher-is-better metric.
+    expect(board.worst).toEqual({ name: 'Webhooks', display: '99.06%' })
+    expect(board.current).toBe('')
+    expect(board.caption).toBe('worst of 3 services · 1 not reported')
+  })
+
+  it('has no worst child when the scope reports its own value', () => {
+    const scope = row([cell('2026-M10', { status: 'Y', display: '85%' })])
+    const child = row([cell('2026-M10', { status: 'R', display: '60%' })], { subjectId: 'a', depth: 1 })
+    const board = buildBoardRow({
+      key: 'm',
+      category: { id: 'delivery', name: 'Delivery' },
+      scope,
+      head: scope,
+      children: [child],
+      noun: 'segments',
+      columns,
+      scale: SCALE,
+      fyStart: 1,
+    })
+    expect(board.worst).toBeUndefined()
+    expect(board.current).toBe('85%')
+  })
+})
+
+describe('fiscalLabel', () => {
+  const group = { fy: 2026, label: 'FY2026', start: 0, span: 1 }
+
+  it('names the year in full when it fits, else shortens it, so a one-column year never truncates', () => {
+    expect(fiscalLabel(group, null)).toBe('FY2026')
+    expect(fiscalLabel(group, 64)).toBe('FY2026')
+    expect(fiscalLabel({ ...group, span: 4 }, 40)).toBe('FY2026')
+    expect(fiscalLabel(group, 40)).toBe('FY26')
+    expect(fiscalLabel(group, 28)).toBe('’26')
+  })
 })
 
 describe('buildBoardRow coarse', () => {
@@ -234,6 +287,27 @@ describe('buildBoardRow coarse', () => {
     expect(b.current).toBe('')
     expect(b.caption).toBe('Q3 FY2026 overdue (due by Oct 2026)')
     expect(b.counted?.kind).toBe('missing')
+  })
+
+  it('with no company value, the counted quarter answers with the worst segment', () => {
+    const scope = row([], { frequency: 'quarterly', chartKind: 'discrete' })
+    const a = row([cell('2026-Q3', { status: 'G', value: 90, display: '90%' })], { subjectId: 'a', subjectName: 'Unit A', depth: 1, frequency: 'quarterly' })
+    const b = row([cell('2026-Q3', { status: 'Y', value: 75, display: '75%' })], { subjectId: 'b', subjectName: 'Unit B', depth: 1, frequency: 'quarterly' })
+    const b2 = buildBoardRow({
+      key: 'm',
+      category: { id: 'delivery', name: 'Delivery' },
+      scope,
+      head: scope,
+      children: [a, b],
+      noun: 'segments',
+      columns: months,
+      scale: SCALE,
+      fyStart: 1,
+      frequency: 'quarterly',
+      coarse: quarters,
+    })
+    expect(b2.counted?.status).toBe('Y')
+    expect(b2.worst).toEqual({ name: 'Unit B', display: '75%' })
   })
 
   it('in a quarter view, a half sits in its last quarter', () => {

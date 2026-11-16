@@ -229,6 +229,47 @@ describe('StatusBoard', () => {
     expect(within(row).getByText(/-12 pts vs Sep/).textContent).toBe('▼ -12 pts vs Sep')
   })
 
+  it('with no company value, Current shows the worst item’s value with its name and the scope', () => {
+    const uptime = boardRow(
+      'uptime',
+      'Uptime',
+      MONTHS.map((c) => ({ ...status(c, 'R'), caption: 'worst of 21 services · 3 not reported' })),
+      { worst: { name: 'Webhooks', display: '99.06%' }, caption: 'worst of 21 services · 3 not reported' },
+    )
+    renderBoard({ rows: [uptime] })
+    const row = screen.getByTestId('ribbon-uptime')
+    expect(within(row).getByText('99.06%').className).toContain('tabular-nums')
+    expect(within(row).getByText('Webhooks')).toBeTruthy()
+    expect(within(row).getByText('worst of 21 services · 3 not reported')).toBeTruthy()
+  })
+
+  it('on a phone, the stacked row names the worst item beside its value', () => {
+    measuredAt(262)
+    const uptime = boardRow(
+      'uptime',
+      'Uptime',
+      MONTHS.map((c) => ({ ...status(c, 'R'), caption: 'worst of 21 services' })),
+      { worst: { name: 'Webhooks', display: '99.06%' }, caption: 'worst of 21 services' },
+    )
+    renderBoard({ rows: [uptime] })
+    const value = within(screen.getByTestId('name-row-uptime')).getByTestId('stacked-value')
+    expect(value.textContent).toBe('Webhooks99.06%')
+    expect(within(value).getByText('99.06%').className).toContain('shrink-0')
+    expect(within(value).getByText('Webhooks').className).toContain('truncate')
+  })
+
+  it('shortens a fiscal year header too narrow for its full name, keeping the full name for screen readers', () => {
+    measuredAt(1150)
+    // 2025-Q4 … 2027-Q3: FY2025 has one quarter.
+    renderBoard({ columns: buildTrendColumns('2027-Q3', 1), label: '8-quarter status' })
+    const grid = screen.getByRole('grid', { name: '8-quarter status' })
+    const header = within(grid).getByRole('columnheader', { name: 'FY2025' })
+    expect(header.getAttribute('colspan')).toBe('1')
+    expect(header.querySelector('[aria-hidden="true"]')!.textContent).toBe('FY25')
+    expect(header.getAttribute('title')).toBe('FY2025')
+    expect(within(grid).getByRole('columnheader', { name: 'FY2026' }).textContent).toBe('FY2026')
+  })
+
   it('rolls each category up as quiet text naming only exceptions', () => {
     renderBoard()
     const delivery = screen.getByRole('rowheader', { name: /^Delivery/ })
