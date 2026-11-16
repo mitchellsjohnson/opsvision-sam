@@ -15,6 +15,8 @@ import { needsAttention, streakMonths, type NeedsAttentionItem } from './logic/n
 import { chartTheme, defaultStatusScale, MOVE_CLASS } from './charts/chartTheme'
 import { MetricChart } from './charts/MetricChart'
 import { headerChange } from './charts/points'
+import { multiSeriesHeader, noTotalNote } from './charts/seriesLayout'
+import { versionBoundaries } from './charts/versionMarkers'
 import { LAYOUT_BUTTON } from './CustomizeBar'
 import { focusBodyKind } from './focusBody'
 import { focusReturnRef } from './focusTrigger'
@@ -454,15 +456,21 @@ export function OverviewPage() {
     const scopeReported = cellReported(cell)
     const reportedChildren = children.filter((ch) => cellReported(scopeCell(ch, columnKey)))
     const chartChildren = !scopeReported && reportedChildren.length > 0
-    const scopeNote =
-      chartChildren && scope
+    const levelName = orgLevels.data?.find((l) => l.depth === (children[0]?.depth ?? -1))?.name
+    // Several lines and no company value anywhere in the window: a metric with no company total (§7.6).
+    const seriesNoun = noun === 'items' && children[0]?.subjectKind === 'unit' ? nounForms(levelName, 'unit').many : noun
+    const noTotal = chartChildren && reportedChildren.length > 1 && !columns.some((c) => cellReported(scopeCell(scope, c.key)))
+    const scopeNote = noTotal
+      ? noTotalNote(reportedChildren.length, seriesNoun, head.definition ?? '')
+      : chartChildren && scope
         ? `Company total not reported; ${reportedChildren.length} ${noun} reported`
         : (shownStatus && status?.caption) || undefined
     const chartRow = scope ?? emptyScope(head)
     const chartRows = chartChildren ? reportedChildren : [chartRow]
+    const worstSeries =
+      chartRows.length > 1 ? multiSeriesHeader(chartRows, columnKey, statusColors, (k) => statusLabel(k) ?? k, seriesNoun) : null
     const ytdCell = scope ? ytdCellFor(scope) : undefined
     const ytdDisplay = ytdCell?.display ? `YTD ${ytdCell.display}` : null
-    const levelName = orgLevels.data?.find((l) => l.depth === (children[0]?.depth ?? -1))?.name
     const threshold = thresholdOf(meta, noun === 'services' ? nounForms('services', 'item') : nounForms(levelName, 'unit'))
     const kind = status?.notReported?.kind
     const state = kind === 'window' ? 'window' : kind === 'stopped' ? 'stopped' : 'normal'
@@ -526,6 +534,23 @@ export function OverviewPage() {
           )}
         </>
       )
+    } else if (worstSeries?.worst) {
+      const worst = worstSeries.worst
+      value = (
+        <>
+          <span className="text-xs text-ink/70">Worst</span>
+          <span className="text-base font-semibold">{worst.name}</span>
+          <span data-testid="header-value" className="text-[28px] font-semibold leading-9 tabular-nums">
+            {worst.display}
+          </span>
+          {worst.status && (
+            <span title={statusLabel(worst.status)}>
+              <StatusChip status={worst.status} scale={statusColors} size="lg" />
+            </span>
+          )}
+          {worstSeries.count && <span className="text-xs text-ink/70">{worstSeries.count}</span>}
+        </>
+      )
     } else {
       const change = headerChange(chartRow, cell, fy)
       value = (
@@ -565,7 +590,6 @@ export function OverviewPage() {
         <MetricChart
           row={chartRow}
           chartRows={chartRows}
-          childRows={children}
           columns={columns}
           currentColumnKey={columnKey}
           currentDisplay={cell?.display ?? ''}
@@ -574,6 +598,7 @@ export function OverviewPage() {
           scale={statusColors}
           fiscalYearStartMonth={fy}
           framed
+          markers={versionBoundaries(versions.data?.versions ?? [], columns, metric.key, period.restate)}
         />
       </TileFrame>
     )

@@ -43,14 +43,31 @@ function signedAmount(format: string, delta: number): string {
   return format.startsWith('percent') ? `${sign}${amount.replace(/%$/, ' pts')}` : `${sign}${amount}`
 }
 
-/** The last value less the first among `columns`; null with fewer than two values. */
+/**
+ * The improvement from `first` to `last` in a change rule's terms (`26% worse`),
+ * as the engine computes it: relative to the first value, positive when the
+ * value moved the good way. Null from zero, which has no percentage.
+ */
+function improvementChange(row: ViewRow, first: number, last: number): RangeChange | null {
+  if (first === 0) return last === 0 ? { text: 'No change', move: valueMove(0, row.direction) } : null
+  const diff = row.direction === 'lower_better' ? first - last : last - first
+  const pct = Math.round((diff / Math.abs(first)) * 1000) / 10
+  if (pct === 0) return { text: 'No change', move: valueMove(0, row.direction) }
+  const text = `${Math.abs(pct)}% ${pct < 0 ? 'worse' : 'better'}`
+  // The arrow follows the value; the tone, whether that was better.
+  return { text, move: valueMove(row.direction === 'lower_better' ? -pct : pct, row.direction) }
+}
+
+/**
+ * The last value less the first among `columns`; null with fewer than two
+ * values. A metric judged on change states it as the header does: `26% worse`.
+ */
 export function rangeChange(row: ViewRow, columns: Column[]): RangeChange | null {
   const byKey = new Map(row.cells.map((c) => [cellKey(c), c]))
-  const values = columns
-    .map((col) => byKey.get(col.key))
-    .filter((c) => c != null && c.naReason === '' && c.value != null)
-    .map((c) => c!.value!)
+  const cells = columns.map((col) => byKey.get(col.key)).filter((c) => c != null && c.naReason === '' && c.value != null)
+  const values = cells.map((c) => c!.value!)
   if (values.length < 2) return null
+  if (cells.some((c) => c!.rule?.type === 'change')) return improvementChange(row, values[0]!, values[values.length - 1]!)
   const decimals = metricDecimals(row.format)
   const delta = Number((values[values.length - 1]! - values[0]!).toFixed(decimals)) || 0
   if (delta === 0) return { text: 'No change', move: valueMove(0, row.direction) }

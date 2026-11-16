@@ -6,6 +6,7 @@ import { usePrefersReducedMotion } from '../../ui/Sparkline'
 import { MOVE_CLASS } from './charts/chartTheme'
 import { buildPoints } from './charts/points'
 import { RatioChart } from './charts/RatioChart'
+import type { VersionMarker } from './charts/versionMarkers'
 import type { Column } from './columns'
 import { ITEM_PARAM, type ItemRow } from './logic/itemGrid'
 import type { NounForms } from './logic/nouns'
@@ -27,6 +28,8 @@ export interface ItemDrillInProps {
   /** The item's `h3`; the dialog moves focus to it on entry. */
   headingRef: RefObject<HTMLHeadingElement | null>
   fy: number
+  /** Methodology changes within the columns. */
+  markers?: VersionMarker[]
 }
 
 /**
@@ -35,7 +38,7 @@ export interface ItemDrillInProps {
  * rule after per-subject bands), the value row, and the focus line chart
  * banded by that rule.
  */
-export function ItemDrillIn({ head, row, columns, scale, noun, total, onBack, headingRef, fy }: ItemDrillInProps) {
+export function ItemDrillIn({ head, row, columns, scale, noun, total, onBack, headingRef, fy, markers = [] }: ItemDrillInProps) {
   const headingId = useId()
   const [params] = useSearchParams()
   const reduced = usePrefersReducedMotion()
@@ -129,7 +132,6 @@ export function ItemDrillIn({ head, row, columns, scale, noun, total, onBack, he
       <div data-chart-region="" className="mt-2">
         <RatioChart
           row={row.row}
-          chartRows={[row.row]}
           points={points}
           columns={columns}
           scale={scale}
@@ -137,6 +139,7 @@ export function ItemDrillIn({ head, row, columns, scale, noun, total, onBack, he
           animated={!reduced}
           size="focus"
           fyStart={fy}
+          markers={markers}
         />
       </div>
     </section>

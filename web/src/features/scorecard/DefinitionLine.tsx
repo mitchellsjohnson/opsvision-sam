@@ -20,6 +20,14 @@ function sentence(s: string): string {
   return t === '' || /[.!?]$/.test(t) ? t : `${t}.`
 }
 
+/** The threshold without the clauses the definition already states (`Lower is better`, `Reported quarterly`). */
+function unsaid(threshold: string, definition: string): string {
+  const said = definition.toLowerCase()
+  const rest = threshold.split(' · ').filter((clause) => !said.includes(clause.toLowerCase()))
+  const text = rest.join(' · ')
+  return text.charAt(0).toUpperCase() + text.slice(1)
+}
+
 /**
  * The definition and source under the dialog title (§8.2), read from the
  * metric as defined in the version in force for the selected period:
@@ -58,7 +66,7 @@ export function DefinitionLine({
         surface: 'focus',
       })
     : ''
-  const first = [sentence(definition), sentence(threshold)].filter(Boolean).join(' ')
+  const first = [sentence(definition), sentence(unsaid(threshold, definition))].filter(Boolean).join(' ')
   const source = metric?.source ?? ''
   const frequency = metric?.frequency ?? row.frequency
   const parts = [

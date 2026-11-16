@@ -91,6 +91,24 @@ describe('rangeChange', () => {
     expect(rangeChange(row, columns.slice(-5))!.text).toBe('+3.0 pts')
   })
 
+  it('a change-rule metric states its range change in the header’s terms: better or worse by a percentage', () => {
+    const changeRule = (values: number[], direction: ViewRow['direction'] = 'lower_better') => {
+      const row = rowWith(values, 'number2', direction)
+      for (const c of row.cells) c.rule = { type: 'change', compare: 'prior_period', bands: [] }
+      return row
+    }
+    // Lower is better: 18.10 to 22.81 is 26% worse.
+    const worse = rangeChange(changeRule([18.1, 20, 22.81]), columns.slice(-3))!
+    expect(worse.text).toBe('26% worse')
+    expect(worse.move).toEqual({ arrow: '▲', tone: 'bad' })
+    const better = rangeChange(changeRule([20, 15]), columns.slice(-2))!
+    expect(better).toEqual({ text: '25% better', move: { arrow: '▼', tone: 'good' } })
+    expect(rangeChange(changeRule([80, 100], 'higher_better'), columns.slice(-2))!.text).toBe('25% better')
+    expect(rangeChange(changeRule([20, 20]), columns.slice(-2))!.text).toBe('No change')
+    // From zero there is no percentage to give.
+    expect(rangeChange(changeRule([0, 3]), columns.slice(-2))).toBeNull()
+  })
+
   it('is unchanged when the ends match, and unknown with fewer than two values', () => {
     const same = rangeChange(rowWith([80, 82, 80]), columns.slice(-3))!
     expect(same.text).toBe('No change')

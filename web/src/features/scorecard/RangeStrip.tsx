@@ -18,7 +18,8 @@ export function RangeStrip({
   if (hidden) return null
   return (
     <div data-range-strip="" className="mt-3">
-      <div role="group" aria-label="Range" className="grid grid-cols-5 gap-1">
+      {/* Three a row on phones, so `8.8% worse` keeps to one line (§7). */}
+      <div role="group" aria-label="Range" className="grid grid-cols-3 gap-1 sm:grid-cols-5">
         {RANGES.map(({ key, label }) => {
           const change = changeFor(key)
           const pressed = selected === key
@@ -33,7 +34,10 @@ export function RangeStrip({
             >
               <span className="block">{label}</span>
               {change ? (
-                <span data-tone={change.move.tone} className={`block text-[11px] leading-4 font-medium tabular-nums sm:text-xs ${MOVE_CLASS[change.move.tone]}`}>
+                <span
+                  data-tone={change.move.tone}
+                  className={`block text-[11px] leading-4 font-medium whitespace-nowrap tabular-nums sm:text-xs ${MOVE_CLASS[change.move.tone]}`}
+                >
                   {change.move.arrow && <span className="mr-0.5">{change.move.arrow}</span>}
                   {change.text}
                 </span>

@@ -633,6 +633,58 @@ describe('FocusDialog', () => {
     }
   })
 
+  it('the chart leaves the value row to the dialog: no second value row, no CSS to hide one', async () => {
+    renderOverview(`${OVERVIEW}&focus=on_time_pct`)
+    const dialog = await screen.findByRole('dialog', { name: /On-time delivery/i })
+    await within(dialog).findByTestId('metric-chart')
+    const region = dialog.querySelector<HTMLElement>('[data-chart-region]')!
+    expect(within(region).queryByTestId('header-value')).toBeNull()
+    expect(region.className).not.toContain('header-value')
+    expect(within(dialog).getByTestId('focus-value-row')).toBeTruthy()
+  })
+
+  // jsdom draws no plot here, so the chart's text summary stands for the marker (MetricChart tests draw it).
+  const chartSummary = (dialog: HTMLElement) => dialog.querySelector('[data-chart-region] .sr-only')?.textContent ?? ''
+
+  it('marks a methodology change on the chart', async () => {
+    renderDefined(`${OVERVIEW}&focus=on_time_pct`)
+    const dialog = await screen.findByRole('dialog', { name: /On-time delivery/i })
+    await within(dialog).findByTestId('metric-chart')
+    await waitFor(() => expect(chartSummary(dialog)).toContain('Methodology changed: FY26 v2 from Jul 2026'))
+  })
+
+  it('restated under one version, the chart has no methodology markers', async () => {
+    renderDefined(`${OVERVIEW}&focus=on_time_pct&restate=ver-3`)
+    const dialog = await screen.findByRole('dialog', { name: /On-time delivery/i })
+    await within(dialog).findByTestId('metric-chart')
+    await within(dialog).findByText(/Share of committed epics/)
+    expect(chartSummary(dialog)).toMatch(/^On-time delivery:/)
+    expect(chartSummary(dialog)).not.toContain('Methodology changed')
+  })
+
+  it('with no company value this month, the value row leads with the worst segment', async () => {
+    server.use(
+      ...viewHandlers({
+        respond: (u) => {
+          const view = buildView(u.searchParams)
+          const root = view.rows.find((r) => r.metricKey === 'on_time_pct' && r.subjectId === 'root')!
+          const oct = root.cells.find((c) => c.period === '2026-M10' && !c.ytd)
+          if (oct) Object.assign(oct, { value: null, display: '', status: '', naReason: '', components: {} })
+          return HttpResponse.json(view)
+        },
+      }),
+    )
+    renderApp(<App />, { route: `${OVERVIEW}&focus=on_time_pct` })
+    const dialog = await screen.findByRole('dialog', { name: /On-time delivery/i })
+    const row = await within(dialog).findByTestId('focus-value-row')
+    await waitFor(() => expect(row.textContent).toMatch(/^Worst ?Unit A ?70\.0%/))
+    expect(row.textContent).toContain('1 of 2 segments Red')
+    // Each segment's streak is its own; the header does not pick one.
+    expect(row.textContent).not.toContain(' since ')
+    // Several lines have no one change per range, so the strip goes (§8.5).
+    expect(within(dialog).queryByRole('group', { name: 'Range' })).toBeNull()
+  })
+
   it('closing after a card background click returns focus to that card’s Expand button', async () => {
     renderOverview()
     await screen.findByRole('heading', { name: 'Overview', level: 1 })
@@ -799,6 +851,43 @@ describe('FocusDialog: item metrics', () => {
     expect(within(dialog).getByRole('radio', { name: 'Most Red months' }).getAttribute('aria-checked')).toBe('true')
     await waitFor(() => expect(document.activeElement?.getAttribute('aria-label')).toBe('Search, Oct 2026: Yellow, 99.85%'))
     expect(again.contains(document.activeElement)).toBe(true)
+  })
+
+  it('opened at a service by URL, focus goes to the drill-in heading (§6.6)', async () => {
+    server.use(...itemHandlers())
+    renderRouted(`${OVERVIEW}&focus=svc_uptime&item=svc-web`)
+    const dialog = await screen.findByRole('dialog', { name: 'Service uptime' })
+    const heading = await within(dialog).findByRole('heading', { level: 3, name: 'Web service' })
+    await waitFor(() => expect(document.activeElement).toBe(heading))
+  })
+
+  it('opened from an Overview tile row, focus goes to that service’s heading; closing clears item and sort', async () => {
+    server.use(...itemHandlers())
+    const router = renderRouted(OVERVIEW)
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: /^Open Web service trend/ }))
+    const dialog = await screen.findByRole('dialog', { name: 'Service uptime' })
+    const heading = await within(dialog).findByRole('heading', { level: 3, name: 'Web service' })
+    await waitFor(() => expect(document.activeElement).toBe(heading))
+    expect(search(router).get('item')).toBe('svc-web')
+
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(search(router).get('focus')).toBeNull()
+    expect(search(router).get('item')).toBeNull()
+  })
+
+  it('closing the dialog drops item and sort from the URL', async () => {
+    server.use(...itemHandlers())
+    const router = renderRouted(`${OVERVIEW}&focus=svc_uptime&item=svc-web&sort=name`)
+    const dialog = await screen.findByRole('dialog', { name: 'Service uptime' })
+    await within(dialog).findByTestId('item-drill-in')
+    await userEvent.setup().click(within(dialog).getByRole('button', { name: 'Close' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(search(router).get('focus')).toBeNull()
+    expect(search(router).get('item')).toBeNull()
+    expect(search(router).get('sort')).toBeNull()
+    expect(search(router).get('period')).toBe('2026-M10')
   })
 
   it('an item not in view shows the grid and drops item from the URL', async () => {

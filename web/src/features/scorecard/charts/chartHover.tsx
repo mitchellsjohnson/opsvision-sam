@@ -19,6 +19,8 @@ export interface ChartHoverCardProps {
   columns: Column[]
   series: ChartSeries[]
   scale: StatusLevel[]
+  /** A line for a column, by index: `Methodology changed: 2026 v2 from Jul 2026`. */
+  notes?: Record<number, string>
 }
 
 function valueText(point: ChartPoint): string {
@@ -36,12 +38,13 @@ function statusText(theme: StatusTheme, withLabel: boolean): string {
  * value, the full period, the status and the change; one line per series
  * when there are several.
  */
-export function ChartHoverCard({ active, payload, columns, series, scale }: ChartHoverCardProps) {
+export function ChartHoverCard({ active, payload, columns, series, scale, notes }: ChartHoverCardProps) {
   const datum = payload?.[0]?.payload as { i?: unknown } | undefined
   const i = typeof datum?.i === 'number' ? datum.i : -1
   const column = columns[i]
   if (!active || !column) return null
   const single = series.length === 1 ? series[0]!.points[i] : undefined
+  const note = notes?.[i]
   return (
     <div data-testid="chart-hover" className="w-max max-w-64 rounded-md bg-ink px-2 py-1.5 text-[11px] leading-4 text-white shadow-md">
       {single ? (
@@ -75,6 +78,7 @@ export function ChartHoverCard({ active, payload, columns, series, scale }: Char
           </ul>
         </>
       )}
+      {note && <p className="mt-0.5 text-white/75">{note}</p>}
     </div>
   )
 }
@@ -107,10 +111,12 @@ export function Hairline({ points, x = 0, y = 0, width = 0, height = 0 }: Cursor
   )
 }
 
-export function hoverTooltip(columns: Column[], series: ChartSeries[], scale: StatusLevel[], animated: boolean, top: number) {
+export function hoverTooltip(columns: Column[], series: ChartSeries[], scale: StatusLevel[], animated: boolean, top: number, notes?: Record<number, string>) {
   return (
     <Tooltip
-      content={(props) => <ChartHoverCard active={props.active} payload={props.payload} columns={columns} series={series} scale={scale} />}
+      content={(props) => (
+        <ChartHoverCard active={props.active} payload={props.payload} columns={columns} series={series} scale={scale} notes={notes} />
+      )}
       // Keep n/a and missing periods, so they still say why there is no value.
       filterNull={false}
       cursor={<Hairline />}

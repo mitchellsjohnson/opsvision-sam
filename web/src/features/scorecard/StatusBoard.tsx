@@ -170,7 +170,11 @@ export function StatusBoard({ label, columns, rows, scale, onOpen }: StatusBoard
             </span>
           )}
         </div>
-        <Legend scale={scale} unrated={rows.some((r) => r.cells.slice(offset).some((c) => c.kind === 'unrated'))} />
+        <Legend
+          scale={scale}
+          unrated={rows.some((r) => r.cells.slice(offset).some((c) => c.kind === 'unrated'))}
+          notDue={rows.some((r) => r.cells.slice(offset).some((c) => c.kind === 'notDue'))}
+        />
       </div>
       <div ref={measure} className="mt-3 min-w-0">
         <div className={clsx('relative isolate', inline ? 'w-full' : 'w-fit')}>

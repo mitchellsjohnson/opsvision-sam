@@ -9,11 +9,12 @@ import { ChangeLabel, StatusMarker, type ChartSize } from './chartParts'
 import { chartTheme } from './chartTheme'
 import { moneyPlanSummary } from './moneyPlan'
 import { MoneyPlanChart } from './MoneyPlanChart'
+import { MultiSeriesChart } from './MultiSeries'
 import { buildPoints, headerChange } from './points'
 import { RatioChart } from './RatioChart'
 import { isSparse } from './sparse'
 import { SparseRibbon } from './SparseRibbon'
-import { UptimeRows } from './UptimeRows'
+import type { VersionMarker } from './versionMarkers'
 
 export { buildPoints, type ChartPoint } from './points'
 export {
@@ -31,7 +32,6 @@ export interface MetricChartProps {
   row: ViewRow
   /** When the scope cell is missing, one trend line per child row. */
   chartRows?: ViewRow[]
-  childRows?: ViewRow[]
   columns: Column[]
   currentColumnKey: string
   currentDisplay: string
@@ -49,13 +49,14 @@ export interface MetricChartProps {
   framed?: boolean
   /** The chart's own value row; off where the surface draws one (the dialog). */
   header?: boolean
+  /** Methodology changes within the columns (`useVersionMarkers`); none when restated. */
+  markers?: VersionMarker[]
 }
 
 /** Renders the chart for one metric row and encodings required by the UX spec. */
 export function MetricChart({
   row,
   chartRows,
-  childRows = [],
   columns,
   currentColumnKey,
   currentDisplay,
@@ -69,24 +70,34 @@ export function MetricChart({
   fiscalYearStartMonth = 1,
   framed = false,
   header = true,
+  markers = [],
 }: MetricChartProps) {
   const reduced = usePrefersReducedMotion()
   const animated = !reduced
   const lines = chartRows ?? [row]
+  // One line: the scope's, or the one child reported in its place.
+  const lineRow = lines.length === 1 ? lines[0]! : row
   const points = useMemo(() => buildPoints(row, columns, fiscalYearStartMonth), [row, columns, fiscalYearStartMonth])
+  const linePoints = useMemo(
+    () => (lineRow === row ? points : buildPoints(lineRow, columns, fiscalYearStartMonth)),
+    [lineRow, row, points, columns, fiscalYearStartMonth],
+  )
   const kind = isSparse(row.chartKind, points.map((p) => p.kind)) ? 'sparse' : row.chartKind
   // A quarterly, biannual or annual metric charted at its own grain (§5.5); the columns already are that grain.
   const shownGrain = parsePeriod(columns[0]?.period)?.grain ?? 'month'
   const coarse = shownGrain !== 'month' && FREQUENCY_GRAIN[row.frequency] === shownGrain
   const currentCell = row.cells.find((c) => cellKey(c) === currentColumnKey)
-  const target = currentCell?.target ?? null
+  const lineCell = lineRow.cells.find((c) => cellKey(c) === currentColumnKey)
+  const target = (currentCell ?? lineCell)?.target ?? null
   const theme = chartTheme(scale, currentStatus)
   const change = headerChange(row, currentCell, fiscalYearStartMonth)
   const nameOf = (key: string) => statusLabel(key) || chartTheme(scale, key).label || key
-  const summary =
+  const summary = [
     kind === 'money_plan'
       ? moneyPlanSummary(row.metricName, points, columns, nameOf)
-      : `${row.metricName}: ${currentDisplay || 'no data'}, status ${currentStatus || 'none'}`
+      : `${row.metricName}: ${currentDisplay || 'no data'}, status ${currentStatus || 'none'}`,
+    ...markers.map((m) => m.title),
+  ].join('. ')
 
   return (
     <div>
@@ -106,17 +117,25 @@ export function MetricChart({
           )}
         </>
       )}
-      {kind === 'uptime' ? (
-        <UptimeRows childRows={childRows} columns={columns} currentColumnKey={currentColumnKey} scale={scale} />
-      ) : kind === 'sparse' ? (
+      {kind === 'sparse' ? (
         <SparseRibbon points={points} columns={columns} scale={scale} size={size} statusLabel={statusLabel} />
       ) : kind === 'money_plan' ? (
         <MoneyPlanChart row={row} points={points} columns={columns} scale={scale} animated={animated} size={size} />
+      ) : lines.length > 1 ? (
+        <MultiSeriesChart
+          rows={lines}
+          columns={columns}
+          scale={scale}
+          animated={animated}
+          size={size}
+          fyStart={fiscalYearStartMonth}
+          statusLabel={nameOf}
+          markers={markers}
+        />
       ) : (
         <RatioChart
-          row={row}
-          chartRows={lines}
-          points={points}
+          row={lineRow}
+          points={linePoints}
           columns={columns}
           scale={scale}
           target={target}
@@ -125,6 +144,7 @@ export function MetricChart({
           fyStart={fiscalYearStartMonth}
           framed={framed}
           valuePoints={kind === 'discrete' || coarse}
+          markers={markers}
         />
       )}
       {/* In focus, the dialog's own table link sits below its breakdown. */}

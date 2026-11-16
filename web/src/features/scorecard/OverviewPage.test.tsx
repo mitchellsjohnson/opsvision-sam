@@ -151,6 +151,12 @@ describe('OverviewPage', () => {
     ).toBeTruthy()
     const card = metricTile('On-time delivery')
     expect(within(card).getByText('Company total not reported; 2 segments reported')).toBeTruthy()
+    // The value row leads with the worst segment (§7.6).
+    const valueRow = within(card).getByTestId('header-value').parentElement!
+    expect(within(valueRow).getByText('Worst')).toBeTruthy()
+    expect(within(valueRow).getByText('Unit A')).toBeTruthy()
+    expect(within(card).getByTestId('header-value').textContent).toBe('70.0%')
+    expect(within(valueRow).getByText('1 of 2 segments Red')).toBeTruthy()
     expect(within(card).getByText('R')).toBeTruthy()
     expect(within(card).getByRole('button', { name: /Oct: 70\.0%/ })).toBeTruthy()
     expect(within(card).getByRole('button', { name: /Oct: 95\.0%/ })).toBeTruthy()
@@ -276,7 +282,7 @@ describe('OverviewPage', () => {
     expect(within(card).queryByText(/^YTD /)).toBeNull()
   })
 
-  it('uptime rows show a status marker for each period in the window', async () => {
+  it('an uptime metric reported for units only charts its scope as a line with a ribbon', async () => {
     renderOverview(ROUTE, (view) => {
       for (const row of view.rows.filter((r) => r.metricKey === 'on_time_pct')) {
         row.chartKind = 'uptime'
@@ -284,10 +290,37 @@ describe('OverviewPage', () => {
     })
     await screen.findByRole('heading', { name: 'Overview', level: 1 })
     const card = metricCard('On-time delivery')
-    const strip = within(card).getByTestId('uptime-strip-unit-a')
-    expect(strip.children.length).toBe(12)
-    // Twelve markers wrap rather than push a phone-width page sideways.
-    expect(strip.className).toContain('flex-wrap')
+    expect(within(card).queryByTestId('uptime-strip-unit-a')).toBeNull()
+    expect(within(card).getByTestId('metric-chart')).toBeTruthy()
+    expect(within(card).getByTestId('status-ribbon').children).toHaveLength(12)
+  })
+
+  it('a metric with no company total in any month says so, and leads with its worst segment', async () => {
+    renderOverview(ROUTE, (view) => {
+      const root = view.rows.find((r) => r.metricKey === 'on_time_pct' && r.subjectId === 'root')!
+      for (const c of root.cells) Object.assign(c, { value: null, display: '', status: '', naReason: '', components: {} })
+    })
+    await screen.findByRole('heading', { name: 'Overview', level: 1 })
+    const card = metricTile('On-time delivery')
+    expect(within(card).getByText('2 segments · no company total')).toBeTruthy()
+    expect(within(card).queryByText(/^Company total not reported/)).toBeNull()
+    expect(within(within(card).getByTestId('header-value').parentElement!).getByText('Unit A')).toBeTruthy()
+  })
+
+  it('a tile marks a methodology change in its chart, and none when restated', async () => {
+    const v1 = versions.find((v) => v.id === 'ver-1')!
+    const withJuly = [...versions, { ...v1, id: 'ver-3', name: 'FY26 v2', effectiveFrom: '2026-M07' }]
+    // Earlier handlers win, so these versions come before viewHandlers' own.
+    server.use(http.get(`${API}/v1/scorecards/sc-main/versions`, () => HttpResponse.json({ versions: withJuly })), ...viewHandlers())
+    const { unmount } = renderApp(<App />, { route: ROUTE })
+    await screen.findByRole('heading', { name: 'Overview', level: 1 })
+    const summary = () => metricTile('On-time delivery').querySelector('.sr-only')?.textContent ?? ''
+    await waitFor(() => expect(summary()).toContain('Methodology changed: FY26 v2 from Jul 2026'))
+    unmount()
+    renderApp(<App />, { route: `${ROUTE}&restate=ver-3` })
+    await screen.findByRole('heading', { name: 'Overview', level: 1 })
+    expect(summary()).toMatch(/^On-time delivery:/)
+    expect(summary()).not.toContain('Methodology changed')
   })
 
   it('a needs-attention card: a stretched link to the metric, the reason, value row, trend and why line', async () => {

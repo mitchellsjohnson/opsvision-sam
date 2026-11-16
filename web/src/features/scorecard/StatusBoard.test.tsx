@@ -175,6 +175,16 @@ describe('StatusBoard', () => {
     expect(items).toEqual(['●GOn track', '▲YWatch', '◆ROff track', 'No data', 'n/a', 'Not rated'])
   })
 
+  it('adds Not due to the legend when a shown cell is a coarse metric’s month that reports later', () => {
+    const quarterly = MONTHS.map((c, i) => (i % 3 === 2 ? status(c, 'G', '90%') : empty(c, 'notDue', { caption: 'Q3 FY2026 reports after Sep' })))
+    renderBoard({ rows: [...rowsFor(MONTHS), boardRow('concepts', 'Concepts delivered expected value', quarterly)] })
+    const items = within(screen.getByRole('list', { name: 'Status key' })).getAllByRole('listitem').map((li) => li.textContent)
+    expect(items.at(-1)).toBe('Not due')
+    cleanup()
+    renderBoard()
+    expect(within(screen.getByRole('list', { name: 'Status key' })).queryByText('Not due')).toBeNull()
+  })
+
   it('emphasizes the selected period column', () => {
     renderBoard()
     const grid = screen.getByRole('grid')

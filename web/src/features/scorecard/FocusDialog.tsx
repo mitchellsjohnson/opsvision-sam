@@ -13,7 +13,9 @@ import { defaultStatusScale, MOVE_CLASS } from './charts/chartTheme'
 import { FOCUS_CHART_HEIGHT, MetricChart } from './charts/MetricChart'
 import { buildPoints, headerChange } from './charts/points'
 import { RANGES, rangeChange, rangeMonths, type RangeKey } from './charts/ranges'
+import { multiSeriesHeader } from './charts/seriesLayout'
 import { isSparse } from './charts/sparse'
+import { useVersionMarkers } from './charts/versionMarkers'
 import { buildMonthTrendColumns, windowColumns } from './columns'
 import { DefinitionLine } from './DefinitionLine'
 import { chartCsv, chartSvg, downloadBlob, metricPng } from './exports'
@@ -155,7 +157,8 @@ function MetricFocus({
   const [filter, setFilter] = useState('')
   const [restoreId, setRestoreId] = useState('')
   const gridScroll = useRef(0)
-  const focusHeading = useRef(false)
+  // Opened straight onto a drill-in (a tile row, a link): its heading takes focus once it renders (§6.6).
+  const focusHeading = useRef(params.has(ITEM_PARAM))
   const shownSubject = useRef('')
   const headingRef = useRef<HTMLHeadingElement>(null)
   const groupOf = useItemGroups()
@@ -452,8 +455,9 @@ function MetricFocus({
   const points = stripRow ? buildPoints(stripRow, trendColumns, fy) : []
   const sparse = head ? isSparse(head.chartKind, points.map((p) => p.kind)) : false
   const monthly = monthGrain && (head?.frequency ?? 'monthly') === 'monthly'
-  // The range strip goes with a chart (a drill-in included); the item grid has its own 6M · 12M · 24M control.
-  const rangeShown = monthly && !sparse && !gridShown
+  // The range strip goes with a chart of one line (a drill-in included); the item grid has its own 6M · 12M · 24M control.
+  const multiSeries = !drillRow && chartRows.length > 1
+  const rangeShown = monthly && !sparse && !gridShown && !multiSeries
   const itemRangeShown = monthly && gridShown
 
   const shortcuts = useDialogShortcuts(
@@ -503,6 +507,9 @@ function MetricFocus({
   const goal = head && cell?.target != null ? formatMetricValue(head.format, cell.target) : ''
   const ytd = scope?.cells.find((c) => c.ytd && c.period === selectedColumn?.period)?.display ?? ''
   const status = atScope?.status ?? ''
+  // No company value: the value row leads with the worst of the lines shown (§7.6).
+  const worstSeries = multiSeries ? multiSeriesHeader(chartRows, columnKey, statusColors, (k) => statusLabel(k) ?? k, noun) : null
+  const markers = useVersionMarkers(trendColumns, metricKey)
 
   let chartArea
   let details = null
@@ -539,6 +546,7 @@ function MetricFocus({
               onBack={backToGrid}
               headingRef={headingRef}
               fy={fy}
+              markers={markers}
             />
           ) : (
             <ItemGrid
@@ -574,34 +582,49 @@ function MetricFocus({
     chartArea = (
       <>
         <div data-testid="focus-value-row" className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-          <span className="text-[28px] leading-9 font-semibold tabular-nums">{cell?.display || '—'}</span>
-          {status && (
-            <span role="img" aria-label={statusLabel(status) ?? status} title={statusLabel(status)} className="inline-flex self-center">
-              <StatusChip status={status} scale={statusColors} size="lg" />
-            </span>
+          {worstSeries?.worst ? (
+            <>
+              <span className="text-xs text-ink/70">Worst</span>
+              <span className="text-base font-semibold">{worstSeries.worst.name}</span>
+              <span className="text-[28px] leading-9 font-semibold tabular-nums">{worstSeries.worst.display}</span>
+              {worstSeries.worst.status && (
+                <span
+                  role="img"
+                  aria-label={statusLabel(worstSeries.worst.status) ?? worstSeries.worst.status}
+                  title={statusLabel(worstSeries.worst.status)}
+                  className="inline-flex self-center"
+                >
+                  <StatusChip status={worstSeries.worst.status} scale={statusColors} size="lg" />
+                </span>
+              )}
+              {worstSeries.count && <span className="text-sm text-ink/70">{worstSeries.count}</span>}
+            </>
+          ) : (
+            <>
+              <span className="text-[28px] leading-9 font-semibold tabular-nums">{cell?.display || '—'}</span>
+              {status && (
+                <span role="img" aria-label={statusLabel(status) ?? status} title={statusLabel(status)} className="inline-flex self-center">
+                  <StatusChip status={status} scale={statusColors} size="lg" />
+                </span>
+              )}
+              {change && (
+                <span data-tone={change.move.tone} className={`text-base font-medium tabular-nums ${MOVE_CLASS[change.move.tone]}`}>
+                  {change.move.arrow && <span aria-hidden="true">{change.move.arrow} </span>}
+                  <span>{change.text}</span>
+                </span>
+              )}
+              {atScope?.caption && <span className="text-sm text-ink/70">{atScope.caption}</span>}
+            </>
           )}
-          {change && (
-            <span data-tone={change.move.tone} className={`text-base font-medium tabular-nums ${MOVE_CLASS[change.move.tone]}`}>
-              {change.move.arrow && <span aria-hidden="true">{change.move.arrow} </span>}
-              <span>{change.text}</span>
-            </span>
-          )}
-          {atScope?.caption && <span className="text-sm text-ink/70">{atScope.caption}</span>}
-          {since && <span className="text-sm text-ink/70">{since}</span>}
+          {since && !worstSeries?.worst && <span className="text-sm text-ink/70">{since}</span>}
           {goal && <span className="text-sm text-ink/70">Goal {goal}</span>}
           {ytd && <span className="text-sm text-ink/70">YTD {ytd}</span>}
         </div>
-        {/* The value row above replaces the chart's own header in the dialog. */}
-        <div
-          data-chart-region=""
-          className="mt-2 [&_div:has(>[data-testid=header-value])]:hidden"
-          aria-busy={view.isPlaceholderData || undefined}
-        >
+        <div data-chart-region="" className="mt-2" aria-busy={view.isPlaceholderData || undefined}>
           <MetricChart
             size="focus"
             row={chartRow}
             chartRows={chartRows}
-            childRows={children}
             columns={trendColumns}
             currentColumnKey={columnKey}
             currentDisplay={cell?.display ?? ''}
@@ -610,6 +633,8 @@ function MetricFocus({
             scale={statusColors}
             tableTo={tableLink}
             fiscalYearStartMonth={fy}
+            header={false}
+            markers={markers}
           />
         </div>
       </>
@@ -770,6 +795,9 @@ export function FocusDialog() {
     setParams((prev) => {
       const next = new URLSearchParams(prev)
       next.delete('focus')
+      // The drill-in and the grid's sort belong to the dialog.
+      next.delete(ITEM_PARAM)
+      next.delete(SORT_PARAM)
       return next
     })
   }, [setParams])
@@ -781,10 +809,11 @@ export function FocusDialog() {
         <Dialog.Content
           ref={frameRef}
           aria-describedby={undefined}
-          // The dialog itself takes focus, so its name is read first and no control shows a ring before it is used.
+          // The dialog itself takes focus, so its name is read first and no control shows a ring before it is used;
+          // unless focus already moved inside, to a drill-in heading.
           onOpenAutoFocus={(e) => {
             e.preventDefault()
-            frameRef.current?.focus()
+            if (!frameRef.current?.contains(document.activeElement)) frameRef.current?.focus()
           }}
           onCloseAutoFocus={(e) => {
             if (focusReturnRef.current) {

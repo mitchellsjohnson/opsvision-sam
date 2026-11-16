@@ -1,4 +1,4 @@
-import { Fragment, useId, useMemo, useState } from 'react'
+import { useId, useMemo, useState } from 'react'
 import {
   Area,
   CartesianGrid,
@@ -24,37 +24,45 @@ import {
   BAND_PILL,
   BandPill,
   BandRect,
+  capPercent,
   coarseColumnsShown,
   CurrentDot,
-  monthSpan,
   GUIDE,
   GuidePill,
   hoverTooltip,
+  markerLines,
+  markerNotes,
+  monthSpan,
+  percentMax,
+  PeriodTick,
+  PHONE_AXIS_WIDTH,
   PointButtons,
   PointControls,
-  seriesColor,
   sizeSpec,
   StatusMarker,
   StatusRibbon,
-  tickStyle,
-  valueAxis,
+  usePhone,
   ValueDot,
+  valueAxis,
+  ValueTick,
   yDomain,
   type BandShapeProps,
   type ChartSize,
   type DotProps,
   type LabelViewBox,
+  type TickProps,
 } from './chartParts'
 import { chartTheme } from './chartTheme'
-import { buildPoints, type ChartPoint } from './points'
+import type { ChartPoint } from './points'
+import type { VersionMarker } from './versionMarkers'
 
 type Schemas = components['schemas']
 type ViewRow = Schemas['ViewRow']
 type StatusLevel = Schemas['StatusLevel']
 
+/** One series' line over its bands, goal and status ribbon (§7.1); several series go to `MultiSeriesChart`. */
 export function RatioChart({
   row,
-  chartRows,
   points,
   columns,
   scale,
@@ -64,10 +72,10 @@ export function RatioChart({
   fyStart,
   framed = false,
   valuePoints = false,
+  markers = [],
 }: {
   row: ViewRow
-  chartRows: ViewRow[]
-  /** The scope row's points, for the status ribbon. */
+  /** The row's points over `columns`: the line and the status ribbon. */
   points: ChartPoint[]
   columns: Column[]
   scale: StatusLevel[]
@@ -79,50 +87,39 @@ export function RatioChart({
   framed?: boolean
   /** Coarse and discrete metrics: a visible point and value on every period (§5.5). */
   valuePoints?: boolean
+  /** Methodology changes within the columns (§7.2). */
+  markers?: VersionMarker[]
 }) {
-  const base = sizeSpec(size, 120)
+  const focus = size === 'focus'
+  const phone = usePhone() && focus
+  const base = sizeSpec(size, 120, phone)
   // Room above the highest point for its value label.
   const spec = valuePoints ? { ...base, margin: { ...base.margin, top: base.margin.top + 14 } } : base
-  const focus = size === 'focus'
   const coarse = coarseColumnsShown(columns)
   // Eight quarters show Q3 twice: name each point by its full period then.
   const fullNames = coarse && new Set(columns.map((c) => c.label)).size < columns.length
   const gradientId = `area-${useId().replace(/[^\w-]/g, '')}`
   const [tip, setTip] = useState<ChartPoint | null>(null)
-  const series = useMemo(
-    () => chartRows.map((r) => ({ row: r, points: buildPoints(r, columns, fyStart) })),
-    [chartRows, columns, fyStart],
-  )
   const hoverColumns = useMemo(
     () => (coarse ? columns.map((c) => ({ ...c, fullLabel: monthSpan(c, fyStart) })) : columns),
     [coarse, columns, fyStart],
   )
-  const single = series.length === 1
-  const hoverSeries = useMemo(
-    () => series.map(({ row: r, points: p }, s) => ({ name: r.subjectName, color: seriesColor(s, single), points: p })),
-    [series, single],
-  )
+  const hoverSeries = useMemo(() => [{ name: row.subjectName, color: ACCENT, points }], [row.subjectName, points])
   const lastIndex = columns.length - 1
-  const currentPoint = single ? series[0]!.points[lastIndex] : undefined
+  const currentPoint = points[lastIndex]
   const currentValue = currentPoint?.kind === 'value' ? currentPoint.value : null
-  const padded = yDomain(series.flatMap((s) => s.points), target)
-  const axis = focus ? valueAxis(row.format, padded, currentValue !== null ? [currentPoint!.display] : []) : null
+  const values = points.map((p) => p.value).filter((v): v is number => v !== null)
+  const padded = capPercent(row.format, yDomain(points, target), values)
+  const fitted = focus ? valueAxis(row.format, padded, currentValue !== null ? [currentPoint!.display] : [], percentMax(row.format, values)) : null
+  const axis = fitted && phone ? { ...fitted, width: PHONE_AXIS_WIDTH } : fitted
   const domain = axis?.domain ?? padded
   const currentCell = row.cells.find((c) => cellKey(c) === columns[lastIndex]?.key)
   const bands = currentCell?.rule?.type === 'bands' ? currentCell.rule.bands : undefined
   const rects = statusIntervals(bands, domain)
   const inset = { left: spec.margin.left, right: spec.margin.right + (axis?.width ?? 0) }
-  const showRibbon = single || points.some((p) => p.kind !== 'missing')
   const labels = new Map(columns.map((c) => [c.key, axisLabel(c)]))
 
-  const data = columns.map((col, i) => {
-    const entry: Record<string, string | number | null> = { i, label: col.label, key: col.key }
-    for (const { row: r, points: p } of series) {
-      entry[`plot_${r.subjectId}`] = p[i]!.kind === 'value' ? p[i]!.value : null
-    }
-    if (single) entry.plot = entry[`plot_${series[0]!.row.subjectId}`]!
-    return entry
-  })
+  const data = columns.map((col, i) => ({ i, label: col.label, key: col.key, plot: points[i]?.kind === 'value' ? points[i]!.value : null }))
 
   return (
     <div>
@@ -130,6 +127,8 @@ export function RatioChart({
         data-testid="metric-chart"
         data-size={size}
         data-bands={rects.map((r) => `${r.status}:${r.y0}-${r.y1}`).join(' ')}
+        data-domain-max={domain[1]}
+        data-axis-width={axis?.width}
         aria-hidden="true"
         className={spec.className}
         style={spec.style}
@@ -156,7 +155,9 @@ export function RatioChart({
               scale="band"
               axisLine={false}
               tickLine={false}
-              tick={tickStyle(spec)}
+              // Phones label every other period themselves, so none is dropped at random.
+              interval={phone ? 0 : undefined}
+              tick={(props: TickProps) => <PeriodTick {...props} labels={labels} last={lastIndex} fontSize={spec.tick} every={phone ? 2 : 1} />}
               height={spec.xAxisHeight}
             />
             {axis ? (
@@ -167,12 +168,12 @@ export function RatioChart({
                 interval={0}
                 axisLine={false}
                 tickLine={false}
-                tick={tickStyle(spec)}
-                tickFormatter={axis.format}
+                // 11px in the phone's 48px axis, so `100.0%` fits.
+                tick={(props: TickProps) => <ValueTick {...props} format={axis.format} fontSize={phone ? 11 : spec.tick} avoid={currentValue} />}
                 width={axis.width}
               />
             ) : (
-              <YAxis hide domain={domain} />
+              <YAxis hide domain={domain} allowDataOverflow />
             )}
             {rects.map((r, i) => {
               const theme = chartTheme(scale, r.status)
@@ -186,6 +187,7 @@ export function RatioChart({
                 />
               )
             })}
+            {markerLines(markers, columns)}
             {target !== null && (
               <ReferenceLine
                 className="goal-line"
@@ -209,69 +211,52 @@ export function RatioChart({
               <ReferenceLine
                 y={currentValue}
                 stroke="none"
-                label={(props: LabelViewBox) => <AxisPill viewBox={props.viewBox} text={currentPoint!.display} axisWidth={axis.width} />}
+                label={(props: LabelViewBox) => (
+                  <AxisPill viewBox={props.viewBox} text={currentPoint!.display} axisWidth={axis.width} fontSize={phone ? 11 : 12} />
+                )}
               />
             )}
-            {hoverTooltip(hoverColumns, hoverSeries, scale, animated, spec.margin.top)}
-            {single && (
-              <Area
-                type="monotoneX"
-                dataKey="plot"
-                stroke="none"
-                fill={`url(#${gradientId})`}
-                fillOpacity={1}
-                activeDot={false}
-                tooltipType="none"
-                connectNulls={false}
-                isAnimationActive={animated}
-                {...ANIMATION}
-              />
-            )}
-            {series.map(({ row: r, points: p }, s) => {
-              const color = seriesColor(s, single)
-              const dataKey = single ? 'plot' : `plot_${r.subjectId}`
-              return (
-                <Line
-                  key={r.subjectId}
-                  type="monotoneX"
-                  dataKey={dataKey}
-                  stroke={color}
-                  strokeWidth={spec.stroke}
-                  dot={(props: DotProps) =>
-                    valuePoints ? (
-                      <ValueDot
-                        {...props}
-                        key={`dot-${r.subjectId}-${props.index}`}
-                        dataKey={dataKey}
-                        last={lastIndex}
-                        color={color}
-                        text={single ? (p[props.index ?? -1]?.display ?? null) : null}
-                      />
-                    ) : (
-                      <CurrentDot {...props} key={`dot-${r.subjectId}-${props.index}`} dataKey={dataKey} last={lastIndex} r={spec.dot} color={color} />
-                    )
-                  }
-                  activeDot={(props: DotProps) => <ActiveDot cx={props.cx} cy={props.cy} r={spec.activeDot} color={color} />}
-                  isAnimationActive={animated}
-                  {...ANIMATION}
-                  connectNulls={false}
-                />
-              )
-            })}
+            {hoverTooltip(hoverColumns, hoverSeries, scale, animated, spec.margin.top, markerNotes(markers))}
+            <Area
+              type="monotoneX"
+              dataKey="plot"
+              stroke="none"
+              fill={`url(#${gradientId})`}
+              fillOpacity={1}
+              activeDot={false}
+              tooltipType="none"
+              connectNulls={false}
+              isAnimationActive={animated}
+              {...ANIMATION}
+            />
+            <Line
+              type="monotoneX"
+              dataKey="plot"
+              stroke={ACCENT}
+              strokeWidth={spec.stroke}
+              dot={(props: DotProps) =>
+                valuePoints ? (
+                  <ValueDot
+                    {...props}
+                    key={`dot-${props.index}`}
+                    dataKey="plot"
+                    last={lastIndex}
+                    color={ACCENT}
+                    text={points[props.index ?? -1]?.display ?? null}
+                  />
+                ) : (
+                  <CurrentDot {...props} key={`dot-${props.index}`} dataKey="plot" last={lastIndex} r={spec.dot} color={ACCENT} />
+                )
+              }
+              activeDot={(props: DotProps) => <ActiveDot cx={props.cx} cy={props.cy} r={spec.activeDot} color={ACCENT} />}
+              isAnimationActive={animated}
+              {...ANIMATION}
+              connectNulls={false}
+            />
           </ComposedChart>
         </ResponsiveContainer>
       </div>
-      {showRibbon && <StatusRibbon points={points} scale={scale} size={size} inset={inset} />}
-      {!single && (
-        <ul data-testid="chart-legend" aria-hidden="true" className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-ink/80">
-          {series.map(({ row: r }, s) => (
-            <li key={r.subjectId} className="inline-flex items-center gap-1.5">
-              <span className="inline-block h-0.5 w-4 rounded-full" style={{ backgroundColor: seriesColor(s, single) }} />
-              {r.subjectName}
-            </li>
-          ))}
-        </ul>
-      )}
+      <StatusRibbon points={points} scale={scale} size={size} inset={inset} phone={phone} />
       {!focus && !framed && currentPoint?.kind === 'value' && (
         <p data-testid="current-point-label" className="mt-1 text-xs text-ink/80">
           Current: {currentPoint.display}{' '}
@@ -279,12 +264,7 @@ export function RatioChart({
         </p>
       )}
       <PointControls tip={tip} scale={scale}>
-        {series.map(({ row: r, points: p }) => (
-          <Fragment key={r.subjectId}>
-            {!single && <p className="mt-2 text-xs font-medium text-ink/80">{r.subjectName}</p>}
-            <PointButtons points={p} onSelect={setTip} prefix={single ? undefined : `${r.subjectName} `} full={fullNames} />
-          </Fragment>
-        ))}
+        <PointButtons points={points} onSelect={setTip} full={fullNames} />
       </PointControls>
     </div>
   )
