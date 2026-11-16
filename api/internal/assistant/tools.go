@@ -15,9 +15,9 @@ const (
 )
 
 // toolSetExcluded are the API paths SAM never reads, with everything under
-// them: people and their tokens, keys and settings, SAM's own threads, the
-// audit log, and the platform operator's endpoints.
-var toolSetExcluded = []string{"/members", "/me", "/assistant", "/audit", "/operator"}
+// them: people and their tokens, keys and settings, SAM's own threads and
+// summary drafts, the audit log, and the platform operator's endpoints.
+var toolSetExcluded = []string{"/members", "/me", "/assistant", "/audit", "/operator", "/scorecards/{sc}/reports/{period}/summary/draft"}
 
 // ToolSet returns the API tools SAM may call: the read-only (GET) tools of
 // catalog, except those whose path is one of the excluded paths or under

@@ -91,6 +91,7 @@ type tenantData struct {
 	credentials     map[string]domain.AssistantCredential // by user ID
 	assistant       *domain.AssistantSettings
 	threads         map[threadKey]*storedThread
+	drafts          map[draftKey]domain.AssistantDraft
 }
 
 type snapshotKey struct{ recordType, id string }

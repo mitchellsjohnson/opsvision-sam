@@ -510,6 +510,58 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/scorecards/{sc}/reports/{period}/summary/draft": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Scorecard ID. */
+                sc: components["parameters"]["ScorecardId"];
+                /** @description Reporting period string such as 2026-M10. */
+                period: components["parameters"]["Period"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ask SAM to draft the executive summary (admin only)
+         * @description Starts a draft of the month's company-scope executive summary off the request path, written by SAM with the caller's own model provider key from the live report's facts, what needs attention, and each category's values. Poll `getReportSummaryDraft` until `pending` is false. The draft is private to the caller and is never saved as the summary; save it with `putReportSummary`. A draft is kept for 24 hours, and each user keeps at most their 5 newest drafts. 409 while the caller already has a draft of this month pending, when the assistant is turned off for the organization, or when the caller has no key saved; 503 `assistant_unavailable` when the server cannot run drafts.
+         */
+        post: operations["draftReportSummary"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/scorecards/{sc}/reports/{period}/summary/draft/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Scorecard ID. */
+                sc: components["parameters"]["ScorecardId"];
+                /** @description Reporting period string such as 2026-M10. */
+                period: components["parameters"]["Period"];
+                /** @description Server-generated identifier. */
+                id: components["parameters"]["ServerIdPath"];
+            };
+            cookie?: never;
+        };
+        /**
+         * One of the caller's summary drafts (admin only)
+         * @description Poll this while `pending` is true. A pending draft older than 3 minutes is reported as failed ("SAM took too long. Try again."). Another user's draft, a draft of another scorecard or month, and a draft older than 24 hours are 404.
+         */
+        get: operations["getReportSummaryDraft"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/scorecards/{sc}/reports/{period}/publish": {
         parameters: {
             query?: never;
@@ -2323,6 +2375,22 @@ export interface components {
             text: string;
             expectedRevision: number;
         };
+        DraftReportSummaryRequest: {
+            /** @description Must be empty or absent. The summary belongs to the company report, so a draft always reads the whole company; any org unit here is rejected. */
+            scope?: string;
+        };
+        ReportSummaryDraft: {
+            id: components["schemas"]["ServerId"];
+            /** @description True while SAM is still writing; then exactly one of `text` and `error` is present. */
+            pending: boolean;
+            /** @description The drafted summary, plain text of at most 8000 characters, for the admin to review before saving. */
+            text?: string;
+            /** @description Why SAM could not draft, as a sentence to show the user. */
+            error?: string;
+            /** Format: date-time */
+            createdAt: string;
+            usage?: components["schemas"]["AssistantUsage"];
+        };
         ReportMonthList: {
             months: components["schemas"]["ReportMonth"][];
         };
@@ -3569,6 +3637,72 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
+        };
+    };
+    draftReportSummary: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Scorecard ID. */
+                sc: components["parameters"]["ScorecardId"];
+                /** @description Reporting period string such as 2026-M10. */
+                period: components["parameters"]["Period"];
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["DraftReportSummaryRequest"];
+            };
+        };
+        responses: {
+            /** @description The pending draft */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReportSummaryDraft"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            503: components["responses"]["AssistantUnavailable"];
+        };
+    };
+    getReportSummaryDraft: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Scorecard ID. */
+                sc: components["parameters"]["ScorecardId"];
+                /** @description Reporting period string such as 2026-M10. */
+                period: components["parameters"]["Period"];
+                /** @description Server-generated identifier. */
+                id: components["parameters"]["ServerIdPath"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The draft */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReportSummaryDraft"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
         };
     };
     publishReport: {

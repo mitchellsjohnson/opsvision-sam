@@ -83,3 +83,21 @@ type AssistantUsage struct {
 	OutputTokens int    `json:"outputTokens"`
 	ToolCalls    int    `json:"toolCalls"`
 }
+
+// AssistantDraft is SAM's draft of a report month's company-scope summary,
+// private to the user who asked for it. Status is an AssistantStatus*; Text
+// is set when done and Error when failed. Revision counts the draft's saves
+// (1 after creation); the store assigns it.
+type AssistantDraft struct {
+	ID          string          `json:"id"`
+	UserID      string          `json:"userId"`
+	ScorecardID string          `json:"scorecardId"`
+	Period      string          `json:"period"`
+	Status      string          `json:"status"`
+	Text        string          `json:"text,omitempty"`
+	Error       string          `json:"error,omitempty"`
+	CreatedAt   time.Time       `json:"createdAt"`
+	UpdatedAt   time.Time       `json:"updatedAt"`
+	Usage       *AssistantUsage `json:"usage,omitempty"`
+	Revision    int             `json:"-"`
+}

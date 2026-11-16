@@ -11,18 +11,33 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 )
 
-// TurnRef names one turn: the pending assistant message MessageID in the
-// user's thread. It is all a queue carries; the worker reads the rest from
-// the store.
+// KindDraft is the TurnRef kind of a report summary draft.
+const KindDraft = "draft"
+
+// TurnRef names one job. Without a Kind it is a thread turn: the pending
+// assistant message MessageID in the user's thread ThreadID. With Kind
+// KindDraft it is the user's pending report summary draft DraftID. It is all
+// a queue carries; the worker reads the rest from the store.
 type TurnRef struct {
+	Kind      string `json:"kind,omitempty"`
 	TenantID  string `json:"tenantId"`
 	UserID    string `json:"userId"`
-	ThreadID  string `json:"threadId"`
-	MessageID string `json:"messageId"`
+	ThreadID  string `json:"threadId,omitempty"`
+	MessageID string `json:"messageId,omitempty"`
+	DraftID   string `json:"draftId,omitempty"`
 }
 
 func (r TurnRef) complete() bool {
-	return r.TenantID != "" && r.UserID != "" && r.ThreadID != "" && r.MessageID != ""
+	if r.TenantID == "" || r.UserID == "" {
+		return false
+	}
+	switch r.Kind {
+	case "":
+		return r.ThreadID != "" && r.MessageID != ""
+	case KindDraft:
+		return r.DraftID != ""
+	}
+	return false
 }
 
 // Queue starts turns off the request path.

@@ -28,6 +28,8 @@ func TestToolSetIsReadOnlyAndExcludesPrivatePaths(t *testing.T) {
 		tool("list_assistant_threads", "GET", "/assistant/threads"),
 		tool("list_audit", "GET", "/audit"),
 		tool("list_operator_tenants", "GET", "/operator/tenants"),
+		tool("get_report_summary_draft", "GET", "/scorecards/{sc}/reports/{period}/summary/draft/{id}"),
+		tool("get_report_summary", "GET", "/scorecards/{sc}/reports/{period}/summary"),
 		tool("list_metrics_about_members", "GET", "/membersx"), // a prefix is not a path segment
 		{Name: mcp.ImportCSVToolName},                          // an extra tool has no method
 	}
@@ -36,7 +38,7 @@ func TestToolSetIsReadOnlyAndExcludesPrivatePaths(t *testing.T) {
 	for _, tl := range got {
 		names = append(names, tl.Name)
 	}
-	want := []string{"get_scorecard_view", "list_org_units", "list_metrics_about_members"}
+	want := []string{"get_scorecard_view", "list_org_units", "get_report_summary", "list_metrics_about_members"}
 	if !slices.Equal(names, want) {
 		t.Fatalf("ToolSet = %v, want %v", names, want)
 	}

@@ -353,6 +353,26 @@ type AssistantThreadStore interface {
 	DeleteThread(ctx context.Context, tenantID, userID, id string) error
 }
 
+// AssistantDraftStore holds users' private report summary drafts, keyed by
+// (tenant, user, draft ID): no method reads or changes another user's
+// drafts.
+type AssistantDraftStore interface {
+	// PutDraft saves d with optimistic concurrency like PutThread:
+	// expectedRevision 0 creates it (ErrConflict if it exists); otherwise
+	// expectedRevision must equal the stored Revision (ErrConflict when it
+	// does not or the draft is gone). The stored Revision becomes
+	// expectedRevision+1; d.Revision is ignored.
+	PutDraft(ctx context.Context, tenantID string, d domain.AssistantDraft, expectedRevision int) error
+	// GetDraft returns one draft; ErrNotFound when the user has no such
+	// draft.
+	GetDraft(ctx context.Context, tenantID, userID, id string) (domain.AssistantDraft, error)
+	// ListDrafts returns a user's drafts, newest CreatedAt first, then ID
+	// descending.
+	ListDrafts(ctx context.Context, tenantID, userID string) ([]domain.AssistantDraft, error)
+	// DeleteDraft removes a draft; ErrNotFound if absent.
+	DeleteDraft(ctx context.Context, tenantID, userID, id string) error
+}
+
 // RecordStore holds record types, records (one stored item per revision),
 // and upload snapshots.
 type RecordStore interface {
@@ -398,6 +418,18 @@ type Store interface {
 	TokenStore
 	AssistantStore
 	AssistantThreadStore
+	AssistantDraftStore
+}
+
+// SortDrafts sorts drafts in list order: newest CreatedAt first, then ID
+// descending.
+func SortDrafts(ds []domain.AssistantDraft) {
+	slices.SortFunc(ds, func(a, b domain.AssistantDraft) int {
+		if c := b.CreatedAt.Compare(a.CreatedAt); c != 0 {
+			return c
+		}
+		return strings.Compare(b.ID, a.ID)
+	})
 }
 
 // SortMessages sorts assistant messages in thread order: CreatedAt, then ID.

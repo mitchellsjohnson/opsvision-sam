@@ -57,6 +57,8 @@ func TestKeys(t *testing.T) {
 		{"assistant thread SK prefix", assistantThreadPrefix("user-1"), "ATHREAD#user-1#"},
 		{"assistant message SK", assistantMessageSK("user-1", "th-1", "m-1"), "AMSG#user-1#th-1#m-1"},
 		{"assistant message SK prefix", assistantMessagePrefix("user-1", "th-1"), "AMSG#user-1#th-1#"},
+		{"assistant draft SK", assistantDraftSK("user-1", "d-1"), "ADRAFT#user-1#d-1"},
+		{"assistant draft SK prefix", assistantDraftPrefix("user-1"), "ADRAFT#user-1#"},
 		{"version SK", versionSK("sc1", "v1"), "SC#sc1#VER#v1"},
 
 		{"data current PK", dataPK("acme", "sc1", 2026), "T#acme#SC#sc1#FY#2026"},

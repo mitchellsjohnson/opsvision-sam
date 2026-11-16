@@ -858,6 +858,69 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
 
+  /scorecards/{sc}/reports/{period}/summary/draft:
+    parameters:
+      - $ref: '#/components/parameters/ScorecardId'
+      - $ref: '#/components/parameters/Period'
+    post:
+      operationId: draftReportSummary
+      tags: [Scorecards]
+      summary: Ask SAM to draft the executive summary (admin only)
+      description: >
+        Starts a draft of the month's company-scope executive summary off the
+        request path, written by SAM with the caller's own model provider key
+        from the live report's facts, what needs attention, and each
+        category's values. Poll `getReportSummaryDraft` until `pending` is
+        false. The draft is private to the caller and is never saved as the
+        summary; save it with `putReportSummary`. A draft is kept for 24
+        hours, and each user keeps at most their 5 newest drafts. 409 while
+        the caller already has a draft of this month pending, when the
+        assistant is turned off for the organization, or when the caller has
+        no key saved; 503 `assistant_unavailable` when the server cannot run
+        drafts.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DraftReportSummaryRequest' }
+      responses:
+        '202':
+          description: The pending draft
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReportSummaryDraft' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/AssistantUnavailable' }
+
+  /scorecards/{sc}/reports/{period}/summary/draft/{id}:
+    parameters:
+      - $ref: '#/components/parameters/ScorecardId'
+      - $ref: '#/components/parameters/Period'
+      - $ref: '#/components/parameters/ServerIdPath'
+    get:
+      operationId: getReportSummaryDraft
+      tags: [Scorecards]
+      summary: One of the caller's summary drafts (admin only)
+      description: >
+        Poll this while `pending` is true. A pending draft older than 3
+        minutes is reported as failed ("SAM took too long. Try again.").
+        Another user's draft, a draft of another scorecard or month, and a
+        draft older than 24 hours are 404.
+      responses:
+        '200':
+          description: The draft
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReportSummaryDraft' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
   /scorecards/{sc}/reports/{period}/publish:
     parameters:
       - $ref: '#/components/parameters/ScorecardId'
@@ -3522,6 +3585,31 @@ components:
       properties:
         text: { type: string }
         expectedRevision: { type: integer, minimum: 0 }
+    DraftReportSummaryRequest:
+      type: object
+      properties:
+        scope:
+          type: string
+          description: >
+            Must be empty or absent. The summary belongs to the company
+            report, so a draft always reads the whole company; any org unit
+            here is rejected.
+    ReportSummaryDraft:
+      type: object
+      required: [id, pending, createdAt]
+      properties:
+        id: { $ref: '#/components/schemas/ServerId' }
+        pending:
+          type: boolean
+          description: True while SAM is still writing; then exactly one of `text` and `error` is present.
+        text:
+          type: string
+          description: The drafted summary, plain text of at most 8000 characters, for the admin to review before saving.
+        error:
+          type: string
+          description: Why SAM could not draft, as a sentence to show the user.
+        createdAt: { type: string, format: date-time }
+        usage: { $ref: '#/components/schemas/AssistantUsage' }
     ReportMonthList:
       type: object
       required: [months]

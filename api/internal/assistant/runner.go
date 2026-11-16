@@ -75,6 +75,8 @@ type Runner struct {
 	// Dispatcher serves tool calls; the call's context carries the turn's
 	// user (mcp.NewHTTPDispatcher on the API router, channel assistant).
 	Dispatcher mcp.Dispatcher
+	// Reports builds the report a summary draft is written from.
+	Reports ReportSource
 	// Now is the clock; time.Now when nil.
 	Now func() time.Time
 	// Budget overrides TurnBudget when positive.
@@ -95,12 +97,21 @@ func (f *turnFailure) Error() string { return f.msg }
 
 func fail(msg string) error { return &turnFailure{msg} }
 
-// Run answers the pending assistant message ref names. It returns an error
-// only when the turn should be retried (the store could not be read); every
-// other outcome, including provider failures, is written to the message.
-// A message that is no longer pending, or a deleted thread, is nothing to
-// do, so a redelivered turn is harmless.
+// Run answers the pending assistant message ref names, or writes the
+// pending summary draft for a KindDraft ref. It returns an error only when
+// the job should be retried (the store could not be read); every other
+// outcome, including provider failures, is written to the message or
+// draft. One that is no longer pending, or deleted, is nothing to do, so a
+// redelivered job is harmless.
 func (r *Runner) Run(ctx context.Context, ref TurnRef) error {
+	switch ref.Kind {
+	case "":
+	case KindDraft:
+		return r.runDraft(ctx, ref)
+	default:
+		slog.Error("assistant: dropping a job of an unknown kind", "kind", ref.Kind, "tenant", ref.TenantID)
+		return nil
+	}
 	th, err := r.Store.GetThread(ctx, ref.TenantID, ref.UserID, ref.ThreadID)
 	if errors.Is(err, store.ErrNotFound) {
 		return nil
@@ -150,36 +161,11 @@ func messageIndex(ms []domain.AssistantMessage, id string) int {
 // answer runs the model and tool loop for the message at idx. A *turnFailure
 // is a reason to show the user; any other error is to retry.
 func (r *Runner) answer(ctx context.Context, ref TurnRef, th domain.AssistantThread, idx int) (string, *domain.AssistantUsage, error) {
-	tenant, err := r.Store.GetTenant(ctx, ref.TenantID)
-	if errors.Is(err, store.ErrNotFound) {
-		return "", nil, fail(MsgNotMember)
-	}
+	js, err := r.start(ctx, ref, MsgNoKey)
 	if err != nil {
 		return "", nil, err
 	}
-	m, err := r.Store.GetMembership(ctx, ref.TenantID, ref.UserID)
-	if errors.Is(err, store.ErrNotFound) {
-		return "", nil, fail(MsgNotMember)
-	}
-	if err != nil {
-		return "", nil, err
-	}
-	settings, err := r.Store.GetAssistantSettings(ctx, ref.TenantID)
-	if err != nil {
-		return "", nil, err
-	}
-	if !settings.Enabled {
-		return "", nil, fail(MsgDisabled)
-	}
-	key, err := r.openKey(ctx, ref)
-	if err != nil {
-		return "", nil, err
-	}
-
-	p := auth.Principal{
-		UserID: ref.UserID, Email: m.Email, Name: m.Name,
-		Tenant: &tenant, Membership: &m, Channel: auth.ChannelAssistant,
-	}
+	tenant, m, settings, key, p := js.tenant, js.membership, js.settings, js.key, js.principal
 	tools := ToolSet(r.Catalog)
 	allowed := make(map[string]mcp.Tool, len(tools))
 	for _, t := range tools {
@@ -247,13 +233,61 @@ func (r *Runner) answer(ctx context.Context, ref TurnRef, th domain.AssistantThr
 	}
 }
 
-// openKey reads and opens the user's credential. A key that is missing, or
-// cannot be opened (the server's credential key changed), is a failure the
-// user can fix by saving the key again.
-func (r *Runner) openKey(ctx context.Context, ref TurnRef) (string, error) {
+// jobStart is what every job needs before it calls the model.
+type jobStart struct {
+	tenant     domain.Tenant
+	membership domain.Membership
+	settings   domain.AssistantSettings
+	key        string
+	// principal is the job's user on the assistant channel.
+	principal auth.Principal
+}
+
+// start loads the job's tenant, the user's current membership, the
+// tenant's settings, and the user's key. A removed user, a turned-off
+// assistant, and a missing (noKey) or unreadable key are failures.
+func (r *Runner) start(ctx context.Context, ref TurnRef, noKey string) (jobStart, error) {
+	var js jobStart
+	tenant, err := r.Store.GetTenant(ctx, ref.TenantID)
+	if errors.Is(err, store.ErrNotFound) {
+		return js, fail(MsgNotMember)
+	}
+	if err != nil {
+		return js, err
+	}
+	m, err := r.Store.GetMembership(ctx, ref.TenantID, ref.UserID)
+	if errors.Is(err, store.ErrNotFound) {
+		return js, fail(MsgNotMember)
+	}
+	if err != nil {
+		return js, err
+	}
+	settings, err := r.Store.GetAssistantSettings(ctx, ref.TenantID)
+	if err != nil {
+		return js, err
+	}
+	if !settings.Enabled {
+		return js, fail(MsgDisabled)
+	}
+	key, err := r.openKey(ctx, ref, noKey)
+	if err != nil {
+		return js, err
+	}
+	js = jobStart{tenant: tenant, membership: m, settings: settings, key: key}
+	js.principal = auth.Principal{
+		UserID: ref.UserID, Email: m.Email, Name: m.Name,
+		Tenant: &js.tenant, Membership: &js.membership, Channel: auth.ChannelAssistant,
+	}
+	return js, nil
+}
+
+// openKey reads and opens the user's credential. A key that is missing
+// (noKey), or cannot be opened (the server's credential key changed), is a
+// failure the user can fix by saving the key again.
+func (r *Runner) openKey(ctx context.Context, ref TurnRef, noKey string) (string, error) {
 	cred, err := r.Store.GetCredential(ctx, ref.TenantID, ref.UserID)
 	if errors.Is(err, store.ErrNotFound) {
-		return "", fail(MsgNoKey)
+		return "", fail(noKey)
 	}
 	if err != nil {
 		return "", err

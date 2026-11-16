@@ -57,6 +57,7 @@ const (
 	prefixAssistantCred = "ASSISTANTCRED#"
 	prefixThread        = "ATHREAD#"
 	prefixThreadMsg     = "AMSG#"
+	prefixDraft         = "ADRAFT#"
 
 	versionMarker = "#VER#"
 )
@@ -98,6 +99,11 @@ func assistantMessagePrefix(userID, id string) string {
 func assistantMessageSK(userID, threadID, msgID string) string {
 	return assistantMessagePrefix(userID, threadID) + msgID
 }
+
+// Report summary drafts live in the tenant partition, one item per draft
+// under a per-user prefix.
+func assistantDraftPrefix(userID string) string { return prefixDraft + userID + "#" }
+func assistantDraftSK(userID, id string) string { return assistantDraftPrefix(userID) + id }
 
 func versionSK(scID, versionID string) string { return versionPrefix(scID) + versionID }
 

@@ -90,6 +90,9 @@ func Run(t *testing.T, newStore func(t *testing.T) store.Store) {
 		{"AssistantThreadLifecycle", assistantThreadLifecycle},
 		{"AssistantThreadIsolation", assistantThreadIsolation},
 		{"AssistantThreadOneWriterWins", assistantThreadOneWriterWins},
+		{"AssistantDraftLifecycle", assistantDraftLifecycle},
+		{"AssistantDraftIsolation", assistantDraftIsolation},
+		{"AssistantDraftOneWriterWins", assistantDraftOneWriterWins},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) { c.fn(t, newStore(t)) })
@@ -2542,5 +2545,116 @@ func assistantThreadOneWriterWins(t *testing.T, s store.Store) {
 	must(t, err)
 	if got.Revision != 2 || len(got.Messages) != 1 || got.Messages[0].Text != fmt.Sprintf("writer-%d", w) {
 		t.Fatalf("thread = %+v, want only writer-%d's message at revision 2", got, w)
+	}
+}
+
+func assistantDraftLifecycle(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	tn := newTenant(t, s)
+
+	_, err := s.GetDraft(ctx, tn, "user-a", "d-1")
+	wantErr(t, err, store.ErrNotFound)
+	wantErr(t, s.DeleteDraft(ctx, tn, "user-a", "d-1"), store.ErrNotFound)
+	list, err := s.ListDrafts(ctx, tn, "user-a")
+	wantEmpty(t, "no drafts", list, err)
+
+	d := domain.AssistantDraft{
+		ID: "d-1", UserID: "user-a", ScorecardID: "sc", Period: "2026-M09",
+		Status: domain.AssistantStatusPending, CreatedAt: at(2), UpdatedAt: at(2),
+	}
+	must(t, s.PutDraft(ctx, tn, d, 0))
+	wantErr(t, s.PutDraft(ctx, tn, d, 0), store.ErrConflict)
+	got, err := s.GetDraft(ctx, tn, "user-a", "d-1")
+	must(t, err)
+	want := d
+	want.Revision = 1
+	wantEq(t, "created", got, want)
+
+	done := d
+	done.Status, done.Text, done.UpdatedAt = domain.AssistantStatusDone, "September went well.", at(3)
+	done.Usage = &domain.AssistantUsage{Model: "m", InputTokens: 10, OutputTokens: 5}
+	must(t, s.PutDraft(ctx, tn, done, 1))
+	wantErr(t, s.PutDraft(ctx, tn, d, 1), store.ErrConflict)
+	got, err = s.GetDraft(ctx, tn, "user-a", "d-1")
+	must(t, err)
+	want = done
+	want.Revision = 2
+	wantEq(t, "finished", got, want)
+
+	// Returned values are copies.
+	got.Usage.InputTokens = 99
+	again, err := s.GetDraft(ctx, tn, "user-a", "d-1")
+	must(t, err)
+	wantEq(t, "unchanged through a returned value", again.Usage.InputTokens, 10)
+
+	older := domain.AssistantDraft{ID: "d-0", UserID: "user-a", ScorecardID: "sc", Period: "2026-M08", Status: domain.AssistantStatusError, Error: "Nope.", CreatedAt: at(1), UpdatedAt: at(1)}
+	tieA := domain.AssistantDraft{ID: "d-2", UserID: "user-a", ScorecardID: "sc", Period: "2026-M09", Status: domain.AssistantStatusPending, CreatedAt: at(4), UpdatedAt: at(4)}
+	tieB := tieA
+	tieB.ID = "d-3"
+	for _, x := range []domain.AssistantDraft{older, tieA, tieB} {
+		must(t, s.PutDraft(ctx, tn, x, 0))
+	}
+	list, err = s.ListDrafts(ctx, tn, "user-a")
+	must(t, err)
+	var ids []string
+	for _, l := range list {
+		ids = append(ids, l.ID)
+	}
+	wantEq(t, "list order", ids, []string{"d-3", "d-2", "d-1", "d-0"})
+	wantEq(t, "listed draft", list[2], want)
+
+	// A deleted draft stays deleted: finishing it conflicts.
+	must(t, s.DeleteDraft(ctx, tn, "user-a", "d-1"))
+	_, err = s.GetDraft(ctx, tn, "user-a", "d-1")
+	wantErr(t, err, store.ErrNotFound)
+	wantErr(t, s.PutDraft(ctx, tn, done, 2), store.ErrConflict)
+	_, err = s.GetDraft(ctx, tn, "user-a", "d-1")
+	wantErr(t, err, store.ErrNotFound)
+	wantErr(t, s.DeleteDraft(ctx, tn, "user-a", "d-1"), store.ErrNotFound)
+}
+
+func assistantDraftIsolation(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	tn := newTenant(t, s)
+	other := newTenant(t, s)
+	mk := func(user, text string) domain.AssistantDraft {
+		return domain.AssistantDraft{ID: "d-1", UserID: user, ScorecardID: "sc", Period: "2026-M09", Status: domain.AssistantStatusDone, Text: text, CreatedAt: at(2), UpdatedAt: at(2)}
+	}
+	must(t, s.PutDraft(ctx, tn, mk("user-a", "mine"), 0))
+	must(t, s.PutDraft(ctx, tn, mk("user-ab", "theirs"), 0))
+	must(t, s.PutDraft(ctx, other, mk("user-a", "other tenant"), 0))
+
+	_, err := s.GetDraft(ctx, tn, "user-b", "d-1")
+	wantErr(t, err, store.ErrNotFound)
+	wantErr(t, s.DeleteDraft(ctx, tn, "user-b", "d-1"), store.ErrNotFound)
+	list, err := s.ListDrafts(ctx, tn, "user-b")
+	wantEmpty(t, "another user's list", list, err)
+	list, err = s.ListDrafts(ctx, tn, "user-a")
+	must(t, err)
+	if len(list) != 1 || list[0].Text != "mine" {
+		t.Fatalf("user-a list = %+v, want only user-a's draft (not user-ab's)", list)
+	}
+	must(t, s.DeleteDraft(ctx, other, "user-a", "d-1"))
+	must(t, s.DeleteDraft(ctx, tn, "user-ab", "d-1"))
+	got, err := s.GetDraft(ctx, tn, "user-a", "d-1")
+	must(t, err)
+	wantEq(t, "mine kept", got.Text, "mine")
+}
+
+func assistantDraftOneWriterWins(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	tn := newTenant(t, s)
+	d := domain.AssistantDraft{ID: "d-1", UserID: "user-a", ScorecardID: "sc", Period: "2026-M09", Status: domain.AssistantStatusPending, CreatedAt: at(2), UpdatedAt: at(2)}
+	must(t, s.PutDraft(ctx, tn, d, 0))
+	errs := race(func(i int) error {
+		x := d
+		x.Status, x.Text = domain.AssistantStatusDone, fmt.Sprintf("writer-%d", i)
+		return s.PutDraft(ctx, tn, x, 1)
+	})
+	w := oneWinner(t, "draft", errs)
+	got, err := s.GetDraft(ctx, tn, "user-a", "d-1")
+	must(t, err)
+	if got.Revision != 2 || got.Text != fmt.Sprintf("writer-%d", w) {
+		t.Fatalf("draft = %+v, want writer-%d's text at revision 2", got, w)
 	}
 }
