@@ -1,9 +1,17 @@
 // Package demo seeds the fictional "Acme Demo" tenant: an org tree with a
-// reorg, tracked services, a scorecard with three published methodology
-// versions, 22 months of deterministic synthetic data, and, from 2026-M07,
-// synthetic tracker records (epics and defects, with monthly snapshots) that
-// the third version derives four measures from. The proof of concept, the
-// web app's development, and the end-to-end tests all run against it.
+// reorg, 24 tracked services, a scorecard with four published methodology
+// versions, 24 months of deterministic synthetic data (2024-M11 through
+// 2026-M10), and, from 2026-M07, synthetic tracker records (epics and
+// defects, with monthly snapshots) that the latest version derives four
+// measures from. The proof of concept, the web app's development, and the
+// end-to-end tests all run against it.
+//
+// The data exercises every chart kind at realistic density: ratio, line
+// (a lower-is-better score in the hundreds), change, days, discrete
+// (quarterly and biannual), money plan, uptime across 24 services with
+// mid-window onboarding and gaps, a sparse metric that is mostly not
+// applicable, a metric whose company total is not reported (so the chart
+// draws one line per segment), and metrics that are not reported at all.
 //
 // Everything here is invented. No real company, product, or person appears.
 package demo
@@ -17,6 +25,7 @@ import (
 	"maps"
 	"math"
 	"math/rand/v2"
+	"slices"
 	"time"
 
 	"opsvision/internal/domain"
@@ -78,9 +87,23 @@ var ZeroOverZero = struct {
 	Measures:  map[string]bool{"idea_age_days_sum": true, "idea_count": true},
 }
 
+// NotReported lists the metrics with no value in the latest month, on
+// purpose: one has never been reported, the other stopped after 2026-M07.
+var NotReported = []string{"design_review_coverage", "roadmap_evidence"}
+
+// NoCompanyTotal is the metric reported per segment whose measures do not
+// roll up, so the company row has no value and charts draw a line per
+// segment instead.
+const NoCompanyTotal = "customer_satisfaction"
+
+// SparseMetric is the company-level metric that is not applicable in most
+// months (no incident needed a postmortem), so it charts as lettered results.
+const SparseMetric = "postmortems_on_time"
+
 // Fixed instants keep the seed reproducible.
 var (
-	tenantCreated = time.Date(2025, time.January, 1, 0, 0, 0, 0, time.UTC)
+	tenantCreated = time.Date(2024, time.October, 1, 0, 0, 0, 0, time.UTC)
+	published2024 = time.Date(2023, time.December, 15, 0, 0, 0, 0, time.UTC)
 	published2025 = time.Date(2024, time.December, 15, 0, 0, 0, 0, time.UTC)
 	published2026 = time.Date(2025, time.December, 15, 0, 0, 0, 0, time.UTC)
 	// published2026v2 is when the records-derived methodology was published.
@@ -90,10 +113,14 @@ var (
 	derivedAt = time.Date(2026, time.November, 1, 9, 0, 0, 0, time.UTC)
 )
 
-// rngSeed fixes the synthetic data.
+// rngSeed fixes the synthetic data. rngSeedWide seeds a second stream for
+// the data added later (the first two months of the window, the services
+// beyond the first three, and the newer metrics), so the original stream's
+// values do not move.
 const (
-	rngSeed1 = 0x0b5c0de
-	rngSeed2 = 0x2026
+	rngSeed1    = 0x0b5c0de
+	rngSeed2    = 0x2026
+	rngSeedWide = 0x5ca1e
 )
 
 // Seed creates the demo tenant in st and returns its ID. cal is the fiscal
@@ -171,8 +198,55 @@ var products = []struct{ id, name, segment string }{
 	{"android-app", "Android App", "mobile"},
 }
 
-var services = []struct{ id, name string }{
-	{"public-api", "Public API"}, {"web-app", "Web App"}, {"status-page", "Status Page"},
+// serviceSpec is one tracked service and how its uptime behaves. It reports
+// from `from` (the window start when zero) through `until` (the latest month
+// when zero), except in `gaps`; `outages` are months with a long outage.
+// `latest` pins the minutes down in the latest month (nil draws as usual).
+type serviceSpec struct {
+	id, name, segment string
+	downtime          float64 // typical minutes down a month
+	from, until       period.Period
+	gaps, outages     []period.Period
+	latest            *float64
+}
+
+func minutes(v float64) *float64 { return &v }
+
+// services are the tracked services. The first three are drawn from the
+// original stream (see monthlyServices); the rest from the wide one. In the
+// latest month 18 are green (four at 100.00%), two yellow, one red, and three
+// not reported.
+var services = []serviceSpec{
+	{id: "public-api", name: "Public API", segment: "platform"},
+	{id: "web-app", name: "Web App", segment: "platform"},
+	{id: "status-page", name: "Status Page", segment: "platform"},
+	{id: "checkout-api", name: "Checkout API", segment: "payments", downtime: 12, latest: minutes(0)},
+	{id: "billing-worker", name: "Billing Worker", segment: "payments", downtime: 25},
+	{id: "payments-gateway", name: "Payments Gateway", segment: "payments", downtime: 8, latest: minutes(0)},
+	{id: "ledger", name: "Ledger", segment: "payments", downtime: 15, from: month(2025, 6)},
+	{id: "inventory-api", name: "Inventory API", segment: "payments", downtime: 14, from: month(2025, 9)},
+	{id: "pricing-engine", name: "Pricing Engine", segment: "payments", downtime: 16, until: month(2026, 8)},
+	{id: "search", name: "Search", segment: "platform", downtime: 35, latest: minutes(60)},
+	{id: "auth-service", name: "Auth Service", segment: "platform", downtime: 5, latest: minutes(0)},
+	{id: "notifications", name: "Notifications", segment: "platform", downtime: 40},
+	{
+		id: "webhooks", name: "Webhooks", segment: "platform", downtime: 50, from: month(2025, 3),
+		outages: []period.Period{month(2025, 7), month(2025, 8), month(2026, 3)}, latest: minutes(420),
+	},
+	{id: "feature-flags", name: "Feature Flags", segment: "platform", downtime: 10, from: month(2026, 2)},
+	{id: "email-relay", name: "Email Relay", segment: "platform", downtime: 30, gaps: []period.Period{month(2025, 8), month(2025, 9)}},
+	{
+		id: "admin-console", name: "Admin Console", segment: "platform", downtime: 30,
+		gaps: []period.Period{month(2025, 1), month(2025, 3), month(2025, 5), month(2025, 7), month(2025, 9), month(2025, 11)},
+	},
+	{id: "audit-log", name: "Audit Log", segment: "platform", downtime: 4, from: month(2026, 7)},
+	{id: "reporting", name: "Reporting", segment: "data", downtime: 45, until: month(2026, 9)},
+	{id: "analytics-ingest", name: "Analytics Ingest", segment: "data", downtime: 55, from: month(2025, 1), latest: minutes(75)},
+	{id: "data-export", name: "Data Export", segment: "data", downtime: 20, from: month(2026, 5)},
+	{id: "scheduler", name: "Scheduler", segment: "data", downtime: 18, gaps: []period.Period{month(2025, 12), month(2026, 1), month(2026, 2)}},
+	{id: "mobile-backend", name: "Mobile Backend", segment: "mobile", downtime: 22},
+	{id: "media-cdn", name: "Media CDN", segment: "mobile", downtime: 6, latest: minutes(0)},
+	{id: "push-gateway", name: "Push Gateway", segment: "mobile", downtime: 28, from: month(2025, 10), until: month(2026, 9)},
 }
 
 const companyID = "acme"
@@ -210,7 +284,7 @@ func seedOrg(ctx context.Context, st store.Store) error {
 	}
 	for _, s := range services {
 		if err := st.PutTrackedItem(ctx, TenantID, domain.TrackedItem{
-			ID: s.id, KindID: "services", Name: s.name, OrgUnitID: "platform", SourceKeys: []string{s.name},
+			ID: s.id, KindID: "services", Name: s.name, OrgUnitID: s.segment, SourceKeys: []string{s.name},
 		}); err != nil {
 			return fmt.Errorf("demo: tracked item %s: %w", s.id, err)
 		}
@@ -225,6 +299,7 @@ func seedMethodology(ctx context.Context, st store.Store) error {
 		return fmt.Errorf("demo: scorecard: %w", err)
 	}
 	for _, v := range []domain.MethodologyVersion{
+		version("v2024", "2024 v1.0", 2024, published2024, 85),
 		version("v2025", "2025 v1.0", 2025, published2025, 85),
 		version("v2026", "2026 v1.0", 2026, published2026, 90),
 		derivedVersion(),
@@ -307,6 +382,7 @@ func methodology(fy int, onTimeGreen float64) domain.Methodology {
 	atProduct := []domain.Subject{{Kind: domain.SubjectLevel, ID: "product"}}
 	atSegment := []domain.Subject{{Kind: domain.SubjectLevel, ID: "segment"}}
 	atService := []domain.Subject{{Kind: domain.SubjectItemKind, ID: "services"}}
+	atCompany := []domain.Subject{{Kind: domain.SubjectLevel, ID: "company"}}
 	year := period.Period{Grain: period.Year, FY: fy}
 
 	return domain.Methodology{
@@ -341,6 +417,18 @@ func methodology(fy int, onTimeGreen float64) domain.Methodology {
 			{Key: "a11y_max", Name: "Accessibility maximum score", Unit: "points", OrgAgg: domain.AggNone, TimeAgg: domain.AggLatest},
 			{Key: "oss_within_slo", Name: "Open-source risks within SLO", Unit: "count", OrgAgg: domain.AggSum, TimeAgg: domain.AggSum},
 			{Key: "oss_due", Name: "Open-source risks due", Unit: "count", OrgAgg: domain.AggSum, TimeAgg: domain.AggSum},
+			// Each product's backlog is scored on its own scale, so the company
+			// figure is their average rather than their sum.
+			{Key: "support_points", Name: "Weighted support backlog", Unit: "points", OrgAgg: domain.AggAverage, TimeAgg: domain.AggLatest},
+			// Survey results are weighted per segment and do not roll up.
+			{Key: "csat_positive", Name: "Positive survey responses", Unit: "count", OrgAgg: domain.AggNone, TimeAgg: domain.AggSum},
+			{Key: "csat_responses", Name: "Survey responses", Unit: "count", OrgAgg: domain.AggNone, TimeAgg: domain.AggSum},
+			{Key: "postmortems_on_time", Name: "Postmortems published on time", Unit: "count", OrgAgg: domain.AggNone, TimeAgg: domain.AggSum},
+			{Key: "postmortems_due", Name: "Postmortems due", Unit: "count", OrgAgg: domain.AggNone, TimeAgg: domain.AggSum},
+			{Key: "design_reviewed", Name: "Features with a design review", Unit: "count", OrgAgg: domain.AggSum, TimeAgg: domain.AggSum},
+			{Key: "design_shipped", Name: "Features shipped", Unit: "count", OrgAgg: domain.AggSum, TimeAgg: domain.AggSum},
+			{Key: "roadmap_evidenced", Name: "Roadmap items with customer evidence", Unit: "count", OrgAgg: domain.AggSum, TimeAgg: domain.AggSum},
+			{Key: "roadmap_items", Name: "Roadmap items", Unit: "count", OrgAgg: domain.AggSum, TimeAgg: domain.AggSum},
 		},
 		Metrics: []domain.Metric{
 			{
@@ -369,6 +457,7 @@ func methodology(fy int, onTimeGreen float64) domain.Methodology {
 				Formula: "actual_spend_k / planned_spend_k * 100", Format: domain.FormatPercent0,
 				Direction: domain.DirectionLowerBetter, Frequency: domain.FrequencyMonthly, ReportedAt: atProduct,
 				Rule:       domain.StatusRule{Type: domain.RuleBands, Bands: lowerBands(110, 120)},
+				ChartKind:  "money_plan",
 				Definition: "Actual spend as a percentage of planned spend. Lower is better.",
 				Example:    "$1,150k spent against $1,000k planned is 115%.",
 				Source:     "Finance ledger",
@@ -395,6 +484,15 @@ func methodology(fy int, onTimeGreen float64) domain.Methodology {
 				Source:     "Defect tracker",
 			},
 			{
+				Key: "support_backlog", Name: "Weighted support backlog", CategoryID: "quality",
+				Formula: "support_points", Format: domain.FormatNumber0,
+				Direction: domain.DirectionLowerBetter, Frequency: domain.FrequencyMonthly, ReportedAt: atProduct,
+				Rule:       domain.StatusRule{Type: domain.RuleBands, Bands: lowerBands(450, 600)},
+				Definition: "Open support cases at month end, weighted by severity and age. Lower is better.",
+				Example:    "Two week-old severity 1 cases at 64 points each and forty minor ones at 4 is 288.",
+				Source:     "Support desk",
+			},
+			{
 				Key: "uptime", Name: "Uptime", CategoryID: "engineering",
 				Formula: "(1 - seconds_down / seconds_in_period) * 100", Format: domain.FormatPercent2,
 				Direction: domain.DirectionHigherBetter, Frequency: domain.FrequencyMonthly, ReportedAt: atService,
@@ -417,6 +515,15 @@ func methodology(fy int, onTimeGreen float64) domain.Methodology {
 				Source:     "Monitoring",
 			},
 			{
+				Key: "postmortems_on_time", Name: "Incident postmortems on time", CategoryID: "engineering",
+				Formula: "postmortems_on_time / postmortems_due * 100", Format: domain.FormatPercent0,
+				Direction: domain.DirectionHigherBetter, Frequency: domain.FrequencyMonthly, ReportedAt: atCompany,
+				Rule:       domain.StatusRule{Type: domain.RuleBands, Bands: bands(90, 75)},
+				Definition: "Share of major incidents whose postmortem was published within five working days.",
+				Notes:      "A month with no major incident is not applicable.",
+				Source:     "Incident log",
+			},
+			{
 				Key: "security_training", Name: "Security training completion", CategoryID: "security",
 				Formula: "trained_count / headcount * 100", Format: domain.FormatPercent0,
 				Direction: domain.DirectionHigherBetter, Frequency: domain.FrequencyMonthly, ReportedAt: atProduct,
@@ -432,6 +539,30 @@ func methodology(fy int, onTimeGreen float64) domain.Methodology {
 				Definition: "Average age, in days, of customer ideas awaiting a response.",
 				Notes:      "A month with no ideas is not applicable.",
 				Source:     "Feedback portal",
+			},
+			{
+				Key: "customer_satisfaction", Name: "Customer satisfaction", CategoryID: "product",
+				Formula: "csat_positive / csat_responses * 100", Format: domain.FormatPercent0,
+				Direction: domain.DirectionHigherBetter, Frequency: domain.FrequencyMonthly, ReportedAt: atSegment,
+				Rule:       domain.StatusRule{Type: domain.RuleBands, Bands: bands(85, 75)},
+				Definition: "Share of survey responses rating the product 4 or 5 out of 5. Each segment runs its own survey, so there is no company total.",
+				Source:     "Customer survey",
+			},
+			{
+				Key: "roadmap_evidence", Name: "Roadmap items with customer evidence", CategoryID: "product",
+				Formula: "roadmap_evidenced / roadmap_items * 100", Format: domain.FormatPercent0,
+				Direction: domain.DirectionHigherBetter, Frequency: domain.FrequencyMonthly, ReportedAt: atProduct,
+				Rule:       domain.StatusRule{Type: domain.RuleBands, Bands: bands(75, 60)},
+				Definition: "Share of committed roadmap items backed by at least one linked customer request.",
+				Source:     "Roadmap tool",
+			},
+			{
+				Key: "design_review_coverage", Name: "Design review coverage", CategoryID: "design",
+				Formula: "design_reviewed / design_shipped * 100", Format: domain.FormatPercent0,
+				Direction: domain.DirectionHigherBetter, Frequency: domain.FrequencyMonthly, ReportedAt: atProduct,
+				Rule:       domain.StatusRule{Type: domain.RuleBands, Bands: bands(90, 75)},
+				Definition: "Share of shipped features that had a design review before build.",
+				Source:     "Design tracker",
 			},
 			{
 				Key: "accessibility_compliance", Name: "Accessibility compliance", CategoryID: "design",
@@ -539,7 +670,16 @@ func (g *generator) share(n int, rate, spread float64) float64 {
 	return math.Round(float64(n) * clamp(rate+g.between(-spread, spread), 0, 1))
 }
 
-// months lists the fiscal months with data: 2025-M01 through 2026-M10.
+// latestMonth is the last month with entered data.
+var latestMonth = month(2026, 10)
+
+// earlyMonths are the window's first two months, drawn from the wide stream.
+var earlyMonths = []period.Period{month(2024, 11), month(2024, 12)}
+
+// window lists every month with data: 2024-M11 through 2026-M10.
+func window() []period.Period { return append(slices.Clone(earlyMonths), months()...) }
+
+// months lists the months the original stream draws: 2025-M01 through 2026-M10.
 func months() []period.Period {
 	var out []period.Period
 	for fy := 2025; fy <= 2026; fy++ {
@@ -578,6 +718,25 @@ func seedData(ctx context.Context, st store.Store, cal period.Calendar) error {
 			return err
 		}
 		g.biannual(p)
+	}
+
+	// Everything below draws from its own stream, so the values above stay put.
+	g.r = rand.New(rand.NewPCG(rngSeedWide, rngSeed2))
+	for i, m := range earlyMonths {
+		g.monthlyProducts(m, i-len(earlyMonths))
+		g.monthlyServices(m)
+		g.monthlySegments(m)
+	}
+	q4, h2 := period.Period{Grain: period.Quarter, FY: 2024, Index: 4}, period.Period{Grain: period.Half, FY: 2024, Index: 2}
+	g.quarterly(q4)
+	g.biannual(h2)
+	ws := window()
+	g.fleet(ws)
+	for i, m := range ws {
+		g.supportBacklog(m, i)
+		g.satisfaction(m)
+		g.postmortems(m)
+		g.roadmapEvidence(m)
 	}
 
 	g.pin()
@@ -637,13 +796,120 @@ func (g *generator) monthlyProducts(m period.Period, idx int) {
 // service; the actual figure is that scaled by a skewed random factor.
 var serviceDowntime = map[string]float64{"public-api": 30, "web-app": 110, "status-page": 120}
 
+// monthlyServices draws the first three services, the ones in serviceDowntime.
 func (g *generator) monthlyServices(m period.Period) {
 	secs := float64(g.cal.Seconds(m))
-	for _, s := range services {
+	for _, s := range services[:len(serviceDowntime)] {
 		f := g.r.Float64()
 		down := math.Round(serviceDowntime[s.id]*f*f) * 60
 		g.put("seconds_down", s.id, m, down)
 		g.put("seconds_in_period", s.id, m, secs)
+	}
+}
+
+// before reports whether month a comes before month b.
+func before(a, b period.Period) bool {
+	return a.FY < b.FY || (a.FY == b.FY && a.Index < b.Index)
+}
+
+func reports(s serviceSpec, m period.Period) bool {
+	if (s.from != period.Period{}) && before(m, s.from) {
+		return false
+	}
+	if (s.until != period.Period{}) && before(s.until, m) {
+		return false
+	}
+	return !slices.Contains(s.gaps, m)
+}
+
+// fleet draws the services after the first three over the window: usually a
+// skewed share of their typical downtime, now and then an incident, a long
+// outage in their `outages` months, and the pinned figure in the latest
+// month. The latest month never draws an incident, so its mix is fixed.
+func (g *generator) fleet(ws []period.Period) {
+	for _, s := range services[len(serviceDowntime):] {
+		for _, m := range ws {
+			if !reports(s, m) {
+				continue
+			}
+			f := g.r.Float64()
+			down := math.Round(s.downtime * f * f)
+			switch {
+			case m == latestMonth && s.latest != nil:
+				down = *s.latest
+			case m == latestMonth:
+				down = math.Round(math.Min(s.downtime, 40) * f * f)
+			case slices.Contains(s.outages, m):
+				down = math.Round(g.between(150, 480))
+			case g.r.Float64() < 0.03:
+				down = math.Round(g.between(95, 300))
+			}
+			g.put("seconds_down", s.id, m, down*60)
+			g.put("seconds_in_period", s.id, m, float64(g.cal.Seconds(m)))
+		}
+	}
+}
+
+// supportBacklog wanders around each product's level with a slow seasonal
+// swing and drifts worse over the window, so the company average crosses
+// from green into yellow.
+func (g *generator) supportBacklog(m period.Period, idx int) {
+	for _, p := range profiles {
+		base := 180 * p.defects * (1 + 0.12*math.Sin(float64(idx)/3) + 0.011*float64(idx))
+		g.put("support_points", p.id, m, math.Round(base*g.between(0.9, 1.1)))
+	}
+}
+
+// satisfactionRates is each segment's share of positive survey responses.
+// Mobile starts surveying in 2025-M06.
+var satisfactionRates = map[string]float64{"platform": 0.9, "payments": 0.83, "data": 0.78, "mobile": 0.72}
+
+func (g *generator) satisfaction(m period.Period) {
+	for _, s := range segments {
+		if s.id == "mobile" && before(m, month(2025, 6)) {
+			continue
+		}
+		n := g.count(80, 220)
+		g.put("csat_responses", s.id, m, float64(n))
+		g.put("csat_positive", s.id, m, g.share(n, satisfactionRates[s.id], 0.05))
+	}
+}
+
+// postmortemMonths are the months with a major incident; every other month
+// is not applicable. Five of the latest twelve have one, so the metric is
+// sparse over the default window.
+var postmortemMonths = []period.Period{
+	month(2024, 11), month(2025, 1), month(2025, 2), month(2025, 4), month(2025, 6), month(2025, 7),
+	month(2025, 9), month(2025, 10), month(2025, 12), month(2026, 3), month(2026, 6), month(2026, 8), latestMonth,
+}
+
+const noIncident = "No major incident needed a postmortem this month"
+
+func (g *generator) postmortems(m period.Period) {
+	measures := []string{"postmortems_on_time", "postmortems_due"}
+	if !slices.Contains(postmortemMonths, m) {
+		g.na(measures, companyID, m, noIncident)
+		return
+	}
+	due := g.count(1, 5)
+	onTime := g.share(due, 0.85, 0.2)
+	if m == latestMonth {
+		due, onTime = 5, 4
+	}
+	g.put("postmortems_due", companyID, m, float64(due))
+	g.put("postmortems_on_time", companyID, m, onTime)
+}
+
+// roadmapEvidence is reported until 2026-M07 and then stops, so it has
+// history but nothing for the latest months.
+func (g *generator) roadmapEvidence(m period.Period) {
+	if before(month(2026, 7), m) {
+		return
+	}
+	for _, p := range profiles {
+		n := g.count(5, 14)
+		g.put("roadmap_items", p.id, m, float64(n))
+		g.put("roadmap_evidenced", p.id, m, g.share(n, 0.55+0.25*p.expected, 0.12))
 	}
 }
 
@@ -740,6 +1006,8 @@ func (g *generator) pin() {
 	}
 	set("epics_committed", "checkout", month(2025, 6), 20)
 	set("epics_on_time", "checkout", month(2025, 6), 17)
+	// The web app is green in the latest month, so the services' mix is fixed.
+	set("seconds_down", "web-app", latestMonth, 20*60)
 }
 
 // --- records ---------------------------------------------------------------

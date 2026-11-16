@@ -24,6 +24,9 @@ import (
 
 var cal = period.Calendar{FiscalYearStartMonth: 1}
 
+// years are the fiscal years with data: the window runs 2024-M11 to 2026-M10.
+var years = []int{2024, 2025, 2026}
+
 func mustPeriod(t testing.TB, s string) period.Period {
 	t.Helper()
 	p, err := period.Parse(s)
@@ -67,7 +70,7 @@ func input(t testing.TB, st store.Store, tenantID string) *engine.Input {
 	if err != nil {
 		t.Fatal(err)
 	}
-	data, overrides, err := st.ListData(ctx, tenantID, demo.ScorecardID, []int{2025, 2026})
+	data, overrides, err := st.ListData(ctx, tenantID, demo.ScorecardID, years)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,32 +155,35 @@ func TestSeedReturnsTenantAndModel(t *testing.T) {
 		t.Errorf("2026-M07 Data children = %v", got)
 	}
 
-	// Services item kind with three items attached to Platform.
+	// Services item kind with 24 items spread over the segments.
 	kinds, _ := st.ListItemKinds(ctx, id)
 	if len(kinds) != 1 || kinds[0].Name != "Services" {
 		t.Errorf("item kinds = %+v", kinds)
 	}
 	items, _ := st.ListTrackedItems(ctx, id)
-	var names []string
+	perSegment := map[string]int{}
 	for _, it := range items {
-		names = append(names, it.Name)
-		if it.OrgUnitID != platform {
-			t.Errorf("item %s attached to %q, want Platform (%s)", it.Name, it.OrgUnitID, platform)
-		}
+		perSegment[nameOf(it.OrgUnitID)]++
 	}
-	if want := []string{"Public API", "Status Page", "Web App"}; !reflect.DeepEqual(names, want) {
-		t.Errorf("items = %v, want %v", names, want)
+	if len(items) != 24 {
+		t.Errorf("items = %d, want 24", len(items))
+	}
+	if want := map[string]int{"Platform": 11, "Payments": 6, "Data": 4, "Mobile": 3}; !reflect.DeepEqual(perSegment, want) {
+		t.Errorf("services per segment = %v, want %v", perSegment, want)
+	}
+	if platform == "" {
+		t.Fatal("no Platform segment in 2026-M07")
 	}
 
-	// Scorecard and three published versions: 2025, 2026, and 2026 v2, which
-	// derives four measures from records.
+	// Scorecard and four published versions: 2024, 2025, 2026, and 2026 v2,
+	// which derives four measures from records.
 	scs, _ := st.ListScorecards(ctx, id)
 	if len(scs) != 1 || scs[0].ID != "service-fulfillment" || scs[0].Name != "Service Fulfillment" {
 		t.Errorf("scorecards = %+v", scs)
 	}
 	vers, _ := st.ListVersions(ctx, id, demo.ScorecardID)
-	if len(vers) != 3 {
-		t.Fatalf("versions = %d, want 3", len(vers))
+	if len(vers) != 4 {
+		t.Fatalf("versions = %d, want 4", len(vers))
 	}
 	eff := map[string]string{}
 	for _, v := range vers {
@@ -186,7 +192,7 @@ func TestSeedReturnsTenantAndModel(t *testing.T) {
 		}
 		eff[v.ID] = v.EffectiveFrom.String()
 	}
-	if eff["v2025"] != "2025-M01" || eff["v2026"] != "2026-M01" || eff["v2026-2"] != "2026-M07" {
+	if eff["v2024"] != "2024-M01" || eff["v2025"] != "2025-M01" || eff["v2026"] != "2026-M01" || eff["v2026-2"] != "2026-M07" {
 		t.Errorf("effective-from = %v", eff)
 	}
 }
@@ -197,9 +203,10 @@ func TestSeedMethodologyIsValidAndComplete(t *testing.T) {
 	vers, _ := st.ListVersions(context.Background(), id, demo.ScorecardID)
 	want := []string{
 		"Epics delivered on time", "Concepts delivered on budget", "Spend vs plan",
-		"Concepts delivered expected value", "Weighted defect score", "Uptime",
-		"Security training completion", "Customer feedback SLO", "Accessibility compliance",
-		"Open-source risk SLO",
+		"Concepts delivered expected value", "Weighted defect score", "Weighted support backlog", "Uptime",
+		"Incident postmortems on time", "Security training completion", "Customer feedback SLO",
+		"Customer satisfaction", "Roadmap items with customer evidence", "Design review coverage",
+		"Accessibility compliance", "Open-source risk SLO",
 	}
 	types, err := st.ListRecordTypes(context.Background(), id)
 	if err != nil {
@@ -281,8 +288,19 @@ func TestSeedComputes(t *testing.T) {
 	}
 	col := map[domain.Frequency]int{domain.FrequencyMonthly: 0, domain.FrequencyQuarterly: 1, domain.FrequencyBiannual: 2}
 
+	// Blank on purpose: metrics not reported, services not reported this
+	// month, and the company row of the metric that has no company total.
+	unreportedServices := map[string]bool{"pricing-engine": true, "push-gateway": true, "reporting": true}
+	blankByDesign := func(r engine.Row) bool {
+		return slices.Contains(demo.NotReported, r.MetricKey) ||
+			(r.MetricKey == "uptime" && unreportedServices[r.SubjectID]) ||
+			(r.MetricKey == demo.NoCompanyTotal && r.SubjectID == "acme")
+	}
 	status := map[string]bool{}
 	for _, r := range v.Rows {
+		if blankByDesign(r) {
+			continue
+		}
 		c := r.Cells[col[freq[r.MetricKey]]]
 		if c.Status == "" && c.NAReason == "" {
 			t.Errorf("%s / %s (%s): blank cell for %s (value %v)", r.MetricName, r.SubjectName, freq[r.MetricKey], c.Period, c.Value)
@@ -312,6 +330,145 @@ func TestSeedComputes(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected %s / %s to be not applicable with reason %q in %s", na.MetricKey, na.SubjectID, na.Reason, na.Period)
+	}
+}
+
+// windowMonths are the 24 months with data, oldest first.
+func windowMonths() []string {
+	var out []string
+	for fy := 2024; fy <= 2026; fy++ {
+		for i := 1; i <= 12; i++ {
+			if (fy == 2024 && i < 11) || (fy == 2026 && i > 10) {
+				continue
+			}
+			out = append(out, period.Period{Grain: period.Month, FY: fy, Index: i}.String())
+		}
+	}
+	return out
+}
+
+// TestSeedCoversEveryChartKind checks the cases the dashboard is designed
+// against: every chart kind over 24 months, the services' mix in the latest
+// month, a sparse metric, a metric with no company total, and metrics that
+// are not reported.
+func TestSeedCoversEveryChartKind(t *testing.T) {
+	st, id := seeded(t)
+	in := input(t, st, id)
+	ms := windowMonths()
+	if len(ms) != 24 {
+		t.Fatalf("window = %d months, want 24", len(ms))
+	}
+	v := viewOf(t, in, "", ms...)
+	last := len(ms) - 1
+
+	kinds := map[string]bool{}
+	for _, r := range v.Rows {
+		kinds[r.ChartKind] = true
+	}
+	for _, k := range []string{"ratio", "line", "change", "days", "discrete", "money_plan", "uptime"} {
+		if !kinds[k] {
+			t.Errorf("no metric charts as %s; got %v", k, kinds)
+		}
+	}
+
+	rows := func(metric string) []engine.Row {
+		var out []engine.Row
+		for _, r := range v.Rows {
+			if r.MetricKey == metric {
+				out = append(out, r)
+			}
+		}
+		return out
+	}
+	company := func(metric string) engine.Row {
+		for _, r := range rows(metric) {
+			if r.SubjectID == "acme" {
+				return r
+			}
+		}
+		t.Fatalf("no company row for %s", metric)
+		return engine.Row{}
+	}
+
+	// History covers the whole window.
+	for i, c := range company("epics_on_time").Cells {
+		if c.Value == nil {
+			t.Errorf("company epics on time has no value in %s", ms[i])
+		}
+	}
+
+	// Uptime: 24 services; in the latest month 18 green, 2
+	// yellow, 1 red, 3 not reported; many with gaps or a mid-window start.
+	// Four are pinned at 100.00%; services with little downtime may draw it too.
+	uptime := rows("uptime")
+	if len(uptime) != 24 {
+		t.Fatalf("uptime rows = %d, want 24", len(uptime))
+	}
+	mix := map[string]int{}
+	perfect, gappy := 0, 0
+	for _, r := range uptime {
+		c := r.Cells[last]
+		switch {
+		case c.Value == nil:
+			mix["not reported"]++
+		default:
+			mix[c.Status]++
+			if *c.Value == 100 {
+				perfect++
+			}
+		}
+		if slices.ContainsFunc(r.Cells, func(c engine.Cell) bool { return c.Value == nil }) {
+			gappy++
+		}
+	}
+	if want := map[string]int{"G": 18, "Y": 2, "R": 1, "not reported": 3}; !reflect.DeepEqual(mix, want) {
+		t.Errorf("uptime latest-month mix = %v, want %v", mix, want)
+	}
+	if perfect < 4 {
+		t.Errorf("services at 100.00%% = %d, want at least 4", perfect)
+	}
+	if gappy < 10 {
+		t.Errorf("services with a missing month = %d, want at least 10", gappy)
+	}
+
+	// Sparse: not applicable more often than valued over the latest 12 months.
+	na, valued := 0, 0
+	for _, c := range company(demo.SparseMetric).Cells[last-11:] {
+		switch {
+		case c.NAReason != "":
+			na++
+		case c.Value != nil:
+			valued++
+		}
+	}
+	if na <= valued || valued == 0 {
+		t.Errorf("%s over 12 months: %d n/a, %d valued; want mostly n/a", demo.SparseMetric, na, valued)
+	}
+
+	// No company total: the company row is blank, every segment has a value.
+	for i, c := range company(demo.NoCompanyTotal).Cells {
+		if c.Value != nil || c.Status != "" {
+			t.Errorf("%s company %s = %v %q, want blank", demo.NoCompanyTotal, ms[i], c.Value, c.Status)
+		}
+	}
+	segments := 0
+	for _, r := range rows(demo.NoCompanyTotal) {
+		if r.SubjectID != "acme" && r.Cells[last].Value != nil {
+			segments++
+		}
+	}
+	if segments != 4 {
+		t.Errorf("%s segments with a latest value = %d, want 4", demo.NoCompanyTotal, segments)
+	}
+
+	// Not reported in the latest month; one has history.
+	for _, m := range demo.NotReported {
+		if c := company(m).Cells[last]; c.Value != nil || c.Status != "" {
+			t.Errorf("%s latest = %v %q, want not reported", m, c.Value, c.Status)
+		}
+	}
+	if company("roadmap_evidence").Cells[slices.Index(ms, "2026-M07")].Value == nil {
+		t.Error("roadmap_evidence has no value in 2026-M07")
 	}
 }
 
@@ -382,8 +539,8 @@ func TestSeedRestatementChangesStatus(t *testing.T) {
 func TestSeedIsDeterministic(t *testing.T) {
 	a, ida := seeded(t)
 	b, idb := seeded(t)
-	da, _, _ := a.ListData(context.Background(), ida, demo.ScorecardID, []int{2025, 2026})
-	db, _, _ := b.ListData(context.Background(), idb, demo.ScorecardID, []int{2025, 2026})
+	da, _, _ := a.ListData(context.Background(), ida, demo.ScorecardID, years)
+	db, _, _ := b.ListData(context.Background(), idb, demo.ScorecardID, years)
 	if len(da) == 0 || len(da) != len(db) {
 		t.Fatalf("data point counts: %d vs %d", len(da), len(db))
 	}
@@ -411,7 +568,7 @@ func TestSeedIsDeterministic(t *testing.T) {
 func TestSeedTwiceIsSafe(t *testing.T) {
 	st, id := seeded(t)
 	ctx := context.Background()
-	before, _, _ := st.ListData(ctx, id, demo.ScorecardID, []int{2025, 2026})
+	before, _, _ := st.ListData(ctx, id, demo.ScorecardID, years)
 
 	id2, err := demo.Seed(ctx, st, cal)
 	if err != nil {
@@ -420,7 +577,7 @@ func TestSeedTwiceIsSafe(t *testing.T) {
 	if id2 != id {
 		t.Errorf("second Seed returned %q, want %q", id2, id)
 	}
-	after, _, _ := st.ListData(ctx, id, demo.ScorecardID, []int{2025, 2026})
+	after, _, _ := st.ListData(ctx, id, demo.ScorecardID, years)
 	if len(after) != len(before) {
 		t.Errorf("data points %d -> %d after re-seed", len(before), len(after))
 	}
@@ -591,10 +748,18 @@ func TestSeedDerivedMonths(t *testing.T) {
 		}
 	}
 	// Nothing derived is written on parent units, and every point of these
-	// measures from July on comes from records.
+	// measures from July on comes from records. Tracked items have source
+	// keys, so they are subjects records can match.
 	isProduct := map[string]bool{}
 	for _, s := range products {
 		isProduct[s] = true
+	}
+	items, err := st.ListTrackedItems(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, it := range items {
+		isProduct[it.ID] = true
 	}
 	for _, dp := range in.Data {
 		if !slices.Contains(derivedMeasures, dp.MeasureKey) || dp.Source != domain.SourceRecords {
@@ -604,11 +769,7 @@ func TestSeedDerivedMonths(t *testing.T) {
 			t.Errorf("records point %s/%s outside 2026-M07..M10: %s", dp.MeasureKey, dp.SubjectID, dp.Period)
 		}
 		if !isProduct[dp.SubjectID] {
-			switch dp.SubjectID {
-			case "public-api", "web-app", "status-page": // tracked items with source keys
-			default:
-				t.Errorf("derived point on parent unit %s: %s/%s", dp.SubjectID, dp.MeasureKey, dp.Period)
-			}
+			t.Errorf("derived point on parent unit %s: %s/%s", dp.SubjectID, dp.MeasureKey, dp.Period)
 		}
 	}
 	for _, dp := range in.Data {
