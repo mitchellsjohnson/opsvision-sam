@@ -82,6 +82,10 @@ type Config struct {
 	// email claim. Defaults to https://<Domain>/userinfo.
 	UserInfoURL string
 
+	// Now is the clock for access-token expiry and last-used times. The
+	// default is time.Now.
+	Now func() time.Time
+
 	// now overrides the clock of the JWKS and /userinfo caches; tests only.
 	now func() time.Time
 	// userInfoTimeout overrides the /userinfo timeout; tests only.

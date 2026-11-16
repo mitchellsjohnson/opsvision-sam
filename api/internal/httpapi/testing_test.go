@@ -58,7 +58,7 @@ func newTestEnvWith(t *testing.T, wrap func(store.Store) store.Store) *testEnv {
 	ctx := context.Background()
 	tokens := map[string]string{}
 
-	cfg := auth.Config{Mode: auth.ModeDev, DevSecret: testSecret}
+	cfg := auth.Config{Mode: auth.ModeDev, DevSecret: testSecret, Now: func() time.Time { return testNow }}
 	mint := func(name, userID, orgID string, op bool) {
 		tok, err := auth.IssueDevToken(testSecret, userID, userID+"@example.test", "User "+userID, orgID, op)
 		if err != nil {

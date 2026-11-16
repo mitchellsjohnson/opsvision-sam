@@ -60,6 +60,53 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/me/tokens": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The current user's personal access tokens in the active tenant
+         * @description Expired tokens are listed until revoked. The secret is never returned.
+         */
+        get: operations["listMyTokens"];
+        put?: never;
+        /**
+         * Create a personal access token
+         * @description Returns the secret once; only a hash is stored. The token acts as the caller in the active tenant with the caller's current role and scope, until it expires or is revoked. A user has at most 10 unexpired tokens (409 beyond that). A request authenticated by an access token cannot create one (403).
+         */
+        post: operations["createMyToken"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/me/tokens/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Server-generated identifier. */
+                id: components["parameters"]["ServerIdPath"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Revoke one of the current user's access tokens
+         * @description The token stops working on the next request.
+         */
+        delete: operations["deleteMyToken"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/operator/tenants": {
         parameters: {
             query?: never;
@@ -1094,6 +1141,34 @@ export interface components {
              *     the top level is the company and is stored as empty.
              */
             defaultScope: string;
+        };
+        AccessToken: {
+            id: components["schemas"]["ServerId"];
+            name: string;
+            /**
+             * @description The first 12 characters of the secret, to tell tokens apart.
+             * @example ovs_pat_Ab3x
+             */
+            prefix: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            expiresAt: string;
+            /**
+             * Format: date-time
+             * @description Last use, recorded at most once a minute; absent until first use.
+             */
+            lastUsedAt?: string;
+        };
+        CreatedAccessToken: components["schemas"]["AccessToken"] & {
+            /** @description The secret, `ovs_pat_` plus 43 characters. Shown only in this response; send it as `Authorization: Bearer <token>`. */
+            token: string;
+        };
+        CreateTokenRequest: {
+            /** @description A label for the token; surrounding spaces are trimmed. */
+            name: string;
+            /** @default 90 */
+            expiresInDays: number;
         };
         CreateTenantRequest: {
             name: string;
@@ -2303,6 +2378,82 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+        };
+    };
+    listMyTokens: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The caller's tokens, oldest first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        tokens: components["schemas"]["AccessToken"][];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    createMyToken: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateTokenRequest"];
+            };
+        };
+        responses: {
+            /** @description The new token, with its secret */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreatedAccessToken"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+        };
+    };
+    deleteMyToken: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Server-generated identifier. */
+                id: components["parameters"]["ServerIdPath"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The token was revoked */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
         };
     };
     listOperatorTenants: {

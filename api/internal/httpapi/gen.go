@@ -688,6 +688,26 @@ func (e GetScorecardViewParamsStructure) Valid() bool {
 	}
 }
 
+// AccessToken defines model for AccessToken.
+type AccessToken struct {
+	CreatedAt time.Time `json:"createdAt"`
+	ExpiresAt time.Time `json:"expiresAt"`
+
+	// Id Server-generated identifier; treat as opaque.
+	//
+	// Example: 01J9ZQ3K8W
+	Id ServerId `json:"id"`
+
+	// LastUsedAt Last use, recorded at most once a minute; absent until first use.
+	LastUsedAt *time.Time `json:"lastUsedAt,omitempty"`
+	Name       string     `json:"name"`
+
+	// Prefix The first 12 characters of the secret, to tell tokens apart.
+	//
+	// Example: ovs_pat_Ab3x
+	Prefix string `json:"prefix"`
+}
+
 // Agg Aggregation across org units or across time.
 type Agg string
 
@@ -938,11 +958,42 @@ type CreateTenantRequest struct {
 	Name                 string `json:"name"`
 }
 
+// CreateTokenRequest defines model for CreateTokenRequest.
+type CreateTokenRequest struct {
+	ExpiresInDays *int `json:"expiresInDays,omitempty"`
+
+	// Name A label for the token; surrounding spaces are trimmed.
+	Name string `json:"name"`
+}
+
 // CreateVersionRequest defines model for CreateVersionRequest.
 type CreateVersionRequest struct {
 	// CloneFrom ID of a version whose content seeds the new draft.
 	CloneFrom *ServerId `json:"cloneFrom,omitempty"`
 	Name      string    `json:"name"`
+}
+
+// CreatedAccessToken defines model for CreatedAccessToken.
+type CreatedAccessToken struct {
+	CreatedAt time.Time `json:"createdAt"`
+	ExpiresAt time.Time `json:"expiresAt"`
+
+	// Id Server-generated identifier; treat as opaque.
+	//
+	// Example: 01J9ZQ3K8W
+	Id ServerId `json:"id"`
+
+	// LastUsedAt Last use, recorded at most once a minute; absent until first use.
+	LastUsedAt *time.Time `json:"lastUsedAt,omitempty"`
+	Name       string     `json:"name"`
+
+	// Prefix The first 12 characters of the secret, to tell tokens apart.
+	//
+	// Example: ovs_pat_Ab3x
+	Prefix string `json:"prefix"`
+
+	// Token The secret, `ovs_pat_` plus 43 characters. Shown only in this response; send it as `Authorization: Bearer <token>`.
+	Token string `json:"token"`
 }
 
 // DataBatchConflicts defines model for DataBatchConflicts.
@@ -2617,6 +2668,9 @@ type PutMyLayoutJSONRequestBody = PutLayoutRequest
 // PutMyPreferencesJSONRequestBody defines body for PutMyPreferences for application/json ContentType.
 type PutMyPreferencesJSONRequestBody = UserPreferences
 
+// CreateMyTokenJSONRequestBody defines body for CreateMyToken for application/json ContentType.
+type CreateMyTokenJSONRequestBody = CreateTokenRequest
+
 // InviteMemberJSONRequestBody defines body for InviteMember for application/json ContentType.
 type InviteMemberJSONRequestBody = InviteMemberRequest
 
@@ -2733,6 +2787,15 @@ type ServerInterface interface {
 	// PutMyPreferences Save the current user's preferences in the active tenant
 	// (PUT /me/preferences)
 	PutMyPreferences(w http.ResponseWriter, r *http.Request)
+	// ListMyTokens The current user's personal access tokens in the active tenant
+	// (GET /me/tokens)
+	ListMyTokens(w http.ResponseWriter, r *http.Request)
+	// CreateMyToken Create a personal access token
+	// (POST /me/tokens)
+	CreateMyToken(w http.ResponseWriter, r *http.Request)
+	// DeleteMyToken Revoke one of the current user's access tokens
+	// (DELETE /me/tokens/{id})
+	DeleteMyToken(w http.ResponseWriter, r *http.Request, id ServerIdPath)
 	// ListMembers List the tenant's members
 	// (GET /members)
 	ListMembers(w http.ResponseWriter, r *http.Request)
@@ -3265,6 +3328,60 @@ func (siw *ServerInterfaceWrapper) PutMyPreferences(w http.ResponseWriter, r *ht
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.PutMyPreferences(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListMyTokens operation middleware
+func (siw *ServerInterfaceWrapper) ListMyTokens(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListMyTokens(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateMyToken operation middleware
+func (siw *ServerInterfaceWrapper) CreateMyToken(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateMyToken(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DeleteMyToken operation middleware
+func (siw *ServerInterfaceWrapper) DeleteMyToken(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id ServerIdPath
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteMyToken(w, r, id)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -4653,6 +4770,9 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/me/layouts/{sc}", wrapper.PutMyLayout)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/me/preferences", wrapper.GetMyPreferences)
 	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/me/preferences", wrapper.PutMyPreferences)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/me/tokens", wrapper.ListMyTokens)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/me/tokens", wrapper.CreateMyToken)
+	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/me/tokens/{id}", wrapper.DeleteMyToken)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/operator/tenants", wrapper.ListOperatorTenants)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/operator/tenants", wrapper.CreateOperatorTenant)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/members", wrapper.ListMembers)
@@ -6100,6 +6220,193 @@ func (response PutMyPreferences403JSONResponse) VisitPutMyPreferencesResponse(w 
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListMyTokensRequestObject struct {
+}
+
+type ListMyTokensResponseObject interface {
+	VisitListMyTokensResponse(w http.ResponseWriter) error
+}
+
+type ListMyTokens200JSONResponse struct {
+	Tokens []AccessToken `json:"tokens"`
+}
+
+func (response ListMyTokens200JSONResponse) VisitListMyTokensResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListMyTokens401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response ListMyTokens401JSONResponse) VisitListMyTokensResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListMyTokens403JSONResponse struct{ ForbiddenJSONResponse }
+
+func (response ListMyTokens403JSONResponse) VisitListMyTokensResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateMyTokenRequestObject struct {
+	Body *CreateMyTokenJSONRequestBody
+}
+
+type CreateMyTokenResponseObject interface {
+	VisitCreateMyTokenResponse(w http.ResponseWriter) error
+}
+
+type CreateMyToken201JSONResponse CreatedAccessToken
+
+func (response CreateMyToken201JSONResponse) VisitCreateMyTokenResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(201)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateMyToken400JSONResponse struct{ BadRequestJSONResponse }
+
+func (response CreateMyToken400JSONResponse) VisitCreateMyTokenResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateMyToken401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response CreateMyToken401JSONResponse) VisitCreateMyTokenResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateMyToken403JSONResponse struct{ ForbiddenJSONResponse }
+
+func (response CreateMyToken403JSONResponse) VisitCreateMyTokenResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateMyToken409JSONResponse struct{ ConflictJSONResponse }
+
+func (response CreateMyToken409JSONResponse) VisitCreateMyTokenResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeleteMyTokenRequestObject struct {
+	Id ServerIdPath `json:"id"`
+}
+
+type DeleteMyTokenResponseObject interface {
+	VisitDeleteMyTokenResponse(w http.ResponseWriter) error
+}
+
+type DeleteMyToken204Response struct {
+}
+
+func (response DeleteMyToken204Response) VisitDeleteMyTokenResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type DeleteMyToken401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response DeleteMyToken401JSONResponse) VisitDeleteMyTokenResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeleteMyToken403JSONResponse struct{ ForbiddenJSONResponse }
+
+func (response DeleteMyToken403JSONResponse) VisitDeleteMyTokenResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeleteMyToken404JSONResponse struct{ NotFoundJSONResponse }
+
+func (response DeleteMyToken404JSONResponse) VisitDeleteMyTokenResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
 	_, err := buf.WriteTo(w)
 	return err
 }
@@ -9125,6 +9432,15 @@ type StrictServerInterface interface {
 	// PutMyPreferences Save the current user's preferences in the active tenant
 	// (PUT /me/preferences)
 	PutMyPreferences(ctx context.Context, request PutMyPreferencesRequestObject) (PutMyPreferencesResponseObject, error)
+	// ListMyTokens The current user's personal access tokens in the active tenant
+	// (GET /me/tokens)
+	ListMyTokens(ctx context.Context, request ListMyTokensRequestObject) (ListMyTokensResponseObject, error)
+	// CreateMyToken Create a personal access token
+	// (POST /me/tokens)
+	CreateMyToken(ctx context.Context, request CreateMyTokenRequestObject) (CreateMyTokenResponseObject, error)
+	// DeleteMyToken Revoke one of the current user's access tokens
+	// (DELETE /me/tokens/{id})
+	DeleteMyToken(ctx context.Context, request DeleteMyTokenRequestObject) (DeleteMyTokenResponseObject, error)
 	// ListMembers List the tenant's members
 	// (GET /members)
 	ListMembers(ctx context.Context, request ListMembersRequestObject) (ListMembersResponseObject, error)
@@ -9835,6 +10151,87 @@ func (sh *strictHandler) PutMyPreferences(w http.ResponseWriter, r *http.Request
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(PutMyPreferencesResponseObject); ok {
 		if err := validResponse.VisitPutMyPreferencesResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListMyTokens operation middleware
+func (sh *strictHandler) ListMyTokens(w http.ResponseWriter, r *http.Request) {
+	var request ListMyTokensRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListMyTokens(ctx, request.(ListMyTokensRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListMyTokens")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListMyTokensResponseObject); ok {
+		if err := validResponse.VisitListMyTokensResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// CreateMyToken operation middleware
+func (sh *strictHandler) CreateMyToken(w http.ResponseWriter, r *http.Request) {
+	var request CreateMyTokenRequestObject
+
+	var body CreateMyTokenJSONRequestBody
+	if err := runtime.BindJSONBody(r, &body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.CreateMyToken(ctx, request.(CreateMyTokenRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "CreateMyToken")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(CreateMyTokenResponseObject); ok {
+		if err := validResponse.VisitCreateMyTokenResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// DeleteMyToken operation middleware
+func (sh *strictHandler) DeleteMyToken(w http.ResponseWriter, r *http.Request, id ServerIdPath) {
+	var request DeleteMyTokenRequestObject
+
+	request.Id = id
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.DeleteMyToken(ctx, request.(DeleteMyTokenRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "DeleteMyToken")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(DeleteMyTokenResponseObject); ok {
+		if err := validResponse.VisitDeleteMyTokenResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

@@ -6,6 +6,7 @@ package storetest
 import (
 	stdcmp "cmp"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -81,6 +82,8 @@ func Run(t *testing.T, newStore func(t *testing.T) store.Store) {
 		{"DeleteDataPoint", deleteDataPoint},
 		{"DeleteDataPointRevisionChecks", deleteDataPointRevisionChecks},
 		{"DeleteDataPointCrossTenant", deleteDataPointCrossTenant},
+		{"AccessTokenLifecycle", accessTokenLifecycle},
+		{"AccessTokenIsolation", accessTokenIsolation},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) { c.fn(t, newStore(t)) })
@@ -2160,4 +2163,131 @@ func reportSummaryRevision(t *testing.T, s store.Store) {
 	must(t, s.PutScorecard(ctx, other, domain.Scorecard{ID: "delivery", Name: "Theirs"}))
 	_, err = s.GetReportSummary(ctx, other, "delivery", per)
 	wantErr(t, err, store.ErrNotFound)
+}
+
+// accessToken returns a token of user in tenant whose hash is unique across
+// runs, so the suite can share a real table.
+func accessToken(tenant, user, id string, created int) domain.AccessToken {
+	return domain.AccessToken{
+		ID: id, TenantID: tenant, UserID: user, Name: "Token " + id, Prefix: "ovs_pat_" + id[:min(4, len(id))],
+		Hash:      sha256.Sum256([]byte(uid("secret"))),
+		CreatedAt: at(created), ExpiresAt: at(created).AddDate(0, 0, 90),
+	}
+}
+
+func accessTokenLifecycle(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	tn := newTenant(t, s)
+	a1 := accessToken(tn, "user-a", "tok-1", 2)
+	a2 := accessToken(tn, "user-a", "tok-2", 3)
+	a0 := accessToken(tn, "user-a", "tok-0", 3) // same CreatedAt as a2: ID breaks the tie
+
+	_, err := s.TokenByHash(ctx, a1.Hash)
+	wantErr(t, err, store.ErrNotFound)
+	list, err := s.ListTokens(ctx, tn, "user-a")
+	wantEmpty(t, "no tokens", list, err)
+
+	must(t, s.PutToken(ctx, a2))
+	must(t, s.PutToken(ctx, a1))
+	must(t, s.PutToken(ctx, a0))
+	got, err := s.TokenByHash(ctx, a1.Hash)
+	must(t, err)
+	wantEq(t, "by hash", got, a1)
+	list, err = s.ListTokens(ctx, tn, "user-a")
+	must(t, err)
+	wantEq(t, "list sorted by CreatedAt then ID", list, []domain.AccessToken{a1, a0, a2})
+
+	used := at(5)
+	must(t, s.TouchToken(ctx, tn, "user-a", a1.ID, used))
+	got, err = s.TokenByHash(ctx, a1.Hash)
+	must(t, err)
+	if got.LastUsedAt == nil || !got.LastUsedAt.Equal(used) {
+		t.Fatalf("lastUsedAt = %v, want %v", got.LastUsedAt, used)
+	}
+	touched := a1
+	touched.LastUsedAt = &used
+	wantEq(t, "touch changes only LastUsedAt", got, touched)
+
+	// Returned values are copies.
+	*got.LastUsedAt = at(9)
+	list, err = s.ListTokens(ctx, tn, "user-a")
+	must(t, err)
+	if !list[0].LastUsedAt.Equal(used) {
+		t.Fatalf("stored lastUsedAt changed through a returned value: %v", list[0].LastUsedAt)
+	}
+
+	wantErr(t, s.TouchToken(ctx, tn, "user-a", "missing", used), store.ErrNotFound)
+	_, err = s.TokenByHash(ctx, accessToken(tn, "user-a", "missing", 1).Hash)
+	wantErr(t, err, store.ErrNotFound)
+
+	must(t, s.DeleteToken(ctx, tn, "user-a", a1.ID))
+	_, err = s.TokenByHash(ctx, a1.Hash)
+	wantErr(t, err, store.ErrNotFound)
+	wantErr(t, s.DeleteToken(ctx, tn, "user-a", a1.ID), store.ErrNotFound)
+	// Touching a revoked token must not bring it back.
+	wantErr(t, s.TouchToken(ctx, tn, "user-a", a1.ID, at(6)), store.ErrNotFound)
+	_, err = s.TokenByHash(ctx, a1.Hash)
+	wantErr(t, err, store.ErrNotFound)
+	list, err = s.ListTokens(ctx, tn, "user-a")
+	must(t, err)
+	wantEq(t, "after delete", list, []domain.AccessToken{a0, a2})
+
+	// Put upserts by ID; the old hash no longer resolves.
+	rotated := a2
+	rotated.Hash = sha256.Sum256([]byte(uid("rotated")))
+	rotated.Name = "Renamed"
+	must(t, s.PutToken(ctx, rotated))
+	_, err = s.TokenByHash(ctx, a2.Hash)
+	wantErr(t, err, store.ErrNotFound)
+	got, err = s.TokenByHash(ctx, rotated.Hash)
+	must(t, err)
+	wantEq(t, "upserted", got, rotated)
+	list, err = s.ListTokens(ctx, tn, "user-a")
+	must(t, err)
+	wantEq(t, "after upsert", list, []domain.AccessToken{a0, rotated})
+}
+
+func accessTokenIsolation(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	tn := newTenant(t, s)
+	other := newTenant(t, s)
+	mine := accessToken(tn, "user-a", "tok-1", 2)
+	theirs := accessToken(tn, "user-b", "tok-1", 2)     // same ID, other user
+	foreign := accessToken(other, "user-a", "tok-1", 2) // same ID and user, other tenant
+	for _, tok := range []domain.AccessToken{mine, theirs, foreign} {
+		must(t, s.PutToken(ctx, tok))
+	}
+
+	for _, c := range []struct {
+		tenant, user string
+		want         domain.AccessToken
+	}{{tn, "user-a", mine}, {tn, "user-b", theirs}, {other, "user-a", foreign}} {
+		list, err := s.ListTokens(ctx, c.tenant, c.user)
+		must(t, err)
+		wantEq(t, "list "+c.user, list, []domain.AccessToken{c.want})
+		got, err := s.TokenByHash(ctx, c.want.Hash)
+		must(t, err)
+		wantEq(t, "by hash "+c.user, got, c.want)
+	}
+	list, err := s.ListTokens(ctx, other, "user-b")
+	wantEmpty(t, "other tenant, user b", list, err)
+
+	wantErr(t, s.DeleteToken(ctx, tn, "user-c", "tok-1"), store.ErrNotFound)
+	wantErr(t, s.TouchToken(ctx, other, "user-b", "tok-1", at(5)), store.ErrNotFound)
+
+	must(t, s.TouchToken(ctx, tn, "user-b", "tok-1", at(5)))
+	must(t, s.DeleteToken(ctx, other, "user-a", "tok-1"))
+	got, err := s.TokenByHash(ctx, mine.Hash)
+	must(t, err)
+	wantEq(t, "mine untouched", got, mine)
+	got, err = s.TokenByHash(ctx, theirs.Hash)
+	must(t, err)
+	if got.LastUsedAt == nil {
+		t.Fatal("theirs not touched")
+	}
+	_, err = s.TokenByHash(ctx, foreign.Hash)
+	wantErr(t, err, store.ErrNotFound)
+	list, err = s.ListTokens(ctx, tn, "user-a")
+	must(t, err)
+	wantEq(t, "mine kept", list, []domain.AccessToken{mine})
 }

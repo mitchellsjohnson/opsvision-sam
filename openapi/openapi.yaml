@@ -116,6 +116,67 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
+  /me/tokens:
+    get:
+      operationId: listMyTokens
+      tags: [Identity]
+      summary: The current user's personal access tokens in the active tenant
+      description: Expired tokens are listed until revoked. The secret is never returned.
+      responses:
+        '200':
+          description: The caller's tokens, oldest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tokens]
+                properties:
+                  tokens:
+                    type: array
+                    items: { $ref: '#/components/schemas/AccessToken' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      operationId: createMyToken
+      tags: [Identity]
+      summary: Create a personal access token
+      description: >
+        Returns the secret once; only a hash is stored. The token acts as the
+        caller in the active tenant with the caller's current role and scope,
+        until it expires or is revoked. A user has at most 10 unexpired
+        tokens (409 beyond that). A request authenticated by an access token
+        cannot create one (403).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateTokenRequest' }
+      responses:
+        '201':
+          description: The new token, with its secret
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CreatedAccessToken' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /me/tokens/{id}:
+    parameters:
+      - $ref: '#/components/parameters/ServerIdPath'
+    delete:
+      operationId: deleteMyToken
+      tags: [Identity]
+      summary: Revoke one of the current user's access tokens
+      description: The token stops working on the next request.
+      responses:
+        '204':
+          description: The token was revoked
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
   /operator/tenants:
     get:
       operationId: listOperatorTenants
@@ -1742,6 +1803,47 @@ components:
             scope. Empty means the whole company. A saved value must be an
             existing org unit of the tenant that is not retired; a unit at
             the top level is the company and is stored as empty.
+    AccessToken:
+      type: object
+      required: [id, name, prefix, createdAt, expiresAt]
+      properties:
+        id: { $ref: '#/components/schemas/ServerId' }
+        name: { type: string }
+        prefix:
+          type: string
+          description: The first 12 characters of the secret, to tell tokens apart.
+          example: ovs_pat_Ab3x
+        createdAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+        lastUsedAt:
+          type: string
+          format: date-time
+          description: Last use, recorded at most once a minute; absent until first use.
+    CreatedAccessToken:
+      allOf:
+        - $ref: '#/components/schemas/AccessToken'
+        - type: object
+          required: [token]
+          properties:
+            token:
+              type: string
+              description: >
+                The secret, `ovs_pat_` plus 43 characters. Shown only in this
+                response; send it as `Authorization: Bearer <token>`.
+    CreateTokenRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: A label for the token; surrounding spaces are trimmed.
+        expiresInDays:
+          type: integer
+          minimum: 1
+          maximum: 365
+          default: 90
     CreateTenantRequest:
       type: object
       required: [name, auth0OrgId, fiscalYearStartMonth, adminEmail]

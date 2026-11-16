@@ -1,6 +1,7 @@
 package dynamostore
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -46,6 +47,10 @@ func TestKeys(t *testing.T) {
 		{"layout SK", layoutSK("user-1", "delivery"), "LAYOUT#user-1#delivery"},
 		{"layout default SK", layoutDefaultSK("delivery"), "LAYOUTDEFAULT#delivery"},
 		{"preferences SK", preferencesSK("user-1"), "PREFS#user-1"},
+		{"access token SK", tokenSK("user-1", "tok-1"), "PAT#user-1#tok-1"},
+		{"access token SK prefix", tokenPrefix("user-1"), "PAT#user-1#"},
+		{"access token GSI1PK", gsiTokenPK([32]byte{0xab, 0x01}), "PATHASH#ab01" + strings.Repeat("00", 30)},
+		{"access token GSI1SK", gsiTenantSK("acme"), "T#acme"},
 		{"version SK", versionSK("sc1", "v1"), "SC#sc1#VER#v1"},
 
 		{"data current PK", dataPK("acme", "sc1", 2026), "T#acme#SC#sc1#FY#2026"},

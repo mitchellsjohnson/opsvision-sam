@@ -27,6 +27,8 @@ type Store struct {
 	tenants map[string]domain.Tenant
 	byOrg   map[string]string // Auth0OrgID -> tenant ID
 	data    map[string]*tenantData
+	// tokenHashes indexes every tenant's access tokens by secret hash.
+	tokenHashes map[[32]byte]tokenRef
 }
 
 var _ store.Store = (*Store)(nil)
@@ -85,6 +87,7 @@ type tenantData struct {
 	preferences     map[string]domain.UserPreferences // by user ID
 	reportSummaries map[reportSummaryKey]domain.ReportSummary
 	reportRevisions map[reportRevisionKey]domain.ReportRevision
+	tokens          map[tokenKey]domain.AccessToken
 }
 
 type snapshotKey struct{ recordType, id string }

@@ -292,6 +292,26 @@ type PreferenceStore interface {
 	PutPreferences(ctx context.Context, tenantID, userID string, p domain.UserPreferences) error
 }
 
+// TokenStore holds personal access tokens. A token belongs to one user in one
+// tenant and is found at authentication time by the hash of its secret.
+type TokenStore interface {
+	// PutToken upserts a token by (TenantID, UserID, ID). Hashes are
+	// assumed unique (they hash 32 random bytes); the store does not check.
+	PutToken(ctx context.Context, t domain.AccessToken) error
+	// TokenByHash returns the token whose secret hashes to hash, in any
+	// tenant. ErrNotFound when there is none, including right after
+	// DeleteToken.
+	TokenByHash(ctx context.Context, hash [32]byte) (domain.AccessToken, error)
+	// ListTokens returns a user's tokens (expired ones included) sorted by
+	// CreatedAt then ID.
+	ListTokens(ctx context.Context, tenantID, userID string) ([]domain.AccessToken, error)
+	// DeleteToken removes a user's token; ErrNotFound if it does not exist.
+	DeleteToken(ctx context.Context, tenantID, userID, id string) error
+	// TouchToken sets a token's LastUsedAt. ErrNotFound if it does not
+	// exist; it never re-creates a deleted token.
+	TouchToken(ctx context.Context, tenantID, userID, id string, at time.Time) error
+}
+
 // RecordStore holds record types, records (one stored item per revision),
 // and upload snapshots.
 type RecordStore interface {
@@ -334,6 +354,7 @@ type Store interface {
 	LayoutStore
 	PreferenceStore
 	RecordStore
+	TokenStore
 }
 
 // ComparePeriod orders periods by fiscal year, then grain, then index. It

@@ -4,14 +4,23 @@
 // The API trusts only the verified access token for identity: the user is the
 // token's sub claim and the tenant is resolved from its org_id claim (an Auth0
 // Organization), or in single-organization mode is the one configured tenant.
-// Nothing in the URL, query string, headers, or body can select a tenant or
-// user.
+// A personal access token (TokenPrefix) stands for the user and tenant it was
+// created for. Nothing in the URL, query string, headers, or body can select a
+// tenant or user.
 package auth
 
 import (
 	"context"
 
 	"opsvision/internal/domain"
+)
+
+// Channels a request can arrive through; see Principal.Channel.
+const (
+	// ChannelToken is a request authenticated by a personal access token.
+	ChannelToken = "token"
+	// ChannelMCP is a request made through the MCP endpoint.
+	ChannelMCP = "mcp"
 )
 
 // Principal is the authenticated caller of a request.
@@ -31,6 +40,11 @@ type Principal struct {
 	// Membership is the caller's membership in Tenant; nil when Tenant is nil
 	// and for an operator who is not a member of Tenant.
 	Membership *domain.Membership
+	// Channel is how the request arrived, as recorded in the audit log: ""
+	// for the identity provider's token (the web UI), ChannelToken, or
+	// ChannelMCP. For an access token, UserID is the token's owner, Email
+	// and Name come from the membership, and IsOperator is false.
+	Channel string
 }
 
 type ctxKey struct{}

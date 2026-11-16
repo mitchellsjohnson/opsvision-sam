@@ -1,6 +1,7 @@
 package dynamostore
 
 import (
+	"encoding/hex"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -51,6 +52,7 @@ const (
 	prefixPreferences   = "PREFS#"
 	prefixReportSummary = "REPORTSUMMARY#"
 	prefixReportRev     = "REPORT#"
+	prefixToken         = "PAT#"
 
 	versionMarker = "#VER#"
 )
@@ -70,6 +72,8 @@ func layoutSK(userID, scorecardID string) string {
 }
 func layoutDefaultSK(scorecardID string) string { return prefixLayoutDef + scorecardID }
 func preferencesSK(userID string) string        { return prefixPreferences + userID }
+func tokenPrefix(userID string) string          { return prefixToken + userID + "#" }
+func tokenSK(userID, id string) string          { return tokenPrefix(userID) + id }
 func importSK(id string) string                 { return prefixImport + id }
 func templateSK(id string) string               { return prefixTemplate + id }
 func recordTypeSK(id string) string             { return prefixRecType + id }
@@ -94,6 +98,10 @@ func recordPK(tid, recordType string) string { return "T#" + tid + "#REC#" + rec
 func recordSK(source, externalID string, asOf domain.Date) string {
 	return prefixRecordRev + url.PathEscape(source) + "#" + url.PathEscape(externalID) + "#" + asOf.String()
 }
+
+// gsiTokenPK is the GSI1 partition of the access token whose secret hashes to
+// hash (lowercase hex).
+func gsiTokenPK(hash [32]byte) string { return "PATHASH#" + hex.EncodeToString(hash[:]) }
 
 // tenantFromGSISK extracts the tenant ID from a membership's GSI1SK.
 func tenantFromGSISK(sk string) string { return strings.TrimPrefix(sk, "T#") }

@@ -184,14 +184,18 @@ func operator(ctx context.Context) (auth.Principal, error) {
 	return p, nil
 }
 
-// audit appends an audit entry for a write by p. before is nil for a create.
-// A failure is returned so the request reports it instead of silently losing
-// the record of a change.
+// audit appends an audit entry for a write by p, on p's channel (channelUI
+// when p has none). before is nil for a create. A failure is returned so the
+// request reports it instead of silently losing the record of a change.
 func (s *Server) audit(ctx context.Context, p auth.Principal, tenantID, action, targetType, targetID string, before, after any) error {
+	channel := p.Channel
+	if channel == "" {
+		channel = channelUI
+	}
 	e := domain.AuditEntry{
 		ID:         s.newID(),
 		ActorID:    p.UserID,
-		Channel:    channelUI,
+		Channel:    channel,
 		Action:     action,
 		TargetType: targetType,
 		TargetID:   targetID,

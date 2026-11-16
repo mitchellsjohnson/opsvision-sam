@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	jwtmiddleware "github.com/auth0/go-jwt-middleware/v3"
@@ -45,6 +46,10 @@ import (
 // email counts as verified whatever email_verified says: the trusted
 // connection is the organization's own directory.
 //
+// A bearer starting with TokenPrefix is a personal access token instead (see
+// authenticateToken); it is accepted only when ts also implements
+// store.TokenStore, and is otherwise rejected with 401.
+//
 // Middleware returns an error for an invalid Config (including a dev secret
 // shorter than 32 bytes, or single-organization mode without trusted
 // prefixes) or a nil store.
@@ -63,7 +68,11 @@ func Middleware(cfg Config, ts store.TenantStore) (func(http.Handler) http.Handl
 	if cfg.Mode == ModeDev {
 		slog.Warn("auth: dev mode enabled; tokens are signed with a shared secret. Never use outside local development")
 	}
-	a := &authenticator{validator: v, ts: ts, single: single}
+	a := &authenticator{validator: v, ts: ts, single: single, now: cfg.Now}
+	a.tokens, _ = ts.(store.TokenStore)
+	if a.now == nil {
+		a.now = time.Now
+	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			p, herr := a.authenticate(r)
@@ -79,7 +88,9 @@ func Middleware(cfg Config, ts store.TenantStore) (func(http.Handler) http.Handl
 type authenticator struct {
 	validator tokenValidator
 	ts        store.TenantStore
-	single    *singleOrg // nil in the multi-tenant model
+	tokens    store.TokenStore // nil when ts does not hold access tokens
+	single    *singleOrg       // nil in the multi-tenant model
+	now       func() time.Time
 }
 
 // httpError is an error already shaped for the client.
@@ -116,6 +127,9 @@ func (a *authenticator) authenticate(r *http.Request) (Principal, *httpError) {
 	// proof-of-possession checks this API does not perform.
 	if err != nil || extracted.Token == "" || extracted.Scheme != core.AuthSchemeBearer {
 		return Principal{}, errUnauthorized
+	}
+	if strings.HasPrefix(extracted.Token, TokenPrefix) {
+		return a.authenticateToken(ctx, extracted.Token)
 	}
 	v, err := verify(ctx, a.validator, extracted.Token)
 	if err != nil {
