@@ -756,7 +756,8 @@ export function useMyTokens() {
 /**
  * Creates an access token; the response carries the secret, the only time it
  * is sent. The finished mutation (and the secret with it) leaves the cache as
- * soon as nothing observes it.
+ * soon as nothing observes it: call `reset()` when the secret is no longer shown.
+ * Resolves without waiting for the list to refresh.
  */
 export function useCreateToken() {
   const api = useApi()
@@ -764,7 +765,9 @@ export function useCreateToken() {
   return useMutation({
     gcTime: 0,
     mutationFn: (body: CreateTokenRequest) => unwrap(api.POST('/me/tokens', { body })),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: keys.myTokens }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: keys.myTokens })
+    },
   })
 }
 

@@ -1,11 +1,15 @@
-import { screen, waitFor, within } from '@testing-library/react'
+import { QueryClientProvider } from '@tanstack/react-query'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
+import { createMemoryRouter, RouterProvider } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { axe } from 'vitest-axe'
 import type { components } from '../../api/schema'
-import { API, server } from '../../test/server'
-import { renderApp } from '../../test/utils'
+import { App } from '../../App'
+import { AuthContext } from '../../auth/context'
+import { API, server, state } from '../../test/server'
+import { newQueryClient, renderApp, testAuth } from '../../test/utils'
 import { AccessTokensPage } from './AccessTokensPage'
 
 type AccessToken = components['schemas']['AccessToken']
@@ -16,9 +20,19 @@ interface Fake {
   tokens: AccessToken[]
   requests: { method: string; path: string; body?: unknown }[]
   nextId: number
+  /** While set, the matching requests wait for it before answering. */
+  gates: { list?: Promise<void>; create?: Promise<void>; remove?: Promise<void> }
 }
 
 let fake: Fake
+
+function deferred() {
+  let resolve!: () => void
+  const promise = new Promise<void>((r) => {
+    resolve = r
+  })
+  return { promise, resolve }
+}
 
 function laptop(): AccessToken {
   return {
@@ -55,12 +69,17 @@ beforeEach(() => {
   // Only Date is faked, so the Expired label is stable; timers stay real for user-event.
   vi.useFakeTimers({ toFake: ['Date'] })
   vi.setSystemTime(new Date('2026-11-15T12:00:00Z'))
-  fake = { tokens: [laptop(), script(), old()], requests: [], nextId: 10 }
+  fake = { tokens: [laptop(), script(), old()], requests: [], nextId: 10, gates: {} }
   server.use(
-    http.get(`${API}/v1/me/tokens`, () => HttpResponse.json({ tokens: fake.tokens })),
+    http.get(`${API}/v1/me/tokens`, async () => {
+      const tokens = [...fake.tokens]
+      await fake.gates.list
+      return HttpResponse.json({ tokens })
+    }),
     http.post(`${API}/v1/me/tokens`, async ({ request }) => {
       const body = (await request.json()) as { name: string; expiresInDays: number }
       fake.requests.push({ method: 'POST', path: '/me/tokens', body })
+      await fake.gates.create
       const listed: AccessToken = {
         id: `tok-${fake.nextId++}`,
         name: body.name.trim(),
@@ -71,8 +90,9 @@ beforeEach(() => {
       fake.tokens.push(listed)
       return HttpResponse.json({ ...listed, token: SECRET }, { status: 201 })
     }),
-    http.delete(`${API}/v1/me/tokens/:id`, ({ params }) => {
+    http.delete(`${API}/v1/me/tokens/:id`, async ({ params }) => {
       fake.requests.push({ method: 'DELETE', path: `/me/tokens/${String(params.id)}` })
+      await fake.gates.remove
       fake.tokens = fake.tokens.filter((t) => t.id !== params.id)
       return new HttpResponse(null, { status: 204 })
     }),
@@ -81,6 +101,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers()
+  vi.restoreAllMocks()
 })
 
 async function setup() {
@@ -157,14 +178,25 @@ describe('AccessTokensPage', () => {
         { method: 'POST', path: '/me/tokens', body: { name: 'Desktop client', expiresInDays: 30 } },
       ])
       expect(within(reveal).getByText(/You won’t be able to see it again/)).toBeTruthy()
-      expect((within(reveal).getByLabelText('Token') as HTMLInputElement).value).toBe(SECRET)
+      const tokenField = within(reveal).getByLabelText('Token') as HTMLInputElement
+      expect(tokenField.value).toBe(SECRET)
       const copy = within(reveal).getByRole('button', { name: 'Copy token' })
       expect(document.activeElement).toBe(copy)
       await user.click(copy)
       expect(await navigator.clipboard.readText()).toBe(SECRET)
       expect(within(reveal).getByRole('status').textContent).toBe('Token copied.')
 
-      const snippet = (within(reveal).getByLabelText('MCP client configuration') as HTMLTextAreaElement).value
+      const configField = within(reveal).getByLabelText('MCP client configuration') as HTMLTextAreaElement
+      // Browsers must not spell-check, autofill or remember the secret.
+      for (const field of [tokenField, configField]) {
+        expect(field.getAttribute('spellcheck')).toBe('false')
+        expect(field.getAttribute('autocomplete')).toBe('off')
+      }
+      // The snippet is a remote-server entry; Claude Desktop needs a bridge, described in the docs.
+      expect(within(reveal).getByText(/such as Cursor/)).toBeTruthy()
+      const docs = within(reveal).getByRole('link', { name: /Claude Desktop/ })
+      expect(docs.getAttribute('href')).toMatch(/docs\/mcp\.md#claude-desktop$/)
+      const snippet = configField.value
       expect(snippet).toContain(`"url": "${API}/v1/mcp"`)
       expect(snippet).toContain(`"Authorization": "Bearer ${SECRET}"`)
       expect(() => JSON.parse(snippet) as unknown).not.toThrow()
@@ -193,6 +225,77 @@ describe('AccessTokensPage', () => {
       const dialog = await openCreate(user)
       expect((within(dialog).getByLabelText('Name') as HTMLInputElement).value).toBe('')
       expect(document.body.innerHTML).not.toContain(SECRET)
+    })
+
+    it('cannot be closed while the token is being created, and reopening never shows an earlier secret', async () => {
+      const gate = deferred()
+      fake.gates.create = gate.promise
+      const { user } = await setup()
+      const dialog = await openCreate(user)
+      await user.type(within(dialog).getByLabelText('Name'), 'Desktop client')
+      await user.click(within(dialog).getByRole('button', { name: 'Create token' }))
+      await within(dialog).findByRole('button', { name: 'Creating…' })
+
+      // Escape, a click outside, Cancel and × all leave the dialog open mid-request.
+      await user.keyboard('{Escape}')
+      fireEvent.pointerDown(document.body)
+      expect(within(dialog).getByRole('button', { name: 'Cancel' }).hasAttribute('disabled')).toBe(true)
+      expect(within(dialog).getByRole('button', { name: 'Close' }).hasAttribute('disabled')).toBe(true)
+      expect(screen.getByRole('dialog', { name: 'Create token' })).toBe(dialog)
+
+      gate.resolve()
+      const reveal = await screen.findByRole('dialog', { name: 'Copy your token' })
+      expect((within(reveal).getByLabelText('Token') as HTMLInputElement).value).toBe(SECRET)
+      await user.click(within(reveal).getByRole('button', { name: 'Done' }))
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+
+      const again = await openCreate(user)
+      expect((within(again).getByLabelText('Name') as HTMLInputElement).value).toBe('')
+      expect(document.body.innerHTML).not.toContain(SECRET)
+    })
+
+    it('shows the token without waiting for the list to refresh', async () => {
+      const { user } = await setup()
+      const gate = deferred()
+      fake.gates.list = gate.promise
+      const reveal = await createToken(user)
+      expect((within(reveal).getByLabelText('Token') as HTMLInputElement).value).toBe(SECRET)
+      gate.resolve()
+      await waitFor(() => expect(screen.getAllByText('Desktop client').length).toBeGreaterThan(0))
+    })
+
+    it('says so in a warning color when the clipboard is unavailable', async () => {
+      const { user } = await setup()
+      const reveal = await createToken(user)
+      vi.spyOn(navigator.clipboard, 'writeText').mockRejectedValue(new Error('denied'))
+      await user.click(within(reveal).getByRole('button', { name: 'Copy token' }))
+      const status = within(reveal).getByRole('status')
+      await waitFor(() => expect(status.textContent).toBe('Couldn’t copy. Select the token and copy it.'))
+      expect(status.className).not.toContain('text-status-g')
+      expect(status.className).toContain('text-status-y')
+    })
+
+    it('leaves no secret in the query client once the dialog closes', async () => {
+      const user = userEvent.setup()
+      const client = newQueryClient()
+      const router = createMemoryRouter([{ path: '*', element: <AccessTokensPage /> }])
+      render(
+        <AuthContext.Provider value={testAuth()}>
+          <QueryClientProvider client={client}>
+            <RouterProvider router={router} />
+          </QueryClientProvider>
+        </AuthContext.Provider>,
+      )
+      await screen.findByRole('table', { name: 'Access tokens' })
+      const reveal = await createToken(user)
+      const cached = () =>
+        JSON.stringify([
+          client.getMutationCache().getAll().map((m) => m.state),
+          client.getQueryCache().getAll().map((q) => q.state),
+        ])
+      expect(cached()).toContain(SECRET)
+      await user.click(within(reveal).getByRole('button', { name: 'Done' }))
+      await waitFor(() => expect(cached()).not.toContain(SECRET))
     })
 
     it('asks for a name before sending', async () => {
@@ -246,6 +349,25 @@ describe('AccessTokensPage', () => {
       expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Create token' }))
     })
 
+    it('cannot be dismissed while the revoke is in flight', async () => {
+      const gate = deferred()
+      fake.gates.remove = gate.promise
+      const { user } = await setup()
+      await user.click(screen.getByRole('button', { name: 'Revoke Laptop' }))
+      const confirm = await screen.findByRole('alertdialog', { name: 'Revoke Laptop?' })
+      await user.click(within(confirm).getByRole('button', { name: 'Revoke token' }))
+      await within(confirm).findByRole('button', { name: 'Revoking…' })
+
+      await user.keyboard('{Escape}')
+      fireEvent.pointerDown(document.body)
+      expect(within(confirm).getByRole('button', { name: 'Cancel' }).hasAttribute('disabled')).toBe(true)
+      expect(screen.getByRole('alertdialog', { name: 'Revoke Laptop?' })).toBe(confirm)
+
+      gate.resolve()
+      await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
+      expect(screen.getByText('Revoked Laptop.')).toBeTruthy()
+    })
+
     it('shows a failed revoke in the confirmation', async () => {
       server.use(
         http.delete(`${API}/v1/me/tokens/:id`, () =>
@@ -257,6 +379,22 @@ describe('AccessTokensPage', () => {
       const confirm = await screen.findByRole('alertdialog', { name: 'Revoke Laptop?' })
       await user.click(within(confirm).getByRole('button', { name: 'Revoke token' }))
       expect((await within(confirm).findByRole('alert')).textContent).toContain('access token not found')
+    })
+  })
+
+  describe('routing', () => {
+    it('opens from /settings for a viewer, with no admin gate', async () => {
+      state.role = 'viewer'
+      renderApp(<App />, { route: '/settings' })
+      expect(await screen.findByRole('heading', { level: 1, name: 'Access tokens' })).toBeTruthy()
+      expect(await screen.findByRole('table', { name: 'Access tokens' })).toBeTruthy()
+      expect(screen.queryByText('Only admins can open this page.')).toBeNull()
+    })
+
+    it('opens at /settings/tokens for a contributor', async () => {
+      state.role = 'contributor'
+      renderApp(<App />, { route: '/settings/tokens' })
+      expect(await screen.findByRole('table', { name: 'Access tokens' })).toBeTruthy()
     })
   })
 

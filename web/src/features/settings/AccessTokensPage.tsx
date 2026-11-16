@@ -1,4 +1,5 @@
 import * as Dialog from '@radix-ui/react-dialog'
+import clsx from 'clsx'
 import { Copy, X } from 'lucide-react'
 import { useEffect, useId, useRef, useState, type FormEvent, type RefObject } from 'react'
 import { ApiError } from '../../api/errors'
@@ -8,11 +9,11 @@ import {
   useMyTokens,
   type AccessToken,
   type CreatedAccessToken,
+  type CreateTokenRequest,
 } from '../../api/queries'
 import { getConfig } from '../../config'
 import { NO_ERRORS, errorsFrom, fieldError, forField, unclaimed, type FormErrors } from '../admin/adminModel'
 import {
-  FormActions,
   FormError,
   QueryState,
   SelectField,
@@ -27,12 +28,19 @@ import { formatDate, formatDateTime } from '../scorecard/format'
 const dangerButton =
   'rounded-md bg-status-r px-3 py-1.5 text-sm font-medium text-white hover:bg-status-r/90 disabled:opacity-60'
 
+const tokenInputClass =
+  'block min-w-0 flex-1 rounded-md border border-ink/40 bg-white px-2 py-1.5 font-mono text-sm'
+
 const EXPIRY_OPTIONS = [7, 30, 60, 90, 180, 365].map((d) => ({ value: String(d), label: `${d} days` }))
 
 const LIMIT_MESSAGE = 'You have 10 active tokens. Revoke one to create another.'
 
+const MCP_DOCS_URL = 'https://github.com/mitchellsjohnson/opsvision-sam/blob/main/docs/mcp.md#claude-desktop'
+
 const dialogClass =
   'fixed left-1/2 top-1/2 z-50 max-h-[90vh] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-lg bg-white p-6 shadow-xl'
+
+type CreateToken = ReturnType<typeof useCreateToken>
 
 /** The server entry an MCP client needs, with the token as its bearer credential. */
 function mcpConfig(token: string): string {
@@ -50,8 +58,15 @@ function mcpConfig(token: string): string {
   )
 }
 
-function CreateTokenForm({ onCreated, close }: { onCreated: (t: CreatedAccessToken) => void; close: () => void }) {
-  const create = useCreateToken()
+function CreateTokenForm({
+  pending,
+  onCreate,
+  close,
+}: {
+  pending: boolean
+  onCreate: (body: CreateTokenRequest) => Promise<void>
+  close: () => void
+}) {
   const { formRef, focusErrors } = useFocusOnError()
   const [name, setName] = useState('')
   const [days, setDays] = useState('90')
@@ -66,7 +81,7 @@ function CreateTokenForm({ onCreated, close }: { onCreated: (t: CreatedAccessTok
       return
     }
     try {
-      onCreated(await create.mutateAsync({ name: trimmed, expiresInDays: Number(days) }))
+      await onCreate({ name: trimmed, expiresInDays: Number(days) })
     } catch (err) {
       setErrors(err instanceof ApiError && err.status === 409 ? { fields: {}, general: [LIMIT_MESSAGE] } : errorsFrom(err))
       focusErrors()
@@ -92,7 +107,14 @@ function CreateTokenForm({ onCreated, close }: { onCreated: (t: CreatedAccessTok
         onChange={(e) => setDays(e.target.value)}
       />
       <FormError messages={unclaimed(errors, ['name', 'expiresInDays'])} />
-      <FormActions submitLabel="Create token" pendingLabel="Creating…" pending={create.isPending} onCancel={close} />
+      <div className="mt-2 flex justify-end gap-2">
+        <button type="button" className={secondaryButton} disabled={pending} onClick={close}>
+          Cancel
+        </button>
+        <button type="submit" className={primaryButton} disabled={pending}>
+          {pending ? 'Creating…' : 'Create token'}
+        </button>
+      </div>
     </form>
   )
 }
@@ -101,7 +123,7 @@ function TokenReveal({ created, onDone }: { created: CreatedAccessToken; onDone:
   const tokenId = useId()
   const configId = useId()
   const copyRef = useRef<HTMLButtonElement>(null)
-  const [copied, setCopied] = useState('')
+  const [copied, setCopied] = useState<{ text: string; ok: boolean } | null>(null)
   const config = mcpConfig(created.token)
 
   // The form's submit button is gone, so focus moves to the next thing to do.
@@ -110,9 +132,9 @@ function TokenReveal({ created, onDone }: { created: CreatedAccessToken; onDone:
   async function copy(text: string, what: string) {
     try {
       await navigator.clipboard.writeText(text)
-      setCopied(`${what[0]?.toUpperCase()}${what.slice(1)} copied.`)
+      setCopied({ text: `${what[0]?.toUpperCase()}${what.slice(1)} copied.`, ok: true })
     } catch {
-      setCopied(`Couldn’t copy. Select the ${what} and copy it.`)
+      setCopied({ text: `Couldn’t copy. Select the ${what} and copy it.`, ok: false })
     }
   }
 
@@ -126,9 +148,11 @@ function TokenReveal({ created, onDone }: { created: CreatedAccessToken; onDone:
           <input
             id={tokenId}
             readOnly
+            spellCheck={false}
+            autoComplete="off"
             value={created.token}
             onFocus={(e) => e.currentTarget.select()}
-            className={`${inputClass.replace('mt-1 ', '')} min-w-0 flex-1 font-mono`}
+            className={tokenInputClass}
           />
           <button
             ref={copyRef}
@@ -146,11 +170,18 @@ function TokenReveal({ created, onDone }: { created: CreatedAccessToken; onDone:
           MCP client configuration
         </label>
         <p className="text-sm text-ink/80">
-          Add this server to your MCP client’s settings, such as Claude Desktop or Cursor. It includes the token.
+          Add this server to an MCP client that connects to remote servers, such as Cursor. It includes the token.
+          Claude Desktop needs a bridge:{' '}
+          <a href={MCP_DOCS_URL} target="_blank" rel="noreferrer" className="font-medium text-accent-deep underline">
+            set up Claude Desktop
+          </a>
+          .
         </p>
         <textarea
           id={configId}
           readOnly
+          spellCheck={false}
+          autoComplete="off"
           value={config}
           rows={config.split('\n').length + 1}
           onFocus={(e) => e.currentTarget.select()}
@@ -165,8 +196,11 @@ function TokenReveal({ created, onDone }: { created: CreatedAccessToken; onDone:
           Copy configuration
         </button>
       </div>
-      <p role="status" className="min-h-5 text-sm font-medium text-status-g">
-        {copied}
+      <p
+        role="status"
+        className={clsx('min-h-5 text-sm font-medium', copied?.ok === false ? 'text-status-y' : 'text-status-g')}
+      >
+        {copied?.text}
       </p>
       <div className="flex justify-end">
         <button type="button" className={primaryButton} onClick={onDone}>
@@ -177,14 +211,33 @@ function TokenReveal({ created, onDone }: { created: CreatedAccessToken; onDone:
   )
 }
 
-/** Create, then show the secret once. Closing the dialog drops it. */
+/** Create, then show the secret once. Closing the dialog drops it; it cannot close mid-request. */
 function CreateTokenDialog({ triggerRef }: { triggerRef: RefObject<HTMLButtonElement | null> }) {
+  const create: CreateToken = useCreateToken()
   const [open, setOpen] = useState(false)
   const [created, setCreated] = useState<CreatedAccessToken | null>(null)
+  // Bumped on every open and close, so a response for an earlier opening is never shown.
+  const session = useRef(0)
 
   function onOpenChange(next: boolean) {
+    if (!next && create.isPending) return
+    session.current += 1
     setOpen(next)
-    if (!next) setCreated(null)
+    if (!next) {
+      setCreated(null)
+      create.reset()
+    }
+  }
+
+  async function createToken(body: CreateTokenRequest) {
+    const at = session.current
+    const token = await create.mutateAsync(body)
+    if (session.current === at) setCreated(token)
+  }
+
+  // A stray click outside, or a close mid-request, would lose a secret that cannot be shown again.
+  const blockDismiss = (e: Event) => {
+    if (create.isPending || created) e.preventDefault()
   }
 
   return (
@@ -197,9 +250,9 @@ function CreateTokenDialog({ triggerRef }: { triggerRef: RefObject<HTMLButtonEle
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-40 bg-ink/40" />
         <Dialog.Content
-          // A stray click outside would lose a secret that cannot be shown again.
-          onPointerDownOutside={(e) => {
-            if (created) e.preventDefault()
+          onPointerDownOutside={blockDismiss}
+          onEscapeKeyDown={(e) => {
+            if (create.isPending) e.preventDefault()
           }}
           className={`${dialogClass} w-[min(94vw,44rem)]`}
         >
@@ -216,11 +269,20 @@ function CreateTokenDialog({ triggerRef }: { triggerRef: RefObject<HTMLButtonEle
               (created ? (
                 <TokenReveal created={created} onDone={() => onOpenChange(false)} />
               ) : (
-                <CreateTokenForm onCreated={setCreated} close={() => onOpenChange(false)} />
+                <CreateTokenForm
+                  pending={create.isPending}
+                  onCreate={createToken}
+                  close={() => onOpenChange(false)}
+                />
               ))}
           </div>
           <Dialog.Close asChild>
-            <button type="button" aria-label="Close" className="absolute right-3 top-3 rounded-md p-1 hover:bg-cream">
+            <button
+              type="button"
+              aria-label="Close"
+              disabled={create.isPending}
+              className="absolute right-3 top-3 rounded-md p-1 hover:bg-cream disabled:opacity-60"
+            >
               <X aria-hidden="true" className="size-5" />
             </button>
           </Dialog.Close>
@@ -230,8 +292,15 @@ function CreateTokenDialog({ triggerRef }: { triggerRef: RefObject<HTMLButtonEle
   )
 }
 
-function RevokeConfirm({ token, onRevoked }: { token: AccessToken; onRevoked: () => void }) {
-  const remove = useDeleteToken()
+function RevokeConfirm({
+  token,
+  remove,
+  onRevoked,
+}: {
+  token: AccessToken
+  remove: ReturnType<typeof useDeleteToken>
+  onRevoked: () => void
+}) {
   const [errors, setErrors] = useState<string[]>([])
 
   async function revoke() {
@@ -251,7 +320,7 @@ function RevokeConfirm({ token, onRevoked }: { token: AccessToken; onRevoked: ()
       </div>
       <div className="mt-4 flex justify-end gap-2">
         <Dialog.Close asChild>
-          <button type="button" className={secondaryButton}>
+          <button type="button" className={secondaryButton} disabled={remove.isPending}>
             Cancel
           </button>
         </Dialog.Close>
@@ -263,8 +332,10 @@ function RevokeConfirm({ token, onRevoked }: { token: AccessToken; onRevoked: ()
   )
 }
 
+
 export function AccessTokensPage() {
   const tokens = useMyTokens()
+  const remove = useDeleteToken()
   const createRef = useRef<HTMLButtonElement>(null)
   const [notice, setNotice] = useState('')
   const [revoking, setRevoking] = useState<AccessToken | null>(null)
@@ -275,7 +346,12 @@ export function AccessTokensPage() {
   function startRevoke(token: AccessToken, trigger: HTMLButtonElement) {
     revokeTrigger.current = trigger
     revoked.current = false
+    remove.reset()
     setRevoking(token)
+  }
+
+  const blockWhileRevoking = (e: Event) => {
+    if (remove.isPending) e.preventDefault()
   }
 
   return (
@@ -347,11 +423,18 @@ export function AccessTokensPage() {
         </table>
       )}
 
-      <Dialog.Root open={revoking !== null} onOpenChange={(open) => !open && setRevoking(null)}>
+      <Dialog.Root
+        open={revoking !== null}
+        onOpenChange={(open) => {
+          if (!open && !remove.isPending) setRevoking(null)
+        }}
+      >
         <Dialog.Portal>
           <Dialog.Overlay className="fixed inset-0 z-40 bg-ink/40" />
           <Dialog.Content
             role="alertdialog"
+            onEscapeKeyDown={blockWhileRevoking}
+            onPointerDownOutside={blockWhileRevoking}
             onCloseAutoFocus={(e) => {
               // A revoked token's row (and its button) goes away.
               e.preventDefault()
@@ -368,6 +451,7 @@ export function AccessTokensPage() {
               <RevokeConfirm
                 key={revoking.id}
                 token={revoking}
+                remove={remove}
                 onRevoked={() => {
                   revoked.current = true
                   setNotice(`Revoked ${revoking.name}.`)
