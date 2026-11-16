@@ -81,7 +81,7 @@ const names = () => within(screen.getByRole('table')).getAllByRole('rowheader').
 describe('Breakdown', () => {
   it('is a table headed by the level noun, worst first', async () => {
     renderBreakdown()
-    const section = screen.getByRole('region', { name: 'Org breakdown' })
+    const section = screen.getByRole('region', { name: 'By segment' })
     expect(within(section).getByRole('heading', { level: 3, name: 'By segment' })).toBeTruthy()
     expect(within(section).getByText('Worst first · choose a segment to scope the dashboard to it')).toBeTruthy()
     expect(names()).toEqual(['Unit A', 'Unit C', 'Unit B'])
@@ -102,17 +102,24 @@ describe('Breakdown', () => {
     expect(ribbon.children).toHaveLength(12)
   })
 
-  it('header clicks sort and set aria-sort', async () => {
+  it('worst first by default claims no aria-sort; header clicks sort and set it', async () => {
     renderBreakdown()
     const user = userEvent.setup()
     const valueHeader = screen.getByRole('columnheader', { name: 'Oct' })
     const nameHeader = screen.getByRole('columnheader', { name: 'Segment' })
-    // Higher is better, so worst first is ascending.
+    const changeHeader = screen.getByRole('columnheader', { name: 'vs Sep' })
+    // Worst first orders by status, then value: not a sort on any one column.
+    for (const th of [valueHeader, nameHeader, changeHeader]) expect(th.getAttribute('aria-sort')).toBe('none')
+    await user.click(within(valueHeader).getByRole('button'))
     expect(valueHeader.getAttribute('aria-sort')).toBe('ascending')
-    expect(nameHeader.getAttribute('aria-sort')).toBe('none')
+    expect(names()).toEqual(['Unit A', 'Unit C', 'Unit B'])
     await user.click(within(valueHeader).getByRole('button'))
     expect(valueHeader.getAttribute('aria-sort')).toBe('descending')
     expect(names()).toEqual(['Unit B', 'Unit C', 'Unit A'])
+    // A third click goes back to worst first.
+    await user.click(within(valueHeader).getByRole('button'))
+    expect(valueHeader.getAttribute('aria-sort')).toBe('none')
+    expect(names()).toEqual(['Unit A', 'Unit C', 'Unit B'])
     await user.click(within(nameHeader).getByRole('button'))
     expect(nameHeader.getAttribute('aria-sort')).toBe('ascending')
     expect(valueHeader.getAttribute('aria-sort')).toBe('none')
@@ -120,15 +127,27 @@ describe('Breakdown', () => {
     await user.click(within(nameHeader).getByRole('button'))
     expect(nameHeader.getAttribute('aria-sort')).toBe('descending')
     expect(names()).toEqual(['Unit C', 'Unit B', 'Unit A'])
-    const changeHeader = screen.getByRole('columnheader', { name: 'vs Sep' })
     await user.click(within(changeHeader).getByRole('button'))
     expect(changeHeader.getAttribute('aria-sort')).toBe('ascending')
     expect(names()).toEqual(['Unit A', 'Unit C', 'Unit B'])
   })
 
-  it('lower is better: worst first is descending', () => {
-    renderBreakdown({ direction: 'lower_better' })
-    expect(screen.getByRole('columnheader', { name: 'Oct' }).getAttribute('aria-sort')).toBe('descending')
+  it('worst first ranks status before value: a Red row with a higher value still leads', () => {
+    const odd = [
+      row('unit-x', 'Unit X', { value: 96, display: '96.0%', status: 'R' }),
+      row('unit-y', 'Unit Y', { value: 60, display: '60.0%', status: 'G' }),
+    ]
+    renderBreakdown({ children: odd })
+    expect(names()).toEqual(['Unit X', 'Unit Y'])
+    expect(screen.getByRole('columnheader', { name: 'Oct' }).getAttribute('aria-sort')).toBe('none')
+  })
+
+  it('the change header names the prior period in the tenant’s fiscal calendar', () => {
+    // With a July fiscal start, fiscal 2027-M04 is Oct 2026 and its prior month is Sep.
+    const oct = buildTrendColumns('2027-M04', 7).slice(-1)
+    const kids = children.map((c) => ({ ...c, cells: [cell(c.subjectId, '2027-M04', { change: 1, changeKind: 'delta' })] }))
+    renderBreakdown({ columns: oct, columnKey: '2027-M04', children: kids, fyStart: 7, head: { ...head, cells: [cell('root', '2027-M04', { target: 90 })] } })
+    expect(screen.getByRole('columnheader', { name: 'vs Sep' })).toBeTruthy()
   })
 
   it('an org row is a button that scopes the dashboard to it', async () => {
@@ -141,6 +160,26 @@ describe('Breakdown', () => {
     const numberHead: ViewRow = { ...head, format: 'number1', cells: head.cells.map((c) => ({ ...c, target: 5 })) }
     renderBreakdown({ head: numberHead, children: children.map((c): ViewRow => ({ ...c, format: 'number1' })) })
     expect(screen.queryByRole('columnheader', { name: /vs goal/ })).toBeNull()
+  })
+
+  it('rows with their own goals: the header says vs goal and each tick names its goal', () => {
+    const own = children.map((c, i) => ({
+      ...c,
+      cells: c.cells.map((x) => (x.period === OCT ? { ...x, target: [95, 90, 85][i]! } : x)),
+    }))
+    renderBreakdown({ children: own })
+    expect(screen.getByRole('columnheader', { name: 'vs goal' })).toBeTruthy()
+    const tick = (name: string) => screen.getByRole('rowheader', { name }).closest('tr')!.querySelector('[data-goal-tick]')!
+    expect(tick('Unit B').getAttribute('title')).toBe('Goal 95.0%')
+    expect(tick('Unit A').getAttribute('title')).toBe('Goal 90.0%')
+    expect(tick('Unit C').getAttribute('title')).toBe('Goal 85.0%')
+  })
+
+  it('one goal for all rows: the header names it', () => {
+    renderBreakdown()
+    const tick = screen.getByRole('rowheader', { name: 'Unit A' }).closest('tr')!.querySelector('[data-goal-tick]')!
+    expect(tick.getAttribute('title')).toBe('Goal 90.0%')
+    expect(screen.getByRole('columnheader', { name: 'vs goal 90.0%' })).toBeTruthy()
   })
 
   it('a percent metric with no target has no vs goal column', () => {

@@ -203,7 +203,7 @@ describe('one view request per URL', () => {
     server.use(...viewHandlers({ onView: (u) => seen.push(u) }))
     renderApp(<App />, { route: '/scorecards/sc-main/overview?period=2026-M10&focus=on_time_pct' })
     const dialog = await screen.findByRole('dialog', { name: /On-time delivery/i })
-    const breakdown = await within(dialog).findByRole('region', { name: 'Org breakdown' })
+    const breakdown = await within(dialog).findByRole('region', { name: 'By unit' })
     await userEvent.setup().click(within(breakdown).getByRole('button', { name: /Unit A/ }))
     await waitFor(() => expect(seen.some((u) => u.searchParams.getAll('subjects').includes('unit-a'))).toBe(true))
   })

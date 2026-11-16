@@ -2,8 +2,12 @@ import clsx from 'clsx'
 import { HATCH, NoDataDot, UNRATED_CLASS } from './StatusCell'
 import { CHIP_SIZE, StatusChip, type StatusLevel } from './StatusChip'
 
-/** The status key: each scale level best first, then No data, n/a, and Not rated when any cell is. */
-export function Legend({ scale, unrated }: { scale: StatusLevel[]; unrated: boolean }) {
+/**
+ * The status key: each scale level best first, then No data, n/a, Not rated
+ * when any cell is, and Not due when any cell is a coarse metric's month that
+ * reports later (an empty cell, no dot).
+ */
+export function Legend({ scale, unrated, notDue = false }: { scale: StatusLevel[]; unrated: boolean; notDue?: boolean }) {
   return (
     <ul aria-label="Status key" className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-ink/80">
       {[...scale]
@@ -30,6 +34,12 @@ export function Legend({ scale, unrated }: { scale: StatusLevel[]; unrated: bool
         <li className="inline-flex items-center gap-1.5">
           <span aria-hidden="true" className={clsx(CHIP_SIZE.md, UNRATED_CLASS)} />
           Not rated
+        </li>
+      )}
+      {notDue && (
+        <li className="inline-flex items-center gap-1.5">
+          <span aria-hidden="true" className={clsx(CHIP_SIZE.md, 'border-ink/10')} />
+          Not due
         </li>
       )}
     </ul>

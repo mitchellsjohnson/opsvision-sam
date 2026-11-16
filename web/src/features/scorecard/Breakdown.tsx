@@ -1,6 +1,6 @@
 import clsx from 'clsx'
 import { ChevronDown, ChevronUp } from 'lucide-react'
-import { useState, type ReactNode } from 'react'
+import { useId, useState, type ReactNode } from 'react'
 import type { components } from '../../api/schema'
 import { StatusCell, StatusChip, type StatusLevel } from '../../ui/status'
 import { MOVE_CLASS } from './charts/chartTheme'
@@ -20,6 +20,8 @@ type Cell = components['schemas']['Cell']
 type Direction = components['schemas']['Direction']
 
 type SortKey = 'name' | 'value' | 'change'
+/** `worst`: status rank, then the worse value, then name; no single column's order. */
+type Sort = { key: SortKey | 'worst'; reversed: boolean }
 
 export interface BreakdownProps {
   /** The metric's head row (the scope row when there is one): format and goal. */
@@ -34,6 +36,8 @@ export interface BreakdownProps {
   onScope: (subjectId: string) => void
   /** Opens an item's trend; without it, item names are plain text. */
   onOpenItem?: (subjectId: string) => void
+  /** The tenant's fiscal year start month, for naming the prior period. */
+  fyStart?: number
 }
 
 function capitalized(s: string): string {
@@ -59,8 +63,8 @@ function ribbonCell(row: ViewRow, col: Column): BoardCell {
 }
 
 /** The change amount without its `vs Sep`, which the column header says once. */
-function changeAmount(row: ViewRow, cell: Cell | undefined) {
-  const change = headerChange(row, cell, 1)
+function changeAmount(row: ViewRow, cell: Cell | undefined, fyStart: number) {
+  const change = headerChange(row, cell, fyStart)
   if (!change) return null
   const against = / vs (.+)$/.exec(change.text)?.[1] ?? ''
   return { ...change, amount: change.text.replace(/ vs .+$/, ''), against }
@@ -76,7 +80,7 @@ function SortHeader({
 }: {
   label: string
   sortKey: SortKey
-  sort: { key: SortKey; reversed: boolean }
+  sort: Sort
   ariaSort: 'ascending' | 'descending' | 'none'
   onSort: (key: SortKey) => void
   className?: string
@@ -106,8 +110,20 @@ const CELL = 'border-b border-ink/10 px-1 py-1.5 align-middle'
  * against the goal for percent metrics with one. Org rows scope the
  * dashboard; item rows open the item.
  */
-export function Breakdown({ head, children, columns, columnKey, scale, direction, noun, onScope, onOpenItem }: BreakdownProps) {
-  const [sort, setSort] = useState<{ key: SortKey; reversed: boolean }>({ key: 'value', reversed: false })
+export function Breakdown({
+  head,
+  children,
+  columns,
+  columnKey,
+  scale,
+  direction,
+  noun,
+  onScope,
+  onOpenItem,
+  fyStart = 1,
+}: BreakdownProps) {
+  const headingId = useId()
+  const [sort, setSort] = useState<Sort>({ key: 'worst', reversed: false })
   const statusLabel = (key: string) => scale.find((s) => s.key === key)?.label ?? key
 
   const reported = worstChildren(children, columnKey, scale, direction).ranked.map((r) => r.row)
@@ -118,11 +134,12 @@ export function Breakdown({ head, children, columns, columnKey, scale, direction
   if (sort.key === 'name') {
     rows = [...children].sort((a, b) => a.subjectName.localeCompare(b.subjectName))
     if (sort.reversed) rows.reverse()
-  } else if (sort.key === 'change') {
-    const change = (r: ViewRow) => cellAt(r, columnKey)?.change ?? null
+  } else if (sort.key === 'change' || sort.key === 'value') {
+    const field = sort.key
+    const amount = (r: ViewRow) => cellAt(r, columnKey)?.[field] ?? null
     rows = [...reported].sort((a, b) => {
-      const x = change(a)
-      const y = change(b)
+      const x = amount(a)
+      const y = amount(b)
       if (x === null || y === null) return x === y ? 0 : x === null ? 1 : -1
       return sort.reversed ? y - x : x - y
     })
@@ -132,20 +149,23 @@ export function Breakdown({ head, children, columns, columnKey, scale, direction
     rows = [...rows, ...quiet]
   }
 
+  // Ascending, then descending; the value column's third click returns to worst first.
   const onSort = (key: SortKey) =>
-    setSort((was) => (was.key === key ? { key, reversed: !was.reversed } : { key, reversed: false }))
-  const ariaSort = (key: SortKey): 'ascending' | 'descending' | 'none' => {
-    if (sort.key !== key) return 'none'
-    // Worst first is the low values when higher is better.
-    const ascending = key === 'value' ? direction !== 'lower_better' : true
-    return ascending !== sort.reversed ? 'ascending' : 'descending'
-  }
+    setSort((was) => {
+      if (was.key !== key) return { key, reversed: false }
+      if (key === 'value' && was.reversed) return { key: 'worst', reversed: false }
+      return { key, reversed: !was.reversed }
+    })
+  const ariaSort = (key: SortKey): 'ascending' | 'descending' | 'none' =>
+    sort.key !== key ? 'none' : sort.reversed ? 'descending' : 'ascending'
 
   const index = columns.findIndex((c) => c.key === columnKey)
   const selected = columns[index]
-  const goal = cellAt(head, columnKey)?.target ?? null
-  const showGoal = head.format.startsWith('percent') && goal !== null
-  const firstChange = children.map((r) => changeAmount(r, cellAt(r, columnKey))).find((c) => c !== null)
+  const headGoal = cellAt(head, columnKey)?.target ?? null
+  const goalOf = (row: ViewRow) => cellAt(row, columnKey)?.target ?? headGoal
+  const goals = [...new Set(children.map(goalOf).filter((g): g is number => g !== null))]
+  const showGoal = head.format.startsWith('percent') && goals.length > 0
+  const firstChange = children.map((r) => changeAmount(r, cellAt(r, columnKey), fyStart)).find((c) => c !== null)
   const compareAll = firstChange && /average|baseline/.test(firstChange.against)
   const against = (!compareAll && columns[index - 1]?.label) || firstChange?.against || 'prior'
 
@@ -171,9 +191,11 @@ export function Breakdown({ head, children, columns, columnKey, scale, direction
   }
 
   return (
-    <section aria-label="Org breakdown" className="mt-6">
+    <section aria-labelledby={headingId} className="mt-6">
       <div className="mb-1.5 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-        <h3 className="text-base font-semibold text-accent-deep">By {noun.one}</h3>
+        <h3 id={headingId} className="text-base font-semibold text-accent-deep">
+          By {noun.one}
+        </h3>
         <p className="text-xs text-ink/70">{hint}</p>
       </div>
       <table className="w-full border-separate border-spacing-0 text-sm sm:table-fixed">
@@ -215,7 +237,7 @@ export function Breakdown({ head, children, columns, columnKey, scale, direction
             />
             {showGoal && (
               <th scope="col" className={clsx(HEAD, 'hidden pl-4 text-left sm:table-cell')}>
-                vs goal {formatMetricValue(head.format, goal)}
+                {goals.length === 1 ? `vs goal ${formatMetricValue(head.format, goals[0]!)}` : 'vs goal'}
               </th>
             )}
           </tr>
@@ -224,8 +246,8 @@ export function Breakdown({ head, children, columns, columnKey, scale, direction
           {rows.map((row) => {
             const cell = cellAt(row, columnKey)
             const shown = cellReported(cell)
-            const change = shown ? changeAmount(row, cell) : null
-            const target = cell?.target ?? goal
+            const change = shown ? changeAmount(row, cell, fyStart) : null
+            const target = goalOf(row)
             return (
               <tr key={row.subjectId} className="hover:bg-ink/[0.035]">
                 <th scope="row" className={clsx(CELL, 'text-left')}>
@@ -279,6 +301,8 @@ export function Breakdown({ head, children, columns, columnKey, scale, direction
                         />
                         {target !== null && (
                           <div
+                            data-goal-tick=""
+                            title={`Goal ${formatMetricValue(head.format, target)}`}
                             className="absolute -inset-y-[3px] w-0.5 -translate-x-1/2 bg-ink/55"
                             style={{ left: `${Math.max(0, Math.min(100, target))}%` }}
                           />

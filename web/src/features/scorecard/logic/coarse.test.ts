@@ -133,6 +133,26 @@ describe('coarseStatus (Oct 2026, quarterly)', () => {
     expect(s.state).toBe('overdue')
     expect(s.counted).toBeNull()
     expect(s.cell).toBeUndefined()
+    expect(s.overdue?.period).toBe('2026-Q3')
+  })
+
+  it('Q3 and Q2 both missing in Oct: the overdue column is Q2', () => {
+    const s = coarseStatus(row([cell('2026-Q1')]), quarters('2026-M10'), '2026-M10', 1)
+    expect(s.state).toBe('overdue')
+    expect(s.overdue?.period).toBe('2026-Q2')
+  })
+
+  it('only an overdue status names an overdue column', () => {
+    expect(coarseStatus(row([cell('2026-Q3')]), quarters('2026-M10'), '2026-M10', 1).overdue).toBeNull()
+    expect(coarseStatus(row([cell('2026-Q2'), blank('2026-Q3')]), quarters('2026-M10'), '2026-M10', 1).overdue).toBeNull()
+  })
+
+  it('the overdue column is the column itself, even when two share a label', () => {
+    // Halves: H1 FY2025 and H1 FY2026 are both labelled H1.
+    const halves = coarseColumns('2026-M11', 'half', 4, 1)
+    const s = coarseStatus(row([cell('2025-H1', { metricKey: 'm' }), cell('2025-H2')]), halves, '2026-M11', 1)
+    expect(s.state).toBe('overdue')
+    expect(s.overdue?.period).toBe('2026-H1')
   })
 
   it('nothing reported in the window: none', () => {
@@ -223,6 +243,27 @@ describe('periodStatus', () => {
   it('monthly, values until Jul: stopped, with the last value', () => {
     const cells = twelveMonths.map((p) => (p <= '2026-M07' ? cell(p, { display: p === '2026-M07' ? '77%' : '80%' }) : blank(p)))
     expect(monthly(cells).notReported).toEqual({ kind: 'stopped', text: 'Last reported Jul 2026 (77%)' })
+  })
+
+  it('monthly value with no status this period: reported, not rated', () => {
+    expect(monthly([cell('2026-M10', { status: '', display: '12' })]).notReported).toEqual({
+      kind: 'stopped',
+      text: 'Reported Oct 2026, not rated',
+    })
+  })
+
+  it('coarse value with no status in the latest quarter: reported, not rated', () => {
+    expect(quarterly('2026-M10', [cell('2026-Q3', { status: '', display: '12' })]).notReported).toEqual({
+      kind: 'stopped',
+      text: 'Reported Q3 FY2026, not rated',
+    })
+  })
+
+  it('coarse value with no status in the prior quarter while the latest is due: last reported', () => {
+    expect(quarterly('2026-M10', [cell('2026-Q2', { status: '', display: '12' })]).notReported).toEqual({
+      kind: 'stopped',
+      text: 'Last reported Q2 FY2026 (12), not rated',
+    })
   })
 
   it('counts each metric exactly once: statuses plus not reported equal the metric count', () => {

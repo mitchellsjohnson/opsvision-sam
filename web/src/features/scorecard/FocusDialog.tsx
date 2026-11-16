@@ -99,24 +99,36 @@ function ItemNoun({ metric, children }: { metric: Metric; children: (noun: NounF
   return children(useItemNoun(metric))
 }
 
-/** One polite region for the dialog; repeating the same message still announces it. */
-function useAnnouncer(): [string, (message: string) => void] {
+/** How long an announcement stays in the live region before it gives way (to `Loading chart`, say). */
+const ANNOUNCE_MS = 4000
+
+/** One polite region for the dialog; repeating the same message still announces it, and each clears after a few seconds. */
+function useAnnouncer(): [string, (message: string) => void, () => void] {
   const [message, setMessage] = useState('')
   const shown = useRef('')
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined)
   useEffect(() => () => clearTimeout(timer.current), [])
-  const announce = useCallback((next: string) => {
+  const clear = useCallback(() => {
     clearTimeout(timer.current)
-    const show = () => {
-      shown.current = next
-      setMessage(next)
-    }
-    if (shown.current !== next) return show()
     shown.current = ''
     setMessage('')
-    timer.current = setTimeout(show, 50)
   }, [])
-  return [message, announce]
+  const announce = useCallback(
+    (next: string) => {
+      clearTimeout(timer.current)
+      const show = () => {
+        shown.current = next
+        setMessage(next)
+        timer.current = setTimeout(clear, ANNOUNCE_MS)
+      }
+      if (shown.current !== next) return show()
+      shown.current = ''
+      setMessage('')
+      timer.current = setTimeout(show, 50)
+    },
+    [clear],
+  )
+  return [message, announce, clear]
 }
 
 function MetricFocus({
@@ -136,7 +148,7 @@ function MetricFocus({
   const [params, setParams] = useSearchParams()
   const [range, setRange] = useState<RangeKey>('12M')
   const [exportError, setExportError] = useState('')
-  const [announcement, announce] = useAnnouncer()
+  const [announcement, announce, clearAnnouncement] = useAnnouncer()
   const [toast, setToast] = useState('')
   const bodyRef = useRef<HTMLDivElement>(null)
   // Item views: the filter and the grid's scroll position live here, so they survive the drill-in.
@@ -169,7 +181,7 @@ function MetricFocus({
   const requested = focusWindow(range, period.period, frequency)
   // 12 months share the Overview's request and cache; 24 months, and a coarse
   // metric's own grain, ask for this metric's rows only.
-  const { request, ready } = useScorecardViewRequest(focusRequestOptions(requested, metricKey))
+  const { request, ready } = useScorecardViewRequest(focusRequestOptions(requested, metricKey, period.period))
   const view = useView(ready ? scorecardId : undefined, request, { keepPrevious: true })
   // The window of the data on screen: while another window loads, the chart keeps the one it has data for.
   const [shownWindow, setShownWindow] = useState(requested)
@@ -466,6 +478,12 @@ function MetricFocus({
 
   const waiting = view.isPending || (view.isPlaceholderData && !metricGroup)
   const busy = waiting || view.isPlaceholderData
+  // When a load that followed a move settles, its announcement has done its job.
+  const wasBusy = useRef(busy)
+  useEffect(() => {
+    if (wasBusy.current && !busy) clearAnnouncement()
+    wasBusy.current = busy
+  }, [busy, clearAnnouncement])
 
   const boardCells = head
     ? buildBoardRow({
@@ -608,6 +626,7 @@ function MetricFocus({
           direction={head.direction}
           noun={nouns.children}
           onScope={(id) => updatePeriod({ scope: id })}
+          fyStart={fy}
         />
       ))
   }
@@ -640,6 +659,7 @@ function MetricFocus({
               onTable={openTable}
               onPresent={present}
               onExport={(format) => (format === 'png' ? void exportPng() : format === 'svg' ? exportSvg() : exportCsv())}
+              shortcuts={{ enabled: shortcuts.enabled, onToggle: shortcuts.setEnabled }}
             />
           }
         />
@@ -684,26 +704,27 @@ function MetricFocus({
           }}
         />
         {!isItems && details}
-        <div data-hints="" className="mt-6 hidden flex-wrap items-center gap-x-4 gap-y-1 text-[11px] leading-4 text-ink/70 sm:flex">
+        {/* The switch shows at every width; the key hints only where there is a keyboard to use them. */}
+        <div data-hints="" className="mt-6 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] leading-4 text-ink/70">
           {shortcuts.enabled && (
             <>
-              <span>
+              <span data-hint="" className="hidden sm:inline">
                 <Kbd>←</Kbd> <Kbd>→</Kbd> previous / next metric
               </span>
               {(rangeShown || itemRangeShown) && (
-                <span>
+                <span data-hint="" className="hidden sm:inline">
                   <Kbd>1</Kbd>–<Kbd>{itemRangeShown ? '3' : '5'}</Kbd> range
                 </span>
               )}
-              <span>
+              <span data-hint="" className="hidden sm:inline">
                 <Kbd>T</Kbd> table
               </span>
-              <span>
+              <span data-hint="" className="hidden sm:inline">
                 <Kbd>L</Kbd> copy link
               </span>
             </>
           )}
-          <span>
+          <span data-hint="" className="hidden sm:inline">
             <Kbd>Esc</Kbd> close
           </span>
           <button

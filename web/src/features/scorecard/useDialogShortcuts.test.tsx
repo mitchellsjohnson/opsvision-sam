@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { useRef } from 'react'
 import { describe, expect, it, vi } from 'vitest'
@@ -98,6 +98,23 @@ describe('useDialogShortcuts', () => {
     await user.keyboard('{ArrowRight}')
     await user.keyboard('2')
     none(h)
+  })
+
+  it('ignores auto-repeat from a held key', () => {
+    const h = handlers()
+    render(<Harness h={h} />)
+    const plain = screen.getByRole('button', { name: 'Plain' })
+    plain.focus()
+    fireEvent.keyDown(plain, { key: 'ArrowRight' })
+    fireEvent.keyDown(plain, { key: 'ArrowRight', repeat: true })
+    fireEvent.keyDown(plain, { key: 'ArrowRight', repeat: true })
+    fireEvent.keyDown(plain, { key: 'ArrowLeft', repeat: true })
+    fireEvent.keyDown(plain, { key: 't', repeat: true })
+    fireEvent.keyDown(plain, { key: '2', repeat: true })
+    expect(h.next).toHaveBeenCalledTimes(1)
+    expect(h.prev).not.toHaveBeenCalled()
+    expect(h.table).not.toHaveBeenCalled()
+    expect(h.range).not.toHaveBeenCalled()
   })
 
   it('ignores a key another handler has already taken', async () => {

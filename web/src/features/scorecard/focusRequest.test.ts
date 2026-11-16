@@ -45,7 +45,7 @@ describe('focusRequestOptions', () => {
     for (const range of RANGES)
       for (const freq of FREQUENCIES)
         for (const period of ['2026-M10', '2026-Q3', '2026-H1', '2025-FY']) {
-          const req = scorecardViewRequest(state(period), {}, focusRequestOptions(focusWindow(range.key, period, freq), 'm'))
+          const req = scorecardViewRequest(state(period), {}, focusRequestOptions(focusWindow(range.key, period, freq), 'm', period))
           expect(req.periods!.length, `${range.key} ${freq} ${period}`).toBeLessThanOrEqual(24)
         }
     expect(scorecardViewRequest(state('2026-M10', { ytd: true }), {}, { coarse: ['quarter', 'half', 'year'] }).periods).toHaveLength(21)
@@ -53,18 +53,38 @@ describe('focusRequestOptions', () => {
 
   it('monthly metrics send exactly today’s requests: the shared 12 months, or 24 months of one metric', () => {
     const s = state('2026-M10')
-    expect(scorecardViewRequest(s, {}, focusRequestOptions(focusWindow('12M', '2026-M10', 'monthly'), 'm'))).toEqual(
+    expect(scorecardViewRequest(s, {}, focusRequestOptions(focusWindow('12M', '2026-M10', 'monthly'), 'm', '2026-M10'))).toEqual(
       scorecardViewRequest(s, {}),
     )
-    expect(scorecardViewRequest(s, {}, focusRequestOptions(focusWindow('24M', '2026-M10', 'monthly'), 'm'))).toEqual(
+    expect(scorecardViewRequest(s, {}, focusRequestOptions(focusWindow('24M', '2026-M10', 'monthly'), 'm', '2026-M10'))).toEqual(
       scorecardViewRequest(s, {}, { months: 24, metrics: ['m'] }),
     )
   })
 
   it('a coarse metric asks for its own grain only, for itself', () => {
-    const req = scorecardViewRequest(state('2026-M10'), {}, focusRequestOptions(focusWindow('12M', '2026-M10', 'quarterly'), 'm'))
+    const req = scorecardViewRequest(state('2026-M10'), {}, focusRequestOptions(focusWindow('12M', '2026-M10', 'quarterly'), 'm', '2026-M10'))
     expect(req.periods).toEqual(['2024-Q4', '2025-Q1', '2025-Q2', '2025-Q3', '2025-Q4', '2026-Q1', '2026-Q2', '2026-Q3'])
     expect(req.metrics).toEqual(['m'])
+  })
+
+  it('a quarter, half or year view shares the Overview request when the window is that view’s own trend', () => {
+    for (const range of RANGES) {
+      expect(focusRequestOptions(focusWindow(range.key, '2026-Q3', 'monthly'), 'm', '2026-Q3')).toEqual({})
+      expect(focusRequestOptions(focusWindow(range.key, '2026-Q3', 'quarterly'), 'm', '2026-Q3')).toEqual({})
+      expect(focusRequestOptions(focusWindow(range.key, '2026-H1', 'quarterly'), 'm', '2026-H1')).toEqual({})
+      expect(focusRequestOptions(focusWindow(range.key, '2025-FY', 'biannual'), 'm', '2025-FY')).toEqual({})
+    }
+    const s = state('2026-Q3')
+    expect(scorecardViewRequest(s, {}, focusRequestOptions(focusWindow('12M', '2026-Q3', 'monthly'), 'm', '2026-Q3'))).toEqual(
+      scorecardViewRequest(s, {}),
+    )
+  })
+
+  it('a coarser metric in a quarter view still asks for its own grain', () => {
+    expect(focusRequestOptions(focusWindow('12M', '2026-Q3', 'annual'), 'm', '2026-Q3')).toEqual({
+      window: { grain: 'year', count: 3 },
+      metrics: ['m'],
+    })
   })
 
   it('a window wins over coarse grains: never mixed', () => {

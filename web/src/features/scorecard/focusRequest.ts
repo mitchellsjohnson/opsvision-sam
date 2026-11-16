@@ -22,12 +22,17 @@ export function focusWindow(range: RangeKey, period: string, frequency: Frequenc
   return { grain, count: TREND_SPAN[grain] }
 }
 
+const SHARED_SPAN: Record<Grain, number> = { month: 12, ...TREND_SPAN }
+
 /**
- * The view request options for a window. Twelve months share the Overview's
- * request and cache; 24 months ask for this metric's rows only, as today;
- * any other window asks for its own grain only, for this metric.
+ * The view request options for a window. The selected period's own trend
+ * (12 months, 8 quarters, 4 halves, 3 years) shares the Overview's request
+ * and cache; 24 months ask for this metric's rows only, as today; any other
+ * window asks for its own grain only, for this metric.
  */
-export function focusRequestOptions(window: { grain: Grain; count: number }, metricKey: string): ViewRequestOptions {
-  if (window.grain === 'month') return window.count === 12 ? {} : { months: window.count, metrics: [metricKey] }
+export function focusRequestOptions(window: { grain: Grain; count: number }, metricKey: string, period: string): ViewRequestOptions {
+  const selected = parsePeriod(period)?.grain ?? 'month'
+  if (window.grain === selected && window.count === SHARED_SPAN[selected]) return {}
+  if (window.grain === 'month') return { months: window.count, metrics: [metricKey] }
   return { window, metrics: [metricKey] }
 }

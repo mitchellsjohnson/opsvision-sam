@@ -170,7 +170,7 @@ describe('FocusDialog', () => {
   it('arrow keys move between metrics; the hint row names the shortcuts and turns them off', async () => {
     renderOverview(`${OVERVIEW}&focus=on_time_pct`)
     const dialog = await screen.findByRole('dialog', { name: /On-time delivery/i })
-    await within(dialog).findByRole('region', { name: 'Org breakdown' })
+    await within(dialog).findByRole('region', { name: 'By unit' })
     const user = userEvent.setup()
     // The dialog itself has focus on open, so a shortcut works at once.
     expect(document.activeElement).toBe(dialog)
@@ -178,6 +178,7 @@ describe('FocusDialog', () => {
     expect(await screen.findByRole('dialog', { name: /Defect rate/i })).toBeTruthy()
     const toggle = within(screen.getByRole('dialog')).getByRole('switch', { name: 'Shortcuts: On' })
     expect(toggle.closest('[data-hints]')!.textContent).toContain('previous / next metric')
+    expect(toggle.getAttribute('aria-keyshortcuts')).toBeNull()
     await user.click(toggle)
     expect(toggle.getAttribute('aria-checked')).toBe('false')
     expect(toggle.textContent).toBe('Shortcuts: Off')
@@ -185,6 +186,65 @@ describe('FocusDialog', () => {
     within(screen.getByRole('dialog')).getByRole('button', { name: /^Previous metric/ }).focus()
     await user.keyboard('{ArrowRight}')
     expect(screen.getByRole('dialog', { name: /Defect rate/i })).toBeTruthy()
+  })
+
+  it('at a phone width the switch stays visible; only the hint text hides', async () => {
+    const width = window.innerWidth
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 360 })
+    try {
+      renderOverview(`${OVERVIEW}&focus=on_time_pct`)
+      const dialog = await screen.findByRole('dialog', { name: /On-time delivery/i })
+      await within(dialog).findByRole('region', { name: 'By unit' })
+      const toggle = within(dialog).getByRole('switch', { name: 'Shortcuts: On' })
+      // Tailwind's `hidden` (display: none below 640px) on the switch or any ancestor would hide it on phones.
+      const hiddenOnPhones = (el: Element | null): boolean => {
+        for (let e = el; e && e !== dialog; e = e.parentElement) if (e.classList.contains('hidden')) return true
+        return false
+      }
+      expect(hiddenOnPhones(toggle)).toBe(false)
+      const hints = toggle.closest('[data-hints]')!.querySelectorAll('[data-hint]')
+      expect(hints.length).toBeGreaterThan(0)
+      for (const hint of hints) expect(hiddenOnPhones(hint)).toBe(true)
+    } finally {
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: width })
+    }
+  })
+
+  it('More menu toggles keyboard shortcuts, in step with the hint row switch', async () => {
+    renderOverview(`${OVERVIEW}&focus=on_time_pct`)
+    const dialog = await screen.findByRole('dialog', { name: /On-time delivery/i })
+    await within(dialog).findByTestId('metric-chart')
+    const { user, menu } = await openMore(dialog)
+    const item = within(menu).getByRole('menuitemcheckbox', { name: 'Keyboard shortcuts: On' })
+    expect(item.getAttribute('aria-checked')).toBe('true')
+    await user.click(item)
+    expect(localStorage.getItem('opsvision.shortcuts')).toBe('off')
+    expect(within(dialog).getByRole('switch', { name: 'Shortcuts: Off' }).getAttribute('aria-checked')).toBe('false')
+    await user.keyboard('{ArrowRight}')
+    expect(screen.getByRole('dialog', { name: /On-time delivery/i })).toBeTruthy()
+    const again = await openMore(dialog)
+    expect(within(again.menu).getByRole('menuitemcheckbox', { name: 'Keyboard shortcuts: Off' }).getAttribute('aria-checked')).toBe('false')
+  })
+
+  it('the announcement clears after a few seconds, so Loading chart can be spoken again', async () => {
+    renderOverview(`${OVERVIEW}&focus=on_time_pct`)
+    const dialog = await screen.findByRole('dialog', { name: /On-time delivery/i })
+    await within(dialog).findByRole('navigation', { name: 'Metrics' })
+    await userEvent.setup().click(within(dialog).getByRole('button', { name: /^Next metric/ }))
+    const live = within(screen.getByRole('dialog')).getByTestId('dialog-live')
+    expect(live.textContent).toBe('Defect rate, 2 of 2')
+    await waitFor(() => expect(live.textContent).toBe(''), { timeout: 6000 })
+  }, 10000)
+
+  it('a quarter view shares the Overview request: no second request for the chart', async () => {
+    const seen: URL[] = []
+    server.use(...viewHandlers({ onView: (u) => seen.push(u) }))
+    renderApp(<App />, { route: '/scorecards/sc-main/overview?period=2026-Q3&focus=on_time_pct' })
+    const dialog = await screen.findByRole('dialog', { name: /On-time delivery/i })
+    await within(dialog).findByTestId('metric-chart')
+    expect(seen.some((u) => u.searchParams.has('metrics'))).toBe(false)
+    expect(new Set(seen.map((u) => u.search)).size).toBe(1)
+    expect(seen[0]!.searchParams.getAll('periods')).toHaveLength(8)
   })
 
   it('More menu holds copy link, table, present and exports; copy announces', async () => {
@@ -278,7 +338,7 @@ describe('FocusDialog', () => {
     )
     renderApp(<App />, { route: `${OVERVIEW}&focus=on_time_pct` })
     const dialog = await screen.findByRole('dialog', { name: /On-time delivery/i })
-    await within(dialog).findByRole('region', { name: 'Org breakdown' })
+    await within(dialog).findByRole('region', { name: 'By unit' })
     expect(within(dialog).queryByText(/Loading chart/)).toBeNull()
     const region = within(dialog).getByTestId('metric-chart').closest('[data-chart-region]')!
     expect(region.getAttribute('aria-busy')).toBeNull()
@@ -293,7 +353,7 @@ describe('FocusDialog', () => {
   it('the chart fills the dialog height, ahead of the breakdown; tile charts keep their size', async () => {
     renderOverview(`${OVERVIEW}&focus=on_time_pct`)
     const dialog = await screen.findByRole('dialog', { name: /On-time delivery/i })
-    const breakdown = await within(dialog).findByRole('region', { name: 'Org breakdown' })
+    const breakdown = await within(dialog).findByRole('region', { name: 'By unit' })
     const chart = within(dialog).getByTestId('metric-chart')
     expect(chart.dataset.size).toBe('focus')
     expect(chart.className).toContain(FOCUS_CHART_HEIGHT)
@@ -309,7 +369,7 @@ describe('FocusDialog', () => {
   it('the dialog has no axe violations', async () => {
     renderOverview(`${OVERVIEW}&focus=on_time_pct`)
     const dialog = await screen.findByRole('dialog', { name: /On-time delivery/i })
-    await within(dialog).findByRole('region', { name: 'Org breakdown' })
+    await within(dialog).findByRole('region', { name: 'By unit' })
     await within(dialog).findByRole('navigation', { name: 'Metrics' })
     expect((await axe(dialog)).violations).toEqual([])
   })
@@ -328,12 +388,12 @@ describe('FocusDialog', () => {
   it('a range strip under the chart offers 3M, 6M, 12M, YTD and 24M, each with its own change; 12M is selected', async () => {
     renderRamp(`${OVERVIEW}&focus=on_time_pct`)
     const dialog = await screen.findByRole('dialog', { name: /On-time delivery/i })
-    await within(dialog).findByRole('region', { name: 'Org breakdown' })
+    await within(dialog).findByRole('region', { name: 'By unit' })
     const strip = within(dialog).getByRole('group', { name: 'Range' })
     const ribbon = within(dialog).getByTestId('status-ribbon')
     expect(ribbon.compareDocumentPosition(strip) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     // The breakdown follows the strip.
-    expect(strip.compareDocumentPosition(within(dialog).getByRole('region', { name: 'Org breakdown' })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(strip.compareDocumentPosition(within(dialog).getByRole('region', { name: 'By unit' })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     const tabs = within(strip).getAllByRole('button')
     // One point a month up to October's 73.0%: Aug 71, May 68, Nov 62, Jan 64. 24 months are not loaded yet.
     expect(tabs.map((t) => t.textContent)).toEqual(['3M▲+2.0 pts', '6M▲+5.0 pts', '12M▲+11.0 pts', 'YTD▲+9.0 pts', '24M—'])
@@ -354,7 +414,7 @@ describe('FocusDialog', () => {
   it('range strip has a caption and is hidden for a quarterly metric', async () => {
     renderOverview(`${OVERVIEW}&focus=on_time_pct`)
     const dialog = await screen.findByRole('dialog', { name: /On-time delivery/i })
-    await within(dialog).findByRole('region', { name: 'Org breakdown' })
+    await within(dialog).findByRole('region', { name: 'By unit' })
     const strip = within(dialog).getByRole('group', { name: 'Range' })
     expect(strip.closest('[data-range-strip]')).toBeTruthy()
     expect(within(dialog).getByText('Change from the first month in each range to Oct 2026')).toBeTruthy()
@@ -382,11 +442,12 @@ describe('FocusDialog', () => {
     server.use(...viewHandlers({ onView: (u) => seen.push(u) }))
     renderApp(<App />, { route: `${OVERVIEW}&focus=on_time_pct` })
     const dialog = await screen.findByRole('dialog', { name: /On-time delivery/i })
-    const breakdown = await within(dialog).findByRole('region', { name: 'Org breakdown' })
+    const breakdown = await within(dialog).findByRole('region', { name: 'By unit' })
     expect(within(breakdown).getByRole('heading', { level: 3, name: 'By unit' })).toBeTruthy()
     const table = within(breakdown).getByRole('table')
     expect(within(table).getAllByRole('rowheader').map((th) => th.textContent)).toEqual(['Unit A', 'Unit B'])
-    expect(within(table).getByRole('columnheader', { name: 'Oct' }).getAttribute('aria-sort')).toBe('ascending')
+    // Worst first ranks status before value, so no column claims a sort.
+    expect(within(table).getByRole('columnheader', { name: 'Oct' }).getAttribute('aria-sort')).toBe('none')
     expect(within(table).getByRole('columnheader', { name: 'vs goal 90.0%' })).toBeTruthy()
     await userEvent.setup().click(within(table).getByRole('button', { name: 'Unit A' }))
     await waitFor(() => expect(seen.some((u) => u.searchParams.getAll('subjects').includes('unit-a'))).toBe(true))
@@ -395,7 +456,7 @@ describe('FocusDialog', () => {
   it('selecting 3M or YTD sets the chart to that range', async () => {
     renderRamp(`${OVERVIEW}&focus=on_time_pct`)
     const dialog = await screen.findByRole('dialog', { name: /On-time delivery/i })
-    await within(dialog).findByRole('region', { name: 'Org breakdown' })
+    await within(dialog).findByRole('region', { name: 'By unit' })
     const user = userEvent.setup()
     const pointButtons = () => within(within(dialog).getByTestId('point-controls')).getAllByRole('button')
     expect(pointButtons()).toHaveLength(12)
@@ -412,7 +473,7 @@ describe('FocusDialog', () => {
   it('number keys pick a range', async () => {
     renderRamp(`${OVERVIEW}&focus=on_time_pct`)
     const dialog = await screen.findByRole('dialog', { name: /On-time delivery/i })
-    await within(dialog).findByRole('region', { name: 'Org breakdown' })
+    await within(dialog).findByRole('region', { name: 'By unit' })
     within(dialog).getByRole('button', { name: /^Previous metric/ }).focus()
     await userEvent.setup().keyboard('1')
     expect(within(dialog).getByRole('button', { name: /^3M/ }).getAttribute('aria-pressed')).toBe('true')
@@ -431,7 +492,7 @@ describe('FocusDialog', () => {
     )
     renderApp(<App />, { route: `${OVERVIEW}&focus=on_time_pct` })
     const dialog = await screen.findByRole('dialog', { name: /On-time delivery/i })
-    await within(dialog).findByRole('region', { name: 'Org breakdown' })
+    await within(dialog).findByRole('region', { name: 'By unit' })
     const tab = within(dialog).getByRole('button', { name: /^3M/ })
     expect(tab.getAttribute('aria-label')).toBe('3M, no change')
     expect(tab.textContent).toBe('3MNo change')
@@ -445,7 +506,7 @@ describe('FocusDialog', () => {
     // Fiscal 2027-M04 is October 2026 with a July start.
     renderRamp('/scorecards/sc-main/overview?period=2027-M04&focus=on_time_pct')
     const dialog = await screen.findByRole('dialog', { name: /On-time delivery/i })
-    await within(dialog).findByRole('region', { name: 'Org breakdown' })
+    await within(dialog).findByRole('region', { name: 'By unit' })
     const ytd = within(dialog).getByRole('button', { name: /^YTD/ })
     // Fiscal 2027-M01 (Jul) is 76.0%, M04 (Oct) 79.0%; 12M runs from 2026-M05, 68.0%.
     expect(ytd.getAttribute('aria-label')).toBe('YTD, change +3.0 pts')
@@ -468,7 +529,7 @@ describe('FocusDialog', () => {
     server.use(...viewHandlers({ onView: (u) => seen.push(u), respond: (u) => HttpResponse.json(ramp(buildView(u.searchParams))) }))
     renderApp(<App />, { route: `${OVERVIEW}&focus=on_time_pct` })
     const dialog = await screen.findByRole('dialog', { name: /On-time delivery/i })
-    await within(dialog).findByRole('region', { name: 'Org breakdown' })
+    await within(dialog).findByRole('region', { name: 'By unit' })
     expect(seen.some((u) => u.searchParams.has('metrics'))).toBe(false)
     const user = userEvent.setup()
     const toggle = within(dialog).getByRole('button', { name: /^24M/ })
@@ -500,7 +561,7 @@ describe('FocusDialog', () => {
     )
     renderApp(<App />, { route: `${OVERVIEW}&focus=on_time_pct` })
     const dialog = await screen.findByRole('dialog', { name: /On-time delivery/i })
-    await within(dialog).findByRole('region', { name: 'Org breakdown' })
+    await within(dialog).findByRole('region', { name: 'By unit' })
     await userEvent.setup().click(within(dialog).getByRole('button', { name: /^24M/ }))
     const alert = await within(dialog).findByRole('alert', {}, { timeout: 4000 })
     expect(alert.textContent).toMatch(/couldn’t load this chart/)
@@ -517,7 +578,7 @@ describe('FocusDialog', () => {
     const grid = await within(dialog).findByRole('grid', { name: 'Service uptime by item and month' })
     expect(rowNames(grid)).toEqual(['Web service', 'API service'])
     expect(within(dialog).getByText('1 of 2 items Green')).toBeTruthy()
-    expect(within(dialog).queryByRole('region', { name: 'Org breakdown' })).toBeNull()
+    expect(within(dialog).queryByRole('region', { name: /^By / })).toBeNull()
     expect(within(dialog).queryByTestId('metric-chart')).toBeNull()
     expect(within(dialog).queryByRole('button', { name: 'Web service' })).toBeNull()
   })
@@ -562,7 +623,7 @@ describe('FocusDialog', () => {
     try {
       renderOverview(`${OVERVIEW}&focus=on_time_pct`)
       const dialog = await screen.findByRole('dialog', { name: /On-time delivery/i })
-      await within(dialog).findByRole('region', { name: 'Org breakdown' })
+      await within(dialog).findByRole('region', { name: 'By unit' })
       const { user, menu } = await openMore(dialog)
       await user.click(within(menu).getByRole('menuitem', { name: 'Export PNG' }))
       expect((await within(dialog).findByRole('alert')).textContent).toBe('We couldn’t make the image. Try SVG or CSV.')

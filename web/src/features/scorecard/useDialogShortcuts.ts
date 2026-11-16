@@ -39,8 +39,8 @@ function readEnabled(): boolean {
 /**
  * Single-key shortcuts inside a dialog: arrows for previous and next, `1`–`5`
  * for ranges, `T` table, `L` copy link, `P` present. Never with Cmd, Ctrl or
- * Alt (so the browser's own shortcuts keep working), never inside the
- * controls in `IGNORE`, and switchable off (WCAG 2.1.4).
+ * Alt (so the browser's own shortcuts keep working), never on auto-repeat,
+ * never inside the controls in `IGNORE`, and switchable off (WCAG 2.1.4).
  */
 export function useDialogShortcuts(
   ref: RefObject<HTMLElement | null>,
@@ -68,7 +68,8 @@ export function useDialogShortcuts(
     if (!enabled) return
     // On the document, so handlers inside the dialog (React's included) have had their turn and `defaultPrevented` is final.
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey) return
+      // A held key repeats; one press is one move.
+      if (e.repeat || e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey) return
       const root = ref.current
       const target = e.target
       if (!root || !(target instanceof Element) || !root.contains(target)) return

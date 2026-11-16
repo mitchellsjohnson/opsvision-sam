@@ -51,6 +51,8 @@ export interface CoarseStatus {
   cell: Cell | undefined
   /** The period due next, or for `overdue` the one overdue. */
   next: { label: string; dueBy: string }
+  /** For `overdue`, the column overdue; else null. */
+  overdue: Column | null
 }
 
 /**
@@ -68,7 +70,7 @@ export function coarseStatus(row: ViewRow, columns: Column[], selected: string, 
   }
   const last = columns[columns.length - 1]
   const lastP = parsePeriod(last?.period)
-  if (!last || !lastP) return { state: 'none', counted: null, cell: undefined, next: { label: '', dueBy: '' } }
+  if (!last || !lastP) return { state: 'none', counted: null, cell: undefined, next: { label: '', dueBy: '' }, overdue: null }
   if (accounted(at(last))) {
     const following = next(lastP)
     return {
@@ -76,14 +78,16 @@ export function coarseStatus(row: ViewRow, columns: Column[], selected: string, 
       counted: last,
       cell: at(last),
       next: { label: shortLabel(following, fy), dueBy: shortMonth(dueMonth(following), fy) },
+      overdue: null,
     }
   }
-  if (!columns.some((c) => accounted(at(c)))) return { state: 'none', counted: null, cell: undefined, next: dueBy(last) }
+  if (!columns.some((c) => accounted(at(c)))) return { state: 'none', counted: null, cell: undefined, next: dueBy(last), overdue: null }
   const prior = columns[columns.length - 2]
   const sel = parsePeriod(selected)
   const inGrace = sel !== null && endOrdinal(sel) <= endOrdinal(lastP) + 1
-  if (inGrace && prior && accounted(at(prior))) return { state: 'due', counted: prior, cell: at(prior), next: dueBy(last) }
-  return { state: 'overdue', counted: null, cell: undefined, next: dueBy(inGrace && prior ? prior : last) }
+  if (inGrace && prior && accounted(at(prior))) return { state: 'due', counted: prior, cell: at(prior), next: dueBy(last), overdue: null }
+  const late = inGrace && prior ? prior : last
+  return { state: 'overdue', counted: null, cell: undefined, next: dueBy(late), overdue: late }
 }
 
 export interface PeriodStatus {
@@ -122,9 +126,9 @@ function lastReported(scope: ViewRow | null, children: ViewRow[], selected: Colu
   const found = own ?? fromChildren.sort((a, b) => endOrdinal(parsePeriod(b.period)!) - endOrdinal(parsePeriod(a.period)!))[0]
   if (!found) return { kind: 'window', text: `No reports in the last ${span} ${columnUnit(selected, span)}` }
   const label = periodLabel(parsePeriod(found.period)!, fy)
+  if (found.period === selected.period) return { kind: 'stopped', text: `Reported ${label}, not rated` }
   const value = own && found.display ? ` (${found.display})` : ''
-  const unrated = found.period === selected.period ? ', not rated' : ''
-  return { kind: 'stopped', text: `Last reported ${label}${value}${unrated}` }
+  return { kind: 'stopped', text: `Last reported ${label}${value}` }
 }
 
 /** A cell standing in for a coarse period the scope did not report: the worst child's status. */
@@ -223,7 +227,7 @@ function coarsePeriodStatus({
     return { status: '', caption: text, counted: last, notReported: { kind: 'window', text }, quiet: null }
   }
   if (s.state === 'overdue') {
-    const late = [...coarse].reverse().find((c) => c.label === s.next.label) ?? last
+    const late = s.overdue ?? last
     const text = `${late.fullLabel} overdue (due by ${monthLabel(dueMonth(parsePeriod(late.period)!), fy)})`
     return { status: '', caption: text, counted: last, notReported: { kind: 'overdue', text }, quiet: null }
   }
@@ -236,7 +240,10 @@ function coarsePeriodStatus({
   }
   const nextDue = `${s.next.label} due by ${s.next.dueBy}`
   if (!cell?.status) {
-    const text = `Last reported ${counted.fullLabel}${cell?.display ? ` (${cell.display})` : ''}, not rated`
+    const text =
+      s.state === 'current'
+        ? `Reported ${counted.fullLabel}, not rated`
+        : `Last reported ${counted.fullLabel}${cell?.display ? ` (${cell.display})` : ''}, not rated`
     return { status: '', caption: text, counted, notReported: { kind: 'stopped', text }, quiet: null }
   }
   const lead = s.state === 'current' ? counted.fullLabel : nextDue

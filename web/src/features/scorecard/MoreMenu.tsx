@@ -17,17 +17,19 @@ export function Kbd({ children }: { children: string }) {
   )
 }
 
-/** The dialog's More actions menu (§8.3): copy link, table, present, then exports. */
+/** The dialog's More actions menu (§8.3): copy link, table, present, exports, then the keyboard shortcuts switch. */
 export function MoreMenu({
   onCopyLink,
   onTable,
   onPresent,
   onExport,
+  shortcuts,
 }: {
   onCopyLink: () => Promise<boolean>
   onTable: () => void
   onPresent: () => void
   onExport: (format: 'png' | 'svg' | 'csv') => void
+  shortcuts?: { enabled: boolean; onToggle: (on: boolean) => void }
 }) {
   return (
     <DropdownMenu.Root>
@@ -68,6 +70,14 @@ export function MoreMenu({
           <DropdownMenu.Item className={ITEM} onSelect={() => onExport('csv')}>
             Export CSV
           </DropdownMenu.Item>
+          {shortcuts && (
+            <>
+              <DropdownMenu.Separator className="my-1 h-px bg-ink/10" />
+              <DropdownMenu.CheckboxItem className={ITEM} checked={shortcuts.enabled} onCheckedChange={shortcuts.onToggle}>
+                Keyboard shortcuts: {shortcuts.enabled ? 'On' : 'Off'}
+              </DropdownMenu.CheckboxItem>
+            </>
+          )}
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
     </DropdownMenu.Root>
