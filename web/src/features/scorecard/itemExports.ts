@@ -34,7 +34,8 @@ const TABLE_BOTTOM = SVG_HEIGHT - 72
 const NAME_WIDTH = 380
 const VALUE_WIDTH = 190
 const ROW_MAX = 34
-const ROW_MIN = 18
+/** Tall enough for a 14px cell with its letter, so status never rests on color alone. */
+const ROW_MIN = 20
 
 function n1(v: number): string {
   return String(Math.round(v * 10) / 10)
@@ -115,7 +116,8 @@ export function itemGridSvg(input: { title: string; scope: string; rows: ItemRow
   const rowHeight = Math.max(ROW_MIN, Math.min(ROW_MAX, Math.floor(room / Math.max(rows.length, 1))))
   const fits = Math.floor(room / rowHeight)
   const shown = rows.length > fits ? rows.slice(0, fits - 1) : rows
-  const cellHeight = Math.max(12, rowHeight - 6)
+  const cellHeight = Math.max(14, rowHeight - 6)
+  const letterSize = Math.max(11, Math.min(13, cellHeight - 2))
   const size = Math.min(18, rowHeight - 8)
   shown.forEach((r, k) => {
     const top = TABLE_TOP + k * rowHeight
@@ -130,7 +132,15 @@ export function itemGridSvg(input: { title: string; scope: string; rows: ItemRow
       if (c.kind === 'status') {
         const p = cellPaint(scale, c.status)
         parts.push(`<rect ${attrs} fill="${p.fill}"${p.stroke ? ` stroke="${p.stroke}"` : ''} />`)
-        if (cellHeight >= 14) parts.push(text(x + w / 2, y + cellHeight / 2 + 4.5, c.status, { size: 13, weight: 700, fill: p.letter, anchor: 'middle' }))
+        parts.push(
+          text(x + w / 2, y + cellHeight / 2 + letterSize * 0.35, c.status, {
+            size: letterSize,
+            weight: 700,
+            fill: p.letter,
+            anchor: 'middle',
+            role: 'cell-letter',
+          }),
+        )
       } else if (c.kind === 'na') {
         parts.push(`<rect ${attrs} fill="${WHITE}" stroke="${RULE}" />`)
       } else if (c.kind === 'unrated') {

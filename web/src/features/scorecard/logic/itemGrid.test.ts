@@ -141,7 +141,34 @@ describe('itemSummary', () => {
   })
 
   it('no items: nothing worst', () => {
-    expect(itemSummary([], scale)).toMatchObject({ total: 0, best: 0, notReported: 0, worst: null })
+    expect(itemSummary([], scale)).toMatchObject({ total: 0, best: 0, notReported: 0, notApplicable: 0, worst: null })
+  })
+})
+
+describe('n/a items', () => {
+  /** The fixture plus Archive, not applicable this month. */
+  const withNa = () => {
+    const archive = item('archive', 'Archive', null)
+    const oct = archive.cells[archive.cells.length - 1]!
+    Object.assign(oct, { naReason: 'Retired in Oct', coverage: [0, 0] })
+    return buildItemRows([...fixture, archive], columns, scale, (id) => GROUPS[id] ?? 'Unassigned', 1)
+  }
+
+  it('are their own group, by name, after the not reported', () => {
+    const { reported, notReported, notApplicable } = sortItems(withNa(), 'worst', 'higher_better', scale)
+    expect(reported).toHaveLength(5)
+    expect(ids(notReported)).toEqual(['push', 'report'])
+    expect(ids(notApplicable)).toEqual(['archive'])
+  })
+
+  it('are counted apart from the not reported', () => {
+    expect(itemSummary(withNa(), scale)).toMatchObject({ total: 8, notReported: 2, notApplicable: 1 })
+  })
+
+  it('are not exceptions on the tile', () => {
+    const e = exceptionsFirst(withNa(), scale, 'higher_better', 5)
+    expect(ids(e.shown)).toEqual(['hooks', 'ingest', 'search', 'push', 'report'])
+    expect(e).toMatchObject({ restBest: 2, hiddenNotReported: 0 })
   })
 })
 

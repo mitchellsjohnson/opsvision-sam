@@ -31,7 +31,7 @@
 2. **Tenants with a custom status scale** (two or four levels, labels like "On track / Watch / Off track"): every count, headline and reason uses the tenant's labels; "best" is rank-minimum, "worst" rank-maximum. Pinned by Task 6 (`HealthSummary` with a four-level scale) and Task 4 (headline uses the best label).
 3. **Restated views and mid-window methodology changes** (`?restate=v2026`, versions changing in July): definition and threshold text come from the version in force for the selected period; no methodology markers when restated; coarse grains come from the version in force. Pinned by Task 2 (definition line from `Cell.versionId`), Task 3 (coarse grains from the version in force) and Task 8 (`useVersionMarkers` returns `[]` when restated).
 4. **Metrics with no data, all n/a, or an n/a scope in the selected period**: each metric is counted exactly once in Health; n/a scopes list their reason in Not reported. Pinned by Task 3 (`periodStatus` table test) and Task 5 (`NotReportedCard` n/a row).
-5. **Stale or hand-edited URLs** (`subject` of an item not in view, `sort=bogus`, `focus` of a hidden metric): the dialog falls back (grid without drill-in, Worst now sort) and cleans the URL with `replace`. Pinned by Task 4.
+5. **Stale or hand-edited URLs** (`item` of an item not in view, `sort=bogus`, `focus` of a hidden metric): the dialog falls back (grid without drill-in, Worst now sort) and cleans the URL with `replace`. Pinned by Task 4.
 
 ---
 

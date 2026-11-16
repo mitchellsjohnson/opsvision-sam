@@ -1,10 +1,10 @@
 import * as Dialog from '@radix-ui/react-dialog'
 import { X } from 'lucide-react'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
-import { useLocation, useNavigate, useParams, useSearchParams } from 'react-router'
+import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router'
 import { useMe, useOrgLevels, useOrgUnits, useScorecards, useVersions, useView } from '../../api/queries'
 import type { components } from '../../api/schema'
-import { parsePeriod } from '../../lib/period'
+import { parsePeriod, periodLabel } from '../../lib/period'
 import { usePeriodState } from '../../shell/usePeriodState'
 import { StatusChip } from '../../ui/status'
 import { useAskSam } from '../assistant/useAssistant'
@@ -16,8 +16,8 @@ import { RANGES, rangeChange, rangeMonths, type RangeKey } from './charts/ranges
 import { multiSeriesHeader } from './charts/seriesLayout'
 import { isSparse } from './charts/sparse'
 import { useVersionMarkers } from './charts/versionMarkers'
-import { buildMonthTrendColumns, windowColumns } from './columns'
-import { DefinitionLine } from './DefinitionLine'
+import { buildMonthTrendColumns, windowColumns, type Column } from './columns'
+import { DefinitionLine, MEASURED } from './DefinitionLine'
 import { chartCsv, chartSvg, downloadBlob, metricPng } from './exports'
 import { focusBodyKind } from './focusBody'
 import { FocusHeader } from './FocusHeader'
@@ -27,12 +27,13 @@ import { formatMetricValue } from './format'
 import { ItemDrillIn } from './ItemDrillIn'
 import { itemGridCsv, itemGridSvg } from './itemExports'
 import { ItemGrid, SegmentedControl, useItemGroups } from './ItemGrid'
+import { periodStatus } from './logic/coarse'
 import { buildItemRows, ITEM_PARAM, parseItemSort, SORT_PARAM, sortItems, type ItemSort } from './logic/itemGrid'
 import { defaultLayout } from './logic/layout'
 import { nounForms, type NounForms } from './logic/nouns'
 import { cellReported, statusAtScope, type StatusScaleEntry } from './logic/statusAtScope'
 import { buildBoardRow } from './logic/statusBoard'
-import { sinceText } from './logic/statusText'
+import { columnUnit, sinceText } from './logic/statusText'
 import { Kbd, MoreMenu } from './MoreMenu'
 import { RangeStrip } from './RangeStrip'
 import { TablePage } from './TablePage'
@@ -96,6 +97,21 @@ function ownTargets(rule: StatusRule | undefined, scale: StatusScaleEntry[], nam
   })
 }
 
+/** The index of the last of `columns` where `row` has a value; -1 when none does. */
+function lastValuedIndex(row: components['schemas']['ViewRow'], columns: Column[]): number {
+  for (let i = columns.length - 1; i >= 0; i--) {
+    const c = row.cells.find((x) => cellKey(x) === columns[i]!.key)
+    if (c && c.naReason === '' && c.value != null) return i
+  }
+  return -1
+}
+
+/** `Aug–Oct`, `Oct`: the columns after the last value. */
+function spanLabel(columns: Column[]): string {
+  if (columns.length === 0) return ''
+  return columns.length === 1 ? columns[0]!.label : `${columns[0]!.label}–${columns[columns.length - 1]!.label}`
+}
+
 /** The item kind's noun for a metric reported for tracked items; mounted only then, so other metrics never ask for item kinds. */
 function ItemNoun({ metric, children }: { metric: Metric; children: (noun: NounForms) => ReactNode }) {
   return children(useItemNoun(metric))
@@ -157,8 +173,7 @@ function MetricFocus({
   const [filter, setFilter] = useState('')
   const [restoreId, setRestoreId] = useState('')
   const gridScroll = useRef(0)
-  // Opened straight onto a drill-in (a tile row, a link): its heading takes focus once it renders (§6.6).
-  const focusHeading = useRef(params.has(ITEM_PARAM))
+  // The item whose drill-in was last on screen: a change into a drill-in moves focus to its heading (§6.6).
   const shownSubject = useRef('')
   const headingRef = useRef<HTMLHeadingElement>(null)
   const groupOf = useItemGroups()
@@ -174,8 +189,9 @@ function MetricFocus({
       defaultStatusScale().map((s) => ({ key: s.key, rank: s.rank })),
     [me.data?.tenant?.statusScale],
   )
-  const statusColors = me.data?.tenant?.statusScale ?? defaultStatusScale()
+  const statusColors = useMemo(() => me.data?.tenant?.statusScale ?? defaultStatusScale(), [me.data?.tenant?.statusScale])
   const statusLabel = (key: string) => statusColors.find((s) => s.key === key)?.label
+  const canEnter = me.data?.role === 'admin' || me.data?.role === 'contributor'
 
   // Ranges are months; other grains, and metrics coarser than the selected grain, keep their own trend window.
   const monthGrain = parsePeriod(period.period)?.grain === 'month'
@@ -232,7 +248,11 @@ function MetricFocus({
   const subject = params.get(ITEM_PARAM) ?? ''
   const sortParam = params.get(SORT_PARAM)
   const sort = parseItemSort(sortParam)
-  const itemRows = isItems && metricGroup ? buildItemRows(metricGroup.rows, itemColumns, scale, groupOf, fy) : []
+  // Kept per response and window, so the grid's memoized rows skip when the filter or an announcement changes.
+  const itemRows = useMemo(() => {
+    const rows = view.data ? groupRows(view.data).flatMap((g) => g.metrics).find((m) => m.key === metricKey)?.rows : undefined
+    return isItems && rows ? buildItemRows(rows, itemColumns, scale, groupOf, fy) : []
+  }, [view.data, metricKey, isItems, itemColumns, scale, groupOf, fy])
   const subjectRow = isItems && subject ? metricGroup?.rows.find((r) => r.subjectKind === 'item' && r.subjectId === subject) : undefined
   const drillRow = subjectRow ? buildItemRows([subjectRow], trendColumns, scale, groupOf, fy)[0] : undefined
   const drilling = drillRow !== undefined
@@ -256,13 +276,14 @@ function MetricFocus({
     )
   }, [settled, subject, hasSubjectRow, sortParam, isItems, setParams])
 
-  // Into a drill-in: focus its heading. Back to the grid: the scroll position it had (the grid refocuses the item).
+  // Into a drill-in, however it came (the grid, a tile row, a link, Forward): focus its heading. Back to the
+  // grid: the scroll position it had (the grid refocuses the item). Undecided until the metric's rows are in.
   useLayoutEffect(() => {
+    if (!metricGroup) return
     const was = shownSubject.current
     shownSubject.current = drilling ? subject : ''
     const body = bodyRef.current
-    if (drilling && focusHeading.current && headingRef.current) {
-      focusHeading.current = false
+    if (drilling && was !== subject && headingRef.current) {
       if (body) body.scrollTop = 0
       headingRef.current.focus()
     } else if (!drilling && was !== '' && body) {
@@ -272,7 +293,6 @@ function MetricFocus({
 
   const openItem = (id: string) => {
     gridScroll.current = bodyRef.current?.scrollTop ?? 0
-    focusHeading.current = true
     setRestoreId(id)
     setParams(
       (prev) => {
@@ -284,7 +304,9 @@ function MetricFocus({
     )
   }
   const backToGrid = () => {
-    // Opened from the grid: the same as browser Back. Opened from a link: drop the subject in place.
+    // The grid then focuses this item's cell, so focus never falls back to the frame (where ← → change metric).
+    setRestoreId(subject)
+    // Opened from the grid: the same as browser Back. Opened from a link: drop the item in place.
     if ((location.state as { itemGrid?: boolean } | null)?.itemGrid) {
       void navigate(-1)
       return
@@ -310,7 +332,7 @@ function MetricFocus({
     )
   const sortedItems = () => {
     const s = sortItems(itemRows, sort, head?.direction ?? 'higher_better', scale)
-    return [...s.reported, ...s.notReported]
+    return [...s.reported, ...s.notReported, ...s.notApplicable]
   }
 
   // A metric with no org-unit row (item-only) has no scope value to chart.
@@ -366,7 +388,6 @@ function MetricFocus({
     })
     setFilter('')
     setRestoreId('')
-    focusHeading.current = false
     announce(`${target.name}, ${layout.indexOf(target) + 1} of ${layout.length}`)
   }
 
@@ -457,7 +478,34 @@ function MetricFocus({
   const monthly = monthGrain && (head?.frequency ?? 'monthly') === 'monthly'
   // The range strip goes with a chart of one line (a drill-in included); the item grid has its own 6M · 12M · 24M control.
   const multiSeries = !drillRow && chartRows.length > 1
-  const rangeShown = monthly && !sparse && !gridShown && !multiSeries
+
+  // Nothing to answer with in the selected column, by the rule the Overview counts with, so the dialog says
+  // what the tile says: no reports in the window (§7.9), stopped reporting (§7.8), or not applicable.
+  const selectedGrain = parsePeriod(period.period)?.grain ?? 'month'
+  const coarseShown = shownWindow.grain !== selectedGrain
+  const periodColumn = coarseShown ? windowColumns(period.period, selectedGrain, 1, fy).at(-1) : selectedColumn
+  const standing =
+    head && periodColumn && !isItems && !multiSeries
+      ? periodStatus({
+          scope,
+          children,
+          frequency: head.frequency,
+          selected: periodColumn,
+          coarse: coarseShown ? shownColumns : [],
+          scale,
+          noun,
+          fy,
+        })
+      : null
+  const unreported = standing?.notReported ?? null
+  const noReports = unreported?.kind === 'window'
+  const stopped = (unreported?.kind === 'stopped' || unreported?.kind === 'overdue') && !cellReported(cell)
+  const lastShownAt = stopped && chartRow ? lastValuedIndex(chartRow, trendColumns) : -1
+  const lastShown = lastShownAt >= 0 ? trendColumns[lastShownAt] : undefined
+  // A stopped metric's range change runs to its last value, not to the empty months after it.
+  const stripTo = lastShown ?? selectedColumn
+
+  const rangeShown = monthly && !sparse && !gridShown && !multiSeries && !noReports
   const itemRangeShown = monthly && gridShown
 
   const shortcuts = useDialogShortcuts(
@@ -530,6 +578,32 @@ function MetricFocus({
     chartArea = <div data-chart-region="" className={`mt-4 ${FOCUS_CHART_HEIGHT}`} aria-busy="true" />
   } else if (!chartRow || !head) {
     chartArea = <p role="alert">This metric has no rows for this selection.</p>
+  } else if (noReports) {
+    const first = shownColumns[0]
+    const last = shownColumns[shownColumns.length - 1]
+    const parsed = parsePeriod(period.period)
+    chartArea = (
+      <div
+        data-chart-region=""
+        data-testid="focus-no-reports"
+        className={`flex flex-col items-center justify-center gap-1 px-4 text-center ${FOCUS_CHART_HEIGHT}`}
+      >
+        <p className="text-sm font-medium">
+          No reports in the last {shownColumns.length} {columnUnit(last, shownColumns.length)}
+        </p>
+        {withNouns(({ reported }) => (
+          <p className="max-w-[640px] text-balance text-xs text-ink/70">
+            Nothing has been entered for {first?.fullLabel ?? ''} – {last?.fullLabel ?? ''}. Measured {MEASURED[head.frequency]}
+            {metric ? `, by ${reported.one}` : ''}.
+          </p>
+        ))}
+        {canEnter && (
+          <Link to={`/entry?period=${period.period}`} className="mt-1 text-sm font-medium text-accent-deep hover:underline">
+            Enter {parsed ? periodLabel(parsed, fy) : period.period} data<span aria-hidden="true"> ›</span>
+          </Link>
+        )}
+      </div>
+    )
   } else if (isItems) {
     const total = itemRows.length
     chartArea = (
@@ -564,14 +638,20 @@ function MetricFocus({
               restoreId={restoreId}
               announce={announce}
               range={
-                itemRangeShown ? (
-                  <SegmentedControl
-                    label="Range"
-                    options={ITEM_RANGES.map((key) => ({ value: key, label: key }))}
-                    value={itemRange}
-                    onChange={selectRange}
-                  />
-                ) : undefined
+                itemRangeShown
+                  ? {
+                      control: (
+                        <SegmentedControl
+                          label="Range"
+                          options={ITEM_RANGES.map((key) => ({ value: key, label: key }))}
+                          value={itemRange}
+                          onChange={selectRange}
+                        />
+                      ),
+                      minCount: rangeMonths(ITEM_RANGES[0], period.period),
+                      maxCount: rangeMonths(ITEM_RANGES[ITEM_RANGES.length - 1]!, period.period),
+                    }
+                  : undefined
               }
             />
           ),
@@ -599,6 +679,26 @@ function MetricFocus({
               )}
               {worstSeries.count && <span className="text-sm text-ink/70">{worstSeries.count}</span>}
             </>
+          ) : stopped ? (
+            // The last value as history, with no current chip (§7.8).
+            lastShown ? (
+              <>
+                <span className="text-[28px] leading-9 font-semibold tabular-nums text-ink/70">
+                  {chartRow.cells.find((c) => cellKey(c) === lastShown.key)?.display}
+                </span>
+                <span data-testid="stopped-since" className="text-sm text-ink/80">
+                  Last reported {lastShown.fullLabel}
+                  {/* A no-break space keeps the `·` off the start of a wrapped line. */}
+                  {lastShownAt < trendColumns.length - 1 && (
+                    <span className="text-ink/70">{`\u00a0· nothing for ${spanLabel(trendColumns.slice(lastShownAt + 1))}`}</span>
+                  )}
+                </span>
+              </>
+            ) : (
+              <span className="text-xl font-semibold text-ink/80">{unreported?.text}</span>
+            )
+          ) : unreported?.kind === 'na' ? (
+            <span className="text-xl font-semibold text-ink/80">{unreported.text}</span>
           ) : (
             <>
               <span className="text-[28px] leading-9 font-semibold tabular-nums">{cell?.display || '—'}</span>
@@ -715,7 +815,7 @@ function MetricFocus({
           selected={range}
           onSelect={selectRange}
           hidden={!rangeShown}
-          caption={selectedColumn ? `Change from the first month in each range to ${selectedColumn.fullLabel}` : ''}
+          caption={stripTo ? `Change from the first month in each range to ${stripTo.fullLabel}` : ''}
           changeFor={(key) => {
             const span = rangeMonths(key, period.period)
             // In a drill-in, the change is the item's own.
@@ -814,6 +914,11 @@ export function FocusDialog() {
           onOpenAutoFocus={(e) => {
             e.preventDefault()
             if (!frameRef.current?.contains(document.activeElement)) frameRef.current?.focus()
+          }}
+          // Escape in a filter with text clears the filter (the field does that) instead of closing the dialog.
+          onEscapeKeyDown={(e) => {
+            const t = e.target
+            if (t instanceof HTMLInputElement && t.type === 'search' && t.value !== '') e.preventDefault()
           }}
           onCloseAutoFocus={(e) => {
             if (focusReturnRef.current) {

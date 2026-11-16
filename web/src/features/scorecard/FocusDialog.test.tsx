@@ -685,6 +685,54 @@ describe('FocusDialog', () => {
     expect(within(dialog).queryByRole('group', { name: 'Range' })).toBeNull()
   })
 
+  /** On-time delivery with no values after `last` in any row, or none at all when `last` is null. */
+  function silence(last: string | null) {
+    server.use(
+      ...viewHandlers({
+        respond: (u) => {
+          const view = buildView(u.searchParams)
+          for (const r of view.rows.filter((x) => x.metricKey === 'on_time_pct')) {
+            for (const c of r.cells) {
+              if (last === null || c.period > last) Object.assign(c, { value: null, display: '', status: '', naReason: '', components: {}, change: null })
+            }
+          }
+          return HttpResponse.json(view)
+        },
+      }),
+    )
+  }
+
+  it('no reports in the window: the tile’s message, centred, with no chart, range strip, breakdown or "—"', async () => {
+    silence(null)
+    renderApp(<App />, { route: `${OVERVIEW}&focus=on_time_pct` })
+    const dialog = await screen.findByRole('dialog', { name: /On-time delivery/i })
+    const message = await within(dialog).findByTestId('focus-no-reports')
+    expect(within(message).getByText('No reports in the last 12 months')).toBeTruthy()
+    expect(within(message).getByText(/^Nothing has been entered for Nov 2025 – Oct 2026\. Measured monthly/)).toBeTruthy()
+    expect(within(dialog).queryByTestId('focus-value-row')).toBeNull()
+    expect(within(dialog).queryByTestId('metric-chart')).toBeNull()
+    expect(within(dialog).queryByRole('group', { name: 'Range' })).toBeNull()
+    expect(within(dialog).queryByRole('region', { name: 'By unit' })).toBeNull()
+    expect(within(dialog).queryByText('—')).toBeNull()
+  })
+
+  it('stopped reporting: the last value as history, when it was, what is missing since; no chip, no "—"', async () => {
+    silence('2026-M07')
+    renderApp(<App />, { route: `${OVERVIEW}&focus=on_time_pct` })
+    const dialog = await screen.findByRole('dialog', { name: /On-time delivery/i })
+    const row = await within(dialog).findByTestId('focus-value-row')
+    await waitFor(() => expect(row.textContent).toContain('Last reported Jul 2026'))
+    expect(within(row).getByTestId('stopped-since').textContent).toBe('Last reported Jul 2026\u00a0· nothing for Aug–Oct')
+    const value = row.firstElementChild!
+    expect(value.textContent).toMatch(/^\d+\.\d%$/)
+    expect(value.className).toContain('text-ink/70')
+    expect(within(row).queryByRole('img')).toBeNull()
+    expect(row.textContent).not.toContain('—')
+    // The plot still shows the history up to July; the strip's changes run to July too.
+    expect(within(dialog).getByTestId('metric-chart')).toBeTruthy()
+    expect(within(dialog).getByText('Change from the first month in each range to Jul 2026')).toBeTruthy()
+  })
+
   it('closing after a card background click returns focus to that card’s Expand button', async () => {
     renderOverview()
     await screen.findByRole('heading', { name: 'Overview', level: 1 })
@@ -816,7 +864,9 @@ describe('FocusDialog: item metrics', () => {
     expect(search(router).getAll('subject')).toEqual([])
     expect(seen.some((u) => u.searchParams.has('subjects'))).toBe(false)
     const drill = within(dialog).getByTestId('item-drill-in')
-    expect(within(drill).getByRole('navigation', { name: 'Breadcrumb' }).textContent).toContain('· Platform · Green at 99.90% or better')
+    expect(within(drill).getByTestId('drill-details').textContent).toBe('Platform · Green at 99.90% or better')
+    // On phones the details take their own line, so no line starts with the separator.
+    expect(within(drill).getByTestId('drill-details').className).toContain('max-sm:basis-full')
     expect(within(drill).getByRole('link', { name: 'All 2 services' })).toBeTruthy()
     expect(within(drill).getByTestId('metric-chart').dataset.size).toBe('focus')
     expect(within(dialog).queryByRole('grid')).toBeNull()
@@ -859,6 +909,50 @@ describe('FocusDialog: item metrics', () => {
     const dialog = await screen.findByRole('dialog', { name: 'Service uptime' })
     const heading = await within(dialog).findByRole('heading', { level: 3, name: 'Web service' })
     await waitFor(() => expect(document.activeElement).toBe(heading))
+  })
+
+  it('opened at a service by URL, All services focuses that service’s cell, so arrow keys stay in the grid', async () => {
+    server.use(...itemHandlers())
+    const router = renderRouted(`${OVERVIEW}&focus=svc_uptime&item=svc-web`)
+    const dialog = await screen.findByRole('dialog', { name: 'Service uptime' })
+    await within(dialog).findByRole('heading', { level: 3, name: 'Web service' })
+    const user = userEvent.setup()
+    await user.click(within(dialog).getByRole('link', { name: 'All 2 services' }))
+    await within(dialog).findByRole('grid')
+    await waitFor(() => expect(document.activeElement?.getAttribute('aria-label')).toBe('Web service, Oct 2026: Red, 99.20%'))
+    await user.keyboard('{ArrowLeft}')
+    expect(search(router).get('focus')).toBe('svc_uptime')
+    expect(document.activeElement?.getAttribute('aria-label')).toMatch(/^Web service, Sep 2026/)
+  })
+
+  it('Forward into a drill-in focuses its heading', async () => {
+    server.use(...itemHandlers())
+    const router = renderRouted(`${OVERVIEW}&focus=svc_uptime`)
+    const dialog = await screen.findByRole('dialog', { name: 'Service uptime' })
+    const grid = await within(dialog).findByRole('grid')
+    await userEvent.setup().click(within(grid).getByRole('button', { name: 'Web service, Oct 2026: Red, 99.20%' }))
+    await within(dialog).findByRole('heading', { level: 3, name: 'Web service' })
+    await act(() => router.navigate(-1))
+    await waitFor(() => expect(document.activeElement?.getAttribute('aria-label')).toBe('Web service, Oct 2026: Red, 99.20%'))
+    await act(() => router.navigate(1))
+    const heading = await within(dialog).findByRole('heading', { level: 3, name: 'Web service' })
+    await waitFor(() => expect(document.activeElement).toBe(heading))
+  })
+
+  it('Escape in a filter with text clears it and keeps the dialog open; a second Escape closes', async () => {
+    server.use(...itemHandlers({ many: true }))
+    const router = renderRouted(`${OVERVIEW}&focus=svc_uptime`)
+    const dialog = await screen.findByRole('dialog', { name: 'Service uptime' })
+    await within(dialog).findByRole('grid')
+    const user = userEvent.setup()
+    const input = within(dialog).getByRole('searchbox', { name: 'Filter services' }) as HTMLInputElement
+    await user.type(input, 'se')
+    await user.keyboard('{Escape}')
+    expect(screen.getByRole('dialog', { name: 'Service uptime' })).toBeTruthy()
+    expect(input.value).toBe('')
+    expect(search(router).get('focus')).toBe('svc_uptime')
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
   })
 
   it('opened from an Overview tile row, focus goes to that service’s heading; closing clears item and sort', async () => {

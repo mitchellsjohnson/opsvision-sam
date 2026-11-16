@@ -26,6 +26,19 @@ vi.mock('../../ui/useElementWidth', async () => {
   }
 })
 
+/** How many times a status cell has rendered, to see that rows skip when nothing of theirs changed. */
+const cellRenders = vi.hoisted(() => ({ count: 0 }))
+vi.mock('../../ui/status', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../ui/status')>()
+  return {
+    ...actual,
+    StatusCell: (props: Parameters<typeof actual.StatusCell>[0]) => {
+      cellRenders.count++
+      return actual.StatusCell(props)
+    },
+  }
+})
+
 const columns = buildTrendColumns('2026-M10', 1)
 
 /** A tenant scale with four levels; the best is still called Green. */
@@ -97,14 +110,28 @@ const ROWS = buildItemRows(SERVICES, columns, FOUR, groupOf, 1)
 const serviceNames = (grid: HTMLElement) => [...grid.querySelectorAll('tbody th[scope=row] [data-name]')].map((n) => n.textContent)
 const monthHeaders = (grid: HTMLElement) => [...grid.querySelectorAll('thead tr:last-child th')].map((th) => th.textContent)
 
-function Harness({ onOpenItem = () => {}, onSort = () => {} }: { onOpenItem?: (id: string) => void; onSort?: (s: ItemSort) => void }) {
+function Harness({
+  onOpenItem = () => {},
+  onSort = () => {},
+  rows = ROWS,
+  range,
+}: {
+  onOpenItem?: (id: string) => void
+  onSort?: (s: ItemSort) => void
+  rows?: typeof ROWS
+  range?: Parameters<typeof ItemGrid>[0]['range']
+}) {
   const [filter, setFilter] = useState('')
   const [sort, setSort] = useState<ItemSort>('worst')
+  const [, setTick] = useState(0)
   return (
     <Tooltip.Provider>
+      <button type="button" onClick={() => setTick((t) => t + 1)}>
+        Re-render
+      </button>
       <ItemGrid
         head={SERVICES[0]!}
-        rows={ROWS}
+        rows={rows}
         columns={columns}
         scale={FOUR}
         direction="higher_better"
@@ -116,10 +143,18 @@ function Harness({ onOpenItem = () => {}, onSort = () => {} }: { onOpenItem?: (i
         }}
         filter={filter}
         onFilter={setFilter}
-        onOpenItem={onOpenItem}
+        onOpenItem={(id) => onOpenItem(id)}
+        range={range}
       />
     </Tooltip.Provider>
   )
+}
+
+/** SERVICES plus Archive, not applicable this month. */
+function withArchive() {
+  const archive = service('svc-archive', 'Archive', null)
+  Object.assign(archive.cells[archive.cells.length - 1]!, { naReason: 'Retired in Oct', coverage: [0, 0] })
+  return buildItemRows([...SERVICES, archive], columns, FOUR, groupOf, 1)
 }
 
 describe('ItemGrid', () => {
@@ -286,6 +321,75 @@ describe('ItemGrid', () => {
     render(<Harness />)
     const th = within(screen.getByRole('grid')).getByRole('rowheader', { name: /Analytics Ingest Worker/ })
     expect(th.querySelector('[data-name]')!.className).toContain('line-clamp-2')
+  })
+
+  it('n/a services are counted and grouped apart from the not reported', () => {
+    width.value = 1296
+    render(<Harness rows={withArchive()} />)
+    const summary = screen.getByRole('region', { name: 'Summary' })
+    expect(within(summary).getByText('18 of 25 services Green')).toBeTruthy()
+    expect(within(summary).getByTestId('summary-counts').textContent).toBe('◆ 1 Red · ▲ 2 Yellow · 3 not reported · 1 n/a · Oct 2026')
+    const grid = screen.getByRole('grid')
+    expect([...grid.querySelectorAll('th[scope=rowgroup]')].map((th) => th.textContent)).toEqual([
+      'Not reported this month · 3',
+      'Not applicable this month · 1',
+    ])
+    expect(serviceNames(grid).slice(-2)).toEqual(['Reporting', 'Archive'])
+    expect(within(grid).getByText('Retired in Oct')).toBeTruthy()
+  })
+
+  it('Escape in a non-empty filter clears it and goes no further; in an empty one it passes on', async () => {
+    width.value = 1296
+    render(<Harness />)
+    const seen: boolean[] = []
+    const listen = (e: KeyboardEvent) => e.key === 'Escape' && seen.push(e.defaultPrevented)
+    window.addEventListener('keydown', listen)
+    try {
+      const user = userEvent.setup()
+      const input = screen.getByRole('searchbox', { name: 'Filter services' }) as HTMLInputElement
+      await user.type(input, 'led')
+      await user.keyboard('{Escape}')
+      expect(input.value).toBe('')
+      expect(serviceNames(screen.getByRole('grid'))).toHaveLength(24)
+      await user.keyboard('{Escape}')
+      expect(seen).toEqual([true, false])
+    } finally {
+      window.removeEventListener('keydown', listen)
+    }
+  })
+
+  it('on phones the status key sits in two even rows, not with one entry wrapped alone', () => {
+    width.value = 342
+    render(<Harness />)
+    expect(screen.getByTestId('item-grid-legend').className).toContain('grid-cols-3')
+    width.value = 1296
+    const wide = render(<Harness />)
+    expect(within(wide.container).getByTestId('item-grid-legend').className).not.toContain('grid-cols-3')
+  })
+
+  it('the range control shows only where the grid can show more months than the shortest range', () => {
+    const range = { control: <button type="button">Range control</button>, minCount: 6, maxCount: 24 }
+    width.value = 342
+    render(<Harness range={range} />)
+    expect(screen.queryByRole('button', { name: 'Range control' })).toBeNull()
+    width.value = 1296
+    const wide = render(<Harness range={range} />)
+    expect(within(wide.container).getByRole('button', { name: 'Range control' })).toBeTruthy()
+  })
+
+  it('rows skip re-rendering when nothing of theirs changed', async () => {
+    width.value = 1296
+    render(<Harness />)
+    const user = userEvent.setup()
+    const before = cellRenders.count
+    await user.click(screen.getByRole('button', { name: 'Re-render' }))
+    expect(cellRenders.count).toBe(before)
+    // Moving the tab stop redraws the two rows it leaves and enters, not all 24.
+    screen.getByRole('button', { name: 'Web App, Oct 2026: Red, 99.06%' }).focus()
+    const moved = cellRenders.count
+    await user.keyboard('{ArrowDown}')
+    expect(cellRenders.count - moved).toBeLessThanOrEqual(2 * columns.length)
+    expect(document.activeElement?.getAttribute('aria-label')).toBe('Analytics Ingest Worker, Oct 2026: Yellow, 99.83%')
   })
 
   it('has no axe violations', async () => {

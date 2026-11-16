@@ -131,22 +131,26 @@ function worstFirst(scale: StatusScaleEntry[], direction: Direction) {
   }
 }
 
+/** Not applicable in the selected column (`naReason`): neither reported nor missing. */
+const notApplicable = (r: ItemRow) => !r.reported && r.current.kind === 'na'
+
 /**
  * The items in display order: those reported in the selected column by
- * `sort`, then those not reported, always by name.
+ * `sort`, then those not reported, then those not applicable, both by name.
  */
 export function sortItems(
   rows: ItemRow[],
   sort: ItemSort,
   direction: Direction,
   scale: StatusScaleEntry[],
-): { reported: ItemRow[]; notReported: ItemRow[] } {
+): { reported: ItemRow[]; notReported: ItemRow[]; notApplicable: ItemRow[] } {
   const worst = worstFirst(scale, direction)
   const compare =
     sort === 'name' ? byName : sort === 'reds' ? (a: ItemRow, b: ItemRow) => b.worstCount - a.worstCount || worst(a, b) : worst
   return {
     reported: rows.filter((r) => r.reported).sort(compare),
-    notReported: rows.filter((r) => !r.reported).sort(byName),
+    notReported: rows.filter((r) => !r.reported && !notApplicable(r)).sort(byName),
+    notApplicable: rows.filter(notApplicable).sort(byName),
   }
 }
 
@@ -157,15 +161,17 @@ export interface ItemSummary {
   best: number
   /** Reported items by status. */
   counts: Map<string, number>
+  /** Items with no value in the selected column; n/a items are not among them. */
   notReported: number
+  notApplicable: number
   /** The worst reported item: highest rank, then worse value, then name. */
   worst: ItemRow | null
 }
 
-/** The counts behind `18 of 24 services Green · ◆ 1 Red · ▲ 2 Yellow · 3 not reported`. */
+/** The counts behind `18 of 24 services Green · ◆ 1 Red · ▲ 2 Yellow · 3 not reported · 1 n/a`. */
 export function itemSummary(rows: ItemRow[], scale: StatusScaleEntry[]): ItemSummary {
   const direction = rows[0]?.row.direction ?? 'higher_better'
-  const { reported, notReported } = sortItems(rows, 'worst', direction, scale)
+  const { reported, notReported, notApplicable } = sortItems(rows, 'worst', direction, scale)
   const counts = new Map<string, number>()
   for (const r of reported) if (r.status) counts.set(r.status, (counts.get(r.status) ?? 0) + 1)
   return {
@@ -173,6 +179,7 @@ export function itemSummary(rows: ItemRow[], scale: StatusScaleEntry[]): ItemSum
     best: counts.get(bestKey(scale)) ?? 0,
     counts,
     notReported: notReported.length,
+    notApplicable: notApplicable.length,
     worst: reported[0] ?? null,
   }
 }
@@ -186,7 +193,8 @@ export function filterItems(rows: ItemRow[], query: string): ItemRow[] {
 
 /**
  * The tile's exceptions: reported items not at the best status (worst
- * first), then the not reported (by name), at most `max`. `restBest` items
+ * first), then the not reported (by name), at most `max`; n/a items are
+ * not exceptions. `restBest` items
  * are at the best status and never shown; `hiddenNotReported` and
  * `hiddenWorse` count those cut off.
  */

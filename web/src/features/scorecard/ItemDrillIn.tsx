@@ -66,6 +66,7 @@ export function ItemDrillIn({ head, row, columns, scale, noun, total, onBack, he
         chartKind: head.chartKind,
         frequency: head.frequency,
         statusLabel,
+        items: true,
         surface: 'focus',
       })
     : ''
@@ -94,7 +95,17 @@ export function ItemDrillIn({ head, row, columns, scale, noun, total, onBack, he
         <h3 id={headingId} ref={headingRef} tabIndex={-1} className="text-sm font-semibold text-ink outline-none">
           {row.name}
         </h3>
-        {(row.group || threshold) && <span className="text-ink/70">· {[row.group, threshold].filter(Boolean).join(' · ')}</span>}
+        {(row.group || threshold) && (
+          <>
+            {/* On phones the details take their own line, so it never starts with a stray `·`. */}
+            <span aria-hidden="true" className="hidden text-ink/70 sm:inline">
+              ·
+            </span>
+            <span data-testid="drill-details" className="text-ink/70 max-sm:basis-full">
+              {[row.group, threshold].filter(Boolean).join(' · ')}
+            </span>
+          </>
+        )}
       </nav>
       <div data-testid="drill-value-row" className="mt-2 flex flex-wrap items-baseline gap-x-3 gap-y-1">
         {row.reported ? (

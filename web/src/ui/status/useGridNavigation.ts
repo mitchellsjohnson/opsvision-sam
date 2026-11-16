@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState, type FocusEventHandler, type KeyboardEventHandler, type RefCallback } from 'react'
+import { useCallback, useLayoutEffect, useRef, useState, type FocusEventHandler, type KeyboardEventHandler, type RefCallback } from 'react'
 
 export interface GridCellProps {
   tabIndex: 0 | -1
@@ -21,6 +21,12 @@ export interface GridNavigationOptions {
 export interface GridNavigation {
   active: { rowId: string; col: number }
   cellProps: (rowId: string, col: number) => GridCellProps
+  /**
+   * As `cellProps`, given the row's index and whether the cell holds the tab
+   * stop. The same function while the column count holds, so a memoized row
+   * that passes these in re-renders only when they change.
+   */
+  cellPropsFor: (rowId: string, col: number, index: number, active: boolean) => GridCellProps
   /** Moves the tab stop and focus to a row, at `col` or the active column. */
   focusRow: (rowId: string, col?: number) => void
 }
@@ -36,69 +42,25 @@ export function useGridNavigation({ rowIds, colCount, anchor, pageSize = 10, onO
   // The row by id (by index once the id is gone) and the column as anchored: from the start, or back from the end.
   const [pos, setPos] = useState({ rowId: '', rowIndex: 0, at: 0 })
   const cells = useRef(new Map<string, HTMLElement>())
-  const pending = useRef<string | null>(null)
+  // A move to a cell not drawn yet, and what had focus when it was asked for.
+  const pending = useRef<{ id: string; from: Element | null } | null>(null)
 
   const last = Math.max(colCount - 1, 0)
   const clampCol = (col: number) => Math.max(0, Math.min(last, col))
   const toCol = (at: number) => (anchor === 'end' ? last - clampCol(at) : clampCol(at))
-  const toAt = (col: number) => (anchor === 'end' ? last - col : col)
   const rowIndex = rowIds.includes(pos.rowId) ? rowIds.indexOf(pos.rowId) : Math.min(pos.rowIndex, Math.max(rowIds.length - 1, 0))
   const active = { rowId: rowIds[rowIndex] ?? '', col: toCol(pos.at) }
 
-  useLayoutEffect(() => {
-    if (pending.current === null) return
-    const el = cells.current.get(pending.current)
-    if (el) {
-      pending.current = null
-      el.focus()
-    }
-  })
-
   const moveTo = (row: number, col: number) => {
+    pending.current = null
     const index = Math.max(0, Math.min(rowIds.length - 1, row))
     const rowId = rowIds[index]
     if (rowId === undefined) return
     const c = clampCol(col)
-    setPos({ rowId, rowIndex: index, at: toAt(c) })
+    setPos({ rowId, rowIndex: index, at: anchor === 'end' ? last - c : c })
     const el = cells.current.get(cellId(rowId, c))
     if (el) el.focus()
-    else pending.current = cellId(rowId, c)
-  }
-
-  const cellProps = (rowId: string, col: number): GridCellProps => {
-    const id = cellId(rowId, col)
-    const index = rowIds.indexOf(rowId)
-    return {
-      tabIndex: rowId === active.rowId && col === active.col ? 0 : -1,
-      'data-pos': `${index}:${toAt(col)}`,
-      ref: (el) => {
-        if (el) cells.current.set(id, el)
-        else cells.current.delete(id)
-      },
-      onFocus: () => setPos({ rowId, rowIndex: index, at: toAt(col) }),
-      onKeyDown: (e) => {
-        if (e.altKey || e.ctrlKey || e.metaKey) return
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault()
-          onOpen(rowId, col, e.currentTarget)
-          return
-        }
-        const moves: Record<string, [number, number]> = {
-          ArrowLeft: [index, col - 1],
-          ArrowRight: [index, col + 1],
-          ArrowUp: [index - 1, col],
-          ArrowDown: [index + 1, col],
-          Home: [index, 0],
-          End: [index, last],
-          PageUp: [index - pageSize, col],
-          PageDown: [index + pageSize, col],
-        }
-        const to = moves[e.key]
-        if (!to) return
-        e.preventDefault()
-        moveTo(to[0], to[1])
-      },
-    }
+    else pending.current = { id: cellId(rowId, c), from: document.activeElement }
   }
 
   const focusRow = (rowId: string, col?: number) => {
@@ -106,5 +68,74 @@ export function useGridNavigation({ rowIds, colCount, anchor, pageSize = 10, onO
     if (index >= 0) moveTo(index, col ?? active.col)
   }
 
-  return { active, cellProps, focusRow }
+  // What the cells' handlers act on: the committed render's rows and moves (handlers run after commit).
+  const latest = useRef({ rowIds, pageSize, onOpen, moveTo })
+  useLayoutEffect(() => {
+    latest.current = { rowIds, pageSize, onOpen, moveTo }
+  })
+
+  useLayoutEffect(() => {
+    const queued = pending.current
+    if (!queued) return
+    // Focus moved on to something else (not just dropped to the body by a redraw): the move is stale.
+    const now = document.activeElement
+    if (now !== queued.from && now !== null && now !== document.body) {
+      pending.current = null
+      return
+    }
+    const el = cells.current.get(queued.id)
+    if (el) {
+      pending.current = null
+      el.focus()
+    }
+  })
+
+  const cellPropsFor = useCallback(
+    (rowId: string, col: number, index: number, isActive: boolean): GridCellProps => {
+      const id = cellId(rowId, col)
+      const at = anchor === 'end' ? last - col : col
+      return {
+        tabIndex: isActive ? 0 : -1,
+        'data-pos': `${index}:${at}`,
+        ref: (el) => {
+          if (el) cells.current.set(id, el)
+          else cells.current.delete(id)
+        },
+        onFocus: () => {
+          pending.current = null
+          setPos({ rowId, rowIndex: latest.current.rowIds.indexOf(rowId), at })
+        },
+        onKeyDown: (e) => {
+          if (e.altKey || e.ctrlKey || e.metaKey) return
+          const now = latest.current
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault()
+            now.onOpen(rowId, col, e.currentTarget)
+            return
+          }
+          const row = now.rowIds.indexOf(rowId)
+          const moves: Record<string, [number, number]> = {
+            ArrowLeft: [row, col - 1],
+            ArrowRight: [row, col + 1],
+            ArrowUp: [row - 1, col],
+            ArrowDown: [row + 1, col],
+            Home: [row, 0],
+            End: [row, last],
+            PageUp: [row - now.pageSize, col],
+            PageDown: [row + now.pageSize, col],
+          }
+          const to = moves[e.key]
+          if (!to) return
+          e.preventDefault()
+          now.moveTo(to[0], to[1])
+        },
+      }
+    },
+    [anchor, last],
+  )
+
+  const cellProps = (rowId: string, col: number) =>
+    cellPropsFor(rowId, col, rowIds.indexOf(rowId), rowId === active.rowId && col === active.col)
+
+  return { active, cellProps, cellPropsFor, focusRow }
 }

@@ -9,14 +9,19 @@ type Opts = Parameters<typeof useGridNavigation>[0]
 
 const ROWS = ['r1', 'r2', 'r3']
 
-function Harness({ colCount = 4, apiRef, ...opts }: Partial<Opts> & { apiRef?: { current: Api | null } }) {
+function Harness({
+  colCount = 4,
+  apiRef,
+  drawn = ROWS,
+  ...opts
+}: Partial<Opts> & { apiRef?: { current: Api | null }; drawn?: string[] }) {
   const nav = useGridNavigation({ rowIds: ROWS, colCount, anchor: 'start', onOpen: () => {}, ...opts })
   useLayoutEffect(() => {
     if (apiRef) apiRef.current = nav
   })
   return (
     <div role="grid" aria-label="Harness">
-      {ROWS.map((rowId) => (
+      {drawn.map((rowId) => (
         <div role="row" key={rowId}>
           {Array.from({ length: colCount }, (_, col) => (
             <button key={col} type="button" {...nav.cellProps(rowId, col)}>
@@ -119,6 +124,82 @@ describe('useGridNavigation', () => {
     expect(tabbable().map((b) => b.textContent)).toEqual(['r2:0'])
     rerender(<Harness anchor="end" colCount={4} />)
     expect(tabbable().map((b) => b.textContent)).toEqual(['r2:2'])
+  })
+
+  it('a move queued for a cell not yet drawn lands when it is drawn', () => {
+    const api = { current: null as Api | null }
+    const { rerender } = render(<Harness apiRef={api} drawn={['r1', 'r2']} />)
+    act(() => api.current!.focusRow('r3', 1))
+    rerender(<Harness apiRef={api} />)
+    expect(focused()).toBe('r3:1')
+  })
+
+  it('a queued move is dropped once focus goes to another cell', () => {
+    const api = { current: null as Api | null }
+    const { rerender } = render(<Harness apiRef={api} drawn={['r1', 'r2']} />)
+    act(() => api.current!.focusRow('r3', 1))
+    act(() => screen.getByRole('button', { name: 'r1:0' }).focus())
+    rerender(<Harness apiRef={api} />)
+    expect(focused()).toBe('r1:0')
+  })
+
+  it('a queued move is dropped once focus leaves the grid', () => {
+    const api = { current: null as Api | null }
+    const { rerender } = render(
+      <>
+        <button type="button">Outside</button>
+        <Harness apiRef={api} drawn={['r1', 'r2']} />
+      </>,
+    )
+    act(() => api.current!.focusRow('r3', 1))
+    act(() => screen.getByRole('button', { name: 'Outside' }).focus())
+    rerender(
+      <>
+        <button type="button">Outside</button>
+        <Harness apiRef={api} />
+      </>,
+    )
+    expect(focused()).toBe('Outside')
+  })
+
+  it('a later move replaces a queued one', () => {
+    const api = { current: null as Api | null }
+    const { rerender } = render(<Harness apiRef={api} drawn={['r1', 'r2']} />)
+    act(() => api.current!.focusRow('r3', 1))
+    act(() => api.current!.focusRow('r2', 0))
+    expect(focused()).toBe('r2:0')
+    rerender(<Harness apiRef={api} />)
+    expect(focused()).toBe('r2:0')
+  })
+
+  it('cellPropsFor keeps its identity while the column count holds, so memoized rows can skip', () => {
+    const seen = new Set<unknown>()
+    function Probe({ n, cols = 2 }: { n: number; cols?: number }) {
+      const nav = useGridNavigation({ rowIds: ROWS.slice(0, n), colCount: cols, anchor: 'end', onOpen: () => {} })
+      seen.add(nav.cellPropsFor)
+      return null
+    }
+    const { rerender } = render(<Probe n={3} />)
+    rerender(<Probe n={2} />)
+    rerender(<Probe n={3} />)
+    expect(seen.size).toBe(1)
+    rerender(<Probe n={3} cols={4} />)
+    expect(seen.size).toBe(2)
+  })
+
+  it('cellPropsFor gives the tab stop to the cell it is told is active', () => {
+    function Probe() {
+      const nav = useGridNavigation({ rowIds: ROWS, colCount: 4, anchor: 'end', onOpen: () => {} })
+      return (
+        <button type="button" {...nav.cellPropsFor('r2', 1, 1, true)}>
+          cell
+        </button>
+      )
+    }
+    render(<Probe />)
+    const cell = screen.getByRole('button', { name: 'cell' })
+    expect(cell.tabIndex).toBe(0)
+    expect(cell.dataset.pos).toBe('1:2')
   })
 
   it('anchors to the selected period: after End, a narrower grid stays on its last column', () => {

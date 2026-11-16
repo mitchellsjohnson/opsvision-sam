@@ -33,6 +33,8 @@ export interface ThresholdOptions {
   perSubject?: { name: string; value: number }[]
   /** For `1 service has its own target`; `item` when absent. */
   noun?: NounForms
+  /** Reported for tracked items, so counted by the best status; read from `chartKind === 'uptime'` when absent. */
+  items?: boolean
   surface: 'tile' | 'focus'
 }
 
@@ -152,7 +154,7 @@ function bandClauses(runs: Interval[], opts: ThresholdOptions): string[] {
   const lowest = runs[0]!
   const highest = runs[runs.length - 1]!
   // Item metrics are counted by the best status, so their line names only where it starts.
-  const bestOnly = opts.chartKind === 'uptime'
+  const bestOnly = opts.items ?? opts.chartKind === 'uptime'
   if (opts.direction !== 'lower_better') {
     const best = `${label(highest.status)} ${highest.loIn ? `at ${value(highest.lo)} or better` : `above ${value(highest.lo)}`}`
     if (bestOnly) return [best]
@@ -199,7 +201,9 @@ export function thresholdText(rule: StatusRule, opts: ThresholdOptions): string 
 /**
  * How long the status at `index` has held: `Red since Sep 2026 · 2 months`,
  * counted in months whatever the grain; `Red all 12 months shown` when the
- * streak reaches the first column. Empty when the cell has no status.
+ * streak runs from the first column to the last, `Red since Nov 2025 or
+ * earlier · 9 months` when it starts at the first but ends before the last
+ * (history before the window is unknown). Empty when the cell has no status.
  */
 export function sinceText(
   cells: BoardCell[],
@@ -212,7 +216,7 @@ export function sinceText(
   if (streak === 0 || !cell) return ''
   const label = statusLabel(cell.status) ?? cell.status
   const start = index - streak + 1
-  if (start === 0) {
+  if (start === 0 && index === columns.length - 1) {
     return streak === 1
       ? `${label} in the only ${columnUnit(columns[0], 1)} shown`
       : `${label} all ${streak} ${columnUnit(columns[0], streak)} shown`
@@ -221,5 +225,6 @@ export function sinceText(
     const p = parsePeriod(c.period)
     return n + (p && !c.ytd ? monthsOf(p).length : 1)
   }, 0)
-  return `${label} since ${columns[start]?.fullLabel ?? ''} · ${months} ${months === 1 ? 'month' : 'months'}`
+  const from = `${columns[start]?.fullLabel ?? ''}${start === 0 ? ' or earlier' : ''}`
+  return `${label} since ${from} · ${months} ${months === 1 ? 'month' : 'months'}`
 }

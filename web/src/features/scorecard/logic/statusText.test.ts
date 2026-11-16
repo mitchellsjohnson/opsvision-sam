@@ -88,6 +88,15 @@ describe('thresholdText', () => {
     expect(thresholdText(uptimeBands, o)).toBe('Green at 99.90% or better · 2 services have their own targets')
   })
 
+  it('item metrics name only where the best status starts, whatever their chart kind', () => {
+    expect(thresholdText(uptimeBands, base({ format: 'percent2', chartKind: 'ratio', items: true }))).toBe('Green at 99.90% or better')
+    expect(thresholdText(uptimeBands, base({ format: 'percent2', chartKind: 'uptime', items: false }))).toBe(
+      'Green at 99.90% or better · Red at 99.80% or below',
+    )
+    // Callers that do not say read an uptime chart as an item metric.
+    expect(thresholdText(uptimeBands, base({ format: 'percent2', chartKind: 'uptime' }))).toBe('Green at 99.90% or better')
+  })
+
   it('coarse prefix', () => expect(thresholdText(b90_80, base({ frequency: 'quarterly' }))).toMatch(/^Reported quarterly · Green at 90%/))
 
   it('uses the tenant labels and every level of a four-level scale', () => {
@@ -141,6 +150,13 @@ describe('sinceText', () => {
     expect(sinceText(allRed12, 11, MONTHS12, label)).toBe('Red all 12 months shown')
     expect(sinceText(quartersYY, 1, QUARTERS2, label)).toBe('Yellow all 2 quarters shown')
     expect(sinceText(quartersGY, 1, QUARTERS2, label)).toBe('Yellow since Q3 FY2026 · 3 months')
+  })
+
+  it('capped at the first column but ending before the last: since that column or earlier, not all shown', () => {
+    const redThenGap = cells(MONTHS12, [...MONTHS12.slice(0, 9).map(() => 'R'), '', '', ''])
+    expect(sinceText(redThenGap, 8, MONTHS12, label)).toBe('Red since Nov 2025 or earlier · 9 months')
+    const quartersY = cells(QUARTERS2, ['Y', ''])
+    expect(sinceText(quartersY, 0, QUARTERS2, label)).toBe('Yellow since Q2 FY2026 or earlier · 3 months')
   })
 
   it('says one month in the singular', () => {

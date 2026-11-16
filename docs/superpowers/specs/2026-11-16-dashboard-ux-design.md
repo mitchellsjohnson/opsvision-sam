@@ -321,7 +321,7 @@ Mockup: `uptime-tile-1440.png`, `uptime-tile-360.png`.
 - Threshold line: `24 services · Green at 99.90% or better · 1 service has its own target`.
 - Value row: `Worst` (12, `ink/70`), the worst reported item (16, 600), its value (28), chip `lg`, then `Red since Oct 2026 · 1 month` (§3.6). Worst = highest status rank, then worse value by direction, then name.
 - Distribution: an 8px proportion bar (as Health) with `role="img"` and the sentence `18 Green · 2 Yellow · 1 Red · 3 not reported` (12; the best status bold).
-- Exceptions first: rows for non-best reported items (worst first) then not-reported items (by name), at most 5. Each row is one `<button>` (min 28px tall, `rounded-md`, hover `ink/3.5`) named `Open Webhooks trend: 99.06%, Red` (`Open Push Gateway trend: not reported this month, last Sep 100.00%`): name, decorative cells (`aria-hidden`, tier fill and letters, 18px), value or `Not reported` (11, `ink/70`). Columns from §6.3. A month-initial header row (`aria-hidden`) when inline. Activating a row opens the dialog at that item (`?focus=uptime&subject={id}`).
+- Exceptions first: rows for non-best reported items (worst first) then not-reported items (by name), at most 5. Each row is one `<button>` (min 28px tall, `rounded-md`, hover `ink/3.5`) named `Open Webhooks trend: 99.06%, Red` (`Open Push Gateway trend: not reported this month, last Sep 100.00%`): name, decorative cells (`aria-hidden`, tier fill and letters, 18px), value or `Not reported` (11, `ink/70`). Columns from §6.3. A month-initial header row (`aria-hidden`) when inline. Activating a row opens the dialog at that item (`?focus=uptime&item={id}`).
 - Then one line (12, `ink/80`): `All other 18 services Green`, prefixed `1 more not reported ·` when rows were cut. When every item is best: `All 24 services Green`.
 - Footer: `See all 24 services ›` (14, 500, accent-deep) opens the dialog; right `Exceptions first · Oct 2026` (11, `ink/70`).
 
@@ -346,10 +346,11 @@ No Breakdown section and no `View as table` link here.
 
 ### 6.6 Drill-in
 
-- Opening pushes a history entry with `&subject={id}` (not replace), so browser Back returns to the grid.
+- Opening pushes a history entry with `&item={id}` (not replace), so browser Back returns to the grid. The parameter is `item`, not `subject`, which is the view's subject filter.
 - The grid is replaced by: a breadcrumb row (12px) `‹ All 24 services` (link, accent-deep 500) `/` the item name as an `h3` with `tabIndex={-1}` that receives focus, then `· Platform · Green at 99.90% or better` (the item's own rule); a value row (28 value, chip, change vs prior, `Red since Oct 2026 · 1 month · 2 Red months in the last 12`); the standard focus `RatioChart` for the item's row. Its bands and threshold text use the item cell's `rule` (the rule after per-subject bands); percent axes are capped at 100; the range strip applies.
 - Sort (URL), filter text and scroll position live in the dialog body, not in the grid, so they survive the drill-in. `All services` (or Back) restores them and moves focus to the same item's row cell **by item id** (`focusRow(id)`), whatever the sort or filter.
-- Previous/next metric clears `subject`, `sort` and the filter. Esc closes the dialog.
+- Previous/next metric clears `item`, `sort` and the filter. Esc closes the dialog; in a filter with text, Esc clears the filter first.
+- Focus moves to the drill-in heading whenever the drill-in appears (from the grid, a tile row, a link, or browser Forward). Leaving it (`All services` or Back) always focuses the item's cell, even when the drill-in was opened from a link.
 - Screen-reader summary of the drill-in chart includes the item's threshold: `Webhooks uptime over 12 months: from 99.98% to 99.06%; Green at 99.90% or better; Red in 2 months`.
 
 ### 6.7 Actions in an item view

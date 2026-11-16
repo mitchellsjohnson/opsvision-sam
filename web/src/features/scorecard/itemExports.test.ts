@@ -120,4 +120,25 @@ describe('itemGridSvg', () => {
     const ys = [...d.querySelectorAll('[data-role="cell"]')].map((c) => Number(c.getAttribute('y')) + Number(c.getAttribute('height')))
     expect(Math.max(...ys)).toBeLessThanOrEqual(SVG_HEIGHT - 60)
   })
+
+  it('every status cell keeps its letter, at 11px or more, however many items', () => {
+    for (const count of [24, 31, 40, 60]) {
+      const many = buildItemRows(
+        Array.from({ length: count }, (_, i) => service(`s${i}`, `Service ${i}`, [...eleven(99.95), 99.06])),
+        columns,
+        scale,
+        () => '',
+        1,
+      )
+      const d = doc(itemGridSvg({ title: 'Uptime', scope: 'All', rows: many, columns, scale }))
+      const items = [...d.querySelectorAll('[data-role="item"]')]
+      for (const g of items) {
+        const cells = g.querySelectorAll('[data-role="cell"]')
+        const letters = [...g.querySelectorAll('[data-role="cell-letter"]')]
+        expect(letters).toHaveLength(cells.length)
+        for (const l of letters) expect(Number(l.getAttribute('font-size'))).toBeGreaterThanOrEqual(11)
+        expect(Number(cells[0]!.getAttribute('height'))).toBeGreaterThanOrEqual(14)
+      }
+    }
+  })
 })
