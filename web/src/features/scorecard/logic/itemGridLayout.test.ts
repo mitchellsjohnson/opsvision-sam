@@ -1,51 +1,69 @@
-import { describe, expect, it } from 'vitest'
-import { itemGridLayout } from './itemGridLayout'
+import { describe, expect, test } from 'vitest'
+import { CHIP_MD_WIDTH, itemGridLayout } from './itemGridLayout'
+
+const needs = { name: 332, group: 76, value: 132, extra: 112 }
 
 describe('itemGridLayout', () => {
-  const dlg = (w: number) => itemGridLayout(w, 12, { valueWidth: w < 640 ? 76 : 136, extraWidth: 112, nameMin: 96 })
-  const tile = (w: number) => itemGridLayout(w, 12, { valueWidth: 72, nameMin: 80 })
+  test.each([
+    [1774, { count: 12, cellWidth: 93, nameWidth: 338, groupWidth: 76, extraShown: true, stacked: false, tableWidth: 1774 }],
+    [1294, { count: 12, cellWidth: 53, nameWidth: 338, groupWidth: 76, extraShown: true, stacked: false, tableWidth: 1294 }],
+    [1134, { count: 12, cellWidth: 40, nameWidth: 334, groupWidth: 76, extraShown: true, stacked: false, tableWidth: 1134 }],
+    [878, { count: 12, cellWidth: 28, nameWidth: 298, groupWidth: 0, extraShown: true, stacked: false, tableWidth: 878 }],
+    [600, { count: 6, cellWidth: 28, nameWidth: 300, groupWidth: 0, extraShown: false, stacked: false, tableWidth: 600 }],
+    [340, { count: 6, cellWidth: 56, stacked: true, tableWidth: 336 }],
+    [310, { count: 6, cellWidth: 51, stacked: true, tableWidth: 306 }],
+  ])('deployments at %i', (w, want) => expect(itemGridLayout(w, 12, needs)).toMatchObject(want))
 
-  it('dialog grid: the spec table', () => {
-    expect(dlg(1296)).toMatchObject({ count: 12, cellWidth: 40, nameWidth: 240, extraShown: true, stacked: false, tableWidth: 968 })
-    expect(dlg(880)).toMatchObject({ count: 12, cellWidth: 39, nameWidth: 164, extraShown: true })
-    expect(dlg(624)).toMatchObject({ count: 12, cellWidth: 28, nameWidth: 100, extraShown: true })
-    expect(dlg(342)).toMatchObject({ count: 6, cellWidth: 28, nameWidth: 98, extraShown: false, stacked: false })
-    expect(dlg(312)).toMatchObject({ count: 6, cellWidth: 48, stacked: true })
-    expect(dlg(272)).toMatchObject({ count: 6, cellWidth: 45, stacked: true })
+  test('24 short names at 1294', () =>
+    expect(itemGridLayout(1294, 12, { name: 150, group: 76, value: 132, extra: 112 })).toMatchObject({ cellWidth: 68, nameWidth: 158 }))
+
+  test('24 months', () => {
+    expect(itemGridLayout(1294, 24, needs)).toMatchObject({ count: 24, cellWidth: 29, nameWidth: 354, groupWidth: 0 })
+    expect(itemGridLayout(878, 24, needs)).toMatchObject({ count: 12 })
   })
 
-  it('tile mini board: the spec table', () => {
-    expect(tile(528)).toMatchObject({ count: 12, cellWidth: 28, nameWidth: 120 })
-    expect(tile(320)).toMatchObject({ count: 6, cellWidth: 28, nameWidth: 80 })
+  test('very wide: cells take the rest, not the name', () =>
+    expect(itemGridLayout(2400, 12, needs)).toMatchObject({ cellWidth: 145, nameWidth: 340 }))
+
+  test('tile', () => {
+    const t = { group: 0, value: 68, extra: 0 }
+    expect(itemGridLayout(536, 12, { ...t, name: 332 }, { nameFloor: 200, stackBelow: 400 })).toMatchObject({
+      count: 6,
+      nameWidth: 300,
+      stacked: false,
+    })
+    expect(itemGridLayout(536, 12, { ...t, name: 120 }, { nameFloor: 200, stackBelow: 400 }).count).toBe(12)
+    expect(itemGridLayout(358, 12, { ...t, name: 332 }, { nameFloor: 200, stackBelow: 400 }).stacked).toBe(true)
   })
 
-  it('24 columns stay inline when they fit', () => {
-    expect(itemGridLayout(1296, 24, { valueWidth: 136, extraWidth: 112 })).toMatchObject({ count: 24, stacked: false })
+  test('inline always fills; the name takes at most count − 1 px past its need', () => {
+    for (let w = 600; w <= 2400; w += 37) {
+      const l = itemGridLayout(w, 12, needs)
+      if (l.stacked) continue
+      expect(l.nameWidth + l.groupWidth + l.count * l.cellWidth + l.valueWidth + (l.extraShown ? 112 : 0)).toBe(w)
+      expect(l.nameWidth).toBeLessThanOrEqual(needs.name + l.count - 1)
+      expect(l.tableWidth).toBe(w)
+    }
   })
 
-  it('the table is only as wide as it needs; stacked tables are the cells only', () => {
-    const inline = dlg(880)
-    expect(inline.tableWidth).toBe(inline.nameWidth + 12 * inline.cellWidth + inline.valueWidth + 112)
-    expect(inline.valueWidth).toBe(136)
-    const stacked = dlg(272)
-    expect(stacked).toMatchObject({ nameWidth: 0, valueWidth: 0, extraShown: false, tableWidth: 6 * 45 })
-  })
-
-  it('fewer items than the inline minimum halve no further than the total', () => {
-    expect(itemGridLayout(300, 4, { valueWidth: 76, nameMin: 96 })).toMatchObject({ count: 4, stacked: false })
-    // Five columns do not fit beside the name and value, and five is the floor: stack.
-    expect(itemGridLayout(300, 5, { valueWidth: 76, nameMin: 96 })).toMatchObject({ count: 5, stacked: true })
-  })
-
-  it('never puts cells under the 24px target', () => {
-    for (let w = 240; w <= 1920; w += 7) {
-      const l = dlg(w)
+  test('cells never go under the 24px target, inline or stacked', () => {
+    for (let w = 240; w <= 2400; w += 7) {
+      const l = itemGridLayout(w, 12, needs)
       expect(l.cellWidth).toBeGreaterThanOrEqual(28)
       expect(l.tableWidth).toBeLessThanOrEqual(w)
     }
   })
 
-  it('before it is measured, lays out the full window inline', () => {
-    expect(dlg(0)).toMatchObject({ count: 12, stacked: false, extraShown: true })
+  test('stacked rows have no name, group, value or extra column', () =>
+    expect(itemGridLayout(340, 12, needs)).toMatchObject({ nameWidth: 0, groupWidth: 0, valueWidth: 0, extraShown: false }))
+
+  test('fewer columns than the inline minimum halve no further than the total', () => {
+    expect(itemGridLayout(700, 4, needs)).toMatchObject({ count: 4, stacked: false })
+    expect(itemGridLayout(340, 4, needs)).toMatchObject({ count: 4, cellWidth: 56, stacked: true })
   })
+
+  test('before it is measured, lays out the full window inline', () =>
+    expect(itemGridLayout(0, 12, needs)).toMatchObject({ count: 12, stacked: false, extraShown: true }))
+
+  test('the md chip is 28px wide', () => expect(CHIP_MD_WIDTH).toBe(28))
 })

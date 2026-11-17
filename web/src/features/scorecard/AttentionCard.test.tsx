@@ -138,7 +138,7 @@ describe('AttentionCard', () => {
       rows: [
         { id: 'webhooks', name: 'Webhooks', display: '99.06%', cells: RED_FROM_JUL },
         { id: 'ingest', name: 'Analytics Ingest', display: '99.83%', cells: RED_FROM_JUL },
-        { id: 'search', name: 'Search', display: '99.87%', cells: RED_FROM_JUL },
+        { id: 'search', name: 'Search Indexer - Production Cluster A-1', display: '99.87%', cells: RED_FROM_JUL },
       ],
       why: 'Webhooks: Red in 4 of the last 12 months',
     }
@@ -156,6 +156,12 @@ describe('AttentionCard', () => {
     const board = within(card).getByTestId('attention-mini-board')
     expect(board.getAttribute('aria-hidden')).toBe('true')
     expect(board.querySelectorAll('[data-kind]')).toHaveLength(36)
+    // One line that keeps the part siblings differ in; no native title.
+    const names = [...board.querySelectorAll('[data-name]')]
+    expect(names.map((n) => n.textContent)).toEqual(['Webhooks', 'Analytics Ingest', 'Search Indexer - Production Cluster A-1'])
+    expect(names[2]!.lastElementChild!.textContent).toBe(' - Production Cluster A-1')
+    expect(names[2]!.lastElementChild!.className).toContain('whitespace-pre')
+    expect(board.querySelector('[title]')).toBeNull()
     expect(within(card).getByTestId('attention-why').textContent).toBe('Webhooks: Red in 4 of the last 12 months')
   })
 

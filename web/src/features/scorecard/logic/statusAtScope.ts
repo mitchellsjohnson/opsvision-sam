@@ -1,3 +1,5 @@
+import { countNoun, type NounForms } from './nouns'
+
 export interface StatusScaleEntry {
   key: string
   rank: number
@@ -40,7 +42,8 @@ export function statusAtScope({
   children: ScopeRow[]
   columnKey: string
   scale: StatusScaleEntry[]
-  noun: 'segments' | 'services' | 'items'
+  /** The children's noun; the old strings still read as their forms. */
+  noun: NounForms | 'segments' | 'services' | 'items'
 }): { status: string; caption: string } {
   const scopeCell = findCell(columnKey, scope.cells)
   if (cellReported(scopeCell)) {
@@ -65,8 +68,9 @@ export function statusAtScope({
   }
 
   const silent = children.length - reported.length
+  const forms = typeof noun === 'string' ? { one: noun.slice(0, -1), many: noun } : noun
   return {
     status: worstStatus,
-    caption: `worst of ${reported.length} ${reported.length === 1 ? noun.slice(0, -1) : noun}${silent > 0 ? ` · ${silent} not reported` : ''}`,
+    caption: `worst of ${countNoun(reported.length, forms)}${silent > 0 ? ` · ${silent} not reported` : ''}`,
   }
 }

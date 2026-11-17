@@ -1,7 +1,18 @@
 import { describe, expect, it } from 'vitest'
 import type { components } from '../../../api/schema'
-import { buildTrendColumns } from '../columns'
-import { buildItemRows, exceptionsFirst, filterItems, itemSummary, parseItemSort, sortItems, type ItemRow } from './itemGrid'
+import { deploymentGroup, deploymentRows } from '../../../test/deploymentFixtures'
+import { buildMonthTrendColumns, buildTrendColumns } from '../columns'
+import {
+  buildItemRows,
+  filterItems,
+  itemSummary,
+  parseItemSort,
+  partitionItems,
+  sortItems,
+  tileExceptions,
+  visibleItemOrder,
+  type ItemRow,
+} from './itemGrid'
 
 type ViewRow = components['schemas']['ViewRow']
 type Cell = components['schemas']['Cell']
@@ -166,9 +177,15 @@ describe('n/a items', () => {
   })
 
   it('are not exceptions on the tile', () => {
-    const e = exceptionsFirst(withNa(), scale, 'higher_better', 5)
-    expect(ids(e.shown)).toEqual(['hooks', 'ingest', 'search', 'push', 'report'])
-    expect(e).toMatchObject({ restBest: 2, hiddenNotReported: 0 })
+    const e = tileExceptions(withNa(), { columns, offset: 0, scale, direction: 'higher_better' })
+    expect(ids(e.shown)).toEqual(['hooks', 'ingest', 'search', 'push'])
+    expect(e).toMatchObject({ restBest: 2, silent: 1 })
+  })
+
+  it('are their own partition, never silent', () => {
+    const p = partitionItems(withNa(), columns)
+    expect(ids(p.notApplicable)).toEqual(['archive'])
+    expect(ids(p.silent)).toEqual(['report'])
   })
 })
 
@@ -181,16 +198,122 @@ describe('filterItems', () => {
   })
 })
 
-describe('exceptionsFirst', () => {
-  it('non-best reported items worst first, then not reported by name, at most five', () => {
-    const e = exceptionsFirst(rows(), scale, 'higher_better', 5)
-    expect(ids(e.shown)).toEqual(['hooks', 'ingest', 'search', 'push', 'report'])
-    expect(e).toMatchObject({ restBest: 2, hiddenNotReported: 0 })
+describe('tileExceptions', () => {
+  it('non-best reported items worst first, then those that stopped inside the shown columns; never the silent', () => {
+    const e = tileExceptions(rows(), { columns, offset: 0, scale, direction: 'higher_better' })
+    expect(ids(e.shown)).toEqual(['hooks', 'ingest', 'search', 'push'])
+    expect(e).toMatchObject({ restBest: 2, hiddenWorse: 0, hiddenStopped: 0, stoppedBefore: 0, silent: 1 })
   })
 
-  it('counts the not reported cut off', () => {
-    const e = exceptionsFirst(rows(), scale, 'higher_better', 4)
-    expect(ids(e.shown)).toEqual(['hooks', 'ingest', 'search', 'push'])
-    expect(e).toMatchObject({ restBest: 2, hiddenNotReported: 1 })
+  it('counts the rows cut by the limit', () => {
+    const e = tileExceptions(rows(), { columns, offset: 0, scale, direction: 'higher_better', max: 2 })
+    expect(ids(e.shown)).toEqual(['hooks', 'ingest'])
+    expect(e).toMatchObject({ hiddenWorse: 1, hiddenStopped: 1 })
+  })
+
+  describe('the deployments over 12 months, 6 shown (May–Oct)', () => {
+    const deployments = buildItemRows(deploymentRows(columns), columns, scale, deploymentGroup, 1)
+    const e = tileExceptions(deployments, { columns, offset: 6, scale, direction: 'higher_better' })
+
+    it('the Red one, then the stopped most recent first', () => {
+      expect(ids(e.shown)).toEqual(['dep-notify-multi', 'dep-webhooks-us', 'dep-renderer', 'dep-identity-dr'])
+    })
+
+    it('a last report before May is counted, not shown; so are the silent', () => {
+      expect(e).toMatchObject({ restBest: 8, hiddenStopped: 0, stoppedBefore: 1, stoppedBeforeLabel: 'May', silent: 8 })
+    })
+
+    it('all 12 shown, the legacy cluster gets its row', () => {
+      expect(ids(tileExceptions(deployments, { columns, offset: 0, scale, direction: 'higher_better' }).shown)).toContain(
+        'dep-search-legacy',
+      )
+    })
+  })
+})
+
+describe('the 21 deployments', () => {
+  const twelve = () => buildItemRows(deploymentRows(columns), columns, scale, deploymentGroup, 1)
+  const window24 = buildMonthTrendColumns('2026-M10', 24, 1)
+
+  it('partition over the 12-month window: 9 reported, 4 not reported, 8 silent', () => {
+    const p = partitionItems(twelve(), columns)
+    expect(p.reported).toHaveLength(9)
+    expect(ids(p.notReported).sort()).toEqual(['dep-identity-dr', 'dep-renderer', 'dep-search-legacy', 'dep-webhooks-us'])
+    expect(p.silent).toHaveLength(8)
+    expect(ids(p.silent)).toContain('dep-partner-sandbox')
+    expect(p.notApplicable).toHaveLength(0)
+  })
+
+  it('over 24 months the sandbox reported (Sep 2025), so it is not silent', () => {
+    const rs = buildItemRows(deploymentRows(window24), window24, scale, deploymentGroup, 1)
+    const p = partitionItems(rs, window24)
+    expect(p.silent).toHaveLength(7)
+    expect(ids(p.notReported)).toContain('dep-partner-sandbox')
+    expect(rs.find((r) => r.id === 'dep-search-legacy')!.lastReported).toMatchObject({ label: 'Dec', fullLabel: 'Dec 2025', display: '99.20%' })
+  })
+
+  it('itemSummary still counts all 12 as not reported', () => {
+    expect(itemSummary(twelve(), scale)).toMatchObject({ total: 21, best: 8, notReported: 12 })
+  })
+
+  it('sortItems returns the same three groups as before', () => {
+    const s = sortItems(twelve(), 'worst', 'higher_better', scale)
+    expect(s.reported).toHaveLength(9)
+    expect(s.reported[0]!.id).toBe('dep-notify-multi')
+    expect(s.notReported).toHaveLength(12)
+    expect(s.notApplicable).toHaveLength(0)
+  })
+})
+
+describe('partitionItems', () => {
+  /** Reported only in the window's first column: not silent, whatever a layout shows. */
+  const early = () => {
+    const firstOnly = item('early', 'Early', null, null, { [columns[0]!.period]: [99.95, '99.95%'] })
+    const none = item('none', 'None', null, null)
+    return buildItemRows([firstOnly, none], columns, scale, () => 'Data', 1)
+  }
+
+  it('judges silence over every column of the window', () => {
+    const p = partitionItems(early(), columns)
+    expect(ids(p.silent)).toEqual(['none'])
+    expect(ids(p.notReported)).toEqual(['early'])
+  })
+
+  it('a window cut to the last 6 makes the early one silent too', () => {
+    const p = partitionItems(early(), columns.slice(6))
+    expect(ids(p.silent)).toEqual(['early', 'none'])
+  })
+})
+
+describe('visibleItemOrder', () => {
+  const deployments = buildItemRows(deploymentRows(columns), columns, scale, deploymentGroup, 1)
+  const order = (o: { filter?: string; silentOpen?: boolean }) =>
+    visibleItemOrder(deployments, { columns, filter: '', sort: 'worst', direction: 'higher_better', scale, silentOpen: false, ...o })
+
+  it('reported, then not reported, without the silent while their group is shut', () => {
+    const ids = order({})
+    expect(ids).toHaveLength(13)
+    expect(ids[0]).toBe('dep-notify-multi')
+    expect(ids).not.toContain('dep-edge-cache')
+  })
+
+  it('the silent last, by name, while open', () => {
+    const ids = order({ silentOpen: true })
+    expect(ids).toHaveLength(21)
+    expect(ids.slice(13)).toEqual([
+      'dep-warehouse-primary',
+      'dep-warehouse-replica',
+      'dep-billing-recon',
+      'dep-export-jobs',
+      'dep-edge-cache',
+      'dep-push-apac',
+      'dep-push-eu',
+      'dep-partner-sandbox',
+    ])
+  })
+
+  it('a filter shows the silent that match, open or not', () => {
+    expect(order({ filter: 'warehouse' })).toEqual(['dep-warehouse-primary', 'dep-warehouse-replica'])
+    expect(order({ filter: 'identity' })).toEqual(['dep-identity-west', 'dep-identity-east', 'dep-identity-dr'])
   })
 })

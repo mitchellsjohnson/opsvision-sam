@@ -38,6 +38,15 @@ export function nounForms(name: string | undefined, fallback: 'item' | 'unit'): 
   return { one: word, many: plural(word) }
 }
 
+/**
+ * A kind id as a noun, for when the kind's name is not at hand:
+ * `deployments` → `deployment` / `deployments`, `edge_nodes` → `edge node` /
+ * `edge nodes` (hyphens and underscores read as spaces).
+ */
+export function nounFromId(id: string): NounForms {
+  return nounForms(id.replace(/[-_]+/g, ' '), 'item')
+}
+
 /** `1 service`, `3 services`. */
 export function countNoun(n: number, forms: NounForms): string {
   return `${n} ${n === 1 ? forms.one : forms.many}`

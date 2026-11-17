@@ -1,5 +1,20 @@
 import { describe, expect, it } from 'vitest'
-import { countNoun, nounForms } from './nouns'
+import { countNoun, nounForms, nounFromId } from './nouns'
+
+describe('nounFromId', () => {
+  it.each([
+    ['deployments', 'deployment', 'deployments'],
+    ['edge_nodes', 'edge node', 'edge nodes'],
+    ['build-agents', 'build agent', 'build agents'],
+    ['service', 'service', 'services'],
+  ])('%s → %s / %s', (id, one, many) => {
+    expect(nounFromId(id)).toEqual({ one, many })
+  })
+
+  it('falls back to item for an empty id', () => {
+    expect(nounFromId('')).toEqual({ one: 'item', many: 'items' })
+  })
+})
 
 describe('nounForms', () => {
   it.each([

@@ -1,11 +1,12 @@
 import clsx from 'clsx'
-import type { CSSProperties } from 'react'
+import { useMemo, type CSSProperties } from 'react'
 import type { components } from '../../api/schema'
-import { HATCH, StatusCell, StatusChip, UNRATED_CLASS, type StatusLevel } from '../../ui/status'
+import { HATCH, ItemName, StatusCell, StatusChip, UNRATED_CLASS, type StatusLevel } from '../../ui/status'
+import { textWidth, uiFont, useFontsReady } from '../../ui/textWidth'
 import { useElementWidth } from '../../ui/useElementWidth'
 import { chartTheme, statusFill } from './charts/chartTheme'
 import type { Column } from './columns'
-import { exceptionsFirst, itemSummary, type ItemRow } from './logic/itemGrid'
+import { groupItems, itemSummary, tileExceptions, type ItemRow } from './logic/itemGrid'
 import { itemGridLayout } from './logic/itemGridLayout'
 import { countNoun, type NounForms } from './logic/nouns'
 import { columnUnit, sinceText, thresholdText } from './logic/statusText'
@@ -18,6 +19,17 @@ type StatusRule = components['schemas']['StatusRule']
 /** Rows pad 6px each side inside the tile. */
 const ROW_PAD = 12
 const MAX_ROWS = 5
+/** Tiles narrower than this (phones) stack each row: name and value, the cells below. */
+const STACK_BELOW = 400
+/** The name column's floor before the tile gives up months for it. */
+const NAME_FLOOR = 200
+/** Windows longer than this name the year in `Last Dec 2025`. */
+const YEAR_AFTER = 12
+
+/** A stopped row's value: `Last Sep`; with the year in a window longer than a year. */
+function lastText(r: ItemRow, long: boolean): string {
+  return r.lastReported ? `Last ${long ? r.lastReported.fullLabel : r.lastReported.label}` : ''
+}
 
 export interface ItemSummaryTileProps {
   /** The metric's head row: its name, format and kind. */
@@ -48,10 +60,12 @@ function segmentStyle(scale: StatusLevel[], key: string): CSSProperties {
 }
 
 /**
- * An item metric's tile (§6.4): the worst item and since when, how the items
- * are spread across statuses, then the exceptions first, one button per item
- * (not at the best status, then not reported), at most five, and how many
- * others are fine.
+ * An item metric's tile (§6.4, §3.1): the worst item and since when, how the
+ * items are spread across statuses, then the exceptions first, one button per
+ * item (not at the best status, then those that stopped reporting inside the
+ * shown months), at most five, and a line counting what has no row. Names come
+ * before months: a tile too narrow for 12 months beside a 200px name shows
+ * the latest 6.
  */
 export function ItemSummaryTile({ head, rows, columns, scale, direction, noun, rule, onExpand, onOpenItem }: ItemSummaryTileProps) {
   const [measure, width] = useElementWidth<HTMLDivElement>()
@@ -62,8 +76,10 @@ export function ItemSummaryTile({ head, rows, columns, scale, direction, noun, r
   const selected = columns[columns.length - 1]
   const unit = columnUnit(selected, 1)
 
+  const long = columns.length > YEAR_AFTER
+  const fontsReady = useFontsReady()
+
   const summary = itemSummary(rows, scale)
-  const ex = exceptionsFirst(rows, scale, direction, MAX_ROWS)
   const unrated = rows.filter((r) => r.reported && !r.status).length
 
   const ownTargets = (rule?.perSubject ?? []).flatMap((p) => {
@@ -110,9 +126,28 @@ export function ItemSummaryTile({ head, rows, columns, scale, direction, noun, r
     ])
     .filter((p) => p.n > 0)
 
-  const layout = itemGridLayout(width > 0 ? width - ROW_PAD : 0, columns.length, { valueWidth: 72, nameMin: 80 })
+  // Measured from every row the tile could show, before the columns decide which do; again once web fonts load.
+  const bestKey = best?.key
+  const needs = useMemo(() => {
+    const g = groupItems(rows, columns, 'worst', direction, scale)
+    const candidates = [...g.reported.filter((r) => r.status !== bestKey), ...g.notReported]
+    const valueOf = (r: ItemRow) =>
+      r.reported ? textWidth(r.display, uiFont(600, 12)) : textWidth(lastText(r, long), uiFont(400, 11))
+    return {
+      name: Math.max(0, ...candidates.map((r) => textWidth(r.name, uiFont(500, 12)))) + 8,
+      group: 0,
+      value: Math.max(56, ...candidates.map((r) => valueOf(r) + 12)),
+      extra: 0,
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `fontsReady` asks for a new measurement.
+  }, [rows, columns, direction, scale, bestKey, long, fontsReady])
+  const layout = itemGridLayout(width > 0 ? width - ROW_PAD : 0, columns.length, needs, {
+    nameFloor: NAME_FLOOR,
+    stackBelow: STACK_BELOW - ROW_PAD,
+  })
   const offset = columns.length - layout.count
   const shownColumns = columns.slice(offset)
+  const ex = tileExceptions(rows, { columns, offset, scale, direction, max: MAX_ROWS })
   const inlineColumns = `${layout.nameWidth}px ${layout.count * layout.cellWidth}px ${layout.valueWidth}px`
   const cellsStyle: CSSProperties = {
     gridTemplateColumns: `repeat(${layout.count}, ${layout.cellWidth}px)`,
@@ -129,8 +164,6 @@ export function ItemSummaryTile({ head, rows, columns, scale, direction, noun, r
   }
 
   const rest = [
-    ex.hiddenWorse > 0 ? <span key="worse">{ex.hiddenWorse} more below {bestLabel}</span> : null,
-    ex.hiddenNotReported > 0 ? <span key="missing">{ex.hiddenNotReported} more not reported</span> : null,
     summary.best > 0 && summary.best === summary.total ? (
       <span key="best">
         All <strong className="font-semibold">{summary.total}</strong> {summary.total === 1 ? noun.one : noun.many} {bestLabel}
@@ -138,6 +171,18 @@ export function ItemSummaryTile({ head, rows, columns, scale, direction, noun, r
     ) : summary.best > 0 ? (
       <span key="best">
         All other <strong className="font-semibold">{summary.best}</strong> {summary.best === 1 ? noun.one : noun.many} {bestLabel}
+      </span>
+    ) : null,
+    ex.hiddenWorse > 0 ? <span key="worse">{ex.hiddenWorse} more below {bestLabel}</span> : null,
+    ex.hiddenStopped > 0 ? <span key="stopped">{ex.hiddenStopped} more stopped reporting</span> : null,
+    ex.stoppedBefore > 0 ? (
+      <span key="before">
+        {ex.stoppedBefore} stopped before {ex.stoppedBeforeLabel}
+      </span>
+    ) : null,
+    ex.silent > 0 ? (
+      <span key="silent">
+        {ex.silent} with no reports in {columns.length} {columnUnit(selected, columns.length)}
       </span>
     ) : null,
   ].filter((x) => x !== null)
@@ -176,7 +221,11 @@ export function ItemSummaryTile({ head, rows, columns, scale, direction, noun, r
           >
             See all {countNoun(summary.total, noun)} <span aria-hidden="true">›</span>
           </button>
-          <span className="text-[11px] text-ink/70">Exceptions first · {selected?.fullLabel ?? ''}</span>
+          <span className="text-[11px] text-ink/70">
+            {['Exceptions first', layout.count < columns.length ? `last ${layout.count} ${columnUnit(selected, layout.count)}` : '', selected?.fullLabel ?? '']
+              .filter(Boolean)
+              .join(' · ')}
+          </span>
         </div>
       }
     >
@@ -214,8 +263,8 @@ export function ItemSummaryTile({ head, rows, columns, scale, direction, noun, r
             <span className="capitalize">{noun.one}</span>
             <span className="grid text-center" style={cellsStyle}>
               {shownColumns.map((c, i) => (
-                <span key={c.key} className={clsx(i === shownColumns.length - 1 && 'font-semibold text-accent-deep')}>
-                  {/^[A-Z][a-z]{2}$/.test(c.label) ? c.label[0] : c.label}
+                <span key={c.key} className={clsx('truncate', i === shownColumns.length - 1 && 'font-semibold text-accent-deep')}>
+                  {c.label}
                 </span>
               ))}
             </span>
@@ -233,9 +282,13 @@ export function ItemSummaryTile({ head, rows, columns, scale, direction, noun, r
             </span>
           )
           const shownValue = r.reported ? (
-            <span className="text-right font-semibold tabular-nums">{r.display || chartTheme(scale, r.status).label}</span>
+            <span data-value="" className="whitespace-nowrap text-right font-semibold tabular-nums">
+              {r.display || chartTheme(scale, r.status).label}
+            </span>
           ) : (
-            <span className="whitespace-nowrap text-right text-[11px] text-ink/70">{r.current.kind === 'na' ? 'Not applicable' : 'Not reported'}</span>
+            <span data-value="" className="whitespace-nowrap text-right text-[11px] text-ink/70">
+              {lastText(r, long)}
+            </span>
           )
           return (
             <button
@@ -250,7 +303,7 @@ export function ItemSummaryTile({ head, rows, columns, scale, direction, noun, r
               style={layout.stacked ? undefined : { gridTemplateColumns: inlineColumns }}
               onClick={(e) => onOpenItem(r.id, e.currentTarget)}
             >
-              <span className={clsx('line-clamp-2 min-w-0 break-words pr-2 font-medium', !r.reported && 'text-ink/70')}>{r.name}</span>
+              <ItemName name={r.name} group={r.group} className={clsx('pr-2 font-medium', !r.reported && 'text-ink/70')} />
               {layout.stacked ? (
                 <>
                   {shownValue}

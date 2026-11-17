@@ -16,16 +16,17 @@ import {
   type ReactNode,
   type RefObject,
 } from 'react'
-import { useItems, useOrgUnits } from '../../api/queries'
+import { useItems, useOrgLevels, useOrgUnits } from '../../api/queries'
 import type { components } from '../../api/schema'
-import { Legend, StatusCell, StatusCellTip, StatusChip, useGridNavigation, type StatusLevel } from '../../ui/status'
+import { ItemName, Legend, StatusCell, StatusCellTip, StatusChip, useGridNavigation, type StatusLevel } from '../../ui/status'
 import type { GridNavigation } from '../../ui/status/useGridNavigation'
+import { textWidth, uiFont, useFontsReady } from '../../ui/textWidth'
 import { useElementWidth } from '../../ui/useElementWidth'
 import { chartTheme } from './charts/chartTheme'
 import type { Column } from './columns'
-import { filterItems, itemSummary, sortItems, type ItemRow, type ItemSort } from './logic/itemGrid'
-import { itemGridLayout } from './logic/itemGridLayout'
-import { countNoun, type NounForms } from './logic/nouns'
+import { filterItems, groupItems, itemSummary, type ItemRow, type ItemSort } from './logic/itemGrid'
+import { CHIP_MD_WIDTH, itemGridLayout, type ItemGridNeeds } from './logic/itemGridLayout'
+import { countNoun, nounForms, type NounForms } from './logic/nouns'
 import { cellName, fiscalGroups, streakAt } from './logic/statusBoard'
 import { columnUnit, sinceText } from './logic/statusText'
 import { cellKey } from './viewHelpers'
@@ -34,11 +35,13 @@ type ViewRow = components['schemas']['ViewRow']
 type Direction = components['schemas']['Direction']
 
 const ROW_HOVER = 'hover:bg-ink/[0.035] focus-within:bg-ink/[0.035]'
-/** Below this container width the value column narrows and drops its chip, and groups hide. */
+/** Below this container width the summary, toolbar, legend and group headers take their phone form. */
 const NARROW = 640
 const EXTRA_WIDTH = 112
 /** The filter appears once there are more items than fit in a glance. */
 const FILTER_MIN = 12
+/** Windows longer than this name the year in `Last Dec 2025`. */
+const YEAR_AFTER = 12
 
 /** Each item's org unit name (`useItems` + `useOrgUnits`); `Unassigned` when it has none, '' until known. */
 export function useItemGroups(): (itemId: string) => string {
@@ -53,6 +56,67 @@ export function useItemGroups(): (itemId: string) => string {
     },
     [items.data, units.data],
   )
+}
+
+const capital = (s: string) => (s ? s[0]!.toUpperCase() + s.slice(1) : s)
+
+/** The group column's header: the org level the items' units sit at (`Segment`), or `Group` when they differ or are not known. */
+function useGroupNoun(rows: ItemRow[]): string {
+  const items = useItems({ enabled: true })
+  const units = useOrgUnits()
+  const levels = useOrgLevels()
+  const at = new Set<string>()
+  for (const r of rows) {
+    const unitId = items.data?.find((i) => i.id === r.id)?.orgUnitId
+    const unit = unitId ? units.data?.units.find((u) => u.id === unitId) : undefined
+    if (unit) at.add(unit.levelId)
+  }
+  const name = at.size === 1 ? levels.data?.find((l) => at.has(l.id))?.name : undefined
+  return name ? capital(nounForms(name, 'unit').one) : 'Group'
+}
+
+/** What an item's value cell reads when it is not reported this period; '' for an item silent all window. */
+function notReportedText(r: ItemRow, long: boolean, stacked: boolean): string {
+  if (r.current.kind === 'na') return 'n/a'
+  const last = r.lastReported
+  if (!last) return ''
+  return `Last ${long ? last.fullLabel : last.label}${stacked ? '' : ` ${last.display}`}`
+}
+
+/** Each column's need in px (§2.2), measured from the texts the rows will show. */
+function measureNeeds(rows: ItemRow[], scale: StatusLevel[], long: boolean, groupNoun: string): ItemGridNeeds {
+  const nameFont = uiFont(500, 14)
+  const groupFont = uiFont(400, 12)
+  const valueFont = uiFont(600, 14)
+  const noteFont = uiFont(400, 12)
+  let name = 0
+  let value = 0
+  for (const r of rows) {
+    name = Math.max(name, textWidth(r.name, nameFont))
+    value = Math.max(
+      value,
+      r.reported
+        ? textWidth(r.display || chartTheme(scale, r.status).label, valueFont) + (r.status ? 6 + CHIP_MD_WIDTH : 0)
+        : textWidth(notReportedText(r, long, false), noteFont),
+    )
+  }
+  const groups = [...new Set(rows.map((r) => r.group).filter(Boolean))]
+  const group =
+    groups.length < 2 ? 0 : Math.max(textWidth(groupNoun, uiFont(500, 12)), ...groups.map((g) => textWidth(g, groupFont))) + 16
+  return { name: name + 12, group, value: Math.min(168, Math.max(96, value + 12)), extra: EXTRA_WIDTH }
+}
+
+/** About how wide the phone key is on one line: chips and dot, labels at 11px, 10px gaps. */
+function legendWidth(scale: StatusLevel[], present: Set<string>): number {
+  const font = uiFont(400, 11)
+  const entries = [
+    ...scale.filter((s) => present.has(s.key)).map((s) => CHIP_MD_WIDTH + 4 + textWidth(s.label, font)),
+    ...(present.has('missing') ? [6 + 4 + textWidth('No data', font)] : []),
+    ...(present.has('na') ? [CHIP_MD_WIDTH + 4 + textWidth('n/a', font)] : []),
+    ...(present.has('unrated') ? [CHIP_MD_WIDTH + 4 + textWidth('Not rated', font)] : []),
+    ...(present.has('notDue') ? [CHIP_MD_WIDTH + 4 + textWidth('Not due', font)] : []),
+  ]
+  return entries.reduce((a, b) => a + b, 0) + 10 * Math.max(entries.length - 1, 0)
 }
 
 /**
@@ -118,42 +182,30 @@ export function SegmentedControl<T extends string>({
   )
 }
 
-function ItemValue({
-  r,
-  scale,
-  columns,
-  narrow,
-  compact,
-}: {
-  r: ItemRow
-  scale: StatusLevel[]
-  columns: Column[]
-  narrow: boolean
-  compact: boolean
-}) {
+/**
+ * The selected period's value (§2.4), on one line: the value and its chip
+ * (no chip when stacked, where the cells carry the letter); else `Last Sep
+ * 100.00%` (`Last Sep` stacked) or `n/a`. The group header says not
+ * reported, so the cell never does.
+ */
+function ItemValue({ r, scale, long, stacked }: { r: ItemRow; scale: StatusLevel[]; long: boolean; stacked: boolean }) {
   if (r.reported) {
     return (
-      <span className="inline-flex items-center justify-end gap-1.5">
+      <span data-value="" className="inline-flex items-center justify-end gap-1.5 whitespace-nowrap">
         <span className="text-sm font-semibold tabular-nums">{r.display || chartTheme(scale, r.status).label}</span>
-        {!narrow && !compact && r.status && <StatusChip status={r.status} scale={scale} />}
+        {!stacked && r.status && <StatusChip status={r.status} scale={scale} />}
       </span>
     )
   }
-  const na = r.current.kind === 'na'
-  const span = columns.length
-  const detail = na
-    ? r.current.naReason
-    : r.lastReported
-      ? narrow
-        ? `Last ${r.lastReported.label}`
-        : `Last ${r.lastReported.label} · ${r.lastReported.display}`
-      : `No reports in ${span} ${columnUnit(columns[span - 1], span)}`
+  const text = notReportedText(r, long, stacked)
   return (
-    <span className="block leading-4">
-      <span className={clsx('block whitespace-nowrap text-ink/80', narrow ? 'text-[11px]' : 'text-xs')}>
-        {na ? 'Not applicable' : 'Not reported'}
-      </span>
-      {detail && <span className="block text-[11px] text-ink/70">{detail}</span>}
+    <span data-value="" className="whitespace-nowrap text-xs leading-4 text-ink/70 tabular-nums">
+      {text || (
+        <>
+          <span aria-hidden="true">—</span>
+          <span className="sr-only">No reports</span>
+        </>
+      )}
     </span>
   )
 }
@@ -171,9 +223,12 @@ interface RowContext {
   fyStarts: Set<number>
   columns: Column[]
   scale: StatusLevel[]
-  narrow: boolean
   stacked: boolean
   extra: boolean
+  /** The group column is shown. */
+  grouped: boolean
+  /** The window is longer than a year, so `Last` names the year. */
+  long: boolean
   colSpan: number
   worstColor: string
   statusLabel: (key: string) => string | undefined
@@ -201,18 +256,28 @@ const ItemGridRow = memo(function ItemGridRow({
   activeCol: number
   ctx: RowContext
 }) {
-  const { shown, offset, fyStarts, columns, scale, narrow, stacked, extra, colSpan, worstColor, statusLabel, cellPropsFor, open, quiet } = ctx
+  const { shown, offset, fyStarts, columns, scale, stacked, extra, grouped, long, colSpan, worstColor, statusLabel, cellPropsFor, open, quiet } =
+    ctx
   const cells = r.cells.slice(offset).map((cell, i) => {
     const column = shown[i]!
     const last = i === shown.length - 1
     const grid = cellPropsFor(r.id, i, index, i === activeCol)
     return (
-      <td key={cell.key} className={clsx('px-0.5 py-0.5 align-middle', last && 'bg-accent/10', fyStarts.has(i) && 'border-l border-ink/20')}>
+      <td key={cell.key} className={clsx('px-0.5 py-1 align-middle', last && 'bg-accent/10', fyStarts.has(i) && 'border-l border-ink/20')}>
         <StatusCell
           cell={cell}
           name={cellName(r.name, column, cell, statusLabel, last)}
           scale={scale}
-          tip={<StatusCellTip column={column} cell={cell} streak={streakAt(r.cells, offset + i)} scale={scale} />}
+          tip={
+            <StatusCellTip
+              column={column}
+              cell={cell}
+              streak={streakAt(r.cells, offset + i)}
+              scale={scale}
+              title={r.name}
+              titleNote={r.group || undefined}
+            />
+          }
           grid={{
             ...grid,
             onFocus: (e: FocusEvent<HTMLElement>) => {
@@ -229,25 +294,23 @@ const ItemGridRow = memo(function ItemGridRow({
       </td>
     )
   })
-  const value = <ItemValue r={r} scale={scale} columns={columns} narrow={narrow} compact={stacked} />
+  const value = <ItemValue r={r} scale={scale} long={long} stacked={stacked} />
   if (stacked) {
     return (
       <>
         <tr
           data-testid={`name-row-${r.id}`}
           aria-hidden="true"
-          className="[&:has(+tr:focus-within)]:bg-ink/[0.035] [&:has(+tr:hover)]:bg-ink/[0.035]"
+          className="h-6 [&:has(+tr:focus-within)]:bg-ink/[0.035] [&:has(+tr:hover)]:bg-ink/[0.035]"
         >
-          <td colSpan={colSpan} className="px-0.5 pt-2">
+          <td colSpan={colSpan} className="px-0.5 pt-1 align-bottom">
             <span className="flex items-baseline justify-between gap-3">
-              <span data-name="" className={clsx('line-clamp-2 min-w-0 break-words font-medium', !r.reported && 'text-ink/70')}>
-                {r.name}
-              </span>
+              <ItemName name={r.name} group={r.group} className={clsx('font-medium', !r.reported && 'text-ink/70')} />
               <span className="max-w-[45%] shrink-0 text-right">{value}</span>
             </span>
           </td>
         </tr>
-        <tr data-testid={`item-${r.id}`} className={clsx(ROW_HOVER, '[tr:hover+&]:bg-ink/[0.035]')}>
+        <tr data-testid={`item-${r.id}`} className={clsx(ROW_HOVER, 'h-8 [tr:hover+&]:bg-ink/[0.035]')}>
           <th scope="row" className="w-0 max-w-0 overflow-hidden p-0">
             <span className="sr-only">{r.name}</span>
           </th>
@@ -257,25 +320,16 @@ const ItemGridRow = memo(function ItemGridRow({
     )
   }
   return (
-    <tr data-testid={`item-${r.id}`} className={ROW_HOVER}>
+    <tr data-testid={`item-${r.id}`} className={clsx(ROW_HOVER, 'h-8')}>
       {/* A pointer shortcut only: the row's cells are the keyboard and screen reader path. */}
-      <th
-        scope="row"
-        title={r.name}
-        className={clsx('group cursor-pointer py-0.5 pr-3 text-left align-middle font-medium', !r.reported && 'text-ink/70')}
-        onClick={() => open(r.id)}
-      >
-        <span className="flex min-w-0 items-baseline gap-1.5">
-          <span data-name="" className="line-clamp-2 min-w-0 break-words group-hover:underline">
-            {r.name}
-          </span>
-          {!narrow && r.group && <span className="max-w-[50%] shrink-0 truncate text-[11px] font-normal leading-4 text-ink/70">{r.group}</span>}
-        </span>
+      <th scope="row" className="group cursor-pointer pr-3 text-left align-middle font-medium" onClick={() => open(r.id)}>
+        <ItemName name={r.name} group={r.group} className={clsx('group-hover:underline', !r.reported && 'text-ink/70')} />
       </th>
+      {grouped && <td className="truncate pr-4 align-middle text-xs text-ink/70">{r.group}</td>}
       {cells}
-      <td className={clsx('py-0.5 text-right align-middle', narrow ? 'pl-2' : 'pl-3')}>{value}</td>
+      <td className="pl-3 text-right align-middle">{value}</td>
       {extra && (
-        <td className="py-0.5 pl-3 text-right align-middle text-xs tabular-nums text-ink/70">
+        <td className="pl-3 text-right align-middle text-xs tabular-nums text-ink/70">
           {r.worstCount > 0 ? (
             <span className="inline-flex items-center gap-1.5">
               {r.worstCount}
@@ -313,7 +367,7 @@ export interface ItemGridProps {
   filter: string
   onFilter: (text: string) => void
   onOpenItem: (itemId: string) => void
-  /** An item whose selected cell takes focus on mount (back from its drill-in). */
+  /** An item whose selected cell takes focus on mount (back from its drill-in); a silent one opens its group first. */
   restoreId?: string
   /**
    * The toolbar's right end: the range control, in month views, with the
@@ -323,12 +377,16 @@ export interface ItemGridProps {
   range?: { control: ReactNode; minCount: number; maxCount: number }
   /** The surface's polite region; without it the grid announces in its own. */
   announce?: (message: string) => void
+  /** Whether the group of items with no reports in the window is open; the grid keeps its own when absent. */
+  silentOpen?: boolean
+  onSilentOpen?: (open: boolean) => void
 }
 
 /**
  * An item metric's answer (§6.5): how many items are at the best status, the
  * exceptions, the worst item now, then every item × period as a keyboard
- * grid, sorted and filtered, with the not reported last.
+ * grid that fills its card (§2), sorted and filtered, with the not reported
+ * after and the silent collapsed last.
  */
 export function ItemGrid({
   head,
@@ -345,9 +403,12 @@ export function ItemGrid({
   restoreId,
   range,
   announce,
+  silentOpen,
+  onSilentOpen,
 }: ItemGridProps) {
   const hintId = useId()
   const noteId = useId()
+  const silentId = useId()
   const inputRef = useRef<HTMLInputElement>(null)
   const [measure, width] = useElementWidth<HTMLDivElement>()
   const box = useRef<HTMLDivElement | null>(null)
@@ -359,10 +420,16 @@ export function ItemGrid({
     [measure],
   )
   const narrow = width > 0 && width < NARROW
-  const layoutOpts = { valueWidth: narrow ? 76 : 136, extraWidth: EXTRA_WIDTH, nameMin: 96 }
-  const layout = itemGridLayout(width, columns.length, layoutOpts)
+  const long = columns.length > YEAR_AFTER
+  const fontsReady = useFontsReady()
+  const groupNoun = useGroupNoun(rows)
+  // Measured once per set of texts (and again once web fonts load), not on every filter keystroke.
+  const textsKey = JSON.stringify(rows.map((r) => [r.name, r.group, r.display, r.status, notReportedText(r, long, false)]))
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- `textsKey` stands for the texts measured from `rows`.
+  const needs = useMemo(() => measureNeeds(rows, scale, long, groupNoun), [textsKey, scale, long, groupNoun, fontsReady])
+  const layout = itemGridLayout(width, columns.length, needs)
   // The range control changes what the grid shows only where the longest range fits more columns than the shortest.
-  const rangeShown = range !== undefined && itemGridLayout(width, range.maxCount, layoutOpts).count > range.minCount
+  const rangeShown = range !== undefined && itemGridLayout(width, range.maxCount, needs).count > range.minCount
   const offset = columns.length - layout.count
   const shown = useMemo(() => columns.slice(offset), [columns, offset])
   const selected = columns[columns.length - 1]
@@ -375,42 +442,70 @@ export function ItemGrid({
 
   // The grid follows the filter at a lower priority than the input, so typing stays quick on a long list.
   const shownFilter = useDeferredValue(filter)
+  const filtering = shownFilter.trim() !== ''
   const summary = useMemo(() => itemSummary(rows, scale), [rows, scale])
-  const { visible, reported, notReported, notApplicable } = useMemo(() => {
+  const { visible, reported, notReported, notApplicable, silent, allSilent } = useMemo(() => {
     const v = filterItems(rows, shownFilter)
-    return { visible: v, ...sortItems(v, sort, direction, scale) }
-  }, [rows, shownFilter, sort, direction, scale])
-  const ordered = useMemo(() => [...reported, ...notReported, ...notApplicable], [reported, notReported, notApplicable])
+    const g = groupItems(v, columns, sort, direction, scale)
+    const every = groupItems(rows, columns, sort, direction, scale)
+    return { visible: v, ...g, allSilent: rows.length > 0 && every.silent.length === rows.length }
+  }, [rows, shownFilter, columns, sort, direction, scale])
+
+  const [ownOpen, setOwnOpen] = useState(false)
+  const open = silentOpen ?? ownOpen
+  const setOpen = (next: boolean) => {
+    if (silentOpen === undefined) setOwnOpen(next)
+    onSilentOpen?.(next)
+  }
+  // While filtering, the matching silent items show; with nothing else to show, they are open.
+  const silentShown = filtering || open || allSilent
+  const silentToggle = !filtering && !allSilent
+  const ordered = useMemo(
+    () => [...reported, ...notReported, ...notApplicable, ...(silentShown ? silent : [])],
+    [reported, notReported, notApplicable, silent, silentShown],
+  )
   const opener = useRef(onOpenItem)
   useLayoutEffect(() => {
     opener.current = onOpenItem
   })
-  const open = useCallback((itemId: string) => opener.current(itemId), [])
+  const openItem = useCallback((itemId: string) => opener.current(itemId), [])
   const nav = useGridNavigation({
     rowIds: ordered.map((r) => r.id),
     colCount: shown.length,
     anchor: 'end',
-    onOpen: open,
+    onOpen: openItem,
   })
+
+  const [ownMessage, setOwnMessage] = useState('')
+  const say = announce ?? setOwnMessage
+  const shownMore = `Showing ${silent.length} more ${silent.length === 1 ? noun.one : noun.many}`
 
   // Back from a drill-in: focus the same item's selected cell, by id, without popping its tooltip. Only once
   // the measured width is laid out: switching to stacked rows rebuilds them, which would drop the focus.
+  // An item in the shut silent group opens it first, so focus never falls back to the dialog frame.
   const restored = useRef(false)
+  const askedOpen = useRef(false)
   const quiet = useRef(false)
   useLayoutEffect(() => {
     if (restored.current || !restoreId) return
     const actual = Math.floor(box.current?.getBoundingClientRect().width ?? 0)
     if (actual > 0 && actual !== Math.floor(width)) return
+    if (!ordered.some((r) => r.id === restoreId)) {
+      if (!silentShown && !askedOpen.current && silent.some((r) => r.id === restoreId)) {
+        askedOpen.current = true
+        setOpen(true)
+        say(shownMore)
+      } else if (!askedOpen.current) {
+        restored.current = true
+      }
+      return
+    }
     restored.current = true
     quiet.current = true
     nav.focusRow(restoreId, shown.length - 1)
   })
 
-  const [ownMessage, setOwnMessage] = useState('')
-  const say = announce ?? setOwnMessage
-  const message = shownFilter.trim()
-    ? `Showing ${visible.length} of ${countNoun(rows.length, noun)}`
-    : `Showing all ${countNoun(rows.length, noun)}`
+  const message = filtering ? `Showing ${visible.length} of ${countNoun(rows.length, noun)}` : `Showing all ${countNoun(rows.length, noun)}`
   // Announced 300 ms after typing stops; never on mount (a filter restored after a drill-in is not news).
   const announced = useRef(filter)
   useEffect(() => {
@@ -426,10 +521,15 @@ export function ItemGrid({
   const fyStarts = useMemo(() => new Set(groups.slice(1).map((g) => g.start)), [groups])
   const stacked = layout.stacked
   const extra = layout.extraShown
-  const colSpan = stacked ? shown.length + 1 : shown.length + 2 + (extra ? 1 : 0)
+  const grouped = !stacked && layout.groupWidth > 0
+  const colSpan = stacked ? shown.length + 1 : shown.length + 2 + (grouped ? 1 : 0) + (extra ? 1 : 0)
   const showFilter = rows.length > FILTER_MIN || filter !== ''
-  const unrated = ordered.some((r) => r.cells.slice(offset).some((c) => c.kind === 'unrated'))
-  const capital = (s: string) => (s ? s[0]!.toUpperCase() + s.slice(1) : s)
+  const present = useMemo(() => {
+    const keys = new Set<string>()
+    for (const r of ordered) for (const c of r.cells.slice(offset)) keys.add(c.kind === 'status' ? c.status : c.kind)
+    return keys
+  }, [ordered, offset])
+  const legendOneLine = narrow && legendWidth(scale, present) <= width
 
   const { cellPropsFor } = nav
   const ctx = useMemo<RowContext>(
@@ -439,17 +539,18 @@ export function ItemGrid({
       fyStarts,
       columns,
       scale,
-      narrow,
       stacked,
       extra,
+      grouped,
+      long,
       colSpan,
       worstColor: worstColorOf(scale),
       statusLabel,
       cellPropsFor,
-      open,
+      open: openItem,
       quiet,
     }),
-    [shown, offset, fyStarts, columns, scale, narrow, stacked, extra, colSpan, statusLabel, cellPropsFor, open],
+    [shown, offset, fyStarts, columns, scale, stacked, extra, grouped, long, colSpan, statusLabel, cellPropsFor, openItem],
   )
   const activeRow = nav.active.rowId
   const activeCol = nav.active.col
@@ -457,17 +558,21 @@ export function ItemGrid({
   const rowOf = (r: ItemRow) => (
     <ItemGridRow key={r.id} r={r} index={indexOf.get(r.id) ?? -1} activeCol={r.id === activeRow ? activeCol : -1} ctx={ctx} />
   )
+  const GROUP_LABEL = 'text-[11px] font-semibold uppercase leading-4 tracking-wide text-ink/70'
   const groupHeader = (text: string) => (
     <tr>
-      <th
-        scope="rowgroup"
-        colSpan={colSpan}
-        className="border-b border-ink/10 pt-3 pb-1 text-left text-[11px] font-semibold uppercase leading-4 tracking-wide text-ink/70"
-      >
-        {text}
+      <th scope="rowgroup" colSpan={colSpan} className="border-b border-ink/10 pt-3 pb-1 text-left">
+        <span data-group-label="" className={GROUP_LABEL}>
+          {text}
+        </span>
       </th>
     </tr>
   )
+  const toggleSilent = () => {
+    const next = !open
+    setOpen(next)
+    say(next ? shownMore : `Hid ${countNoun(silent.length, noun)}`)
+  }
 
   const scopeCell = head.subjectKind !== 'item' && selected ? head.cells.find((c) => cellKey(c) === selected.key) : undefined
   const scopeLead = scopeCell && scopeCell.naReason === '' && scopeCell.value != null ? scopeCell : undefined
@@ -488,6 +593,11 @@ export function ItemGrid({
   const worstMonths =
     w && w.worstCount > 0 ? `${w.worstCount} ${worstLabel} ${unit(w.worstCount)} in the last ${columns.length}` : ''
   const worstLine = [since, worstMonths, w?.group ?? ''].filter(Boolean).join(' · ')
+  const worstChip = w?.status ? (
+    <span role="img" aria-label={statusLabel(w.status) ?? w.status} className="inline-flex self-center">
+      <StatusChip status={w.status} scale={scale} size="lg" />
+    </span>
+  ) : null
 
   const note =
     layout.count < columns.length
@@ -495,6 +605,7 @@ export function ItemGrid({
       : columns.length > 1
         ? `${columns[0]!.fullLabel} – ${selected?.fullLabel ?? ''} · ${columns.length} ${unit(columns.length)}`
         : (selected?.fullLabel ?? '')
+  const silentLabel = `No reports in the last ${columns.length} ${unit(columns.length)} · ${silent.length}${filtering ? ' match' : ''}`
 
   return (
     <div data-testid="item-grid">
@@ -503,7 +614,7 @@ export function ItemGrid({
           {ownMessage}
         </p>
       )}
-      <section aria-label="Summary" className="flex flex-wrap items-end justify-between gap-x-8 gap-y-3">
+      <section aria-label="Summary" className={clsx('flex flex-wrap items-end justify-between gap-x-8', narrow ? 'gap-y-2' : 'gap-y-3')}>
         <div className="min-w-0">
           <p className={clsx('font-semibold tabular-nums', narrow ? 'text-xl' : 'text-[28px] leading-9')}>
             {scopeLead && (
@@ -535,35 +646,53 @@ export function ItemGrid({
             ))}
           </p>
         </div>
-        {w && (
-          <div data-testid="worst-now" className={clsx('grid min-w-0 gap-0.5', !narrow && 'justify-items-end text-right')}>
-            <span className="text-[11px] font-semibold uppercase leading-4 tracking-wide text-ink/70">Worst now</span>
-            <span className="flex flex-wrap items-baseline gap-x-2">
-              <span className="text-base font-semibold">{w.name}</span>
-              <span className="text-xl font-semibold tabular-nums">{w.display || '—'}</span>
-              {w.status && (
-                <span role="img" aria-label={statusLabel(w.status) ?? w.status} className="inline-flex self-center">
-                  <StatusChip status={w.status} scale={scale} size="lg" />
-                </span>
-              )}
-            </span>
-            {worstLine && <span className="text-xs text-ink/70">{worstLine}</span>}
-          </div>
-        )}
+        {w &&
+          (narrow ? (
+            // Phones: two lines, the name keeping its tail; the group and Red months are in the drill-in.
+            <div data-testid="worst-now" className="grid w-full min-w-0 gap-0.5">
+              <span className="flex min-w-0 items-baseline gap-2">
+                <span className="shrink-0 text-[11px] font-semibold uppercase leading-4 tracking-wide text-ink/70">Worst now</span>
+                <ItemName name={w.name} group={w.group} className="text-sm font-semibold" />
+              </span>
+              <span className="flex flex-wrap items-center gap-x-2">
+                <span className="text-xl font-semibold tabular-nums">{w.display || '—'}</span>
+                {worstChip}
+                {since && <span className="text-xs text-ink/70">{since}</span>}
+              </span>
+            </div>
+          ) : (
+            <div data-testid="worst-now" className="grid min-w-0 justify-items-end gap-0.5 text-right">
+              <span className="text-[11px] font-semibold uppercase leading-4 tracking-wide text-ink/70">Worst now</span>
+              <span className="flex flex-wrap items-baseline justify-end gap-x-2">
+                <span className="text-base font-semibold">{w.name}</span>
+                <span className="text-xl font-semibold tabular-nums">{w.display || '—'}</span>
+                {worstChip}
+              </span>
+              {worstLine && <span className="text-xs text-ink/70">{worstLine}</span>}
+            </div>
+          ))}
       </section>
 
-      <div role="toolbar" aria-label={`Arrange ${noun.many}`} className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-2">
-        <span className="text-xs text-ink/70">Sort</span>
-        <SegmentedControl
-          label={`Sort ${noun.many}`}
-          options={[
-            { value: 'worst', label: 'Worst now' },
-            { value: 'reds', label: `Most ${worstLabel} ${unit(2)}` },
-            { value: 'name', label: 'Name' },
-          ]}
-          value={sort}
-          onChange={onSort}
-        />
+      <div
+        role="toolbar"
+        aria-label={`Arrange ${noun.many}`}
+        className={clsx('flex flex-wrap items-center gap-x-3 gap-y-2', narrow ? 'mt-3' : 'mt-4')}
+      >
+        {rows.length > 1 && (
+          <>
+            <span className="text-xs text-ink/70">Sort</span>
+            <SegmentedControl
+              label={`Sort ${noun.many}`}
+              options={[
+                { value: 'worst', label: 'Worst now' },
+                { value: 'reds', label: `Most ${worstLabel} ${unit(2)}` },
+                { value: 'name', label: 'Name' },
+              ]}
+              value={sort}
+              onChange={onSort}
+            />
+          </>
+        )}
         {showFilter && (
           <div className={clsx('relative', narrow ? 'w-full' : 'w-[220px]')}>
             <Search aria-hidden="true" className="pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2 text-ink/55" />
@@ -587,18 +716,14 @@ export function ItemGrid({
         {rangeShown && <div className="ml-auto">{range.control}</div>}
       </div>
 
-      <div className="mt-3 rounded-lg border border-ink/20 bg-white px-2 pt-3 pb-2 sm:px-4">
-        <div className="mb-2 flex flex-wrap items-center justify-between gap-x-6 gap-y-2">
+      <div className={clsx('rounded-lg border border-ink/20 bg-white px-2 pb-2 sm:px-4', narrow ? 'mt-2 pt-2' : 'mt-3 pt-3')}>
+        <div className={clsx('flex flex-wrap items-center justify-between gap-x-6', narrow ? 'mb-1 gap-y-1' : 'mb-2 gap-y-2')}>
           <p id={noteId} className="text-xs text-ink/70">
             {note}
           </p>
           {ordered.length > 0 && (
-            // On phones the key sits in even rows of three, so no entry wraps onto a line alone.
-            <div
-              data-testid="item-grid-legend"
-              className={clsx(narrow && '[&>ul]:grid [&>ul]:grid-cols-3 [&>ul]:justify-items-start')}
-            >
-              <Legend scale={scale} unrated={unrated} />
+            <div data-testid="item-grid-legend" className="min-w-0">
+              <Legend scale={scale} unrated={false} present={present} compact={narrow} oneLine={legendOneLine} />
             </div>
           )}
         </div>
@@ -630,6 +755,7 @@ export function ItemGrid({
             >
               <colgroup>
                 <col style={{ width: layout.stacked ? 0 : layout.nameWidth }} />
+                {grouped && <col style={{ width: layout.groupWidth }} />}
                 {shown.map((c) => (
                   <col key={c.key} style={{ width: layout.cellWidth }} />
                 ))}
@@ -637,9 +763,11 @@ export function ItemGrid({
                 {extra && <col style={{ width: EXTRA_WIDTH }} />}
               </colgroup>
               <thead>
-                {groups.length > 0 && (
+                {/* On phones one fiscal year is the summary's period already; the row would only push the grid down. */}
+                {(stacked ? groups.length > 1 : groups.length > 0) && (
                   <tr>
                     <td className={layout.stacked ? 'p-0' : undefined} />
+                    {grouped && <td />}
                     {groups.map((g) => (
                       <th
                         key={g.fy}
@@ -665,6 +793,11 @@ export function ItemGrid({
                       {capital(noun.one)}
                     </th>
                   )}
+                  {grouped && (
+                    <th scope="col" className="truncate pb-1.5 pr-4 text-left text-xs font-medium text-ink/70">
+                      {groupNoun}
+                    </th>
+                  )}
                   {shown.map((c, i) => {
                     const isSelected = i === shown.length - 1
                     return (
@@ -684,7 +817,7 @@ export function ItemGrid({
                     )
                   })}
                   {!layout.stacked && (
-                    <th scope="col" className={clsx('pb-1.5 text-right text-xs font-medium text-ink/70', narrow ? 'pl-2' : 'pl-3')}>
+                    <th scope="col" className="pb-1.5 pl-3 text-right text-xs font-medium text-ink/70">
                       {selected?.label}
                       <span className="sr-only"> value</span>
                     </th>
@@ -709,6 +842,44 @@ export function ItemGrid({
                   {notApplicable.map(rowOf)}
                 </tbody>
               )}
+              {silent.length > 0 && (
+                // Last, so its button is the next tab stop after the grid's cells; its rows render only while shown.
+                <tbody>
+                  <tr>
+                    <th scope="rowgroup" colSpan={colSpan} className="border-b border-ink/10 pt-3 pb-1 text-left font-normal">
+                      <div
+                        data-testid="silent-header"
+                        className={clsx('flex min-w-0', narrow ? 'flex-col items-start' : 'items-center gap-3')}
+                      >
+                        <span data-group-label="" className={clsx('shrink-0', GROUP_LABEL)}>
+                          {silentLabel}
+                        </span>
+                        {silentToggle && (
+                          <button
+                            type="button"
+                            aria-expanded={open}
+                            aria-controls={open ? silentId : undefined}
+                            className={clsx(
+                              'h-7 shrink-0 rounded-md px-1.5 text-xs font-medium text-accent-deep hover:underline',
+                              'focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent',
+                              narrow ? '-ml-1.5' : '-mx-1.5',
+                            )}
+                            onClick={toggleSilent}
+                          >
+                            {open ? 'Hide' : `Show ${countNoun(silent.length, noun)}`}
+                          </button>
+                        )}
+                        {!narrow && silentToggle && !open && (
+                          <span data-testid="silent-preview" className="min-w-0 truncate text-xs text-ink/70">
+                            {silent.map((r) => r.name).join(', ')}
+                          </span>
+                        )}
+                      </div>
+                    </th>
+                  </tr>
+                </tbody>
+              )}
+              {silent.length > 0 && silentShown && <tbody id={silentId}>{silent.map(rowOf)}</tbody>}
             </table>
           )}
         </div>

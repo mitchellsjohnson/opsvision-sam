@@ -2,7 +2,7 @@ import clsx from 'clsx'
 import { useId, useSyncExternalStore, type CSSProperties } from 'react'
 import { Link } from 'react-router'
 import type { components } from '../../api/schema'
-import { StatusCell, StatusChip, type StatusLevel } from '../../ui/status'
+import { ItemName, StatusCell, StatusChip, type StatusLevel } from '../../ui/status'
 import { statusIntervals } from './charts/bands'
 import { chartTheme, MOVE_CLASS, type Move } from './charts/chartTheme'
 import { focusReturnRef } from './focusTrigger'
@@ -187,9 +187,7 @@ function MiniBoard({ rows, scale }: { rows: AttentionItems['rows']; scale: Statu
     >
       {rows.map((r) => (
         <div key={r.id} className="contents">
-          <span title={r.name} className="truncate pr-1 font-medium">
-            {r.name}
-          </span>
+          <ItemName name={r.name} className="pr-1 font-medium" />
           {r.cells.map((cell) => (
             <StatusCell key={cell.key} cell={cell} name="" scale={scale} size="xs" decorative />
           ))}

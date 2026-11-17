@@ -1,3 +1,4 @@
+export { ItemName } from './ItemName'
 export { Legend } from './Legend'
 export { RollUp } from './RollUp'
 export { HATCH, NoDataDot, StatusCell, UNRATED_CLASS, type StatusCellProps } from './StatusCell'

@@ -51,7 +51,14 @@ export interface ItemRow {
   /** Columns with the scale's worst status ("Red months"). */
   worstCount: number
   /** For an item not reported in the selected column: its last value in the window, if any. */
-  lastReported: { label: string; display: string } | null
+  lastReported: {
+    /** The column's short label (`Sep`) and full label (`Sep 2026`). */
+    label: string
+    fullLabel: string
+    display: string
+    /** The column's index in the window. */
+    index: number
+  } | null
 }
 
 const rankOf = (scale: StatusScaleEntry[], status: string) => scale.find((s) => s.key === status)?.rank ?? -1
@@ -92,7 +99,7 @@ export function buildItemRows(
         for (let i = columns.length - 2; i >= 0; i--) {
           const c = r.cells.find((x) => cellKey(x) === columns[i]!.key)
           if (c && c.naReason === '' && c.value != null) {
-            lastReported = { label: columns[i]!.label, display: c.display }
+            lastReported = { label: columns[i]!.label, fullLabel: columns[i]!.fullLabel, display: c.display, index: i }
             break
           }
         }
@@ -191,28 +198,103 @@ export function filterItems(rows: ItemRow[], query: string): ItemRow[] {
   return rows.filter((r) => r.name.toLocaleLowerCase().includes(q) || r.group.toLocaleLowerCase().includes(q))
 }
 
+/** No value and no status in any column of `columns`. */
+function silentIn(r: ItemRow, columns: Column[]): boolean {
+  const keys = new Set(columns.map((c) => c.key))
+  return !r.row.cells.some((c) => keys.has(cellKey(c)) && (c.value != null || c.status !== ''))
+}
+
 /**
- * The tile's exceptions: reported items not at the best status (worst
- * first), then the not reported (by name), at most `max`; n/a items are
- * not exceptions. `restBest` items
- * are at the best status and never shown; `hiddenNotReported` and
- * `hiddenWorse` count those cut off.
+ * The items by where they sit in the grid (§2.5), each in the order given:
+ * reported in the selected column; not applicable in it; silent (nothing in
+ * any column of the window, `columns`, whatever a layout shows); else not
+ * reported. Presentation only: `itemSummary` still counts the silent as not
+ * reported.
  */
-export function exceptionsFirst(
+export function partitionItems(
   rows: ItemRow[],
-  scale: StatusScaleEntry[],
+  columns: Column[],
+): { reported: ItemRow[]; notReported: ItemRow[]; silent: ItemRow[]; notApplicable: ItemRow[] } {
+  const out = { reported: [] as ItemRow[], notReported: [] as ItemRow[], silent: [] as ItemRow[], notApplicable: [] as ItemRow[] }
+  for (const r of rows) {
+    if (r.reported) out.reported.push(r)
+    else if (notApplicable(r)) out.notApplicable.push(r)
+    else if (silentIn(r, columns)) out.silent.push(r)
+    else out.notReported.push(r)
+  }
+  return out
+}
+
+/** The grid's groups in display order: `sortItems` with the silent taken out of the not reported. */
+export function groupItems(
+  rows: ItemRow[],
+  columns: Column[],
+  sort: ItemSort,
   direction: Direction,
-  max = 5,
-): { shown: ItemRow[]; hiddenNotReported: number; restBest: number; hiddenWorse: number } {
-  const { reported, notReported } = sortItems(rows, 'worst', direction, scale)
-  const best = bestKey(scale)
-  const worse = reported.filter((r) => r.status !== best)
-  const shown = [...worse, ...notReported].slice(0, Math.max(max, 0))
-  const shownWorse = shown.filter((r) => r.reported).length
+  scale: StatusScaleEntry[],
+): { reported: ItemRow[]; notReported: ItemRow[]; notApplicable: ItemRow[]; silent: ItemRow[] } {
+  const sorted = sortItems(rows, sort, direction, scale)
+  const silent = new Set(partitionItems(sorted.notReported, columns).silent)
+  return {
+    reported: sorted.reported,
+    notReported: sorted.notReported.filter((r) => !silent.has(r)),
+    notApplicable: sorted.notApplicable,
+    silent: sorted.notReported.filter((r) => silent.has(r)),
+  }
+}
+
+/**
+ * The item ids in the grid's visible order: filtered and sorted, the silent
+ * last and only while their group is open, or when the filter has text (a
+ * filter shows the silent that match).
+ */
+export function visibleItemOrder(
+  rows: ItemRow[],
+  o: { columns: Column[]; filter: string; sort: ItemSort; direction: Direction; scale: StatusScaleEntry[]; silentOpen: boolean },
+): string[] {
+  const g = groupItems(filterItems(rows, o.filter), o.columns, o.sort, o.direction, o.scale)
+  const silentShown = o.silentOpen || o.filter.trim() !== ''
+  return [...g.reported, ...g.notReported, ...g.notApplicable, ...(silentShown ? g.silent : [])].map((r) => r.id)
+}
+
+/**
+ * The uptime tile's rows (§3.1): reported items not at the best status
+ * (worst first), then items that stopped reporting with their last report
+ * inside the shown columns (from `offset` on; most recent first), at most
+ * `max`. The rest are counted: `restBest` at the best status, `hiddenWorse`
+ * and `hiddenStopped` cut by the limit, `stoppedBefore` last reported before
+ * the first shown column (`stoppedBeforeLabel`), `silent` with no reports in
+ * the window. n/a items are none of these.
+ */
+export function tileExceptions(
+  rows: ItemRow[],
+  o: { columns: Column[]; offset: number; scale: StatusScaleEntry[]; direction: Direction; max?: number },
+): {
+  shown: ItemRow[]
+  restBest: number
+  hiddenWorse: number
+  hiddenStopped: number
+  stoppedBefore: number
+  stoppedBeforeLabel: string
+  silent: number
+} {
+  const max = Math.max(o.max ?? 5, 0)
+  const g = groupItems(rows, o.columns, 'worst', o.direction, o.scale)
+  const best = bestKey(o.scale)
+  const worse = g.reported.filter((r) => r.status !== best)
+  const inView = (r: ItemRow) => (r.lastReported?.index ?? -1) >= o.offset
+  const stopped = g.notReported
+    .filter(inView)
+    .sort((a, b) => b.lastReported!.index - a.lastReported!.index || byName(a, b))
+  const shown = [...worse, ...stopped].slice(0, max)
+  const shownWorse = Math.min(worse.length, max)
   return {
     shown,
-    hiddenNotReported: notReported.length - (shown.length - shownWorse),
-    restBest: reported.length - worse.length,
+    restBest: g.reported.length - worse.length,
     hiddenWorse: worse.length - shownWorse,
+    hiddenStopped: stopped.length - (shown.length - shownWorse),
+    stoppedBefore: g.notReported.length - stopped.length,
+    stoppedBeforeLabel: o.columns[o.offset]?.label ?? '',
+    silent: g.silent.length,
   }
 }
