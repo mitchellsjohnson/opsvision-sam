@@ -13,6 +13,7 @@ import {
   KeyRound,
   List,
   LogOut,
+  Menu,
   MessageCircleQuestion,
   PanelLeftClose,
   PanelLeftOpen,
@@ -20,7 +21,7 @@ import {
   Upload,
   Users,
 } from 'lucide-react'
-import { useEffect, useId, type ReactElement } from 'react'
+import { useEffect, useId, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactElement } from 'react'
 import { Link, NavLink, Outlet, useLocation, useMatch, useResolvedPath, useSearchParams } from 'react-router'
 import { useMe, useScorecards } from '../api/queries'
 import { useAuth } from '../auth/context'
@@ -28,6 +29,7 @@ import { AskSamProvider } from '../features/assistant/AskSamDrawer'
 import { useAskSam, usePageAssistantContext } from '../features/assistant/useAssistant'
 import { focusOnDark, menuItemHighlight } from '../ui/focus'
 import { Sam } from '../ui/Sam'
+import { NavDrawer } from './NavDrawer'
 import { PeriodPicker } from './PeriodPicker'
 import { TenantSwitcher } from './TenantSwitcher'
 import { useDefaultScope } from './useDefaultScope'
@@ -46,6 +48,23 @@ const ADMIN_LINKS: { to: string; label: string; icon: LucideIcon }[] = [
 ]
 
 const NAV_LINKS_ID = 'main-nav-links'
+
+/** Tailwind's `sm`: below it is a phone. Without matchMedia, assume a wider screen. */
+const SM_UP = '(min-width: 640px)'
+
+function subscribePhone(onChange: () => void): () => void {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return () => {}
+  const query = window.matchMedia(SM_UP)
+  query.addEventListener('change', onChange)
+  return () => query.removeEventListener('change', onChange)
+}
+
+function phoneSnapshot(): boolean {
+  return typeof window !== 'undefined' && typeof window.matchMedia === 'function' ? !window.matchMedia(SM_UP).matches : false
+}
+
+/** The top bar is never sticky (it scrolls away), so sticky content below it offsets by nothing. */
+const SHELL_ROOT_STYLE = { ['--top-bar-h' as string]: '0px' } as CSSProperties
 
 function itemClass(collapsed: boolean) {
   return clsx(
@@ -108,7 +127,7 @@ function ShellNavLink({
 }
 
 /** Opens Ask SAM from the navigation; a button, since it opens the drawer rather than a page. */
-function AskSamNavButton({ collapsed }: { collapsed: boolean }) {
+function AskSamNavButton({ collapsed, onOpen }: { collapsed: boolean; onOpen?: () => void }) {
   const sam = useAskSam()
   const context = usePageAssistantContext()
   return (
@@ -118,13 +137,79 @@ function AskSamNavButton({ collapsed }: { collapsed: boolean }) {
         aria-haspopup="dialog"
         aria-expanded={sam.isOpen}
         aria-label={collapsed ? 'Ask SAM' : undefined}
-        onClick={() => sam.open(context)}
+        onClick={onOpen ?? (() => sam.open(context))}
         className={clsx(itemClass(collapsed), 'text-ink hover:bg-white')}
       >
         <Sam className={navIconClass(collapsed)} />
         {!collapsed && <span>Ask SAM</span>}
       </button>
     </RailTip>
+  )
+}
+
+/** The navigation's links: the rail (collapsed or expanded) and the phone drawer (expanded) both draw these. */
+function NavList({
+  scorecards,
+  searchFor,
+  isAdmin,
+  collapsed,
+  onAskSam,
+}: {
+  scorecards: { id: string; name: string }[]
+  searchFor: (scorecardId?: string) => string
+  isAdmin: boolean
+  collapsed: boolean
+  onAskSam?: () => void
+}) {
+  return (
+    <>
+      <ul className="space-y-1">
+        {scorecards.map((sc) => (
+          <li key={sc.id}>
+            <ShellNavLink
+              to={{ pathname: `/scorecards/${sc.id}/overview`, search: searchFor(sc.id) }}
+              label={sc.name}
+              icon={BarChart3}
+              collapsed={collapsed}
+            />
+          </li>
+        ))}
+        <li>
+          <ShellNavLink
+            to={{ pathname: '/entry', search: searchFor() }}
+            label="Enter data"
+            icon={ClipboardPen}
+            collapsed={collapsed}
+          />
+        </li>
+        <li>
+          <AskSamNavButton collapsed={collapsed} onOpen={onAskSam} />
+        </li>
+      </ul>
+      {isAdmin && (
+        <>
+          <p
+            id="admin-nav"
+            className={clsx(
+              'mt-6 px-3 text-xs font-semibold uppercase tracking-wide text-ink/80',
+              collapsed && 'sr-only',
+            )}
+          >
+            Admin
+          </p>
+          <ul
+            aria-labelledby="admin-nav"
+            className={clsx('space-y-1', collapsed ? 'mt-3 border-t border-ink/15 pt-3' : 'mt-1')}
+          >
+            {ADMIN_LINKS.map((l) => (
+              <li key={l.to}>
+                <ShellNavLink to={l.to} label={l.label} icon={l.icon} collapsed={collapsed} />
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+    </>
   )
 }
 
@@ -135,8 +220,27 @@ function AppShellBody() {
   const auth = useAuth()
   const me = useMe()
   const scorecards = useScorecards()
-  const { pathname } = useLocation()
+  const location = useLocation()
+  const { pathname } = location
   const [params] = useSearchParams()
+  const phone = useSyncExternalStore(subscribePhone, phoneSnapshot, () => false)
+  const menuButtonRef = useRef<HTMLButtonElement>(null)
+  const [drawerOpen, setDrawerOpen] = useState(false)
+  // Any route change, or widening past a phone, closes the drawer.
+  const [drawerRoute, setDrawerRoute] = useState(location.key)
+  if (drawerRoute !== location.key) {
+    setDrawerRoute(location.key)
+    setDrawerOpen(false)
+  }
+  if (drawerOpen && !phone) setDrawerOpen(false)
+  const openSamFromDrawer = () => {
+    setDrawerOpen(false)
+    // Once the drawer has gone, so SAM hands focus back to the menu button rather than a removed link.
+    setTimeout(() => {
+      menuButtonRef.current?.focus()
+      sam.open(samContext)
+    }, 0)
+  }
   const [navCollapsed, toggleNav] = useNavCollapsed()
   // The open dock needs the room: the nav shows as the rail meanwhile.
   const collapsed = navCollapsed || dockOpen
@@ -170,9 +274,11 @@ function AppShellBody() {
     if (tenant?.auth0OrgId && rememberTenant) rememberTenant(tenant.id, tenant.auth0OrgId)
   }, [tenant, rememberTenant])
 
+  const scorecardList = scorecards.data?.scorecards ?? []
+
   return (
     // Beside the page, SAM takes the right edge and the page reflows into the rest.
-    <div className={clsx('flex min-h-screen flex-col', sam.docked && 'lg:pr-[26rem]')}>
+    <div style={SHELL_ROOT_STYLE} className={clsx('flex min-h-screen flex-col', sam.docked && 'lg:pr-[26rem]')}>
       <a
         href="#main"
         className="sr-only focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-50 focus:rounded-md focus:bg-white focus:px-3 focus:py-2 focus:font-medium focus:text-accent-deep focus:outline-2 focus:outline-offset-2 focus:outline-amber"
@@ -182,6 +288,19 @@ function AppShellBody() {
 
       {/* At 320px the bar must fit without scrolling the page sideways: tighter gaps, and the account name truncates. */}
       <header className="flex items-center gap-2 bg-accent-deep px-3 py-2 text-white sm:gap-4 sm:px-4">
+        {phone && (
+          <button
+            ref={menuButtonRef}
+            type="button"
+            aria-label="Open navigation"
+            aria-haspopup="dialog"
+            aria-expanded={drawerOpen}
+            onClick={() => setDrawerOpen(true)}
+            className={clsx('-ml-1 flex size-10 shrink-0 items-center justify-center rounded-md hover:bg-white/10', focusOnDark)}
+          >
+            <Menu aria-hidden="true" className="size-5 shrink-0" />
+          </button>
+        )}
         <span className="shrink-0 text-lg font-semibold tracking-tight">OpsVision</span>
         <div className="ml-auto flex min-w-0 items-center gap-2 sm:gap-4">
           <button
@@ -275,109 +394,85 @@ function AppShellBody() {
         </div>
       </header>
 
-      <div className="grid flex-1 grid-cols-[auto_minmax(0,1fr)_auto]">
-        <nav
-          aria-label="Main"
-          className={clsx(
-            'flex shrink-0 flex-col border-r border-ink/15 bg-cream/60 motion-safe:transition-[width]',
-            collapsed ? 'w-16 p-3' : 'w-60 p-3',
-          )}
-        >
-          <div id={NAV_LINKS_ID} className="flex-1">
-            <ul className="space-y-1">
-              {(scorecards.data?.scorecards ?? []).map((sc) => (
-                <li key={sc.id}>
-                  <ShellNavLink
-                    to={{ pathname: `/scorecards/${sc.id}/overview`, search: searchFor(sc.id) }}
-                    label={sc.name}
-                    icon={BarChart3}
-                    collapsed={collapsed}
-                  />
-                </li>
-              ))}
-              <li>
-                <ShellNavLink
-                  to={{ pathname: '/entry', search: searchFor() }}
-                  label="Enter data"
-                  icon={ClipboardPen}
-                  collapsed={collapsed}
-                />
-              </li>
-              <li>
-                <AskSamNavButton collapsed={collapsed} />
-              </li>
-            </ul>
-            {isAdmin && (
-              <>
-                <p
-                  id="admin-nav"
-                  className={clsx(
-                    'mt-6 px-3 text-xs font-semibold uppercase tracking-wide text-ink/80',
-                    collapsed && 'sr-only',
-                  )}
-                >
-                  Admin
-                </p>
-                <ul
-                  aria-labelledby="admin-nav"
-                  className={clsx('space-y-1', collapsed ? 'mt-3 border-t border-ink/15 pt-3' : 'mt-1')}
-                >
-                  {ADMIN_LINKS.map((l) => (
-                    <li key={l.to}>
-                      <ShellNavLink to={l.to} label={l.label} icon={l.icon} collapsed={collapsed} />
-                    </li>
-                  ))}
-                </ul>
-              </>
-            )}
-          </div>
-          <div
-            data-nav-footer
+      {phone && (
+        <NavDrawer open={drawerOpen} onOpenChange={setDrawerOpen} returnFocus={menuButtonRef}>
+          <nav aria-label="Main" className="p-3">
+            <NavList
+              scorecards={scorecardList}
+              searchFor={searchFor}
+              isAdmin={isAdmin}
+              collapsed={false}
+              onAskSam={openSamFromDrawer}
+            />
+          </nav>
+        </NavDrawer>
+      )}
+
+      <div
+        className={clsx(
+          'grid flex-1',
+          phone ? 'grid-cols-[minmax(0,1fr)_auto]' : 'grid-cols-[auto_minmax(0,1fr)_auto]',
+        )}
+      >
+        {!phone && (
+          <nav
+            aria-label="Main"
             className={clsx(
-              'sticky bottom-0 -mx-3 -mb-3 mt-3 flex border-t border-ink/15 bg-cream p-3',
-              collapsed ? 'justify-center' : 'justify-end',
+              'flex shrink-0 flex-col border-r border-ink/15 bg-cream/60 motion-safe:transition-[width]',
+              collapsed ? 'w-16 p-3' : 'w-60 p-3',
             )}
           >
-            <Tooltip.Root>
-              <Tooltip.Trigger asChild>
-                <button
-                  type="button"
-                  aria-expanded={!collapsed}
-                  aria-controls={NAV_LINKS_ID}
-                  aria-label={toggleLabel}
-                  onClick={toggleNav}
-                  className="flex size-8 items-center justify-center rounded-md text-ink hover:bg-white"
-                >
-                  {collapsed ? (
-                    <PanelLeftOpen aria-hidden="true" className="size-4 shrink-0" />
-                  ) : (
-                    <PanelLeftClose aria-hidden="true" className="size-4 shrink-0" />
-                  )}
-                </button>
-              </Tooltip.Trigger>
-              <Tooltip.Portal>
-                <Tooltip.Content
-                  side="right"
-                  sideOffset={8}
-                  className="z-50 rounded-md bg-ink px-2 py-1 text-xs font-medium text-white shadow-lg"
-                >
-                  {toggleLabel}
-                </Tooltip.Content>
-              </Tooltip.Portal>
-            </Tooltip.Root>
-          </div>
-        </nav>
+            <div id={NAV_LINKS_ID} className="flex-1">
+              <NavList scorecards={scorecardList} searchFor={searchFor} isAdmin={isAdmin} collapsed={collapsed} />
+            </div>
+            <div
+              data-nav-footer
+              className={clsx(
+                'sticky bottom-0 -mx-3 -mb-3 mt-3 flex border-t border-ink/15 bg-cream p-3',
+                collapsed ? 'justify-center' : 'justify-end',
+              )}
+            >
+              <Tooltip.Root>
+                <Tooltip.Trigger asChild>
+                  <button
+                    type="button"
+                    aria-expanded={!collapsed}
+                    aria-controls={NAV_LINKS_ID}
+                    aria-label={toggleLabel}
+                    onClick={toggleNav}
+                    className="flex size-8 items-center justify-center rounded-md text-ink hover:bg-white"
+                  >
+                    {collapsed ? (
+                      <PanelLeftOpen aria-hidden="true" className="size-4 shrink-0" />
+                    ) : (
+                      <PanelLeftClose aria-hidden="true" className="size-4 shrink-0" />
+                    )}
+                  </button>
+                </Tooltip.Trigger>
+                <Tooltip.Portal>
+                  <Tooltip.Content
+                    side="right"
+                    sideOffset={8}
+                    className="z-50 rounded-md bg-ink px-2 py-1 text-xs font-medium text-white shadow-lg"
+                  >
+                    {toggleLabel}
+                  </Tooltip.Content>
+                </Tooltip.Portal>
+              </Tooltip.Root>
+            </div>
+          </nav>
+        )}
 
         <div className="min-w-0 flex-1">
           {showFilters && (
             <section
               aria-label="Report filters"
-              className="flex flex-wrap items-end gap-4 border-b border-ink/15 bg-white px-6 py-3"
+              className="flex flex-wrap items-end gap-4 border-b border-ink/15 bg-white px-4 py-3 sm:px-6"
             >
               <PeriodPicker monthOnly />
             </section>
           )}
-          <main id="main" tabIndex={-1} className="min-w-0 p-6 outline-none">
+          <main id="main" tabIndex={-1} className="min-w-0 p-4 outline-none sm:p-6">
             <Outlet />
           </main>
         </div>
@@ -386,8 +481,8 @@ function AppShellBody() {
           ref={dockRef}
           aria-hidden={!dockOpen}
           className={clsx(
-            'sticky top-0 max-h-screen shrink-0 self-start overflow-hidden border-l border-ink/15 bg-white transition-[width]',
-            dockOpen ? 'w-96 overflow-y-auto' : 'w-0',
+            'sticky top-0 max-h-screen shrink-0 self-start overflow-hidden bg-white transition-[width]',
+            dockOpen ? 'w-96 overflow-y-auto border-l border-ink/15' : 'w-0',
           )}
         />
       </div>

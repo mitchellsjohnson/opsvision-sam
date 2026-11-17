@@ -1,9 +1,9 @@
-import { screen, within } from '@testing-library/react'
+import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
-import { Route, Routes } from 'react-router'
+import { Route, Routes, useLocation, useNavigate, type NavigateFunction } from 'react-router'
 import { axe } from 'vitest-axe'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { renderApp, testAuth } from '../test/utils'
 import { meFor, orgUnits, tenant } from '../test/fixtures'
 import { API, server, state } from '../test/server'
@@ -282,7 +282,13 @@ describe('AppShell collapsible navigation', () => {
 
   it('opens collapsed on a narrow screen when nothing is stored, and an explicit choice wins', async () => {
     const original = window.matchMedia
-    window.matchMedia = ((query: string) => ({ matches: query.includes('max-width'), media: query })) as typeof window.matchMedia
+    // Narrower than 1440 but wider than a phone, so the rail is still there.
+    window.matchMedia = ((query: string) => ({
+      matches: true,
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    })) as unknown as typeof window.matchMedia
     try {
       shell()
       const nav = await screen.findByRole('navigation', { name: 'Main' })
@@ -449,6 +455,229 @@ describe('AppShell focus indicators', () => {
     await screen.findByText('Drawer open')
     expect(nav.classList.contains('w-16')).toBe(true)
     expect(within(nav).getByRole('button', { name: 'Expand navigation' }).getAttribute('aria-expanded')).toBe('false')
+  })
+})
+
+describe('AppShell on a phone', () => {
+  let phoneListeners: (() => void)[] = []
+  let isPhone = true
+
+  /** A screen under 640px (`sm`), which can widen to a desktop later. */
+  function phone() {
+    isPhone = true
+    phoneListeners = []
+    Object.defineProperty(window, 'matchMedia', {
+      writable: true,
+      configurable: true,
+      value: (query: string) => ({
+        get matches() {
+          return query.includes('min-width') ? !isPhone : isPhone
+        },
+        media: query,
+        onchange: null,
+        addListener: () => {},
+        removeListener: () => {},
+        addEventListener: (_: string, fn: () => void) => phoneListeners.push(fn),
+        removeEventListener: (_: string, fn: () => void) => {
+          phoneListeners = phoneListeners.filter((l) => l !== fn)
+        },
+        dispatchEvent: () => false,
+      }),
+    })
+  }
+
+  afterEach(() => {
+    // @ts-expect-error matchMedia is absent in jsdom unless a test defines it.
+    delete window.matchMedia
+  })
+
+  const router: { navigate?: NavigateFunction } = {}
+  function Page() {
+    const navigate = useNavigate()
+    useEffect(() => {
+      router.navigate = navigate
+    }, [navigate])
+    const { pathname } = useLocation()
+    return <p>Page at {pathname}</p>
+  }
+  function phoneShell(route = '/scorecards/sc-main/overview?period=2026-M10') {
+    return renderApp(
+      <Routes>
+        <Route element={<AppShell />}>
+          <Route path="*" element={<Page />} />
+        </Route>
+      </Routes>,
+      { route },
+    )
+  }
+  // While the drawer is open the page behind it, top bar included, is hidden from the accessibility tree.
+  const menuButton = () =>
+    within(screen.getByRole('banner', { hidden: true })).getByRole('button', { name: 'Open navigation', hidden: true })
+
+  async function openDrawer() {
+    const user = userEvent.setup()
+    await screen.findByRole('button', { name: /Test admin/ })
+    await user.click(menuButton())
+    const dialog = await screen.findByRole('dialog', { name: 'Navigation' })
+    await within(dialog).findByRole('link', { name: 'Org' })
+    return { user, dialog }
+  }
+
+  it('renders no rail; a 40px menu button leads the top bar', async () => {
+    phone()
+    phoneShell()
+    await screen.findByRole('button', { name: /Test admin/ })
+    expect(screen.queryByRole('navigation', { name: 'Main' })).toBeNull()
+    expect(screen.queryByRole('button', { name: /(Expand|Collapse) navigation/ })).toBeNull()
+    const button = menuButton()
+    expect(button.getAttribute('aria-expanded')).toBe('false')
+    expect(button.getAttribute('aria-haspopup')).toBe('dialog')
+    expect(button.classList.contains('size-10')).toBe(true)
+    expect(button.querySelector('svg')).toBeTruthy()
+    expect(screen.getByRole('banner').firstElementChild).toBe(button)
+  })
+
+  it('opens the expanded navigation in a drawer and focuses its first link', async () => {
+    phone()
+    phoneShell()
+    const { dialog } = await openDrawer()
+    expect(menuButton().getAttribute('aria-expanded')).toBe('true')
+    const nav = within(dialog).getByRole('navigation', { name: 'Main' })
+    for (const name of ['Main scorecard', 'Enter data', ...ADMIN_LINKS]) {
+      const link = within(nav).getByRole('link', { name })
+      expect(link.textContent).toBe(name)
+      expect(link.getAttribute('aria-label')).toBeNull()
+    }
+    expect(within(nav).getByRole('button', { name: 'Ask SAM' })).toBeTruthy()
+    expect(within(dialog).queryByRole('button', { name: /(Expand|Collapse) navigation/ })).toBeNull()
+    await waitFor(() => expect(document.activeElement).toBe(within(nav).getByRole('link', { name: 'Main scorecard' })))
+  })
+
+  it('closes on Esc and returns focus to the menu button', async () => {
+    phone()
+    phoneShell()
+    const { user } = await openDrawer()
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Navigation' })).toBeNull())
+    await waitFor(() => expect(document.activeElement).toBe(menuButton()))
+    expect(menuButton().getAttribute('aria-expanded')).toBe('false')
+  })
+
+  it('closes when a link is activated, goes there, and returns focus to the menu button', async () => {
+    phone()
+    phoneShell()
+    const { user, dialog } = await openDrawer()
+    await user.click(within(dialog).getByRole('link', { name: 'Org' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Navigation' })).toBeNull())
+    expect(await screen.findByText('Page at /admin/org')).toBeTruthy()
+    await waitFor(() => expect(document.activeElement).toBe(menuButton()))
+  })
+
+  it('closes on any route change', async () => {
+    phone()
+    phoneShell()
+    await openDrawer()
+    act(() => {
+      void router.navigate!('/entry?period=2026-M10')
+    })
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Navigation' })).toBeNull())
+    expect(await screen.findByText('Page at /entry')).toBeTruthy()
+    await waitFor(() => expect(document.activeElement).toBe(menuButton()))
+  })
+
+  it('opens Ask SAM from the drawer, closing the drawer first', async () => {
+    phone()
+    phoneShell()
+    const { user, dialog } = await openDrawer()
+    await user.click(within(dialog).getByRole('button', { name: 'Ask SAM' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Navigation' })).toBeNull())
+    expect(await screen.findByRole('dialog', { name: /Ask SAM/ })).toBeTruthy()
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: /Ask SAM/ })).toBeNull())
+    await waitFor(() => expect(document.activeElement).toBe(menuButton()))
+  })
+
+  it('closes the drawer and brings back the rail when the screen widens', async () => {
+    phone()
+    phoneShell()
+    await openDrawer()
+    isPhone = false
+    act(() => phoneListeners.forEach((l) => l()))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Navigation' })).toBeNull())
+    expect(await screen.findByRole('navigation', { name: 'Main' })).toBeTruthy()
+    expect(within(screen.getByRole('banner')).queryByRole('button', { name: 'Open navigation' })).toBeNull()
+  })
+
+  it('gives the page its width back: one content column and 16px page padding', async () => {
+    phone()
+    phoneShell()
+    const main = screen.getByRole('main')
+    expect(main.classList.contains('p-4')).toBe(true)
+    expect(main.classList.contains('sm:p-6')).toBe(true)
+    const grid = main.parentElement!.parentElement!
+    expect(grid.className).toContain('grid-cols-[minmax(0,1fr)_auto]')
+    await screen.findByRole('button', { name: /Test admin/ })
+  })
+
+  it('publishes --top-bar-h as 0px on the shell root, since the top bar scrolls away', async () => {
+    phone()
+    phoneShell()
+    const root = screen.getByRole('banner').parentElement!
+    expect(root.style.getPropertyValue('--top-bar-h')).toBe('0px')
+    await screen.findByRole('button', { name: /Test admin/ })
+  })
+
+  it('has no accessibility violations with the drawer open', async () => {
+    phone()
+    const { baseElement } = phoneShell()
+    await openDrawer()
+    expect((await axe(baseElement)).violations).toEqual([])
+  })
+})
+
+describe('AppShell on a desktop', () => {
+  afterEach(() => {
+    // @ts-expect-error matchMedia is absent in jsdom unless a test defines it.
+    delete window.matchMedia
+  })
+
+  function desktop(width: number) {
+    Object.defineProperty(window, 'matchMedia', {
+      writable: true,
+      configurable: true,
+      value: (query: string) => {
+        const px = Number(/(\d+)px/.exec(query)?.[1] ?? 0)
+        return {
+          matches: query.includes('min-width') ? width >= px : width <= px,
+          media: query,
+          onchange: null,
+          addListener: () => {},
+          removeListener: () => {},
+          addEventListener: () => {},
+          removeEventListener: () => {},
+          dispatchEvent: () => false,
+        }
+      },
+    })
+  }
+
+  it('keeps the rail and has no menu button, collapsed at 1024 and expanded at 1440', async () => {
+    desktop(1024)
+    const first = shell()
+    let nav = await screen.findByRole('navigation', { name: 'Main' })
+    expect(nav.classList.contains('w-16')).toBe(true)
+    expect(within(screen.getByRole('banner')).queryByRole('button', { name: 'Open navigation' })).toBeNull()
+    expect(screen.getByRole('main').parentElement!.parentElement!.className).toContain(
+      'grid-cols-[auto_minmax(0,1fr)_auto]',
+    )
+    first.unmount()
+
+    desktop(1440)
+    shell()
+    nav = await screen.findByRole('navigation', { name: 'Main' })
+    expect(nav.classList.contains('w-60')).toBe(true)
+    expect(within(screen.getByRole('banner')).queryByRole('button', { name: 'Open navigation' })).toBeNull()
+    expect(screen.getByRole('banner').parentElement!.style.getPropertyValue('--top-bar-h')).toBe('0px')
   })
 })
 
