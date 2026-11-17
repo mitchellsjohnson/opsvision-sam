@@ -804,7 +804,8 @@ export function useReportDocument(sc: string | undefined, period: string, revisi
     queryFn: () =>
       unwrap(
         api.GET('/scorecards/{sc}/reports/{period}', {
-          params: { path: { sc: sc ?? '', period }, query: revision === '' ? {} : { revision } },
+          // Published revisions also return what the Overview counted (`standing`).
+          params: { path: { sc: sc ?? '', period }, query: revision === '' ? { standing: true } : { revision, standing: true } },
         }),
       ),
   })

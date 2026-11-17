@@ -2427,6 +2427,16 @@ export interface components {
             summary: string;
             facts: string[];
             view: components["schemas"]["ScorecardView"];
+            /**
+             * @description The view the Overview counts the month from, at the company scope
+             *     and filtered like `view`: the 12 months ending at the month, the
+             *     quarters, halves and years its metrics report at (4, 2 and 3,
+             *     closed by the month), and year to date through the month. Coarse
+             *     cells appear only on rows that report at that grain. Returned only
+             *     when `standing=true` is asked and the published revision stored
+             *     one; absent for live documents and older revisions.
+             */
+            standing?: components["schemas"]["ScorecardView"];
             /** Format: date-time */
             generatedAt: string;
             /** @enum {string} */
@@ -3747,6 +3757,12 @@ export interface operations {
                  *     `live` always recomputes. A positive integer returns that revision.
                  */
                 revision?: string;
+                /**
+                 * @description When true, a published document also returns `standing`, the view
+                 *     the Overview counts the month from, when its snapshot has one.
+                 *     Hidden from MCP tools: the block is large.
+                 */
+                standing?: boolean;
             };
             header?: never;
             path: {

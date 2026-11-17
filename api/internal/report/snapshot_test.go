@@ -87,6 +87,19 @@ func TestFactsNotReported(t *testing.T) {
 	}
 }
 
+// A quarterly metric has no month cell by design: it is not "not reported".
+func TestFactsLeaveCoarseMetricsOutOfNotReported(t *testing.T) {
+	quarterly := row("q", "Quarterly value", "co", 0, cell("2026-M02", "", nil))
+	quarterly.Frequency = domain.FrequencyQuarterly
+	monthly := row("b", "Beta", "co", 0, cell("2026-M02", "", nil))
+	monthly.Frequency = domain.FrequencyMonthly
+	unset := row("c", "Gamma", "co", 0, cell("2026-M02", "", nil))
+	got := Facts(view("2026-M02", quarterly, monthly, unset), defaultScale())
+	if len(got) != 1 || got[0] != "not reported: Beta, Gamma" {
+		t.Fatalf("facts = %#v, want only the monthly metrics not reported", got)
+	}
+}
+
 func TestFactsAllGreenNoTurnedRed(t *testing.T) {
 	v := view("2026-M02",
 		row("a", "Alpha", "co", 0,

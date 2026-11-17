@@ -127,6 +127,12 @@ export interface ReportModel {
   summaryFor: string | null
   health: { key: string; label: string; count: number }[]
   notReported: number
+  /**
+   * Metrics reported less often than monthly in a revision published before
+   * it stored what the Overview counts (no `standing`): neither in Health nor
+   * Not reported. Empty otherwise.
+   */
+  notCounted: { names: string[] }
   facts: string[]
   needsAttention: ReportMetric[]
   /** Every metric shown, needs attention included, by category. */
@@ -322,6 +328,9 @@ function cellAt(row: ViewRow | null, key: string): Cell | undefined {
 /** How the facts (the API's and `scopeFacts`) start the not-reported sentence. */
 const NOT_REPORTED_FACT = 'not reported: '
 
+/** A coarse metric's value in a revision that did not save its periods. */
+export const NOT_IN_REVISION = 'Not in this revision'
+
 /**
  * The API's fact sentences for one scope's rows (one per metric): metrics that
  * turned to the worst status this month, a first best status after a run of
@@ -420,20 +429,25 @@ export function buildReportModel(input: ReportModelInput): ReportModel {
   if (input.layout && input.layout.length > 0) groups = orderByLayout(groups, input.layout)
 
   // Counted as the Overview counts: the period's status (a coarse metric at its own grain), streaks and ranking.
-  const standingView = input.overview
+  // A published revision counts from what it stored; a live one from the Overview's view.
+  const counted = doc.standing ?? input.overview
+  const standingView = counted
     ? companyScope
-      ? input.overview
-      : { ...input.overview, rows: input.overview.rows.filter((r) => inScope.has(r.subjectId)) }
+      ? counted
+      : { ...counted, rows: counted.rows.filter((r) => inScope.has(r.subjectId)) }
     : view
   const standings = metricStandings({ view: standingView, period, fy, scale: scaleEntries, versions: input.versions })
   const standingOf = new Map(standings.metrics.map((s) => [s.key, s]))
+  // An older revision holds only the report's months, so a coarse metric has no period to count.
+  const withoutStanding = !doc.live && !doc.standing
 
   const metrics = groups.flatMap((g) => g.metrics).map((m) => {
     const { scope, children, head } = metricScope(m.rows)
     const noun = metricNoun(head.chartKind, scope, children)
     const atScope = (key: string) => statusAtScope({ scope: scope ?? { cells: [] }, children, columnKey: key, scale: scaleEntries, noun })
-    const standing = standingOf.get(m.key)
-    return { ...m, scope, children, head, noun, atScope, standing, status: standing?.status?.status ?? '' }
+    const notCounted = withoutStanding && head.frequency !== 'monthly'
+    const standing = notCounted ? undefined : standingOf.get(m.key)
+    return { ...m, scope, children, head, noun, atScope, notCounted, standing, status: standing?.status?.status ?? '' }
   })
 
   const reportMetric = (m: (typeof metrics)[number]): ReportMetric => {
@@ -450,7 +464,7 @@ export function buildReportModel(input: ReportModelInput): ReportModel {
       .filter((d): d is { name: string; rank: number } => d !== null)
       .sort((a, b) => b.rank - a.rank)[0]
     const ytdCell = scope?.cells.find((c) => c.ytd && c.display !== '')
-    const display = cell && cell.naReason === '' ? cell.display : ''
+    const display = m.notCounted ? NOT_IN_REVISION : cell && cell.naReason === '' ? cell.display : ''
     const worst =
       m.status && !display && standing?.status && !cellReported(standing.cell)
         ? (worstChildValue(standing.children, standing.status.counted.key, scaleEntries, head.direction) ?? null)
@@ -487,7 +501,7 @@ export function buildReportModel(input: ReportModelInput): ReportModel {
         monthColumns.map((col) => pointKind(cellAt(scope, col.key))),
       ),
       // The worst child already names who drives the status.
-      driver: !worst && driver && driver.rank >= worstRank ? driver.name : null,
+      driver: !m.notCounted && !worst && driver && driver.rank >= worstRank ? driver.name : null,
       series: seriesRows.map((row) => ({
         subject: row.subjectName,
         points: monthColumns.map((col) => {
@@ -519,7 +533,10 @@ export function buildReportModel(input: ReportModelInput): ReportModel {
     .filter(([key, count]) => key !== '' && count > 0)
     .sort((a, b) => rankOf(b[0]) - rankOf(a[0]))
     .map(([key, count]) => ({ key, label: statusLabel(key), count }))
-  const unreported = [...metrics.filter((m) => !m.status).map((m) => m.head.metricName), ...absent.map((m) => m.name)]
+  const unreported = [
+    ...metrics.filter((m) => !m.status && !m.notCounted).map((m) => m.head.metricName),
+    ...absent.map((m) => m.name),
+  ]
 
   const overrideGroups = new Map<string, string[]>()
   const naGroups = new Map<string, Map<string, string[]>>()
@@ -561,6 +578,7 @@ export function buildReportModel(input: ReportModelInput): ReportModel {
     summaryFor: companyScope ? null : `Summary is written for ${input.companyName}`,
     health,
     notReported: unreported.length,
+    notCounted: { names: metrics.filter((m) => m.notCounted).map((m) => m.head.metricName) },
     // The facts name what is not reported from the months alone; restate that one from the count above.
     facts: (companyScope ? doc.facts : scopeFacts(metrics.flatMap((m) => (m.scope ? [m.scope] : [])), period, scaleEntries)).flatMap(
       (f) => (!f.startsWith(NOT_REPORTED_FACT) ? [f] : unreported.length > 0 ? [`${NOT_REPORTED_FACT}${unreported.join(', ')}`] : []),

@@ -148,7 +148,8 @@ func TestDraftReportSummaryEndToEnd(t *testing.T) {
 		"Month: 2026-M10 (October 2026)",
 		"Scope: the whole company (Tenant t1)",
 		"Months shown, oldest first: 2026-M05 (May 2026), 2026-M06 (June 2026), 2026-M07 (July 2026), 2026-M08 (August 2026), 2026-M09 (September 2026), 2026-M10 (October 2026)",
-		"- not reported: ",
+		// Reviews held is quarterly, so it has no month to be "not reported" in.
+		"Facts OpsVision computed for the month:\n- none",
 		"Needs attention, most urgent first:\n- On-time delivery (Flow): Yellow in 2026-M10 (October 2026).",
 		"2026-M09 (September 2026) 95.8% Green; 2026-M10 (October 2026) 84.3% Yellow.",
 		"Values by category, at company scope:\nFlow\n- On-time delivery: Yellow in 2026-M10 (October 2026).",

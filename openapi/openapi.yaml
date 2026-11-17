@@ -963,6 +963,17 @@ paths:
             `live` always recomputes. A positive integer returns that revision.
           schema:
             type: string
+        - name: standing
+          in: query
+          required: false
+          x-mcp-hidden: true
+          description: |
+            When true, a published document also returns `standing`, the view
+            the Overview counts the month from, when its snapshot has one.
+            Hidden from MCP tools: the block is large.
+          schema:
+            type: boolean
+            default: false
       responses:
         '200':
           description: The report document
@@ -3672,6 +3683,16 @@ components:
           type: array
           items: { type: string }
         view: { $ref: '#/components/schemas/ScorecardView' }
+        standing:
+          allOf: [{ $ref: '#/components/schemas/ScorecardView' }]
+          description: |
+            The view the Overview counts the month from, at the company scope
+            and filtered like `view`: the 12 months ending at the month, the
+            quarters, halves and years its metrics report at (4, 2 and 3,
+            closed by the month), and year to date through the month. Coarse
+            cells appear only on rows that report at that grain. Returned only
+            when `standing=true` is asked and the published revision stored
+            one; absent for live documents and older revisions.
         generatedAt: { type: string, format: date-time }
         summaryScope:
           type: string

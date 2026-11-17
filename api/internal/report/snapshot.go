@@ -16,12 +16,19 @@ const jsonContentType = "application/json"
 
 // Document is the JSON snapshot stored for a published revision.
 type Document struct {
-	Period      string          `json:"period"`
-	GeneratedAt time.Time       `json:"generatedAt"`
-	Summary     string          `json:"summary"`
-	Facts       []string        `json:"facts"`
-	VersionIds  []string        `json:"versionIds"`
-	View        json.RawMessage `json:"view"`
+	// SchemaVersion is SchemaVersion for new snapshots; absent (0) in
+	// version 1, which has no Standing.
+	SchemaVersion int             `json:"schemaVersion,omitempty"`
+	Period        string          `json:"period"`
+	GeneratedAt   time.Time       `json:"generatedAt"`
+	Summary       string          `json:"summary"`
+	Facts         []string        `json:"facts"`
+	VersionIds    []string        `json:"versionIds"`
+	View          json.RawMessage `json:"view"`
+	// Standing is the view the Overview counts the month from, at the
+	// company scope: the periods of StandingPeriods and year to date through
+	// the month. Coarse cells are kept only on rows that report at that grain.
+	Standing json.RawMessage `json:"standing,omitempty"`
 }
 
 // FactsView is the slice of a scorecard view used to compute fact sentences.
@@ -39,7 +46,9 @@ type FactsRow struct {
 	MetricName string
 	SubjectID  string
 	Depth      int
-	Cells      []FactsCell
+	// Frequency is how often the metric reports; "" is treated as monthly.
+	Frequency domain.Frequency
+	Cells     []FactsCell
 }
 
 // FactsCell is one column cell.
@@ -91,7 +100,8 @@ func Facts(v FactsView, scale []domain.StatusLevel) []string {
 				firstGreen = append(firstGreen, fmt.Sprintf("first green in %d months: %s", k, r.MetricName))
 			}
 		}
-		if !reported(cur) {
+		// A metric reported less often than monthly has no month cell by design.
+		if !reported(cur) && (r.Frequency == "" || r.Frequency == domain.FrequencyMonthly) {
 			notReported = append(notReported, r.MetricName)
 		}
 	}

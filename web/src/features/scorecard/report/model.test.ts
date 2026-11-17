@@ -1,7 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import type { components } from '../../../api/schema'
 import { tenant } from '../../../test/fixtures'
-import { REPORT_SUMMARY, reportDocument, reportView, reportViewWithUptime } from '../../../test/reportFixtures'
+import {
+  publishedDocV1,
+  publishedDocV2,
+  REPORT_SUMMARY,
+  reportDocument,
+  reportView,
+  reportViewWithUptime,
+  standingView,
+} from '../../../test/reportFixtures'
 import { addQuarterly, buildView, quarterlyVersions } from '../../../test/viewFixtures'
 import { buildReportModel, exportChart, goalSeries, metricFacts, metricValue, reportStatusLine, type ReportModelInput } from './model'
 
@@ -195,6 +203,73 @@ describe('counting as the Overview does', () => {
       'deep_red',
       'on_time_pct',
     ])
+  })
+})
+
+describe('published revisions', () => {
+  const published = { statusLine: 'Published on Nov 3, 2026', versions: quarterlyVersions }
+  const concepts = (model: ReturnType<typeof buildReportModel>) =>
+    model.categories.flatMap((c) => c.metrics).find((m) => m.key === 'concepts_value')!
+
+  it('with standing (v2), counts a quarterly metric at its quarter, as the live report does', () => {
+    const v2 = buildReportModel(input({ ...published, doc: publishedDocV2() }))
+    expect(concepts(v2)).toMatchObject({ status: 'Y', statusLabel: 'Yellow', display: '70%', caption: 'Q3 FY2026' })
+    expect(v2.health).toEqual([{ key: 'Y', label: 'Yellow', count: 2 }])
+    expect(v2.notReported).toBe(1)
+    expect(v2.facts).toEqual(['not reported: Defect rate'])
+    expect(v2.notCounted.names).toEqual([])
+
+    const live = buildReportModel(input({ versions: quarterlyVersions, doc: reportDocument({ view: publishedDocV2().view }), overview: standingView() }))
+    expect(concepts(live).status).toBe(concepts(v2).status)
+    expect(live.health).toEqual(v2.health)
+    expect(live.notReported).toBe(v2.notReported)
+  })
+
+  it('counts from standing, not the live Overview, when a revision has one', () => {
+    const live = standingView('2026-M10', {
+      '2025-Q4': { value: 90, display: '90%', status: 'G' },
+      '2026-Q1': { value: 90, display: '90%', status: 'G' },
+      '2026-Q2': { value: 90, display: '90%', status: 'G' },
+      '2026-Q3': { value: 95, display: '95%', status: 'G' },
+    })
+    expect(concepts(buildReportModel(input({ ...published, doc: publishedDocV2(), overview: live }))).status).toBe('Y')
+  })
+
+  it('filters standing to the scope like the view', () => {
+    const scoped = buildReportModel(input({ ...published, doc: publishedDocV2(), scope: 'unit-a', scopeName: 'Unit A', scopeSubjects: ['unit-a', 'team-a1'] }))
+    // The quarterly metric is reported for the company row only.
+    expect(scoped.categories.flatMap((c) => c.metrics).map((m) => m.key)).not.toContain('concepts_value')
+    expect(scoped.table.find((r) => r.name === 'On-time delivery')!.cells[5]).toMatchObject({ display: '70.0%', status: 'R' })
+  })
+
+  it('without standing (v1), leaves coarse metrics uncounted: not in Health, not Not reported', () => {
+    const model = buildReportModel(input({ ...published, doc: publishedDocV1() }))
+    expect(model.notCounted.names).toEqual(['Concepts delivered expected value', 'Platform review score'])
+    expect(model.health).toEqual([{ key: 'Y', label: 'Yellow', count: 1 }])
+    expect(model.notReported).toBe(1)
+    expect(model.notes.notReported).toEqual(['Defect rate'])
+    expect(model.facts).toEqual(['not reported: Defect rate'])
+    const coarse = model.categories.flatMap((c) => c.metrics).filter((m) => m.key === 'concepts_value' || m.key === 'platform_review')
+    expect(coarse.map((m) => [m.display, m.status, m.statusLabel, m.caption, m.worst])).toEqual([
+      ['Not in this revision', '', '', '', null],
+      ['Not in this revision', '', '', '', null],
+    ])
+    expect(model.needsAttention.map((m) => m.key)).toEqual(['on_time_pct'])
+  })
+
+  it('a v1 revision with only monthly metrics has nothing uncounted', () => {
+    const model = buildReportModel(input({ ...published, doc: reportDocument({ live: false, revision: 1 }) }))
+    expect(model.notCounted.names).toEqual([])
+    expect(model.notReported).toBe(1)
+    expect(model.categories.flatMap((c) => c.metrics).map((m) => m.display)).not.toContain('Not in this revision')
+  })
+
+  it('a live report still counts from the Overview and has nothing uncounted', () => {
+    const doc = reportDocument({ view: addQuarterly(reportView()) })
+    const model = buildReportModel(input({ doc, overview: addQuarterly(overviewView()), versions: quarterlyVersions }))
+    expect(model.notCounted.names).toEqual([])
+    expect(concepts(model)).toMatchObject({ status: 'G', display: '90%' })
+    expect(concepts(buildReportModel(input({ doc, versions: quarterlyVersions }))).display).toBe('')
   })
 })
 

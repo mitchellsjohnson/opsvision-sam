@@ -50,10 +50,11 @@ var methodOrder = []string{
 // BuildCatalog returns one tool per operation of spec, in path order, except
 // the operations exclude reports (by operationId), the MCP endpoint itself
 // (/mcp), and operations that take or return something other than JSON.
+// Parameters marked x-mcp-hidden: true are left out of their tool.
 // Every $ref is resolved, so a client sees each schema inline. It fails on
 // an operation without an operationId, two operations with one tool name,
-// or a parameter the catalog cannot pass (a required header or cookie, or
-// one named "body").
+// or a parameter the catalog cannot pass (a required header or cookie, a
+// required hidden one, or one named "body").
 func BuildCatalog(spec *openapi3.T, exclude func(opID string) bool) ([]Tool, error) {
 	if spec == nil || spec.Paths == nil {
 		return nil, fmt.Errorf("mcp: the spec has no paths")
@@ -144,6 +145,12 @@ func buildTool(method, path string, item *openapi3.PathItem, op *openapi3.Operat
 	}
 	for _, key := range order {
 		p := params[key]
+		if hidden(p) {
+			if p.Required || p.In == openapi3.ParameterInPath {
+				return Tool{}, fmt.Errorf("mcp: %s: required parameter %s is hidden", op.OperationID, p.Name)
+			}
+			continue
+		}
 		switch p.In {
 		case openapi3.ParameterInPath:
 			t.PathParams = append(t.PathParams, p.Name)
@@ -194,6 +201,15 @@ func buildTool(method, path string, item *openapi3.PathItem, op *openapi3.Operat
 		t.InputSchema["required"] = required
 	}
 	return t, nil
+}
+
+// hiddenExt marks a parameter tools never pass, such as a large block only
+// the web asks for.
+const hiddenExt = "x-mcp-hidden"
+
+func hidden(p *openapi3.Parameter) bool {
+	v, _ := p.Extensions[hiddenExt].(bool)
+	return v
 }
 
 func describe(op *openapi3.Operation) string {

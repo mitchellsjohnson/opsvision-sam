@@ -18,6 +18,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/getkin/kin-openapi/openapi3"
+
 	"opsvision/internal/auth"
 	"opsvision/internal/demo"
 	"opsvision/internal/domain"
@@ -416,6 +418,82 @@ func TestToolCallMatchesAPI(t *testing.T) {
 	}
 	if !reflect.DeepEqual(res.StructuredContent, want) {
 		t.Error("structuredContent differs from the API response")
+	}
+}
+
+// The web's standing view is hidden from MCP: it would push the summary and
+// the view past the result limit.
+func TestReportDocumentToolHasNoStanding(t *testing.T) {
+	tool := toolNamed(t, apiTools(t), "get_report_document")
+	props, _ := tool.InputSchema["properties"].(map[string]any)
+	if _, ok := props["standing"]; ok || slices.Contains(tool.QueryParams, "standing") {
+		t.Fatalf("get_report_document takes standing: %v %v", props, tool.QueryParams)
+	}
+	if _, ok := props["revision"]; !ok {
+		t.Fatalf("get_report_document lost revision: %v", props)
+	}
+
+	e := newEnv(t)
+	pub := e.callTool(t, e.tokens["admin"], "publish_report", map[string]any{"sc": demo.ScorecardID, "period": "2026-M09", "body": map[string]any{}})
+	if pub.IsError {
+		t.Fatalf("publish: %s", pub.text())
+	}
+	res := e.callTool(t, e.tokens["admin"], "get_report_document", map[string]any{"sc": demo.ScorecardID, "period": "2026-M09"})
+	if res.IsError {
+		t.Fatalf("isError: %.300s", res.text())
+	}
+	txt := res.text()
+	if !strings.Contains(txt, `"summary"`) || strings.Contains(txt, `"standing"`) {
+		t.Fatalf("report document result: summary %v, standing %v",
+			strings.Contains(txt, `"summary"`), strings.Contains(txt, `"standing"`))
+	}
+}
+
+func TestCatalogSkipsHiddenParameters(t *testing.T) {
+	const spec = `
+openapi: 3.0.3
+info: { title: synthetic, version: "1" }
+paths:
+  /things/{id}:
+    get:
+      operationId: getThing
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: shown, in: query, schema: { type: boolean } }
+        - { name: hidden, in: query, schema: { type: boolean }, x-mcp-hidden: true }
+        - { name: notHidden, in: query, schema: { type: boolean }, x-mcp-hidden: false }
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { type: object } } } }
+`
+	doc, err := openapi3.NewLoader().LoadFromData([]byte(spec))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools, err := mcp.BuildCatalog(doc, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool := toolNamed(t, tools, "get_thing")
+	props, _ := tool.InputSchema["properties"].(map[string]any)
+	if _, ok := props["hidden"]; ok {
+		t.Errorf("hidden parameter listed: %v", props)
+	}
+	for _, want := range []string{"id", "shown", "notHidden"} {
+		if _, ok := props[want]; !ok {
+			t.Errorf("no %s among %v", want, props)
+		}
+	}
+	if !slices.Equal(tool.QueryParams, []string{"shown", "notHidden"}) {
+		t.Errorf("query params = %v", tool.QueryParams)
+	}
+
+	required := strings.Replace(spec, "{ name: hidden, in: query,", "{ name: hidden, in: query, required: true,", 1)
+	doc, err = openapi3.NewLoader().LoadFromData([]byte(required))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mcp.BuildCatalog(doc, nil); err == nil || !strings.Contains(err.Error(), "hidden") {
+		t.Fatalf("a required hidden parameter: err = %v", err)
 	}
 }
 

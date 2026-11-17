@@ -233,7 +233,7 @@ func (s *Server) PublishReport(ctx context.Context, req PublishReportRequestObje
 	} else if !errors.Is(err, store.ErrNotFound) {
 		return nil, err
 	}
-	apiView, root, err := s.companyReportView(ctx, *p.Tenant, sc.ID, mo)
+	apiView, standing, root, err := s.companyReportViews(ctx, *p.Tenant, sc.ID, mo)
 	if err != nil {
 		return nil, err
 	}
@@ -243,9 +243,14 @@ func (s *Server) PublishReport(ctx context.Context, req PublishReportRequestObje
 	if err != nil {
 		return nil, err
 	}
+	standingRaw, err := json.Marshal(standing)
+	if err != nil {
+		return nil, err
+	}
 	doc := report.Document{
-		Period: mo.String(), GeneratedAt: s.now(), Summary: summaryText,
-		Facts: facts, VersionIds: verIDs, View: viewRaw,
+		SchemaVersion: report.SchemaVersion,
+		Period:        mo.String(), GeneratedAt: s.now(), Summary: summaryText,
+		Facts: facts, VersionIds: verIDs, View: viewRaw, Standing: standingRaw,
 	}
 	raw, err := json.Marshal(doc)
 	if err != nil {
@@ -322,18 +327,19 @@ func (s *Server) GetReportDocument(ctx context.Context, req GetReportDocumentReq
 			wantRev = n
 		}
 	}
+	wantStanding := req.Params.Standing != nil && *req.Params.Standing
 	if forceLive {
 		return s.liveReportDocument(ctx, p, req.Sc, mo)
 	}
 	if wantRev > 0 {
-		return s.publishedReportDocument(ctx, p, req.Sc, mo, wantRev)
+		return s.publishedReportDocument(ctx, p, req.Sc, mo, wantRev, wantStanding)
 	}
 	rev, ok, err := latestPublishedRevision(ctx, s.store, p.Tenant.ID, req.Sc, mo.String())
 	if err != nil {
 		return nil, err
 	}
 	if ok {
-		return s.publishedReportDocument(ctx, p, req.Sc, mo, rev.Revision)
+		return s.publishedReportDocument(ctx, p, req.Sc, mo, rev.Revision, wantStanding)
 	}
 	return s.liveReportDocument(ctx, p, req.Sc, mo)
 }
@@ -377,7 +383,11 @@ func (s *Server) liveReportDocument(ctx context.Context, p auth.Principal, score
 	}), nil
 }
 
-func (s *Server) publishedReportDocument(ctx context.Context, p auth.Principal, scorecardID string, mo period.Period, revision int) (GetReportDocumentResponseObject, error) {
+// publishedReportDocument serves a stored revision, filtered for the caller,
+// with its standing view when withStanding is set and it has one. It is
+// compared against one fresh view: over the snapshot's own standing periods
+// (version 2), or the report's months (version 1).
+func (s *Server) publishedReportDocument(ctx context.Context, p auth.Principal, scorecardID string, mo period.Period, revision int, withStanding bool) (GetReportDocumentResponseObject, error) {
 	objs, err := s.objectStore()
 	if err != nil {
 		return nil, err
@@ -397,52 +407,148 @@ func (s *Server) publishedReportDocument(ctx context.Context, p auth.Principal, 
 	if meta == nil {
 		return nil, notFound("report revision not found")
 	}
-	doc, snapView, err := loadReportSnapshot(ctx, objs, meta.ObjectKey)
+	doc, snapView, snapStanding, err := loadReportSnapshot(ctx, objs, meta.ObjectKey)
 	if err != nil {
 		if errors.Is(err, objects.ErrNotFound) {
 			return nil, notFound("report revision not found")
 		}
 		return nil, err
 	}
-	filteredSnap, root, err := s.filterScorecardView(ctx, p, scorecardID, mo, snapView)
+	vr, cols, err := reportViewRequest(*p.Tenant, scorecardID, mo)
 	if err != nil {
 		return nil, err
 	}
+	if snapStanding != nil {
+		if vr.Periods, err = parseStoredPeriods(snapStanding.Periods); err != nil {
+			return nil, err
+		}
+		cols = append(slices.Clone(vr.Periods), mo)
+	}
+	in, err := s.loadInput(ctx, *p.Tenant, scorecardID, fiscalYears(true, cols...))
+	if err != nil {
+		return nil, err
+	}
+	acc := newAccess(p, in)
+	readable := func(metricKey, subjectID string) bool { return acc.canRead(subjectID, []string{metricKey}, mo) }
+
+	filteredSnap := filterViewRows(snapView, readable)
 	facts := doc.Facts
 	if len(filteredSnap.Rows) != len(snapView.Rows) {
-		facts = report.Facts(factsViewFromAPI(filteredSnap, mo.String(), root), statusScale(*p.Tenant))
+		facts = report.Facts(factsViewFromAPI(filteredSnap, mo.String(), reportRoot(in, mo)), statusScale(*p.Tenant))
 	}
-	freshView, _, err := s.memberReportView(ctx, p, scorecardID, mo)
+	fresh, err := engine.Compute(in, vr)
 	if err != nil {
 		return nil, err
 	}
-	dataRevised, changes := diffReportViews(filteredSnap, freshView)
-	return GetReportDocument200JSONResponse(ReportDocument{
+	freshView := apiView(fresh, func(r engine.Row) bool { return readable(r.MetricKey, r.SubjectID) }, nil)
+	was := filteredSnap
+	var filteredStanding *ScorecardView
+	if snapStanding != nil {
+		fs := filterViewRows(*snapStanding, readable)
+		filteredStanding = &fs
+		was = withCoarseCellsOf(filteredSnap, fs)
+	}
+	dataRevised, changes := diffReportViews(was, freshView)
+	out := ReportDocument{
 		Live: false, Revision: revision, DataRevised: dataRevised, Changes: reportChanges(changes),
 		Summary: doc.Summary, Facts: reportStrings(facts), View: filteredSnap, GeneratedAt: doc.GeneratedAt,
 		SummaryScope: Company,
-	}), nil
+	}
+	if withStanding {
+		out.Standing = filteredStanding
+	}
+	return GetReportDocument200JSONResponse(out), nil
 }
 
-func loadReportSnapshot(ctx context.Context, objs objects.Store, key string) (report.Document, ScorecardView, error) {
+// loadReportSnapshot reads a stored revision: its document, its view, and its
+// standing view (nil for a version 1 snapshot).
+func loadReportSnapshot(ctx context.Context, objs objects.Store, key string) (report.Document, ScorecardView, *ScorecardView, error) {
 	rc, _, err := objs.Get(ctx, key)
 	if err != nil {
-		return report.Document{}, ScorecardView{}, err
+		return report.Document{}, ScorecardView{}, nil, err
 	}
 	defer rc.Close()
 	raw, err := io.ReadAll(rc)
 	if err != nil {
-		return report.Document{}, ScorecardView{}, err
+		return report.Document{}, ScorecardView{}, nil, err
 	}
 	var doc report.Document
 	if err := json.Unmarshal(raw, &doc); err != nil {
-		return report.Document{}, ScorecardView{}, err
+		return report.Document{}, ScorecardView{}, nil, err
 	}
 	var view ScorecardView
 	if err := json.Unmarshal(doc.View, &view); err != nil {
-		return report.Document{}, ScorecardView{}, err
+		return report.Document{}, ScorecardView{}, nil, err
 	}
-	return doc, view, nil
+	if doc.SchemaVersion < report.SchemaVersion || len(doc.Standing) == 0 {
+		return doc, view, nil, nil
+	}
+	var standing ScorecardView
+	if err := json.Unmarshal(doc.Standing, &standing); err != nil {
+		return report.Document{}, ScorecardView{}, nil, err
+	}
+	return doc, view, &standing, nil
+}
+
+func parseStoredPeriods(ps []Period) ([]period.Period, error) {
+	out := make([]period.Period, 0, len(ps))
+	for _, s := range ps {
+		p, err := period.Parse(string(s))
+		if err != nil {
+			return nil, fmt.Errorf("stored report: %w", err)
+		}
+		out = append(out, p)
+	}
+	return out, nil
+}
+
+// filterViewRows keeps the rows of v that readable accepts.
+func filterViewRows(v ScorecardView, readable func(metricKey, subjectID string) bool) ScorecardView {
+	out := v
+	out.Rows = slices.DeleteFunc(slices.Clone(v.Rows), func(r ViewRow) bool {
+		return !readable(r.MetricKey, r.SubjectId)
+	})
+	return out
+}
+
+// withCoarseCellsOf adds to v's rows the quarter, half and year cells of
+// standing, so a comparison covers v's months and standing's coarse periods.
+func withCoarseCellsOf(v, standing ScorecardView) ScorecardView {
+	out := v
+	out.Rows = slices.Clone(v.Rows)
+	for _, r := range standing.Rows {
+		coarse := r
+		coarse.Cells = slices.DeleteFunc(slices.Clone(r.Cells), func(c Cell) bool {
+			return c.Ytd || cellGrain(c) == period.Month
+		})
+		if len(coarse.Cells) > 0 {
+			out.Rows = append(out.Rows, coarse)
+		}
+	}
+	return out
+}
+
+// cellGrain is the grain of a cell's period; Month when it does not parse.
+func cellGrain(c Cell) period.Grain {
+	p, err := period.Parse(string(c.Period))
+	if err != nil {
+		return period.Month
+	}
+	return p.Grain
+}
+
+// pruneCoarseCells drops every quarter, half and year cell from the rows of
+// metrics that do not report at that grain.
+func pruneCoarseCells(v ScorecardView) ScorecardView {
+	for i := range v.Rows {
+		r := &v.Rows[i]
+		g, ok := frequencyGrain(domain.Frequency(r.Frequency))
+		r.Cells = slices.DeleteFunc(r.Cells, func(c Cell) bool {
+			cg := cellGrain(c)
+			return !c.Ytd && cg != period.Month && (!ok || cg != g)
+		})
+	}
+	return v
 }
 
 // reportRoot is the org tree's single root unit at mo, the company the facts
@@ -458,24 +564,56 @@ func reportRoot(in *engine.Input, mo period.Period) string {
 	return roots[0]
 }
 
-func (s *Server) companyReportView(ctx context.Context, tenant domain.Tenant, scorecardID string, mo period.Period) (ScorecardView, string, error) {
-	vr, cols, err := reportViewRequest(tenant, scorecardID, mo)
+// companyReportViews computes, at the company scope and from one load of the
+// data, the report's view (its months and year to date) and the standing
+// view the Overview counts the month from (report.StandingPeriods for the
+// frequencies of the version in force, and year to date), with coarse cells
+// only on the rows that report at that grain.
+func (s *Server) companyReportViews(ctx context.Context, tenant domain.Tenant, scorecardID string, mo period.Period) (view, standing ScorecardView, root string, err error) {
+	cal := s.calendar(tenant)
+	versions, err := s.store.ListVersions(ctx, tenant.ID, scorecardID)
 	if err != nil {
-		return ScorecardView{}, "", err
+		return ScorecardView{}, ScorecardView{}, "", err
 	}
-	in, err := s.loadInput(ctx, tenant, scorecardID, fiscalYears(true, cols...))
+	var freqs []domain.Frequency
+	if v, ok := engine.VersionFor(versions, mo, cal); ok {
+		for _, m := range v.Content.Metrics {
+			freqs = append(freqs, m.Frequency)
+		}
+	}
+	periods := report.StandingPeriods(cal, mo, freqs)
+	vr, _, err := reportViewRequest(tenant, scorecardID, mo)
 	if err != nil {
-		return ScorecardView{}, "", err
+		return ScorecardView{}, ScorecardView{}, "", err
 	}
-	view, err := engine.Compute(in, vr)
+	in, err := s.loadInput(ctx, tenant, scorecardID, fiscalYears(true, append(slices.Clone(periods), mo)...))
 	if err != nil {
-		return ScorecardView{}, "", err
+		return ScorecardView{}, ScorecardView{}, "", err
 	}
-	cutoffs, err := s.viewCutoffs(ctx, tenant.ID, in, vr.Periods)
+	view, err = s.companyView(ctx, tenant.ID, in, vr)
 	if err != nil {
-		return ScorecardView{}, "", err
+		return ScorecardView{}, ScorecardView{}, "", err
 	}
-	return apiView(view, nil, cutoffs), reportRoot(in, mo), nil
+	standing, err = s.companyView(ctx, tenant.ID, in, engine.ViewRequest{
+		Structure: engine.StructureAsOf, Periods: periods, YTD: []period.Period{mo},
+	})
+	if err != nil {
+		return ScorecardView{}, ScorecardView{}, "", err
+	}
+	return view, pruneCoarseCells(standing), reportRoot(in, mo), nil
+}
+
+// companyView computes vr over in with every row.
+func (s *Server) companyView(ctx context.Context, tenantID string, in *engine.Input, vr engine.ViewRequest) (ScorecardView, error) {
+	v, err := engine.Compute(in, vr)
+	if err != nil {
+		return ScorecardView{}, err
+	}
+	cutoffs, err := s.viewCutoffs(ctx, tenantID, in, vr.Periods)
+	if err != nil {
+		return ScorecardView{}, err
+	}
+	return apiView(v, nil, cutoffs), nil
 }
 
 // memberReportView is the report view the caller may read, and the facts
@@ -504,28 +642,6 @@ func (s *Server) memberReportView(ctx context.Context, p auth.Principal, scoreca
 	}, cutoffs)
 	facts := reportStrings(report.Facts(factsViewFromAPI(filtered, mo.String(), reportRoot(in, mo)), statusScale(*p.Tenant)))
 	return filtered, facts, nil
-}
-
-// filterScorecardView keeps the rows of v the caller may read and returns
-// the org tree's root at mo.
-func (s *Server) filterScorecardView(ctx context.Context, p auth.Principal, scorecardID string, mo period.Period, v ScorecardView) (ScorecardView, string, error) {
-	in, err := s.loadInput(ctx, *p.Tenant, scorecardID, fiscalYears(true, mo))
-	if err != nil {
-		return ScorecardView{}, "", err
-	}
-	acc := newAccess(p, in)
-	keep := map[string]struct{}{}
-	for _, r := range v.Rows {
-		if acc.canRead(r.SubjectId, []string{r.MetricKey}, mo) {
-			keep[r.MetricKey+"/"+r.SubjectId] = struct{}{}
-		}
-	}
-	out := v
-	out.Rows = slices.DeleteFunc(slices.Clone(v.Rows), func(r ViewRow) bool {
-		_, ok := keep[r.MetricKey+"/"+r.SubjectId]
-		return !ok
-	})
-	return out, reportRoot(in, mo), nil
 }
 
 func reportStrings(ss []string) []string {
@@ -563,7 +679,7 @@ func factsViewFromAPI(v ScorecardView, reportPeriod, root string) report.FactsVi
 	for _, r := range v.Rows {
 		row := report.FactsRow{
 			MetricKey: r.MetricKey, MetricName: r.MetricName,
-			SubjectID: r.SubjectId, Depth: r.Depth,
+			SubjectID: r.SubjectId, Depth: r.Depth, Frequency: domain.Frequency(r.Frequency),
 		}
 		for _, c := range r.Cells {
 			if c.Ytd {
@@ -597,6 +713,10 @@ func versionIDsFromView(v ScorecardView) []string {
 	return out
 }
 
+// diffReportViews lists the cells of live whose value or status differs from
+// the same cell of was. Year-to-date cells are left out on both sides: one
+// carries the month it runs through as its period, so it would stand in for
+// that month's cell.
 func diffReportViews(was, live ScorecardView) (bool, []ReportChange) {
 	type cellKey struct {
 		metric, subject, period string
@@ -604,6 +724,9 @@ func diffReportViews(was, live ScorecardView) (bool, []ReportChange) {
 	wasCells := map[cellKey]Cell{}
 	for _, r := range was.Rows {
 		for _, c := range r.Cells {
+			if c.Ytd {
+				continue
+			}
 			wasCells[cellKey{r.MetricKey, r.SubjectId, string(c.Period)}] = c
 		}
 	}
