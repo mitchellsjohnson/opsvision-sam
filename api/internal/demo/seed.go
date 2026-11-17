@@ -1,5 +1,5 @@
 // Package demo seeds the fictional "Acme Demo" tenant: an org tree with a
-// reorg, 24 tracked services, a scorecard with four published methodology
+// reorg, 24 tracked services and 21 regional deployments, a scorecard with four published methodology
 // versions, 24 months of deterministic synthetic data (2024-M11 through
 // 2026-M10), and, from 2026-M07, synthetic tracker records (epics and
 // defects, with monthly snapshots) that the latest version derives four
@@ -9,7 +9,9 @@
 // The data exercises every chart kind at realistic density: ratio, line
 // (a lower-is-better score in the hundreds), change, days, discrete
 // (quarterly and biannual), money plan, uptime across 24 services with
-// mid-window onboarding and gaps, a sparse metric that is mostly not
+// mid-window onboarding and gaps, deployment uptime in the shape real
+// tenants show (long names, fewer than half reporting this month, many with
+// no reports in the last year), a sparse metric that is mostly not
 // applicable, a metric whose company total is not reported (so the chart
 // draws one line per segment), and metrics that are not reported at all.
 //
@@ -117,10 +119,12 @@ var (
 // the data added later (the first two months of the window, the services
 // beyond the first three, and the newer metrics), so the original stream's
 // values do not move.
+// rngSeedDeploy seeds the deployments' stream, drawn last for the same reason.
 const (
-	rngSeed1    = 0x0b5c0de
-	rngSeed2    = 0x2026
-	rngSeedWide = 0x5ca1e
+	rngSeed1      = 0x0b5c0de
+	rngSeed2      = 0x2026
+	rngSeedWide   = 0x5ca1e
+	rngSeedDeploy = 0xde910
 )
 
 // Seed creates the demo tenant in st and returns its ID. cal is the fiscal
@@ -202,12 +206,16 @@ var products = []struct{ id, name, segment string }{
 // from `from` (the window start when zero) through `until` (the latest month
 // when zero), except in `gaps`; `outages` are months with a long outage.
 // `latest` pins the minutes down in the latest month (nil draws as usual).
+// Deployments also have `degraded` months (Yellow) and may be `silent`: no
+// reports anywhere in the window.
 type serviceSpec struct {
 	id, name, segment string
 	downtime          float64 // typical minutes down a month
 	from, until       period.Period
 	gaps, outages     []period.Period
+	degraded          []period.Period
 	latest            *float64
+	silent            bool
 }
 
 func minutes(v float64) *float64 { return &v }
@@ -249,6 +257,50 @@ var services = []serviceSpec{
 	{id: "push-gateway", name: "Push Gateway", segment: "mobile", downtime: 28, from: month(2025, 10), until: month(2026, 9)},
 }
 
+// deployments are the regional deployments behind Deployment uptime, in the
+// shape real tenants show: long names, and in the latest month only nine
+// reporting (eight green, one red) and twelve not reported, eight of them
+// with no reports in the last twelve months. Several were onboarded inside
+// the window. Their statuses are fixed (see deploymentFleet).
+var deployments = []serviceSpec{
+	{
+		id: "dep-notify-multi", name: "Notification Relay - Multi-Region Active", segment: "platform", downtime: 18, from: month(2025, 9),
+		degraded: []period.Period{month(2026, 1), month(2026, 2), month(2026, 3), month(2026, 4)}, latest: minutes(165),
+	},
+	{id: "dep-pay-eu", name: "Payments Gateway - EU Region Primary", segment: "payments", downtime: 8},
+	{id: "dep-pay-us", name: "Payments Gateway - US Region Primary", segment: "payments", downtime: 10, outages: []period.Period{month(2026, 7)}},
+	{
+		id: "dep-portal-cloud", name: "Customer Portal - Private Cloud Tenant Suite", segment: "platform", downtime: 12,
+		outages: []period.Period{month(2026, 1), month(2026, 2), month(2026, 3)},
+	},
+	{
+		id: "dep-identity-east", name: "Identity Service - Production East", segment: "platform", downtime: 6, from: month(2026, 1),
+		degraded: []period.Period{month(2026, 2)}, outages: []period.Period{month(2026, 6)},
+	},
+	{id: "dep-identity-west", name: "Identity Service - Staging Mirror West", segment: "platform", downtime: 9, from: month(2026, 8)},
+	{id: "dep-search-a1", name: "Search Indexer - Production Cluster A-1", segment: "data", downtime: 14, from: month(2026, 8), outages: []period.Period{month(2026, 9)}},
+	{id: "dep-search-a2", name: "Search Indexer - Production Cluster A-2", segment: "data", downtime: 11, from: month(2026, 9)},
+	{id: "dep-ledger", name: "Ledger API", segment: "payments", downtime: 5, from: month(2026, 9)},
+	{id: "dep-webhooks-us", name: "Webhook Dispatcher - US Region Primary", segment: "platform", downtime: 20, from: month(2025, 4), until: month(2026, 9)},
+	{
+		id: "dep-renderer", name: "Document Renderer - Shared Worker Pool", segment: "data", downtime: 16, from: month(2026, 4), until: month(2026, 8),
+		gaps: []period.Period{month(2026, 6)},
+	},
+	{id: "dep-identity-dr", name: "Identity Service - Disaster Recovery Standby", segment: "platform", downtime: 3, until: month(2026, 6)},
+	{
+		id: "dep-search-legacy", name: "Search Indexer - Legacy Cluster B", segment: "data", downtime: 30, until: month(2025, 12),
+		outages: []period.Period{month(2025, 10), month(2025, 11), month(2025, 12)},
+	},
+	{id: "dep-partner-sandbox", name: "Partner API Gateway - Sandbox Environment", segment: "payments", downtime: 25, until: month(2025, 9)},
+	{id: "dep-warehouse-primary", name: "Analytics Warehouse - Batch Loader Primary", segment: "data", silent: true},
+	{id: "dep-warehouse-replica", name: "Analytics Warehouse - Batch Loader Replica", segment: "data", silent: true},
+	{id: "dep-push-apac", name: "Mobile Push Delivery - APAC Region Primary", segment: "mobile", silent: true},
+	{id: "dep-push-eu", name: "Mobile Push Delivery - EU Region Secondary", segment: "mobile", silent: true},
+	{id: "dep-export-jobs", name: "Data Export Service - Scheduled Jobs Runner", segment: "data", silent: true},
+	{id: "dep-billing-recon", name: "Billing Reconciliation - Nightly Batch Worker", segment: "payments", silent: true},
+	{id: "dep-edge-cache", name: "Edge Cache", segment: "mobile", silent: true},
+}
+
 const companyID = "acme"
 
 func seedOrg(ctx context.Context, st store.Store) error {
@@ -282,11 +334,19 @@ func seedOrg(ctx context.Context, st store.Store) error {
 	if err := st.PutItemKind(ctx, TenantID, domain.ItemKind{ID: "services", Name: "Services"}); err != nil {
 		return fmt.Errorf("demo: item kind: %w", err)
 	}
-	for _, s := range services {
-		if err := st.PutTrackedItem(ctx, TenantID, domain.TrackedItem{
-			ID: s.id, KindID: "services", Name: s.name, OrgUnitID: s.segment, SourceKeys: []string{s.name},
-		}); err != nil {
-			return fmt.Errorf("demo: tracked item %s: %w", s.id, err)
+	if err := st.PutItemKind(ctx, TenantID, domain.ItemKind{ID: "deployments", Name: "Deployments"}); err != nil {
+		return fmt.Errorf("demo: item kind: %w", err)
+	}
+	for _, k := range []struct {
+		kind  string
+		specs []serviceSpec
+	}{{"services", services}, {"deployments", deployments}} {
+		for _, s := range k.specs {
+			if err := st.PutTrackedItem(ctx, TenantID, domain.TrackedItem{
+				ID: s.id, KindID: k.kind, Name: s.name, OrgUnitID: s.segment, SourceKeys: []string{s.name},
+			}); err != nil {
+				return fmt.Errorf("demo: tracked item %s: %w", s.id, err)
+			}
 		}
 	}
 	return nil
@@ -382,6 +442,7 @@ func methodology(fy int, onTimeGreen float64) domain.Methodology {
 	atProduct := []domain.Subject{{Kind: domain.SubjectLevel, ID: "product"}}
 	atSegment := []domain.Subject{{Kind: domain.SubjectLevel, ID: "segment"}}
 	atService := []domain.Subject{{Kind: domain.SubjectItemKind, ID: "services"}}
+	atDeployment := []domain.Subject{{Kind: domain.SubjectItemKind, ID: "deployments"}}
 	atCompany := []domain.Subject{{Kind: domain.SubjectLevel, ID: "company"}}
 	year := period.Period{Grain: period.Year, FY: fy}
 
@@ -513,6 +574,19 @@ func methodology(fy int, onTimeGreen float64) domain.Methodology {
 				Definition: "Share of the period a service was available.",
 				Example:    "43 minutes of downtime in a 30-day month is 99.90%.",
 				Source:     "Monitoring",
+			},
+			{
+				Key: "deployment_uptime", Name: "Deployment uptime", CategoryID: "engineering",
+				Formula: "(1 - seconds_down / seconds_in_period) * 100", Format: domain.FormatPercent2,
+				Direction: domain.DirectionHigherBetter, Frequency: domain.FrequencyMonthly, ReportedAt: atDeployment,
+				Rule: domain.StatusRule{Type: domain.RuleBands, Bands: []domain.Band{
+					{Status: "G", Op: ">=", Value: 99.9},
+					{Status: "Y", Op: ">", Value: 99.8},
+					{Status: "R"},
+				}},
+				Definition: "Share of the month each regional deployment was available, from synthetic checks. A deployment reports once its check is connected.",
+				Example:    "165 minutes of downtime in a 31-day month is 99.63%.",
+				Source:     "Synthetic checks",
 			},
 			{
 				Key: "postmortems_on_time", Name: "Incident postmortems on time", CategoryID: "engineering",
@@ -738,6 +812,8 @@ func seedData(ctx context.Context, st store.Store, cal period.Calendar) error {
 		g.postmortems(m)
 		g.roadmapEvidence(m)
 	}
+	g.r = rand.New(rand.NewPCG(rngSeedDeploy, rngSeed2))
+	g.deploymentFleet(ws)
 
 	g.pin()
 
@@ -843,6 +919,36 @@ func (g *generator) fleet(ws []period.Period) {
 				down = math.Round(g.between(150, 480))
 			case g.r.Float64() < 0.03:
 				down = math.Round(g.between(95, 300))
+			}
+			g.put("seconds_down", s.id, m, down*60)
+			g.put("seconds_in_period", s.id, m, float64(g.cal.Seconds(m)))
+		}
+	}
+}
+
+// deploymentFleet draws the deployments over the window: a skewed share of
+// their typical downtime (at most 30 minutes, always Green), 50 to 78 minutes
+// in `degraded` months (Yellow even in February), a long outage in `outages`
+// months, and the pinned figure in the latest month. Unlike the services they
+// never draw a random incident, so every month's status is fixed.
+func (g *generator) deploymentFleet(ws []period.Period) {
+	for _, s := range deployments {
+		if s.silent {
+			continue
+		}
+		for _, m := range ws {
+			if !reports(s, m) {
+				continue
+			}
+			f := g.r.Float64()
+			down := math.Round(s.downtime * f * f)
+			switch {
+			case m == latestMonth && s.latest != nil:
+				down = *s.latest
+			case slices.Contains(s.outages, m):
+				down = math.Round(g.between(150, 480))
+			case slices.Contains(s.degraded, m):
+				down = math.Round(g.between(50, 78))
 			}
 			g.put("seconds_down", s.id, m, down*60)
 			g.put("seconds_in_period", s.id, m, float64(g.cal.Seconds(m)))

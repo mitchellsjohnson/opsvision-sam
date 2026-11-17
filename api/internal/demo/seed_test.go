@@ -155,21 +155,29 @@ func TestSeedReturnsTenantAndModel(t *testing.T) {
 		t.Errorf("2026-M07 Data children = %v", got)
 	}
 
-	// Services item kind with 24 items spread over the segments.
+	// Two item kinds: 24 services and 21 deployments, spread over the segments.
 	kinds, _ := st.ListItemKinds(ctx, id)
-	if len(kinds) != 1 || kinds[0].Name != "Services" {
+	var kindNames []string
+	for _, k := range kinds {
+		kindNames = append(kindNames, k.Name)
+	}
+	slices.Sort(kindNames)
+	if !reflect.DeepEqual(kindNames, []string{"Deployments", "Services"}) {
 		t.Errorf("item kinds = %+v", kinds)
 	}
 	items, _ := st.ListTrackedItems(ctx, id)
-	perSegment := map[string]int{}
+	perSegment := map[string]map[string]int{"services": {}, "deployments": {}}
 	for _, it := range items {
-		perSegment[nameOf(it.OrgUnitID)]++
+		perSegment[it.KindID][nameOf(it.OrgUnitID)]++
 	}
-	if len(items) != 24 {
-		t.Errorf("items = %d, want 24", len(items))
+	if len(items) != 45 {
+		t.Errorf("items = %d, want 45", len(items))
 	}
-	if want := map[string]int{"Platform": 11, "Payments": 6, "Data": 4, "Mobile": 3}; !reflect.DeepEqual(perSegment, want) {
-		t.Errorf("services per segment = %v, want %v", perSegment, want)
+	if want := map[string]int{"Platform": 11, "Payments": 6, "Data": 4, "Mobile": 3}; !reflect.DeepEqual(perSegment["services"], want) {
+		t.Errorf("services per segment = %v, want %v", perSegment["services"], want)
+	}
+	if want := map[string]int{"Platform": 6, "Payments": 5, "Data": 7, "Mobile": 3}; !reflect.DeepEqual(perSegment["deployments"], want) {
+		t.Errorf("deployments per segment = %v, want %v", perSegment["deployments"], want)
 	}
 	if platform == "" {
 		t.Fatal("no Platform segment in 2026-M07")
@@ -204,7 +212,7 @@ func TestSeedMethodologyIsValidAndComplete(t *testing.T) {
 	want := []string{
 		"Epics delivered on time", "Concepts delivered on budget", "Spend vs plan",
 		"Concepts delivered expected value", "Weighted defect score", "Weighted support backlog", "Uptime",
-		"Incident postmortems on time", "Security training completion", "Customer feedback SLO",
+		"Deployment uptime", "Incident postmortems on time", "Security training completion", "Customer feedback SLO",
 		"Customer satisfaction", "Roadmap items with customer evidence", "Design review coverage",
 		"Accessibility compliance", "Open-source risk SLO",
 	}
@@ -288,12 +296,18 @@ func TestSeedComputes(t *testing.T) {
 	}
 	col := map[domain.Frequency]int{domain.FrequencyMonthly: 0, domain.FrequencyQuarterly: 1, domain.FrequencyBiannual: 2}
 
-	// Blank on purpose: metrics not reported, services not reported this
-	// month, and the company row of the metric that has no company total.
+	// Blank on purpose: metrics not reported, services and deployments not
+	// reported this month, and the company row of the metric that has no
+	// company total.
 	unreportedServices := map[string]bool{"pricing-engine": true, "push-gateway": true, "reporting": true}
+	reportingDeployments := map[string]bool{
+		"dep-notify-multi": true, "dep-pay-eu": true, "dep-pay-us": true, "dep-portal-cloud": true, "dep-identity-east": true,
+		"dep-identity-west": true, "dep-search-a1": true, "dep-search-a2": true, "dep-ledger": true,
+	}
 	blankByDesign := func(r engine.Row) bool {
 		return slices.Contains(demo.NotReported, r.MetricKey) ||
 			(r.MetricKey == "uptime" && unreportedServices[r.SubjectID]) ||
+			(r.MetricKey == "deployment_uptime" && !reportingDeployments[r.SubjectID]) ||
 			(r.MetricKey == demo.NoCompanyTotal && r.SubjectID == "acme")
 	}
 	status := map[string]bool{}
@@ -469,6 +483,74 @@ func TestSeedCoversEveryChartKind(t *testing.T) {
 	}
 	if company("roadmap_evidence").Cells[slices.Index(ms, "2026-M07")].Value == nil {
 		t.Error("roadmap_evidence has no value in 2026-M07")
+	}
+}
+
+// TestSeedDeploymentUptimeHasRealShape checks the item metric shaped like
+// real tenants' uptime, which the item grid is designed against: 21 items
+// with long names, in the latest month 8 Green, 1 Red and 12 not reported,
+// eight of those with nothing in the last 12 months, and items onboarded
+// within the window.
+func TestSeedDeploymentUptimeHasRealShape(t *testing.T) {
+	st, id := seeded(t)
+	in := input(t, st, id)
+	ms := windowMonths()
+	v := viewOf(t, in, "", ms...)
+	last := len(ms) - 1
+
+	var rows []engine.Row
+	for _, r := range v.Rows {
+		if r.MetricKey == "deployment_uptime" {
+			rows = append(rows, r)
+		}
+	}
+	if len(rows) != 21 {
+		t.Fatalf("deployment uptime rows = %d, want 21", len(rows))
+	}
+	if rows[0].ChartKind != "uptime" {
+		t.Errorf("chart kind = %q, want uptime", rows[0].ChartKind)
+	}
+	mix := map[string]int{}
+	long, silentYear, onboarded, redMonths := 0, 0, 0, 0
+	for _, r := range rows {
+		if n := len(r.SubjectName); n >= 30 && n <= 48 {
+			long++
+		} else if n > 48 {
+			t.Errorf("%q is %d characters, want at most 48", r.SubjectName, n)
+		}
+		c := r.Cells[last]
+		if c.Value == nil {
+			mix["not reported"]++
+		} else {
+			mix[c.Status]++
+		}
+		if !slices.ContainsFunc(r.Cells[last-11:], func(c engine.Cell) bool { return c.Value != nil }) {
+			silentYear++
+		}
+		first := slices.IndexFunc(r.Cells, func(c engine.Cell) bool { return c.Value != nil })
+		if first > 0 && c.Value != nil {
+			onboarded++
+		}
+		for _, c := range r.Cells[last-11:] {
+			if c.Status == "R" {
+				redMonths++
+			}
+		}
+	}
+	if want := map[string]int{"G": 8, "R": 1, "not reported": 12}; !reflect.DeepEqual(mix, want) {
+		t.Errorf("latest-month mix = %v, want %v", mix, want)
+	}
+	if long < 17 {
+		t.Errorf("names of 30-48 characters = %d, want at least 17", long)
+	}
+	if silentYear != 8 {
+		t.Errorf("no reports in the last 12 months = %d, want 8", silentYear)
+	}
+	if onboarded < 5 {
+		t.Errorf("reporting deployments onboarded inside the window = %d, want at least 5", onboarded)
+	}
+	if redMonths < 8 {
+		t.Errorf("Red months in the last 12 = %d, want at least 8 (history, not only this month)", redMonths)
 	}
 }
 

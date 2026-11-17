@@ -390,14 +390,19 @@ func viewArgs(periods ...string) map[string]any {
 	return map[string]any{"sc": demo.ScorecardID, "periods": ps}
 }
 
+// The view is narrowed to three metrics (one monthly, one quarterly, one by
+// item) so the result stays under the limit for a structured copy.
 func TestToolCallMatchesAPI(t *testing.T) {
 	e := newEnv(t)
 	tok := e.tokens["contributor"]
-	res := e.callTool(t, tok, "get_scorecard_view", viewArgs("2026-M09", "2026-Q3"))
+	metrics := []string{"epics_on_time", "concepts_expected_value", "uptime"}
+	args := viewArgs("2026-M09", "2026-Q3")
+	args["metrics"] = []any{metrics[0], metrics[1], metrics[2]}
+	res := e.callTool(t, tok, "get_scorecard_view", args)
 	if res.IsError {
 		t.Fatalf("isError: %s", res.text())
 	}
-	q := url.Values{"periods": {"2026-M09", "2026-Q3"}}
+	q := url.Values{"periods": {"2026-M09", "2026-Q3"}, "metrics": metrics}
 	direct := e.get(t, tok, "/scorecards/"+demo.ScorecardID+"/view?"+q.Encode())
 	if len(res.Content) != 1 || res.Content[0].Type != "text" {
 		t.Fatalf("content = %+v", res.Content)
