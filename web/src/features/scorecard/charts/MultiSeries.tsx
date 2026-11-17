@@ -43,8 +43,8 @@ import {
   type DotProps,
   type TickProps,
 } from './chartParts'
-import { chartTheme, LINE_COLORS, statusFill } from './chartTheme'
-import { lastValued, MULTIPLES_FROM, pointCells, rangeText, spreadLabels, worstFirst } from './seriesLayout'
+import { chartTheme, statusFill } from './chartTheme'
+import { drawOrder, frontSeries, lastValued, MULTIPLES_FROM, panelMonthLabels, pointCells, rangeText, spreadLabels, worstFirst } from './seriesLayout'
 import { buildPoints, type ChartPoint } from './points'
 import type { VersionMarker } from './versionMarkers'
 
@@ -56,6 +56,12 @@ interface Series {
   points: ChartPoint[]
   color: string
 }
+
+/** Focus and context (§8): the series in front in the accent, the rest faded ink, so the focus color is the same on every tile. */
+const FRONT = { color: 'var(--color-accent)', width: 2.5, dot: 4, opacity: 1 } as const
+const CONTEXT = { color: 'var(--color-ink)', width: 1.5, dot: 3, opacity: 0.38 } as const
+/** A context line's end dot: the line's faded ink, solid so the white ring stays crisp. */
+const CONTEXT_DOT = 'color-mix(in srgb, var(--color-ink) 45%, white)'
 
 interface MultiSeriesProps {
   rows: ViewRow[]
@@ -86,14 +92,28 @@ function bandsOf(row: ViewRow, columns: Column[]) {
 export function MultiSeriesChart(props: MultiSeriesProps) {
   const { rows, columns, fyStart } = props
   const series = useMemo<Series[]>(
-    () => rows.map((row, s) => ({ row, points: buildPoints(row, columns, fyStart), color: LINE_COLORS[s % LINE_COLORS.length]! })),
+    () => rows.map((row) => ({ row, points: buildPoints(row, columns, fyStart), color: CONTEXT.color })),
     [rows, columns, fyStart],
   )
   return props.size === 'focus' && series.length >= MULTIPLES_FROM ? <SmallMultiples {...props} series={series} /> : <Overlaid {...props} series={series} />
 }
 
 /** The lines' end labels, drawn inside the chart so they sit at each line's last value. */
-function EndLabels({ series, labelWidth, statusLabel, scale }: { series: Series[]; labelWidth: { name: number; value: number }; statusLabel: (key: string) => string; scale: StatusLevel[] }) {
+function EndLabels({
+  series,
+  labelWidth,
+  statusLabel,
+  scale,
+  front,
+  onHover,
+}: {
+  series: Series[]
+  labelWidth: { name: number; value: number }
+  statusLabel: (key: string) => string
+  scale: StatusLevel[]
+  front: string | null
+  onHover: (id: string | null) => void
+}) {
   const yScale = useYAxisScale()
   const plot = usePlotArea()
   if (!yScale || !plot) return null
@@ -113,9 +133,18 @@ function EndLabels({ series, labelWidth, statusLabel, scale }: { series: Series[
         const fill = statusFill(scale, p.status)
         const chipX = x + labelWidth.name + 6 + labelWidth.value + 6
         return (
-          <g key={s.row.subjectId} data-role="end-label">
+          <g key={s.row.subjectId} data-role="end-label" onMouseEnter={() => onHover(s.row.subjectId)} onMouseLeave={() => onHover(null)}>
             <title>{`${s.row.subjectName}: ${p.display}${p.status ? `, ${statusLabel(p.status)}` : ''}`}</title>
-            <text data-role="end-name" x={x} y={y} dy="0.35em" fontSize={11} fontWeight={600} fill={s.color}>
+            <text
+              data-role="end-name"
+              x={x}
+              y={y}
+              dy="0.35em"
+              fontSize={11}
+              fontWeight={600}
+              fill={s.row.subjectId === front ? FRONT.color : 'var(--color-ink)'}
+              fillOpacity={s.row.subjectId === front ? 1 : 0.7}
+            >
               {s.row.subjectName}
             </text>
             <text data-role="end-value" x={x + labelWidth.name + 6} y={y} dy="0.35em" fontSize={11} fontWeight={600} fill="var(--color-ink)" className="tabular-nums">
@@ -146,7 +175,7 @@ function EndLabels({ series, labelWidth, statusLabel, scale }: { series: Series[
 }
 
 /** The end labels under a narrow plot: each line's swatch, name, last value and chip, top line first. */
-function SeriesKey({ series, scale }: { series: Series[]; scale: StatusLevel[] }) {
+function SeriesKey({ series, scale, front }: { series: Series[]; scale: StatusLevel[]; front: string | null }) {
   const ordered = [...series].sort(
     (a, b) => (lastValued(b.points)?.point.value ?? 0) - (lastValued(a.points)?.point.value ?? 0) || a.row.subjectName.localeCompare(b.row.subjectName),
   )
@@ -154,12 +183,11 @@ function SeriesKey({ series, scale }: { series: Series[]; scale: StatusLevel[] }
     <ul data-testid="series-key" aria-hidden="true" className="mt-1 grid grid-cols-[repeat(auto-fill,minmax(8.5rem,1fr))] gap-x-3 gap-y-1">
       {ordered.map((s) => {
         const p = lastValued(s.points)!.point
+        const inFront = s.row.subjectId === front
         return (
           <li key={s.row.subjectId} className="flex min-w-0 items-center gap-1.5 text-[11px] leading-4 font-semibold">
-            <span className="h-0.5 w-3 shrink-0 rounded-full" style={{ backgroundColor: s.color }} />
-            <span className="min-w-0 truncate" style={{ color: s.color }}>
-              {s.row.subjectName}
-            </span>
+            <span className={`h-0.5 w-3 shrink-0 rounded-full ${inFront ? 'bg-accent' : 'bg-ink/40'}`} />
+            <span className={`min-w-0 truncate ${inFront ? 'text-accent' : 'text-ink/70'}`}>{s.row.subjectName}</span>
             <span className="text-ink tabular-nums">{p.display}</span>
             {p.status && <StatusChip status={p.status} scale={scale} />}
           </li>
@@ -174,6 +202,7 @@ function Overlaid({ series, columns, scale, animated, size, statusLabel, markers
   const phone = usePhone() && focus
   const spec = sizeSpec(size, 140, phone)
   const [tip, setTip] = useState<ChartPoint | null>(null)
+  const [hovered, setHovered] = useState<string | null>(null)
   const format = series[0]?.row.format ?? 'number0'
   const all = series.flatMap((s) => s.points)
   const values = all.map((p) => p.value).filter((v): v is number => v !== null)
@@ -195,7 +224,19 @@ function Overlaid({ series, columns, scale, animated, size, statusLabel, markers
   // Labels that would take over 40% of a narrow tile go under the plot instead.
   const below = width > 0 && endWidth > width * 0.4
   const margin = { ...spec.margin, top: Math.max(spec.margin.top, 10), right: below ? spec.margin.right : endWidth }
-  const hoverSeries = series.map((s) => ({ name: s.row.subjectName, color: s.color, points: s.points }))
+  const front = frontSeries(
+    series.map((s) => s.row),
+    columns[last]?.key ?? '',
+    scale,
+    hovered,
+  )
+  const styleOf = (s: Series) => (s.row.subjectId === front ? FRONT : CONTEXT)
+  const byId = new Map(series.map((s) => [s.row.subjectId, s]))
+  const painted = drawOrder(
+    series.map((s) => s.row.subjectId),
+    front,
+  ).map((id) => byId.get(id)!)
+  const hoverSeries = series.map((s) => ({ name: s.row.subjectName, color: styleOf(s).color, points: s.points }))
   const data = columns.map((col, i) => {
     const entry: Record<string, string | number | null> = { i, key: col.key }
     for (const s of series) entry[`plot_${s.row.subjectId}`] = s.points[i]!.kind === 'value' ? s.points[i]!.value : null
@@ -252,28 +293,33 @@ function Overlaid({ series, columns, scale, animated, size, statusLabel, markers
             })}
             {markerLines(markers, columns, { text: focus })}
             {hoverTooltip(columns, hoverSeries, scale, animated, margin.top, markerNotes(markers))}
-            {series.map((s) => {
+            {painted.map((s) => {
               const dataKey = `plot_${s.row.subjectId}`
+              const style = styleOf(s)
               return (
                 <Line
                   key={s.row.subjectId}
-                  type="monotoneX"
+                  className={`series-${s.row.subjectId}`}
+                  type="linear"
                   dataKey={dataKey}
-                  stroke={s.color}
-                  strokeWidth={spec.stroke}
-                  dot={(p: DotProps) => <CurrentDot {...p} key={`dot-${s.row.subjectId}-${p.index}`} dataKey={dataKey} last={last} r={spec.dot} color={s.color} />}
-                  activeDot={(p: DotProps) => <ActiveDot cx={p.cx} cy={p.cy} r={spec.activeDot} color={s.color} />}
+                  stroke={style.color}
+                  strokeOpacity={style.opacity}
+                  strokeWidth={style.width}
+                  dot={(p: DotProps) => (
+                    <CurrentDot {...p} key={`dot-${s.row.subjectId}-${p.index}`} dataKey={dataKey} last={last} r={style.dot} color={style === FRONT ? FRONT.color : CONTEXT_DOT} />
+                  )}
+                  activeDot={(p: DotProps) => <ActiveDot cx={p.cx} cy={p.cy} r={spec.activeDot} color={style.color} />}
                   isAnimationActive={animated}
                   {...ANIMATION}
                   connectNulls={false}
                 />
               )
             })}
-            {!below && <EndLabels series={series} labelWidth={labelWidth} statusLabel={statusLabel} scale={scale} />}
+            {!below && <EndLabels series={series} labelWidth={labelWidth} statusLabel={statusLabel} scale={scale} front={front} onHover={setHovered} />}
           </ComposedChart>
         </ResponsiveContainer>
       </div>
-      {below && <SeriesKey series={shown} scale={scale} />}
+      {below && <SeriesKey series={shown} scale={scale} front={front} />}
       <PointControls tip={tip} scale={scale}>
         {series.map((s) => (
           <Fragment key={s.row.subjectId}>
@@ -357,9 +403,9 @@ function SmallMultiples({ series, columns, scale, animated, statusLabel, markers
                       )
                     })}
                     {markerLines(markers, columns)}
-                    {hoverTooltip(columns, [{ name: s.row.subjectName, color: s.color, points: s.points }], scale, animated, margin.top, markerNotes(markers))}
+                    {hoverTooltip(columns, [{ name: s.row.subjectName, color: FRONT.color, points: s.points }], scale, animated, margin.top, markerNotes(markers))}
                     <Line
-                      type="monotoneX"
+                      type="linear"
                       dataKey="plot"
                       stroke="var(--color-accent)"
                       strokeWidth={2}
@@ -373,6 +419,7 @@ function SmallMultiples({ series, columns, scale, animated, statusLabel, markers
                 </ResponsiveContainer>
               </div>
               <StatusRibbon points={s.points} scale={scale} size="tile" inset={inset} />
+              <PanelMonths columns={columns} inset={inset} />
             </div>
           )
         })}
@@ -390,6 +437,26 @@ function SmallMultiples({ series, columns, scale, animated, statusLabel, markers
           </Fragment>
         ))}
       </PointControls>
+    </div>
+  )
+}
+
+/** Under a panel's ribbon, its months (§8): `Nov` from 360px, `N` below; the selected (last) month in the accent. */
+function PanelMonths({ columns, inset }: { columns: Column[]; inset: { left: number; right: number } }) {
+  const [measure, width] = useElementWidth<HTMLDivElement>()
+  const labels = panelMonthLabels(columns, width)
+  const last = columns.length - 1
+  return (
+    <div ref={measure} aria-hidden="true" className="mt-0.5 flex gap-px text-[11px] leading-4" style={{ marginLeft: inset.left, marginRight: inset.right }}>
+      {labels.map((label, i) => (
+        <span
+          key={columns[i]!.key}
+          data-role="panel-month"
+          className={`min-w-0 flex-1 overflow-hidden text-center whitespace-nowrap ${i === last ? 'font-semibold text-accent-deep' : 'text-ink/70'}`}
+        >
+          {label}
+        </span>
+      ))}
     </div>
   )
 }

@@ -1,13 +1,13 @@
-import { render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import { cloneElement, isValidElement, type ReactNode } from 'react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { components } from '../../../api/schema'
-import { addQuarterly, buildView } from '../../../test/viewFixtures'
+import { addQuarterly, buildView, QUARTERLY_VALUES } from '../../../test/viewFixtures'
 import { buildMonthTrendColumns, buildTrendColumns, coarseColumns, windowColumns, type Column } from '../columns'
+import { axe } from 'vitest-axe'
 import { defaultStatusScale, LINE_COLORS } from './chartTheme'
-import { buildPoints, ChartHoverCard, FOCUS_CHART_HEIGHT, MetricChart, type ChartSize } from './MetricChart'
-import { moneyPlanDomain } from './moneyPlan'
+import { buildPoints, ChartHoverCard, FOCUS_CHART_HEIGHT, MetricChart, type ChartParts, type ChartSize } from './MetricChart'
 import type { VersionMarker } from './versionMarkers'
 
 type ViewRow = components['schemas']['ViewRow']
@@ -15,6 +15,8 @@ type StatusLevel = components['schemas']['StatusLevel']
 
 // A test sets `index` to open the tooltip at that column, as a hover would.
 const hover = vi.hoisted(() => ({ index: undefined as number | undefined }))
+// The plot's width; a test may set it to draw a wider or narrower chart.
+const plotSize = vi.hoisted(() => ({ width: 300 }))
 
 // jsdom measures every element as 0 wide, so ResponsiveContainer draws
 // nothing; give the chart a fixed size instead.
@@ -23,7 +25,9 @@ vi.mock('recharts', async (importOriginal) => {
   return {
     ...mod,
     ResponsiveContainer: ({ children }: { children: ReactNode }) =>
-      isValidElement(children) ? cloneElement(children as React.ReactElement<{ width: number; height: number }>, { width: 300, height: 120 }) : null,
+      isValidElement(children)
+        ? cloneElement(children as React.ReactElement<{ width: number; height: number }>, { width: plotSize.width, height: 120 })
+        : null,
     Tooltip: (props: React.ComponentProps<typeof mod.Tooltip>) => <mod.Tooltip {...props} defaultIndex={hover.index} />,
   }
 })
@@ -45,6 +49,7 @@ afterEach(() => {
   // @ts-expect-error matchMedia is absent in jsdom.
   delete window.matchMedia
   hover.index = undefined
+  plotSize.width = 300
 })
 
 function rowOf(metric: string, edit?: (row: ViewRow) => void, subjectId = 'root'): ViewRow {
@@ -62,6 +67,9 @@ interface DrawOptions {
   columns?: Column[]
   header?: boolean
   markers?: VersionMarker[]
+  selectedPeriod?: string
+  parts?: ChartParts
+  framed?: boolean
 }
 
 function draw(row: ViewRow, opts: DrawOptions = {}) {
@@ -83,6 +91,9 @@ function draw(row: ViewRow, opts: DrawOptions = {}) {
         tableTo="/table"
         header={opts.header}
         markers={opts.markers}
+        selectedPeriod={opts.selectedPeriod}
+        parts={opts.parts}
+        framed={opts.framed}
       />
     </MemoryRouter>,
   )
@@ -422,12 +433,13 @@ describe('MetricChart line', () => {
     expect([...focus.container.querySelectorAll('.band-label')].map((t) => t.textContent)).toEqual(['Y', 'G'])
   })
 
-  it('multi-series lines take distinct palette colors and a current dot each, labelled at their ends rather than by a legend', () => {
+  it('multi-series lines: the worst in the accent, the other in ink, a current dot each, labelled at their ends rather than by a legend', () => {
     const a = rowOf('on_time_pct', undefined, 'unit-a')
     const b = rowOf('on_time_pct', undefined, 'unit-b')
     const { container } = draw(rowOf('on_time_pct'), { chartRows: [a, b] })
     const strokes = [...container.querySelectorAll('.recharts-line-curve')].map((p) => p.getAttribute('stroke'))
-    expect(strokes).toEqual([LINE_COLORS[0], LINE_COLORS[1]])
+    // Unit A is worse now (70% Red), so it is drawn last, in front.
+    expect(strokes).toEqual(['var(--color-ink)', 'var(--color-accent)'])
     expect(container.querySelector('.recharts-area')).toBeNull()
     expect(screen.queryByTestId('chart-legend')).toBeNull()
     expect([...container.querySelectorAll('[data-role="end-name"]')].map((t) => t.textContent).sort()).toEqual(['Unit A', 'Unit B'])
@@ -540,11 +552,11 @@ describe('MetricChart coarse points', () => {
 
   it('half and year columns are labelled with a short fiscal year', () => {
     const halves = windowColumns('2026-M10', 'half', 2, 1)
-    const { container, unmount } = draw(quarterlyRow((r) => (r.frequency = 'biannual')), { columns: halves })
+    const { container, unmount } = draw(quarterlyRow((r) => (r.frequency = 'biannual')), { columns: halves, size: 'focus' })
     expect(xTicks(container)).toEqual(['H2 FY25', 'H1 FY26'])
     unmount()
     const years = windowColumns('2026-M10', 'year', 3, 1)
-    const y = draw(quarterlyRow((r) => (r.frequency = 'annual')), { columns: years })
+    const y = draw(quarterlyRow((r) => (r.frequency = 'annual')), { columns: years, size: 'focus' })
     expect(xTicks(y.container)).toEqual(['FY23', 'FY24', 'FY25'])
   })
 })
@@ -599,14 +611,65 @@ describe('MetricChart money plan', () => {
     expect([...container.querySelectorAll('[data-role="deviation"]')].map((t) => t.textContent)).toEqual(['-4%', '+4%'])
   })
 
-  it('labels every other bar, counted back from the current one, when the labels would overlap', () => {
+  const twelve = () => {
     const row = planRow()
-    row.cells = row.cells.map((c, i) => ({ ...c, value: 104 + (i % 3), display: `${104 + (i % 3)}%`, status: 'G' }))
-    const { container } = draw(row)
-    const labelled = [...container.querySelectorAll('rect[data-bar]')]
+    const values = [108, 109, 111, 107, 110, 107, 107, 108, 107, 107, 110, 104]
+    row.cells = row.cells.map((c, i) => ({ ...c, value: values[i]!, display: `${values[i]}%`, status: values[i]! > 110 ? 'Y' : 'G' }))
+    return row
+  }
+  const labelledKeys = (root: ParentNode) =>
+    [...root.querySelectorAll('rect[data-bar]')]
       .filter((b) => b.parentElement!.querySelector('[data-role="deviation"]'))
       .map((b) => b.getAttribute('data-key'))
-    expect(labelled).toEqual(columns.filter((_, i) => (11 - i) % 2 === 0).map((c) => c.key))
+
+  it('with room, every bar carries its deviation', () => {
+    plotSize.width = 600
+    const { container } = draw(twelve())
+    expect(labelledKeys(container)).toEqual(columns.map((c) => c.key))
+  })
+
+  it('a 358px tile (slots under 32px) labels only the current month and the largest deviation', () => {
+    plotSize.width = 358
+    const { container } = draw(twelve())
+    expect(container.querySelectorAll('[data-role="deviation"]')).toHaveLength(2)
+    expect(labelledKeys(container)).toEqual(['2026-M01', '2026-M10'].map((p) => columns.find((c) => c.period === p)!.key))
+    // Plan moves to the left end, on the side of the line the first bar does not take.
+    const plan = container.querySelector('[data-role="plan-label"]')!
+    const lineStart = Number(container.querySelector('.plan-line .recharts-reference-line-line')!.getAttribute('x1'))
+    expect(Number(plan.getAttribute('x'))).toBeCloseTo(lineStart)
+    expect(Number(plan.getAttribute('y'))).toBeGreaterThan(planY(container))
+  })
+
+  it('the axis follows the data: every month over plan gives the over side the height', () => {
+    const { container } = draw(twelve())
+    expect(screen.getByTestId('metric-chart').dataset.domain).toBe('97-115')
+    // 3 points under plan, 15 over: the 100% line sits low in the plot.
+    const line = Number(container.querySelector('.plan-line .recharts-reference-line-line')!.getAttribute('y1'))
+    const top = Math.min(...[...container.querySelectorAll('[data-role="band"]')].map((b) => Number(b.getAttribute('y'))))
+    expect(line - top).toBeGreaterThan(40)
+  })
+
+  it('one month in view still draws its bar and label', () => {
+    const { container } = draw(planRow(96, 104), { columns: columns.slice(-1) })
+    expect(container.querySelectorAll('rect[data-bar]')).toHaveLength(1)
+    expect(container.querySelector('[data-role="deviation"]')!.textContent).toBe('+4%')
+    expect(screen.getByTestId('metric-chart').dataset.domain).toBe('97-115')
+  })
+
+  it('the 110% line is dashed in status-y and the 120% line in status-r, each only inside the domain; focus labels them', () => {
+    const tile = draw(planRow(115, 125), { columns: sepOct })
+    const line = (edge: number) => tile.container.querySelector(`[data-role="threshold-line"][data-edge="${edge}"] line`)
+    expect(line(110)!.getAttribute('stroke')).toBe(scale.find((s) => s.key === 'Y')!.color)
+    expect(line(120)!.getAttribute('stroke')).toBe(scale.find((s) => s.key === 'R')!.color)
+    expect(line(120)!.getAttribute('stroke-dasharray')).toBeTruthy()
+    tile.unmount()
+    const near = draw(planRow(96, 104), { columns: sepOct })
+    expect(near.container.querySelector('[data-role="threshold-line"][data-edge="110"]')).toBeTruthy()
+    expect(near.container.querySelector('[data-role="threshold-line"][data-edge="120"]')).toBeNull()
+    near.unmount()
+    const focus = draw(planRow(115, 125), { columns: sepOct, size: 'focus' })
+    const ticks = [...focus.container.querySelectorAll('.recharts-yAxis-tick-labels .recharts-cartesian-axis-tick-value')].map((t) => t.textContent)
+    expect(ticks).toEqual(['110% Y', '120% R'])
   })
 
   it('the 100% line is solid ink at 55%', () => {
@@ -646,7 +709,7 @@ describe('MetricChart money plan', () => {
   it('focus ticks sit only at band edges', () => {
     const { container } = draw(planRow(), { columns: sepOct, size: 'focus' })
     const ticks = [...container.querySelectorAll('.recharts-yAxis-tick-labels .recharts-cartesian-axis-tick-value')].map((t) => t.textContent)
-    expect(ticks).toEqual(['110%'])
+    expect(ticks).toEqual(['110% Y'])
   })
 
   it('bands are zones at 7% around the line', () => {
@@ -654,6 +717,14 @@ describe('MetricChart money plan', () => {
     const bands = [...container.querySelectorAll('[data-role="band"]')]
     expect(bands.length).toBeGreaterThan(0)
     for (const b of bands) expect(b.getAttribute('fill-opacity')).toBe('0.07')
+  })
+
+  it('inside a tile frame the value row says how often spend ran over plan, so the chart does not repeat it', () => {
+    const open = draw(planRow(), { columns: sepOct })
+    expect(screen.getByTestId('chart-context').textContent).toBe('Over plan in 1 of the last 2 months')
+    open.unmount()
+    draw(planRow(), { columns: sepOct, framed: true })
+    expect(screen.queryByTestId('chart-context')).toBeNull()
   })
 
   it('summarizes how often spend ran over plan, then the current period', () => {
@@ -665,12 +736,6 @@ describe('MetricChart money plan', () => {
     draw(planRow(), { columns: sepOct })
     expect(screen.getByRole('button', { name: 'Oct: 104%' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Sep: 96%' })).toBeTruthy()
-  })
-
-  it('moneyPlanDomain centres on 100%, padded by the largest deviation plus 3, at least ±15', () => {
-    expect(moneyPlanDomain([96, 111])).toEqual([85, 115])
-    expect(moneyPlanDomain([80, 130])).toEqual([67, 133])
-    expect(moneyPlanDomain([])).toEqual([85, 115])
   })
 })
 
@@ -718,12 +783,14 @@ describe('MetricChart sparse', () => {
     expect(screen.getByText(`n/a: ${REASON}`)).toBeTruthy()
   })
 
-  it('focus adds a table of the valued months', () => {
+  it('focus adds a full-width table of the valued months, newest first', () => {
     draw(sparseRow(), { size: 'focus' })
     const table = screen.getByRole('table')
-    expect(within(table).getAllByRole('columnheader').map((h) => h.textContent)).toEqual(['Month', 'Value', 'Status', 'Change'])
+    expect(table.className).toContain('w-full')
+    expect(table.className).not.toContain('max-w-xl')
+    expect(within(table).getAllByRole('columnheader').map((h) => h.textContent)).toEqual(['Month', 'Value', 'Status', 'Change vs previous report'])
     const rows = within(table).getAllByRole('row').slice(1)
-    expect(rows.map((r) => within(r).getByRole('rowheader').textContent)).toEqual(VALUED.map((i) => columns[i]!.fullLabel))
+    expect(rows.map((r) => within(r).getByRole('rowheader').textContent)).toEqual([...VALUED].reverse().map((i) => columns[i]!.fullLabel))
     expect(within(rows[0]!).getByText('80%')).toBeTruthy()
     expect(within(rows[0]!).getByText('Yellow')).toBeTruthy()
   })
@@ -736,11 +803,11 @@ describe('MetricChart sparse', () => {
     const rows = within(screen.getByRole('table')).getAllByRole('row').slice(1)
     // In the metric's format: on-time delivery shows tenths. An arrow and good or bad colour, as the other change cells.
     const cells = rows.map((r) => r.lastElementChild!)
-    expect(cells.map((c) => c.textContent)).toEqual(['—', '▲ +5.0 pts vs Dec', '▼ -15.0 pts vs Mar', 'No change vs Jun'])
-    expect(cells.map((c) => c.querySelector('[data-tone]')?.getAttribute('data-tone') ?? null)).toEqual([null, 'good', 'bad', 'neutral'])
-    expect(cells[1]!.querySelector('[data-tone]')!.className).toContain('text-status-g')
-    expect(cells[2]!.querySelector('[data-tone]')!.className).toContain('text-status-r')
-    expect(cells[1]!.querySelector('[aria-hidden="true"]')!.textContent).toBe('▲ ')
+    expect(cells.map((c) => c.textContent)).toEqual(['No change vs Jun', '▼ −15.0 pts vs Mar', '▲ +5.0 pts vs Dec', 'First in the window'])
+    expect(cells.map((c) => c.querySelector('[data-tone]')?.getAttribute('data-tone') ?? null)).toEqual(['neutral', 'bad', 'good', null])
+    expect(cells[2]!.querySelector('[data-tone]')!.className).toContain('text-status-g')
+    expect(cells[1]!.querySelector('[data-tone]')!.className).toContain('text-status-r')
+    expect(cells[2]!.querySelector('[aria-hidden="true"]')!.textContent).toBe('▲ ')
   })
 
   it('a lower-is-better metric’s rise in the focus table is bad; a cell’s own change keeps its tone', () => {
@@ -751,7 +818,7 @@ describe('MetricChart sparse', () => {
     Object.assign(row.cells[VALUED[2]!]!, { change: -15, changeKind: 'delta' })
     draw(row, { size: 'focus' })
     const cells = within(screen.getByRole('table')).getAllByRole('row').slice(1).map((r) => r.lastElementChild!)
-    expect(cells.map((c) => c.querySelector('[data-tone]')?.getAttribute('data-tone') ?? null)).toEqual([null, 'bad', 'good', 'neutral'])
+    expect(cells.map((c) => c.querySelector('[data-tone]')?.getAttribute('data-tone') ?? null)).toEqual(['neutral', 'good', 'bad', null])
   })
 
   it('drops the Change column when only one month reported', () => {
@@ -817,9 +884,10 @@ describe('MetricChart multi-series', () => {
         ['Data', '74%', '◆R'],
       ]),
     )
-    // The name is in its line's color.
-    const platform = labels.find((l) => l.textContent?.startsWith('Platform'))!
-    expect(platform.querySelector('[data-role="end-name"]')!.getAttribute('fill')).toBe(LINE_COLORS[0])
+    // The name is in its line's color: the worst in the accent, the rest in ink.
+    const nameFill = (name: string) => labels.find((l) => l.textContent?.startsWith(name))!.querySelector('[data-role="end-name"]')!.getAttribute('fill')
+    expect(nameFill('Data')).toBe('var(--color-accent)')
+    expect(nameFill('Platform')).toBe('var(--color-ink)')
   })
 
   it('overlaid lines sit on the bands when every series has the same rule, and on none when they differ', () => {
@@ -1235,5 +1303,460 @@ describe('MetricChart point controls', () => {
     const { container } = draw(rowOf('on_time_pct', (r) => (r.chartKind = kind)))
     expect(screen.getByTestId('metric-chart').getAttribute('aria-hidden')).toBe('true')
     expect(container.querySelector('[data-testid="metric-chart"] [tabindex]:not([tabindex="-1"])')).toBeNull()
+  })
+})
+
+const UPTIME_BANDS = {
+  type: 'bands' as const,
+  bands: [
+    { status: 'G', op: '>=', value: 99.9 },
+    { status: 'Y', op: '>', value: 99.8 },
+    { status: 'R', op: '', value: 0 },
+  ],
+}
+const status99 = (v: number) => (v >= 99.9 ? 'G' : v > 99.8 ? 'Y' : 'R')
+const linePath = (root: ParentNode) => root.querySelector('.recharts-line-curve')!.getAttribute('d') ?? ''
+const yTicks = (root: ParentNode) =>
+  [...root.querySelectorAll('.recharts-yAxis-tick-labels .recharts-cartesian-axis-tick-value')].map((t) => t.textContent)
+const thresholdLabels = (root: ParentNode) => [...root.querySelectorAll('[data-role="threshold-label"]')].map((t) => t.textContent)
+
+describe('MetricChart item drill-in chart', () => {
+  // Feb is the lowest, May the largest move (+0.18), Oct the current.
+  const VALUES = [100, 99.98, 99.86, 99.7, 99.83, 99.82, 100, 100, 99.99, 99.99, 99.99, 99.93]
+
+  function itemRow(values: (number | null)[] = VALUES): ViewRow {
+    return rowOf('on_time_pct', (r) => {
+      r.subjectKind = 'item'
+      r.subjectName = 'Notification Relay - Multi-Region Active'
+      r.format = 'percent2'
+      r.cells.forEach((c, i) => {
+        const v = values[i] ?? null
+        Object.assign(c, {
+          value: v,
+          display: v === null ? '' : `${v.toFixed(2)}%`,
+          status: v === null ? '' : status99(v),
+          naReason: '',
+          target: 99.9,
+          rule: UPTIME_BANDS,
+          change: null,
+          changeKind: '',
+        })
+      })
+    })
+  }
+
+  it('straight segments, a dot per valued period, labelled threshold lines and no tick under them', () => {
+    const { container } = draw(itemRow(), { size: 'focus' })
+    expect(linePath(container)).toMatch(/^M[\d.,\sLM-]+$/)
+    const chart = screen.getByTestId('metric-chart')
+    const dots = [...chart.querySelectorAll('circle[data-point]')]
+    expect(dots).toHaveLength(12)
+    expect(dots.map((d) => d.getAttribute('r'))).toEqual([...Array<string>(11).fill('3'), '4'])
+    expect(thresholdLabels(container)).toEqual(['Green 99.90%', 'Red 99.80%'])
+    for (const line of container.querySelectorAll('[data-role="threshold-line"] line')) expect(line.getAttribute('stroke-dasharray')).toBeTruthy()
+    const ticks = yTicks(container)
+    expect(ticks.length).toBeGreaterThan(1)
+    expect(ticks).not.toContain('99.80%')
+    expect(ticks).not.toContain('99.8%')
+    expect(ticks).not.toContain('99.9%')
+  })
+
+  it('value labels only on the current, the lowest and the largest-change points, the current to its left', () => {
+    const { container } = draw(itemRow(), { size: 'focus' })
+    const labels = [...container.querySelectorAll<SVGTextElement>('[data-role="value-label"]')]
+    expect(labels.map((l) => l.textContent).sort()).toEqual(['100.00%', '99.70%', '99.93%'])
+    const current = labels.find((l) => l.textContent === '99.93%')!
+    expect(current.getAttribute('text-anchor')).toBe('end')
+    // No axis pill or goal pill compete with the labelled lines.
+    expect(container.querySelector('[data-role="current-pill"], [data-role="goal-pill"]')).toBeNull()
+  })
+
+  it('a dot only where a period has a value', () => {
+    draw(itemRow([...VALUES.slice(0, 9), null, null, 99.93]), { size: 'focus' })
+    expect(screen.getByTestId('metric-chart').querySelectorAll('circle[data-point]')).toHaveLength(10)
+  })
+
+  it('phones label the lines by letter', () => {
+    window.matchMedia = ((query: string) => ({
+      matches: query !== '(min-width: 640px)',
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    })) as unknown as typeof window.matchMedia
+    const { container } = draw(itemRow(), { size: 'focus' })
+    expect(thresholdLabels(container)).toEqual(['G 99.90', 'R 99.80'])
+  })
+
+  it('monthly ratio lines keep their curve', () => {
+    const { container } = draw(rowOf('on_time_pct'))
+    expect(linePath(container)).toMatch(/C/)
+  })
+})
+
+describe('MetricChart coarse rows', () => {
+  function quarterly(at: string, values = QUARTERLY_VALUES, edit?: (row: ViewRow) => void) {
+    const cols = coarseColumns(at, 'quarter', 4, 1)
+    const q = new URLSearchParams()
+    for (const c of cols) q.append('periods', c.period)
+    const row = addQuarterly(buildView(q), values).rows.find((r) => r.metricKey === 'concepts_value')!
+    edit?.(row)
+    return { row, cols }
+  }
+
+  it.each(SIZES)('%s: straight segments and a due slot after the last quarter', (size) => {
+    const { row, cols } = quarterly('2026-M10')
+    const { container } = draw(row, { columns: cols, size, selectedPeriod: '2026-M10' })
+    expect(linePath(container)).toMatch(/^M[\d.,\sLM-]+$/)
+    expect(xTicks(container)).toEqual(['Q4 FY25', 'Q1 FY26', 'Q2 FY26', 'Q3 FY26', 'Q4 FY26'])
+    const ghost = container.querySelector('[data-role="ghost"]')!
+    expect(ghost.querySelector('[data-role="ghost-label"]')!.textContent).toBe('due Jan')
+    expect(ghost.querySelector('circle')!.getAttribute('stroke-dasharray')).toBeTruthy()
+    // The ribbon gets a dashed empty cell under the slot.
+    const cells = ribbonCells(container)
+    expect(cells).toHaveLength(5)
+    expect(cells.at(-1)!.dataset.status).toBe('ghost')
+    expect(cells.at(-1)!.className).toContain('border-dashed')
+  })
+
+  it('a quarter past its grace month reads overdue, in Red', () => {
+    const { row, cols } = quarterly('2027-M02')
+    const { container } = draw(row, { columns: cols, selectedPeriod: '2027-M02' })
+    expect(xTicks(container)).toEqual(['Q1 FY26', 'Q2 FY26', 'Q3 FY26', 'Q4 FY26'])
+    const label = container.querySelector('[data-role="ghost-label"]')!
+    expect(label.textContent).toBe('overdue')
+    expect(label.getAttribute('fill')).toBe(scale.find((s) => s.key === 'R')!.color)
+  })
+
+  it('without the selected period, no slot', () => {
+    const { row, cols } = quarterly('2026-M10')
+    const { container } = draw(row, { columns: cols })
+    expect(container.querySelector('[data-role="ghost"]')).toBeNull()
+    expect(xTicks(container)).not.toContain('Q4 FY26')
+    expect(ribbonCells(container)).toHaveLength(4)
+  })
+
+  it.each(SIZES)('%s: the nearest band edges within 12 points are in view, as labelled dashed lines', (size) => {
+    const values = {
+      '2025-Q4': { value: 84, display: '84%', status: 'Y' },
+      '2026-Q1': { value: 85, display: '85%', status: 'Y' },
+      '2026-Q2': { value: 82, display: '82%', status: 'Y' },
+      '2026-Q3': { value: 83, display: '83%', status: 'Y' },
+    }
+    const { row, cols } = quarterly('2026-M10', values, (r) => {
+      r.cells.forEach((c) => (c.rule = { type: 'bands', bands: [{ status: 'G', op: '>=', value: 90 }, { status: 'Y', op: '>=', value: 80 }, { status: 'R', op: '', value: 0 }] }))
+    })
+    const { container } = draw(row, { columns: cols, size })
+    expect(thresholdLabels(container)).toEqual(['90%', '80%'])
+    const chart = screen.getByTestId('metric-chart')
+    expect(Number(chart.dataset.domainMax)).toBeGreaterThanOrEqual(90)
+    expect(Number(chart.dataset.domainMin)).toBeLessThanOrEqual(80)
+    if (size === 'focus') expect(yTicks(container)).not.toContain('80%')
+  })
+})
+
+describe('MetricChart period cards', () => {
+  function coarseRow(frequency: 'biannual' | 'annual', values: Record<string, { value: number; display: string; status: string }>, cols: Column[]) {
+    const q = new URLSearchParams()
+    for (const c of cols) q.append('periods', c.period)
+    return addQuarterly(buildView(q), values).rows.map((r) => (r.metricKey === 'concepts_value' ? { ...r, frequency } : r)).find((r) => r.metricKey === 'concepts_value')!
+  }
+  const cardsOf = () => screen.queryAllByTestId('period-card')
+
+  it('a twice-yearly tile shows its two halves and the next one due', () => {
+    const halves = windowColumns('2026-M10', 'half', 2, 1)
+    const row = coarseRow('biannual', { '2025-H2': { value: 80, display: '80%', status: 'G' }, '2026-H1': { value: 82, display: '82%', status: 'G' } }, halves)
+    const { container } = draw(row, { columns: halves, selectedPeriod: '2026-M10', framed: true })
+    const cards = cardsOf()
+    expect(cards).toHaveLength(3)
+    expect(within(cards[0]!).getByText('H2 FY25 · Jul–Dec')).toBeTruthy()
+    expect(within(cards[1]!).getByText('H1 FY26 · Jan–Jun')).toBeTruthy()
+    expect(within(cards[1]!).getByText('82%').className).toContain('font-semibold')
+    expect(within(cards[0]!).getByText('80%').className).toContain('font-medium')
+    expect(cards[2]!.textContent).toContain('Due by Jan 2027')
+    expect(cards[2]!.className).toContain('border-dashed')
+    // Cards instead of a line.
+    expect(container.querySelector('.recharts-line-curve')).toBeNull()
+  })
+
+  it('a yearly tile shows the last two years and the one due: three cards', () => {
+    const years = windowColumns('2026-M10', 'year', 3, 1)
+    const row = coarseRow(
+      'annual',
+      {
+        '2023-FY': { value: 70, display: '70%', status: 'Y' },
+        '2024-FY': { value: 75, display: '75%', status: 'Y' },
+        '2025-FY': { value: 85, display: '85%', status: 'G' },
+      },
+      years,
+    )
+    draw(row, { columns: years, selectedPeriod: '2026-M10', framed: true })
+    const cards = cardsOf()
+    expect(cards).toHaveLength(3)
+    expect(cards[0]!.textContent).toContain('FY24')
+    expect(cards[1]!.textContent).toContain('FY25')
+    expect(cards[2]!.textContent).toContain('Due by Jan 2027')
+  })
+
+  it('without the selected period, no due card', () => {
+    const halves = windowColumns('2026-M10', 'half', 2, 1)
+    const row = coarseRow('biannual', { '2025-H2': { value: 80, display: '80%', status: 'G' }, '2026-H1': { value: 82, display: '82%', status: 'G' } }, halves)
+    draw(row, { columns: halves, framed: true })
+    expect(cardsOf()).toHaveLength(2)
+  })
+
+  it('full screen still draws the line', () => {
+    const halves = windowColumns('2026-M10', 'half', 2, 1)
+    const row = coarseRow('biannual', { '2025-H2': { value: 80, display: '80%', status: 'G' }, '2026-H1': { value: 82, display: '82%', status: 'G' } }, halves)
+    const { container } = draw(row, { columns: halves, size: 'focus', selectedPeriod: '2026-M10' })
+    expect(cardsOf()).toHaveLength(0)
+    expect(container.querySelector('.recharts-line-curve')).toBeTruthy()
+  })
+})
+
+describe('MetricChart change bars', () => {
+  const RULE = (compare: string) => ({
+    type: 'change' as const,
+    compare: compare as 'prior_period',
+    bands: [
+      { status: 'G', op: '>=', value: 0 },
+      { status: 'Y', op: '>=', value: -5 },
+      { status: 'R', op: '', value: 0 },
+    ],
+  })
+
+  function defectRow(compare = 'prior_period'): ViewRow {
+    const changes: Record<string, [number, string]> = { '2026-M08': [33.13, 'G'], '2026-M09': [-26.945, 'R'], '2026-M10': [-26.0, 'R'] }
+    return rowOf('on_time_pct', (r) => {
+      r.metricName = 'Weighted defect score'
+      r.format = 'number2'
+      r.direction = 'lower_better'
+      r.cells.forEach((c, i) => {
+        const [change, status] = changes[c.period] ?? [i === 0 ? null : 1.5, 'G']
+        const v = 20 + i * 0.25
+        Object.assign(c, { value: v, display: v.toFixed(2), status, naReason: '', change, changeKind: change === null ? '' : 'improvement_pct', target: null, rule: RULE(compare) })
+      })
+    })
+  }
+
+  it.each(SIZES)('%s: bars of the change that set each status, labelled on the Red ones, under the level line', (size) => {
+    const { container } = draw(defectRow(), { size })
+    const bars = screen.getByTestId('change-bars')
+    expect(bars.getAttribute('aria-hidden')).toBe('true')
+    expect(screen.getByText('Change vs the prior month')).toBeTruthy()
+    const labels = [...bars.querySelectorAll('[data-role="change-label"]')].map((l) => l.textContent)
+    expect(labels).toEqual(['+27%', '+26%'])
+    const sep = bars.querySelector<HTMLElement>('[data-key="2026-M09"] [data-role="change-bar"]')!
+    expect(sep.dataset.direction).toBe('up')
+    const aug = bars.querySelector<HTMLElement>('[data-key="2026-M08"] [data-role="change-bar"]')!
+    expect(aug.dataset.direction).toBe('down')
+    expect(within(bars).getByText('+5%')).toBeTruthy()
+    // The bars sit between the level line and the ribbon.
+    const ribbon = screen.getByTestId('status-ribbon')
+    expect(screen.getByTestId('metric-chart').compareDocumentPosition(bars) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(bars.compareDocumentPosition(ribbon) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    // In focus, 0% sits within 12px of the +5% line here, so only the Red boundary is labelled.
+    if (size === 'focus') expect(within(bars).queryByText('0%')).toBeNull()
+    if (size === 'tile') {
+      expect(screen.getByTestId('metric-chart').style.height).toBe('48px')
+      expect(within(bars).getByText('worse')).toBeTruthy()
+      expect(within(bars).getByText('better')).toBeTruthy()
+      expect([...container.querySelectorAll('[data-role="month-initial"]')].map((m) => m.textContent).join('')).toBe('NDJFMAMJJASO')
+    }
+  })
+
+  it("follows the rule's comparison", () => {
+    draw(defectRow('prior_year_average'))
+    expect(screen.getByText("Change vs last year's average")).toBeTruthy()
+  })
+
+  it('the summary names each period not at the best status', () => {
+    draw(defectRow())
+    expect(screen.getByText(/Changes: Sep 27% worse \(Red\), Oct 26% worse \(Red\)/, { selector: '.sr-only' })).toBeTruthy()
+  })
+})
+
+describe('MetricChart multi-series focus and context', () => {
+  const three = () => [segment('platform', 'Platform', 92, 'G'), segment('data', 'Data', 74, 'R', 'Y'), segment('payments', 'Payments', 82, 'Y')]
+
+  it.each(SIZES)('%s: the worst series is in front in the accent; the others in faded ink', (size) => {
+    const { container } = draw(rowOf('on_time_pct', (r) => (r.cells = [])), { chartRows: three(), size })
+    const curve = (id: string) => container.querySelector(`.series-${id} .recharts-line-curve`)!
+    expect(curve('data').getAttribute('stroke')).toBe('var(--color-accent)')
+    expect(curve('data').getAttribute('stroke-width')).toBe('2.5')
+    for (const id of ['platform', 'payments']) {
+      expect(curve(id).getAttribute('stroke')).toBe('var(--color-ink)')
+      expect(curve(id).getAttribute('stroke-opacity')).toBe('0.38')
+      expect(curve(id).getAttribute('stroke-width')).toBe('1.5')
+    }
+    expect(linePath(container)).toMatch(/^M[\d.,\sLM-]+$/)
+    // Painted last, so it sits over the others.
+    expect([...container.querySelectorAll('.recharts-line')].at(-1)!.classList.contains('series-data')).toBe(true)
+    const names = [...container.querySelectorAll('[data-role="end-name"]')]
+    expect(names.find((n) => n.textContent === 'Data')!.getAttribute('fill')).toBe('var(--color-accent)')
+    expect(names.find((n) => n.textContent === 'Platform')!.getAttribute('fill-opacity')).toBe('0.7')
+  })
+
+  it('pointer on an end label brings that series forward', () => {
+    const { container } = draw(rowOf('on_time_pct', (r) => (r.cells = [])), { chartRows: three() })
+    const platform = [...container.querySelectorAll('[data-role="end-label"]')].find((l) => l.textContent?.startsWith('Platform'))!
+    fireEvent.mouseEnter(platform)
+    expect(container.querySelector('.series-platform .recharts-line-curve')!.getAttribute('stroke')).toBe('var(--color-accent)')
+    expect(container.querySelector('.series-data .recharts-line-curve')!.getAttribute('stroke')).toBe('var(--color-ink)')
+    fireEvent.mouseLeave(platform)
+    expect(container.querySelector('.series-data .recharts-line-curve')!.getAttribute('stroke')).toBe('var(--color-accent)')
+  })
+
+  const four = () => [
+    segment('platform', 'Platform', 92, 'G'),
+    segment('payments', 'Payments', 82, 'Y'),
+    segment('data', 'Data', 74, 'R', 'Y'),
+    segment('mobile', 'Mobile', 75, 'Y', 'R'),
+  ]
+
+  it('small multiples carry their months under each ribbon, the selected one in the accent', () => {
+    const rect = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({ width: 400 } as DOMRect)
+    try {
+      draw(rowOf('on_time_pct', (r) => (r.cells = [])), { chartRows: four(), size: 'focus' })
+      for (const panel of screen.getAllByTestId('series-panel')) {
+        const months = [...panel.querySelectorAll<HTMLElement>('[data-role="panel-month"]')]
+        expect(months.map((m) => m.textContent)).toEqual(columns.map((c) => c.label))
+        expect(months.at(-1)!.className).toContain('text-accent-deep')
+        expect(months[0]!.className).toContain('text-ink/70')
+        expect(linePath(panel)).toMatch(/^M[\d.,\sLM-]+$/)
+      }
+    } finally {
+      rect.mockRestore()
+    }
+  })
+
+  it('panels under 360px carry initials', () => {
+    const rect = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({ width: 300 } as DOMRect)
+    try {
+      draw(rowOf('on_time_pct', (r) => (r.cells = [])), { chartRows: four(), size: 'focus' })
+      const months = [...screen.getAllByTestId('series-panel')[0]!.querySelectorAll('[data-role="panel-month"]')]
+      expect(months.map((m) => m.textContent).join('')).toBe('NDJFMAMJJASO')
+    } finally {
+      rect.mockRestore()
+    }
+  })
+})
+
+/** A table row's cells as text, ` · ` between, leaving out the status chips beside their labels. */
+function rowText(row: HTMLElement): string {
+  return [...row.children]
+    .map((cell) => {
+      const copy = cell.cloneNode(true) as HTMLElement
+      for (const chip of copy.querySelectorAll('[data-role="status-chip"]')) chip.remove()
+      return copy.textContent
+    })
+    .join(' · ')
+}
+
+describe('MetricChart sparse table with parts', () => {
+  const REASON = 'No major incident needed a postmortem this month'
+  const VALUED: Record<number, [number, number, number, string]> = {
+    1: [80, 4, 5, 'Y'],
+    4: [100, 1, 1, 'G'],
+    7: [60, 3, 5, 'R'],
+    9: [100, 3, 3, 'G'],
+    11: [80, 4, 5, 'Y'],
+  }
+  const PARTS: ChartParts = { valueLabel: 'On time', denominatorLabel: 'Postmortems', numerator: 'postmortems_on_time', denominator: 'postmortems_due' }
+
+  function postmortems(): ViewRow {
+    return rowOf('on_time_pct', (r) => {
+      r.metricName = 'Incident postmortems on time'
+      r.format = 'percent0'
+      r.cells = r.cells.map((c, i) => {
+        const v = VALUED[i]
+        return v
+          ? { ...c, value: v[0], display: `${v[0]}%`, status: v[3], naReason: '', change: null, changeKind: '', components: { postmortems_on_time: v[1], postmortems_due: v[2] } }
+          : { ...c, value: null, display: '', status: '', naReason: REASON, change: null, changeKind: '', components: {} as Record<string, number> }
+      })
+    })
+  }
+
+  it('the parts column, the change since the previous report and the n/a line', () => {
+    draw(postmortems(), { size: 'focus', parts: PARTS })
+    const table = screen.getByRole('table')
+    expect(within(table).getAllByRole('columnheader').map((h) => h.textContent)).toEqual(['Month', 'On time', 'Postmortems', 'Status', 'Change vs previous report'])
+    const rows = within(table).getAllByRole('row').slice(1)
+    const text = rowText
+    expect(text(rows[0]!)).toBe('Oct 2026 · 80% · 4 of 5 on time · Yellow · ▼ −20 pts vs Aug')
+    expect(text(rows.at(-1)!)).toBe('Dec 2025 · 80% · 4 of 5 on time · Yellow · First in the window')
+    expect(screen.getByText(`n/a in 7 months (Nov, Jan, Feb, Apr, May, Jul, Sep): ${REASON}`)).toBeTruthy()
+  })
+
+  it('n/a months with different reasons: the count here, the reasons in each month', () => {
+    const row = postmortems()
+    row.cells[0] = { ...row.cells[0]!, naReason: 'Team paused' }
+    draw(row, { size: 'focus', parts: PARTS })
+    expect(screen.getByText('n/a in 7 months')).toBeTruthy()
+  })
+
+  it('without parts, no parts column and the value header Value', () => {
+    draw(postmortems(), { size: 'focus' })
+    expect(within(screen.getByRole('table')).getAllByRole('columnheader').map((h) => h.textContent)).toEqual(['Month', 'Value', 'Status', 'Change vs previous report'])
+  })
+
+  it('phones join the parts to the value and shorten the change', () => {
+    window.matchMedia = ((query: string) => ({
+      matches: query !== '(min-width: 640px)',
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    })) as unknown as typeof window.matchMedia
+    draw(postmortems(), { size: 'focus', parts: PARTS })
+    const table = screen.getByRole('table')
+    expect(within(table).getAllByRole('columnheader').map((h) => h.textContent)).toEqual(['Month', 'On time', 'Status', 'Change'])
+    const first = within(table).getAllByRole('row')[1]!
+    expect(rowText(first)).toBe('Oct 2026 · 80% · 4 of 5 · Yellow · ▼ −20 vs Aug')
+  })
+})
+
+describe('MetricChart accessibility', () => {
+  const quarters = coarseColumns('2026-M10', 'quarter', 4, 1)
+  const halves = windowColumns('2026-M10', 'half', 2, 1)
+  const quarterRow = () => {
+    const q = new URLSearchParams()
+    for (const c of quarters) q.append('periods', c.period)
+    return addQuarterly(buildView(q)).rows.find((r) => r.metricKey === 'concepts_value')!
+  }
+  const halfRow = () => {
+    const q = new URLSearchParams()
+    for (const c of halves) q.append('periods', c.period)
+    const row = addQuarterly(buildView(q), { '2025-H2': { value: 80, display: '80%', status: 'G' }, '2026-H1': { value: 82, display: '82%', status: 'G' } }).rows.find(
+      (r) => r.metricKey === 'concepts_value',
+    )!
+    return { ...row, frequency: 'biannual' as const }
+  }
+  const cases: [string, () => { row: ViewRow; opts: DrawOptions }][] = [
+    ['ratio', () => ({ row: rowOf('on_time_pct'), opts: {} })],
+    ['money plan', () => ({ row: rowOf('on_time_pct', (r) => (r.chartKind = 'money_plan')), opts: {} })],
+    ['quarterly', () => ({ row: quarterRow(), opts: { columns: quarters, selectedPeriod: '2026-M10' } })],
+    ['twice-yearly', () => ({ row: halfRow(), opts: { columns: halves, selectedPeriod: '2026-M10' } })],
+    [
+      'multi-series',
+      () => ({
+        row: rowOf('on_time_pct', (r) => (r.cells = [])),
+        opts: { chartRows: [segment('a', 'Alpha', 80, 'Y'), segment('b', 'Beta', 90, 'G'), segment('c', 'Gamma', 70, 'R'), segment('d', 'Delta', 85, 'Y')] },
+      }),
+    ],
+    [
+      'change rule',
+      () => ({
+        row: rowOf('on_time_pct', (r) =>
+          r.cells.forEach((c, i) => Object.assign(c, { change: i ? -6 : null, changeKind: i ? 'improvement_pct' : '', status: 'R', rule: { type: 'change', compare: 'prior_period', bands: [{ status: 'G', op: '>=', value: 0 }, { status: 'Y', op: '>=', value: -5 }, { status: 'R', op: '', value: 0 }] } })),
+        ),
+        opts: {},
+      }),
+    ],
+  ]
+
+  it.each(cases.flatMap(([name, make]) => SIZES.map((size) => [`${name} ${size}`, make, size] as const)))('%s has no axe violations', async (_name, make, size) => {
+    const { row, opts } = make()
+    draw(row, { ...opts, size })
+    // The chart sits in the page's main landmark in the app; jsdom renders it bare.
+    expect((await axe(document.body, { rules: { region: { enabled: false } } })).violations).toEqual([])
   })
 })

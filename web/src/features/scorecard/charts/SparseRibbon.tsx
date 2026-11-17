@@ -8,8 +8,9 @@ import { changeText, metricDecimals } from '../format'
 import { columnUnit } from '../logic/statusText'
 import type { BoardCell } from '../logic/statusBoard'
 import { cellKey } from '../viewHelpers'
-import { pointLabel, PointButtons, PointControls, type ChartSize } from './chartParts'
+import { pointLabel, PointButtons, PointControls, usePhone, type ChartSize } from './chartParts'
 import { chartTheme, MOVE_CLASS, valueMove, type Move } from './chartTheme'
+import type { ChartParts } from './MetricChart'
 import { headerChange, type ChartPoint } from './points'
 import { sparseContext, sparseKey } from './sparse'
 
@@ -44,10 +45,31 @@ export function changesSinceReported(valued: ChartPoint[], row: ViewRow, fyStart
   })
 }
 
+/** A change for the table: a true minus sign, and on phones no unit (`▼ −20 vs Aug`). */
+function tableChange(text: string, phone: boolean): string {
+  const signed = text.replace(/^-/, '−')
+  return phone ? signed.replace(/ pts\b/, '') : signed
+}
+
+/**
+ * The line under the focus table: `n/a in 7 months (Nov, Jan, …): {reason}`
+ * when every n/a month shares its reason, else the count alone (each month's
+ * reason is in its cell's title).
+ */
+export function naLine(points: ChartPoint[], unit: (n: number) => string): string {
+  const na = points.filter((p) => p.kind === 'na')
+  if (na.length === 0) return ''
+  const reasons = new Set(na.map((p) => p.naReason))
+  const head = `n/a in ${na.length} ${unit(na.length)}`
+  const [reason] = reasons
+  return reasons.size === 1 && reason ? `${head} (${na.map((p) => p.label).join(', ')}): ${reason}` : head
+}
+
 /**
  * A metric with more n/a than values: one board cell per period, the value
  * above each valued one and the period below, with a context line and what
- * n/a means. Focus adds a table of the valued periods (§7.5).
+ * n/a means. Focus adds a full-width table of the valued periods, newest
+ * first, with the ratio's parts when the caller passes them (§7).
  */
 export function SparseRibbon({
   points,
@@ -57,6 +79,7 @@ export function SparseRibbon({
   statusLabel,
   row,
   fyStart,
+  parts,
 }: {
   points: ChartPoint[]
   columns: Column[]
@@ -66,8 +89,11 @@ export function SparseRibbon({
   /** The metric's row: its format and direction, and each cell's own change, for the focus table's changes. */
   row: ViewRow
   fyStart: number
+  /** The ratio's measures: a parts column (`4 of 5 on time`). */
+  parts?: ChartParts
 }) {
   const focus = size === 'focus'
+  const phone = usePhone()
   const [tip, setTip] = useState<ChartPoint | null>(null)
   const [ribbonRef, ribbonWidth] = useElementWidth<HTMLDivElement>()
   // Under about 26px a column, every other period is labelled, counted back from the current one.
@@ -77,8 +103,21 @@ export function SparseRibbon({
   const last = points.length - 1
   const valued = points.filter((p) => p.kind === 'value')
   const changes = changesSinceReported(valued, row, fyStart)
-  const showChange = changes.some((c) => c !== null)
+  const showChange = valued.length > 1 && changes.some((c) => c !== null)
   const nameOf = (status: string) => statusLabel(status) || chartTheme(scale, status).label || status
+  const cells = new Map(row.cells.map((c) => [cellKey(c), c]))
+  const partsOf = (p: ChartPoint) => {
+    const c = cells.get(p.key)?.components
+    const num = parts ? c?.[parts.numerator] : undefined
+    const den = parts ? c?.[parts.denominator] : undefined
+    return num === undefined || den === undefined ? '' : `${num.toLocaleString('en-US')} of ${den.toLocaleString('en-US')}`
+  }
+  const partsNoun = parts ? parts.valueLabel.toLowerCase() : ''
+  const table = focus && valued.length > 0
+  const na = table ? naLine(points, unit) : ''
+  // Newest first; each row keeps its change against the report before it.
+  const rows = valued.map((p, i) => ({ p, change: changes[i] ?? null, first: i === 0 })).reverse()
+  const cellClass = 'py-2 pr-4'
 
   return (
     <div>
@@ -115,62 +154,78 @@ export function SparseRibbon({
           </div>
         ))}
       </div>
-      {key && <p className="mt-2 border-t border-ink/10 pt-2 text-xs text-ink/70">{key}</p>}
-      {focus && valued.length > 0 && (
-        <table className="mt-4 w-full max-w-xl text-left text-sm">
-          <thead className="text-xs text-ink/70">
-            <tr className="border-b border-ink/15">
-              <th scope="col" className="py-1.5 pr-4 font-medium">
-                Month
-              </th>
-              <th scope="col" className="py-1.5 pr-4 font-medium">
-                Value
-              </th>
-              <th scope="col" className="py-1.5 pr-4 font-medium">
-                Status
-              </th>
-              {showChange && (
-                <th scope="col" className="py-1.5 font-medium">
-                  Change
+      {/* In focus, the line under the table names the n/a months and their reason. */}
+      {key && !na && <p className="mt-2 border-t border-ink/10 pt-2 text-xs text-ink/70">{key}</p>}
+      {table && (
+        <>
+          <table className="mt-4 w-full text-left text-sm">
+            <thead className="text-xs text-ink/70">
+              <tr className="border-b border-ink/15">
+                <th scope="col" className="py-1.5 pr-4 font-medium">
+                  Month
                 </th>
-              )}
-            </tr>
-          </thead>
-          <tbody>
-            {valued.map((p, i) => (
-              <tr key={p.key} className="border-b border-ink/10">
-                <th scope="row" className="py-1.5 pr-4 font-normal">
-                  {p.fullLabel}
+                <th scope="col" className="py-1.5 pr-4 font-medium">
+                  {parts?.valueLabel ?? 'Value'}
                 </th>
-                <td className="py-1.5 pr-4 tabular-nums">{p.display || '—'}</td>
-                <td className="py-1.5 pr-4">
-                  {p.status ? (
-                    <span className="inline-flex items-center gap-1.5">
-                      <span aria-hidden="true">
-                        <StatusChip status={p.status} scale={scale} />
-                      </span>
-                      <span>{nameOf(p.status)}</span>
-                    </span>
-                  ) : (
-                    'Not rated'
-                  )}
-                </td>
+                {parts && !phone && (
+                  <th scope="col" className="py-1.5 pr-4 font-medium">
+                    {parts.denominatorLabel}
+                  </th>
+                )}
+                <th scope="col" className="py-1.5 pr-4 font-medium">
+                  Status
+                </th>
                 {showChange && (
-                  <td className="py-1.5 tabular-nums">
-                    {changes[i] ? (
-                      <span data-tone={changes[i].move.tone} className={clsx('font-medium', MOVE_CLASS[changes[i].move.tone])}>
-                        {changes[i].move.arrow && <span aria-hidden="true">{changes[i].move.arrow} </span>}
-                        {changes[i].text}
-                      </span>
-                    ) : (
-                      <span className="text-ink/70">—</span>
-                    )}
-                  </td>
+                  <th scope="col" className="py-1.5 font-medium">
+                    {phone ? 'Change' : 'Change vs previous report'}
+                  </th>
                 )}
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {rows.map(({ p, change, first }) => {
+                const shownParts = partsOf(p)
+                return (
+                  <tr key={p.key} className="border-b border-ink/10">
+                    <th scope="row" className={`${cellClass} font-normal`}>
+                      {p.fullLabel}
+                    </th>
+                    <td className={`${cellClass} font-semibold tabular-nums`}>
+                      {p.display || '—'}
+                      {phone && shownParts && <span className="font-normal">{` · ${shownParts}`}</span>}
+                    </td>
+                    {parts && !phone && <td className={`${cellClass} tabular-nums`}>{shownParts ? `${shownParts} ${partsNoun}` : '—'}</td>}
+                    <td className={cellClass}>
+                      {p.status ? (
+                        <span className="inline-flex items-center gap-1.5">
+                          <span data-role="status-chip" aria-hidden="true">
+                            <StatusChip status={p.status} scale={scale} />
+                          </span>
+                          <span>{nameOf(p.status)}</span>
+                        </span>
+                      ) : (
+                        'Not rated'
+                      )}
+                    </td>
+                    {showChange && (
+                      <td className="py-2 tabular-nums">
+                        {change ? (
+                          <span data-tone={change.move.tone} className={clsx('font-medium', MOVE_CLASS[change.move.tone])}>
+                            {change.move.arrow && <span aria-hidden="true">{change.move.arrow} </span>}
+                            {tableChange(change.text, phone)}
+                          </span>
+                        ) : (
+                          <span className="text-ink/70">{first ? 'First in the window' : '—'}</span>
+                        )}
+                      </td>
+                    )}
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+          {na && <p className="mt-2 text-xs text-ink/70">{na}</p>}
+        </>
       )}
       <PointControls tip={tip} scale={scale}>
         <PointButtons points={points} onSelect={setTip} naText={(p) => p.naReason || 'Not applicable'} />

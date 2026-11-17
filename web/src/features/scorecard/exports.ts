@@ -2,7 +2,7 @@ import type { components } from '../../api/schema'
 import { letterUsesInkOnWhite } from '../../ui/contrast'
 import { statusIntervals } from './charts/bands'
 import { barFill, LINE_COLORS } from './charts/chartTheme'
-import { deviationText, moneyPlanDomain, PLAN } from './charts/moneyPlan'
+import { deviationText, PLAN, symmetricPlanDomain } from './charts/moneyPlan'
 import type { Column } from './columns'
 import { formatMetricValue, metricDecimals } from './format'
 import { cellKey } from './viewHelpers'
@@ -164,9 +164,9 @@ function valueAxis(values: number[], format: string): { lo: number; hi: number; 
   return { lo, hi, ticks }
 }
 
-/** The money-plan axis: the app's domain, centred on 100%, with ticks on an even step out from 100. */
+/** The money-plan axis: centred on 100%, with ticks on an even step out from 100. */
 function planAxis(values: number[]): { lo: number; hi: number; ticks: number[] } {
-  const [lo, hi] = moneyPlanDomain(values)
+  const [lo, hi] = symmetricPlanDomain(values)
   const half = hi - PLAN
   const raw = half / 3
   const magnitude = 10 ** Math.floor(Math.log10(raw))

@@ -1,4 +1,5 @@
 import type { components } from '../../../api/schema'
+import type { Column } from '../columns'
 import type { BoardCell } from '../logic/statusBoard'
 import { cellKey } from '../viewHelpers'
 import type { ChartPoint } from './points'
@@ -107,6 +108,34 @@ export function noTotalNote(count: number, noun: string, definition: string): st
     ?.replace(/\.$/, '')
   const reason = why ? why.charAt(0).toLowerCase() + why.slice(1) : 'no company total'
   return `${count} ${noun} · ${reason}`
+}
+
+/** A small multiple at least this wide labels its months `Nov`; narrower, `N`. */
+export const PANEL_SHORT_LABELS_FROM = 360
+
+/** The month labels under a panel's ribbon: short labels from 360px (or before it is measured), initials below. */
+export function panelMonthLabels(columns: Column[], width: number): string[] {
+  const initials = width > 0 && width < PANEL_SHORT_LABELS_FROM
+  return columns.map((c) => (initials ? c.label.charAt(0) : c.label))
+}
+
+/**
+ * The series drawn in front (§8): the one the pointer is on, else the worst
+ * now (the header's `Worst {segment}`); null with no series.
+ */
+export function frontSeries(rows: ViewRow[], columnKey: string, scale: StatusLevel[], hovered: string | null): string | null {
+  if (hovered && rows.some((r) => r.subjectId === hovered)) return hovered
+  const [first] = worstFirst(
+    rows.map((row) => ({ row })),
+    columnKey,
+    scale,
+  )
+  return first?.row.subjectId ?? null
+}
+
+/** `ids` with `front` moved last, so it paints over the others. */
+export function drawOrder(ids: string[], front: string | null): string[] {
+  return front === null || !ids.includes(front) ? ids : [...ids.filter((id) => id !== front), front]
 }
 
 /** `60–100%`: a domain as one range, the unit once. */

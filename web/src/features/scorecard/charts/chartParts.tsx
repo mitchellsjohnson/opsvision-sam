@@ -1,9 +1,11 @@
 import { useSyncExternalStore, type ReactNode } from 'react'
 import { ReferenceLine, usePlotArea, useYAxisScale } from 'recharts'
 import type { components } from '../../../api/schema'
-import { monthLabel, monthsOf, parsePeriod } from '../../../lib/period'
+import { lastMonth, monthLabel, monthsOf, parsePeriod, periodLabel, type Period } from '../../../lib/period'
 import type { Column } from '../columns'
 import { formatMetricValue, metricDecimals } from '../format'
+import { coarseStatus } from '../logic/coarse'
+import { bandStatus } from './bands'
 import { chartTheme, LINE_COLORS, MOVE_CLASS, statusFill, type Move, type StatusTheme } from './chartTheme'
 import type { ChartPoint } from './points'
 import type { VersionMarker } from './versionMarkers'
@@ -11,6 +13,8 @@ import type { VersionMarker } from './versionMarkers'
 export { ChartHoverCard, Hairline, hoverTooltip, type ChartHoverCardProps, type ChartSeries } from './chartHover'
 
 type StatusLevel = components['schemas']['StatusLevel']
+type Band = components['schemas']['Band']
+type ViewRow = components['schemas']['ViewRow']
 
 /**
  * The plot height in the full-screen dialog: at least half the viewport, and
@@ -149,12 +153,28 @@ export const PILL_TICK_CLEARANCE = 14
 const PILL_HEIGHT = 18
 const PILL_HALF = PILL_HEIGHT / 2
 
-/** A value-axis tick; hidden when its centre line falls within 14px of the current-value pill at `avoid`. */
-export function ValueTick({ x = 0, y = 0, textAnchor, payload, format, fontSize, avoid }: TickProps & { format: (v: number) => string; fontSize: number; avoid: number | null }) {
+/** An axis tick this close to a threshold line is dropped, so its label never prints over the line's (§4). */
+export const THRESHOLD_TICK_CLEARANCE = 12
+
+/**
+ * A value-axis tick; hidden when its centre line falls within 14px of the
+ * current-value pill at `avoid`, or within 12px of a threshold line in `lines`.
+ */
+export function ValueTick({
+  x = 0,
+  y = 0,
+  textAnchor,
+  payload,
+  format,
+  fontSize,
+  avoid,
+  lines = [],
+}: TickProps & { format: (v: number) => string; fontSize: number; avoid: number | null; lines?: number[] }) {
   const yScale = useYAxisScale()
   const value = Number(payload?.value)
   const pillY = avoid !== null ? yScale?.(avoid) : undefined
   if (pillY != null && Math.abs(pillY - Number(y)) < PILL_HALF + PILL_TICK_CLEARANCE) return <g />
+  if (yScale && lines.some((l) => Math.abs((yScale(l) ?? Infinity) - Number(y)) < THRESHOLD_TICK_CLEARANCE)) return <g />
   return (
     <text
       className="recharts-cartesian-axis-tick-value"
@@ -186,8 +206,15 @@ export function seriesColor(index: number, single: boolean): string {
 }
 
 export function yDomain(points: ChartPoint[], target: number | null): [number, number] {
-  const values = points.map((p) => p.value).filter((v): v is number => v !== null)
-  if (target !== null) values.push(target)
+  return valuesDomain(
+    points.map((p) => p.value).filter((v): v is number => v !== null),
+    target,
+  )
+}
+
+/** The values (and the target) with 15% of their span above and below. */
+export function valuesDomain(shown: number[], target: number | null): [number, number] {
+  const values = target !== null ? [...shown, target] : shown
   if (values.length === 0) return [0, 100]
   const min = Math.min(...values)
   const max = Math.max(...values)
@@ -394,6 +421,238 @@ export function GuidePill({ viewBox, text, gap, avoid = null }: LabelViewBox & {
   )
 }
 
+/** A band edge drawn as a dashed line, with its label at the plot's right. */
+export interface Threshold {
+  value: number
+  label: string
+  color: string
+}
+
+/** The band edges strictly inside `domain`, highest first, each with the status a value on the edge gets. */
+export function bandEdges(bands: Band[] | undefined, domain: [number, number]): { value: number; status: string }[] {
+  const [lo, hi] = domain
+  const values = [...new Set((bands ?? []).filter((b) => b.op !== '' && b.value > lo && b.value < hi).map((b) => b.value))]
+  return values.sort((a, b) => b - a).map((value) => ({ value, status: bandStatus(bands ?? [], value) }))
+}
+
+/** A percent metric's band edges as far as this from the data are brought into view (§5.1). */
+export const EDGE_REACH = 12
+
+/**
+ * `values` plus the nearest band edge above and below them when it lies
+ * within 12 points, so a run between two thresholds reads as such. Only
+ * percent formats: elsewhere 12 units mean nothing in particular.
+ */
+export function withNearEdges(values: number[], bands: Band[] | undefined, format: string): number[] {
+  if (!format.startsWith('percent') || values.length === 0 || !bands?.length) return values
+  const edges = bands.filter((b) => b.op !== '').map((b) => b.value)
+  const min = Math.min(...values)
+  const max = Math.max(...values)
+  const above = edges.filter((e) => e > max && e - max <= EDGE_REACH).sort((a, b) => a - b)[0]
+  const below = edges.filter((e) => e < min && min - e <= EDGE_REACH).sort((a, b) => b - a)[0]
+  return [...values, ...(above !== undefined ? [above] : []), ...(below !== undefined ? [below] : [])]
+}
+
+/** Room a threshold label takes right of the plot, 11px text. */
+export function thresholdLabelWidth(thresholds: Threshold[]): number {
+  return thresholds.length === 0 ? 0 : Math.ceil(Math.max(...thresholds.map((t) => t.label.length)) * 6.4) + 8
+}
+
+function ThresholdMark({ viewBox, threshold, labelled }: LabelViewBox & { threshold: Threshold; labelled: boolean }) {
+  const { x = 0, y = 0, width = 0 } = viewBox ?? {}
+  return (
+    <g data-role="threshold-line" data-edge={threshold.value}>
+      <line x1={x} x2={x + width} y1={y} y2={y} stroke={threshold.color} strokeOpacity={0.75} strokeDasharray="4 3" strokeWidth={1} />
+      {labelled && (
+        <text data-role="threshold-label" x={x + width + 4} y={y} dy="0.35em" textAnchor="start" fontSize={11} fill="var(--color-ink)" fillOpacity={TICK_OPACITY}>
+          {threshold.label}
+        </text>
+      )}
+    </g>
+  )
+}
+
+/** One dashed line per band edge (§4, §5.1, §6), a direct child of the chart; labelled at the right when `labelled`. */
+export function thresholdLines(thresholds: Threshold[], labelled = true) {
+  return thresholds.map((t) => (
+    <ReferenceLine
+      key={`threshold-${t.value}`}
+      y={t.value}
+      stroke="none"
+      label={(props: LabelViewBox) => <ThresholdMark viewBox={props.viewBox} threshold={t} labelled={labelled} />}
+    />
+  ))
+}
+
+/** The period after `p`, of the same grain. */
+export function nextPeriod(p: Period): Period {
+  if (p.grain === 'year') return { ...p, fy: p.fy + 1 }
+  const perYear = { month: 12, quarter: 4, half: 2 }[p.grain]
+  return p.index < perYear ? { ...p, index: p.index + 1 } : { ...p, fy: p.fy + 1, index: 1 }
+}
+
+/** `Jan 2027`: the month a coarse period is due by, the one after it closes. */
+export function dueByLabel(p: Period, fyStart: number): string {
+  return monthLabel(nextPeriod(lastMonth(p)), fyStart)
+}
+
+/** The next period's slot on a coarse chart (§5.1): which column it is and what it says. */
+export interface GhostSlot {
+  /** The column index; `columns.length` for a slot after the last column. */
+  index: number
+  /** The axis label of an added slot (`Q4 FY26`); '' when the slot is an existing column. */
+  label: string
+  /** `due Jan` or `overdue`. */
+  text: string
+  overdue: boolean
+  /** The hover label's period line: `Q4 FY2026 · due by Jan 2027`. */
+  fullLabel: string
+}
+
+/**
+ * The ghost slot of a coarse row in the selected period, from `coarseStatus`:
+ * the next period after a reported last column, or the last column itself
+ * while it is due or overdue. Null when nothing is due or no period is selected.
+ */
+export function ghostSlot(row: ViewRow, columns: Column[], selectedPeriod: string | undefined, fyStart: number): GhostSlot | null {
+  if (!selectedPeriod || !coarseColumnsShown(columns)) return null
+  const last = parsePeriod(columns[columns.length - 1]?.period)
+  if (!last) return null
+  const s = coarseStatus(row, columns, selectedPeriod, fyStart)
+  if (s.state === 'current') {
+    const p = nextPeriod(last)
+    const full = periodLabel(p, fyStart)
+    return {
+      index: columns.length,
+      label: full.replace(/FY\d{2}(\d{2})$/, 'FY$1'),
+      text: `due ${s.next.dueBy}`,
+      overdue: false,
+      fullLabel: `${full} · due by ${dueByLabel(p, fyStart)}`,
+    }
+  }
+  if (s.state === 'due' || s.state === 'overdue') {
+    const index = columns.length - 1
+    const p = parsePeriod(columns[index]!.period)!
+    const overdue = s.state === 'overdue'
+    return {
+      index,
+      label: '',
+      text: overdue ? 'overdue' : `due ${s.next.dueBy}`,
+      overdue,
+      fullLabel: `${periodLabel(p, fyStart)} · ${overdue ? 'overdue since' : 'due by'} ${dueByLabel(p, fyStart)}`,
+    }
+  }
+  return null
+}
+
+/**
+ * The ghost slot drawn in the plot: a dashed connector from the last value
+ * to a dashed 4px ring at its height, and the slot's text above the ring.
+ */
+export function GhostMark({ ghost, slots, from, overdueColor }: { ghost: GhostSlot; slots: number; from: { index: number; value: number } | null; overdueColor: string }) {
+  const plot = usePlotArea()
+  const yScale = useYAxisScale()
+  if (!plot || !yScale) return null
+  const band = plot.width / Math.max(slots, 1)
+  const x = plot.x + (ghost.index + 0.5) * band
+  const y = from ? (yScale(from.value) ?? plot.y + plot.height / 2) : plot.y + plot.height / 2
+  const x0 = from ? plot.x + (from.index + 0.5) * band : null
+  return (
+    <g data-role="ghost" pointerEvents="none">
+      {x0 !== null && x0 < x - 6 && (
+        <line x1={x0 + 5} x2={x - 5} y1={y} y2={y} stroke="var(--color-ink)" strokeOpacity={0.55} strokeDasharray="3 3" strokeWidth={1.25} />
+      )}
+      <circle cx={x} cy={y} r={4} fill="#FFFFFF" stroke="var(--color-ink)" strokeOpacity={0.55} strokeDasharray="2 2" strokeWidth={1.5} />
+      <text
+        data-role="ghost-label"
+        x={x}
+        y={y - 10}
+        textAnchor="middle"
+        fontSize={11}
+        fontWeight={ghost.overdue ? 600 : 400}
+        fill={ghost.overdue ? overdueColor : 'var(--color-ink)'}
+        fillOpacity={ghost.overdue ? 1 : TICK_OPACITY}
+        stroke="#FFFFFF"
+        strokeWidth={3}
+        strokeLinejoin="round"
+        paintOrder="stroke"
+      >
+        {ghost.text}
+      </text>
+    </g>
+  )
+}
+
+/**
+ * The points an item's line labels (§4): the current, then the lowest and
+ * the largest move from its predecessor among the others (the current is
+ * labelled anyway, so these add what it does not say). Current first.
+ */
+export function itemLabelIndices(points: ChartPoint[]): number[] {
+  const valued = points.flatMap((p, i) => (p.kind === 'value' && p.value !== null ? [{ i, v: p.value }] : []))
+  const last = points.length - 1
+  const current = valued.find((x) => x.i === last)
+  const others = valued.filter((x) => x.i !== last)
+  const lowest = others.reduce<{ i: number; v: number } | null>((m, x) => (m === null || x.v < m.v ? x : m), null)
+  let move: { i: number; d: number } | null = null
+  for (const x of others) {
+    const prior = points[x.i - 1]
+    if (prior?.kind !== 'value' || prior.value === null) continue
+    const d = Math.abs(x.v - prior.value)
+    if (d > 0 && (move === null || d > move.d)) move = { i: x.i, d }
+  }
+  return [...new Set([current?.i, lowest?.i, move?.i].filter((i): i is number => i !== undefined))]
+}
+
+/** Labels this close (vertically, where they overlap across) collide; the later one is dropped. */
+const LABEL_CLEARANCE = 14
+
+/**
+ * Value labels for chosen points, in priority order: the current one to the
+ * left of its dot, the others above theirs; a label that would collide with
+ * one already placed is dropped.
+ */
+export function PointLabels({ points, indices, slots, last }: { points: ChartPoint[]; indices: number[]; slots: number; last: number }) {
+  const plot = usePlotArea()
+  const yScale = useYAxisScale()
+  if (!plot || !yScale) return null
+  const band = plot.width / Math.max(slots, 1)
+  const placed: { x0: number; x1: number; y: number }[] = []
+  const out: ReactNode[] = []
+  for (const i of indices) {
+    const p = points[i]
+    if (!p || p.value === null || !p.display) continue
+    const cx = plot.x + (i + 0.5) * band
+    const cy = yScale(p.value) ?? 0
+    const w = p.display.length * 6.6
+    const left = i === last
+    const box = left ? { x0: cx - 8 - w, x1: cx - 8, y: cy } : { x0: cx - w / 2, x1: cx + w / 2, y: cy - 12 }
+    if (placed.some((b) => b.x0 < box.x1 && box.x0 < b.x1 && Math.abs(b.y - box.y) < LABEL_CLEARANCE)) continue
+    placed.push(box)
+    out.push(
+      <text
+        key={p.key}
+        data-role="value-label"
+        x={left ? cx - 8 : cx}
+        y={left ? cy : cy - 9}
+        dy={left ? '0.35em' : undefined}
+        textAnchor={left ? 'end' : 'middle'}
+        fontSize={11}
+        fontWeight={600}
+        fill="var(--color-ink)"
+        fillOpacity={0.8}
+        stroke="#FFFFFF"
+        strokeWidth={3}
+        strokeLinejoin="round"
+        paintOrder="stroke"
+      >
+        {p.display}
+      </text>,
+    )
+  }
+  return <g data-role="point-labels">{out}</g>
+}
+
 /** A point's value label (`ValueDot`), which marker text must not cover. */
 export interface ValueLabel {
   index: number
@@ -531,15 +790,19 @@ export function StatusRibbon({
   size,
   inset,
   phone = false,
+  ghost = null,
 }: {
   points: ChartPoint[]
   scale: StatusLevel[]
   size: ChartSize
   inset: { left: number; right: number }
   phone?: boolean
+  /** The next period's slot: a dashed empty cell at this index (`points.length` appends one). */
+  ghost?: number | null
 }) {
   const focus = size === 'focus' && !phone
   const cell = 'flex min-w-0 flex-1 items-center justify-center gap-0.5 overflow-hidden rounded-sm'
+  const dashed = <span key="ghost" data-status="ghost" className={`${cell} border border-dashed border-ink/25`} />
   return (
     <div
       data-testid="status-ribbon"
@@ -547,7 +810,8 @@ export function StatusRibbon({
       className={`mt-1 flex gap-px font-semibold leading-none ${focus ? 'h-[22px] text-xs' : 'h-[18px] text-[11px]'}`}
       style={{ marginLeft: inset.left, marginRight: inset.right }}
     >
-      {points.map((p) => {
+      {points.map((p, i) => {
+        if (i === ghost && p.kind !== 'value') return dashed
         if (p.kind === 'na') {
           return (
             <span key={p.key} data-status="na" className={`${cell} bg-status-na-bg font-medium text-ink/70`}>
@@ -581,6 +845,7 @@ export function StatusRibbon({
           </span>
         )
       })}
+      {ghost === points.length && dashed}
     </div>
   )
 }

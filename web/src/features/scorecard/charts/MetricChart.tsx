@@ -5,11 +5,13 @@ import { parsePeriod } from '../../../lib/period'
 import { usePrefersReducedMotion } from '../../../ui/Sparkline'
 import { FREQUENCY_GRAIN, type Column } from '../columns'
 import { cellKey } from '../viewHelpers'
+import { changeBarsFor, changeSummary, isChangeRow } from './changeBars'
 import { ChangeLabel, StatusMarker, type ChartSize } from './chartParts'
 import { chartTheme } from './chartTheme'
 import { moneyPlanSummary } from './moneyPlan'
 import { MoneyPlanChart } from './MoneyPlanChart'
 import { MultiSeriesChart } from './MultiSeries'
+import { PeriodCards } from './PeriodCards'
 import { buildPoints, headerChange } from './points'
 import { RatioChart } from './RatioChart'
 import { isSparse } from './sparse'
@@ -27,6 +29,17 @@ export {
 
 type Schemas = components['schemas']
 type ViewRow = Schemas['ViewRow']
+
+/**
+ * The two measures of a ratio metric (`ratioParts(metric.formula, cell.components)`)
+ * and their column headers: `On time`, and the denominator measure's first word, `Postmortems`.
+ */
+export interface ChartParts {
+  valueLabel: string
+  denominatorLabel: string
+  numerator: string
+  denominator: string
+}
 
 export interface MetricChartProps {
   row: ViewRow
@@ -51,6 +64,14 @@ export interface MetricChartProps {
   header?: boolean
   /** Methodology changes within the columns (`useVersionMarkers`); none when restated. */
   markers?: VersionMarker[]
+  /** A sparse ratio metric's measures: the full-screen table's parts column (§7). None: no parts column. */
+  parts?: ChartParts
+  /**
+   * The month the user picked. A coarse metric's next period is placed from it
+   * (the ghost slot and the due card, §5); `currentColumnKey` is the counted
+   * period and cannot say it. None: no ghost slot and no due card.
+   */
+  selectedPeriod?: string
 }
 
 /** Renders the chart for one metric row and encodings required by the UX spec. */
@@ -71,6 +92,8 @@ export function MetricChart({
   framed = false,
   header = true,
   markers = [],
+  parts,
+  selectedPeriod,
 }: MetricChartProps) {
   const reduced = usePrefersReducedMotion()
   const animated = !reduced
@@ -96,8 +119,13 @@ export function MetricChart({
     kind === 'money_plan'
       ? moneyPlanSummary(row.metricName, points, columns, nameOf)
       : `${row.metricName}: ${currentDisplay || 'no data'}, status ${currentStatus || 'none'}`,
+    lines.length === 1 && isChangeRow(lineRow, columns) ? changeSummary(changeBarsFor(lineRow, columns), columns, scale, nameOf) : '',
     ...markers.map((m) => m.title),
-  ].join('. ')
+  ]
+    .filter(Boolean)
+    .join('. ')
+  // A twice-yearly or yearly tile has too few periods for a line: cards say more (§5.2).
+  const cards = size === 'tile' && coarse && lines.length === 1 && columns.length <= 3
 
   return (
     <div>
@@ -118,9 +146,20 @@ export function MetricChart({
         </>
       )}
       {kind === 'sparse' ? (
-        <SparseRibbon points={points} columns={columns} scale={scale} size={size} statusLabel={statusLabel} row={row} fyStart={fiscalYearStartMonth} />
+        <SparseRibbon
+          points={points}
+          columns={columns}
+          scale={scale}
+          size={size}
+          statusLabel={statusLabel}
+          row={row}
+          fyStart={fiscalYearStartMonth}
+          parts={parts}
+        />
       ) : kind === 'money_plan' ? (
-        <MoneyPlanChart row={row} points={points} columns={columns} scale={scale} animated={animated} size={size} />
+        <MoneyPlanChart row={row} points={points} columns={columns} scale={scale} animated={animated} size={size} framed={framed} />
+      ) : cards ? (
+        <PeriodCards row={lineRow} columns={columns} selectedPeriod={selectedPeriod} scale={scale} format={row.format} fy={fiscalYearStartMonth} />
       ) : lines.length > 1 ? (
         <MultiSeriesChart
           rows={lines}
@@ -145,6 +184,7 @@ export function MetricChart({
           framed={framed}
           valuePoints={kind === 'discrete' || coarse}
           markers={markers}
+          selectedPeriod={selectedPeriod}
         />
       )}
       {/* In focus, the dialog's own table link sits below its breakdown. */}
