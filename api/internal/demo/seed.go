@@ -3,8 +3,9 @@
 // versions, 24 months of deterministic synthetic data (2024-M11 through
 // 2026-M10), and, from 2026-M07, synthetic tracker records (epics and
 // defects, with monthly snapshots) that the latest version derives four
-// measures from. The proof of concept, the web app's development, and the
-// end-to-end tests all run against it.
+// measures from, plus one incident export (as of 2026-11-01) that explains
+// part of October's uptime and three RCA notes. The proof of concept, the
+// web app's development, and the end-to-end tests all run against it.
 //
 // The data exercises every chart kind at realistic density: ratio, line
 // (a lower-is-better score in the hundreds), change, days, discrete
@@ -21,6 +22,7 @@ package demo
 import (
 	"bytes"
 	"context"
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -33,6 +35,7 @@ import (
 	"opsvision/internal/domain"
 	"opsvision/internal/period"
 	"opsvision/internal/recordimport"
+	"opsvision/internal/records"
 	"opsvision/internal/store"
 )
 
@@ -101,6 +104,32 @@ const NoCompanyTotal = "customer_satisfaction"
 // SparseMetric is the company-level metric that is not applicable in most
 // months (no incident needed a postmortem), so it charts as lettered results.
 const SparseMetric = "postmortems_on_time"
+
+// RCACell names one cell of the demo scorecard.
+type RCACell struct {
+	MetricKey string
+	SubjectID string
+	Period    period.Period
+}
+
+// RCAExamples are the cells of 2026-M10 with an RCA note: Webhooks' uptime,
+// written against the cell as it is; Search's uptime, written when it read
+// 99.90%, so it reads stale; and Checkout's epics on time (not at its best),
+// written by the Payments contributor. Treat it as read-only.
+var RCAExamples = []RCACell{
+	{MetricKey: "uptime", SubjectID: "webhooks", Period: latestMonth},
+	{MetricKey: "uptime", SubjectID: "search", Period: latestMonth},
+	{MetricKey: "epics_on_time", SubjectID: "checkout", Period: latestMonth},
+}
+
+// RCANeeded are two cells of 2026-M10 short of their best with no RCA note:
+// Analytics Ingest's uptime, whose incidents add up to more than it reports,
+// and a deployment with an incident that started in September and one at
+// partial impact. Treat it as read-only.
+var RCANeeded = []RCACell{
+	{MetricKey: "uptime", SubjectID: "analytics-ingest", Period: latestMonth},
+	{MetricKey: "deployment_uptime", SubjectID: "dep-notify-multi", Period: latestMonth},
+}
 
 // Fixed instants keep the seed reproducible.
 var (
@@ -176,6 +205,12 @@ func Seed(ctx context.Context, st store.Store, cal period.Calendar) (string, err
 		return "", err
 	}
 	if err := seedDerived(ctx, st, tenant); err != nil {
+		return "", err
+	}
+	if err := seedIncidents(ctx, st, tenant); err != nil {
+		return "", err
+	}
+	if err := seedRCAs(ctx, st); err != nil {
 		return "", err
 	}
 	return TenantID, nil
@@ -1488,6 +1523,169 @@ func seedDerived(ctx context.Context, st store.Store, tenant domain.Tenant) erro
 	}
 	if _, err := st.PutDataPoints(ctx, TenantID, ScorecardID, writes); err != nil {
 		return fmt.Errorf("demo: derived data points: %w", err)
+	}
+	return nil
+}
+
+// --- incidents and RCA notes -----------------------------------------------
+
+// The incident tracker export the demo's incidents come from, read as of
+// 2026-11-01: September incidents for history and October's, which explain
+// part of the uptime and deployment uptime of a few services and one
+// deployment. They change no value.
+const (
+	incidentSource     = "incident-tracker"
+	incidentTemplateID = "incident-tracker-export"
+	incidentFile       = "acme_incidents_oct.csv"
+)
+
+//go:embed testdata/acme_incidents_oct.csv
+var incidentsCSV []byte
+
+var incidentsAsOf = date(2026, time.November, 1)
+
+// incidentType is the incident preset, linked to the uptime metrics as their
+// downtime explanation, with planned maintenance filtered out.
+func incidentType() domain.RecordType {
+	rt := records.IncidentPreset()
+	rt.TrackedFrom = map[string]period.Period{incidentSource: month(2026, 9)}
+	for _, metric := range []string{"uptime", "deployment_uptime"} {
+		rt.Explains = append(rt.Explains, domain.ExplainLink{
+			ScorecardID: ScorecardID, MetricKey: metric, Mode: domain.ExplainDowntime,
+			DownMeasure: "seconds_down", Where: "category != 'maintenance'",
+		})
+	}
+	return rt
+}
+
+// incidentTemplate reads the tracker's incident export: one record per
+// listed component, times in UTC, and the issue type as the category.
+func incidentTemplate() records.Template {
+	layout := []string{"2006-01-02 15:04"}
+	return records.Template{
+		Name: "Tracker incidents export", RecordType: records.IncidentTypeID, Source: incidentSource,
+		File: records.FileSpec{Format: "csv", HeaderRow: 1}, TimeZone: "UTC",
+		Fields: map[string]records.FieldMap{
+			"externalId":  {Column: "Issue key"},
+			"title":       {Column: "Summary"},
+			"category":    {Column: "Issue Type", Map: map[string]string{"Maintenance": "maintenance", "*": "incident"}},
+			"priority":    {Column: "Priority", Map: map[string]string{"SEV-1": "SEV1", "SEV-2": "SEV2", "SEV-3": "SEV3", "SEV-4": "SEV4"}},
+			"status":      {Column: "Status"},
+			"state":       {Column: "Status", Map: map[string]string{"Resolved": "done", "Closed": "done", "Cancelled": "cancelled", "*": "open"}},
+			"subjectKey":  {Column: "Components", Separator: ","},
+			"createdAt":   {Column: "Incident start", DateFormats: layout},
+			"completedAt": {Column: "Resolved", DateFormats: layout},
+			"url":         {Template: "https://tracker.example/browse/{Issue key}"},
+		},
+		Attributes: map[string]records.FieldMap{
+			"startedAt": {Column: "Incident start", DateFormats: layout},
+			"endedAt":   {Column: "Incident end", DateFormats: layout},
+			"impactPct": {Column: "Customer impact"},
+		},
+	}
+}
+
+// seedIncidents stores the incident type and reads the tracker export
+// through the import plan, as an upload would, then stores its snapshot
+// (with a fixed ID and time, so the seed is reproducible) and the template.
+// It fails if the plan has any problem or would write any value.
+func seedIncidents(ctx context.Context, st store.Store, tenant domain.Tenant) error {
+	rt := incidentType()
+	if err := st.PutRecordType(ctx, TenantID, rt, 0); err != nil {
+		return fmt.Errorf("demo: record type %s: %w", rt.ID, err)
+	}
+	tpl := incidentTemplate()
+	if errs := tpl.Validate(rt); len(errs) != 0 {
+		return fmt.Errorf("demo: incident template: %v", errs)
+	}
+	tbl, err := records.ReadCSV(bytes.NewReader(incidentsCSV))
+	if err != nil {
+		return fmt.Errorf("demo: %s: %w", incidentFile, err)
+	}
+	p, err := recordimport.Build(ctx, st, tenant, ScorecardID, tpl, tbl, incidentsAsOf, recordimport.Answers{}, nil)
+	if err != nil {
+		return fmt.Errorf("demo: plan %s: %w", incidentFile, err)
+	}
+	if len(p.Problems) != 0 || p.Counts.Errors != 0 || p.Counts.Unmatched != 0 || len(p.NewValues) != 0 {
+		return fmt.Errorf("demo: %s: problems %+v, counts %+v, new values %v", incidentFile, p.Problems, p.Counts, p.NewValues)
+	}
+	if len(p.Writes) != 0 {
+		return fmt.Errorf("demo: %s would change %d values", incidentFile, len(p.Writes))
+	}
+	sn := p.Snapshot
+	sn.ID, sn.FileName = snapshotID(rt.ID, incidentsAsOf), incidentFile
+	sn.CreatedBy, sn.CreatedAt = Users[0].UserID, incidentsAsOf.Time.Add(17*time.Hour)
+	revs := slices.Clone(p.Revisions)
+	for i := range revs {
+		revs[i].Rev.SnapshotID = sn.ID
+	}
+	if err := st.ApplySnapshot(ctx, TenantID, sn, revs); err != nil {
+		return fmt.Errorf("demo: incident snapshot: %w", err)
+	}
+	body, err := json.Marshal(tpl)
+	if err != nil {
+		return err
+	}
+	used := sn.CreatedAt
+	// "records" is the profile of a records import template.
+	if err := st.PutTemplate(ctx, TenantID, store.Template{ID: incidentTemplateID, Name: tpl.Name, Profile: "records", Body: body, LastUsed: &used}); err != nil {
+		return fmt.Errorf("demo: incident template: %w", err)
+	}
+	return nil
+}
+
+// seedRCAs stores the RCA notes on RCAExamples, each with the basis it was
+// written against: Webhooks' and Checkout's as the cells are now, Search's
+// from before its value and incidents changed.
+func seedRCAs(ctx context.Context, st store.Store) error {
+	admin, contributor := Users[0], Users[1]
+	webhooksDown := 420
+	at := func(d, h, m int) time.Time { return time.Date(2026, time.November, d, h, m, 0, 0, time.UTC) }
+	notes := []struct {
+		text   string
+		links  []domain.RCALink
+		author User
+		at     time.Time
+		basis  domain.RCABasis
+	}{
+		{
+			text: "A config deploy on Oct 3 saturated the delivery queue for four hours. On Oct 17 a retry worker crash loop " +
+				"overlapped a regional DNS failure. The queue now scales on its depth and the retry worker has a restart budget.",
+			links: []domain.RCALink{
+				{Title: "Delivery queue saturation postmortem", URL: "https://docs.example/postmortems/inc-2041"},
+				{Title: "Retry worker restart budget", URL: "https://tracker.example/browse/INC-2047"},
+			},
+			author: admin, at: at(3, 15, 20),
+			basis: domain.RCABasis{Display: "99.06%", Status: "R", ReportedMinutes: &webhooksDown,
+				Evidence: []string{incidentSource + ":INC-2041", incidentSource + ":INC-2047", incidentSource + ":INC-2049"}},
+		},
+		{
+			text:   "A slow index rebuild after the Oct 9 schema change raised query errors for about 45 minutes. Rebuilds now run off-peak.",
+			links:  []domain.RCALink{{Title: "Index rebuild runbook", URL: "https://docs.example/runbooks/search-index-rebuild"}},
+			author: admin, at: time.Date(2026, time.October, 30, 11, 5, 0, 0, time.UTC),
+			basis: domain.RCABasis{Display: "99.90%", Status: "Y", Evidence: []string{}},
+		},
+		{
+			text: "Three epics slipped when a partner changed its refund interface mid-month. The team re-planned them for " +
+				"November and now checks partner interface notices in sprint planning.",
+			links:  []domain.RCALink{{Title: "November re-plan", URL: "https://docs.example/plans/checkout-november"}},
+			author: contributor, at: at(4, 9, 40),
+			basis: domain.RCABasis{Display: "57%", Status: "R", Evidence: []string{}},
+		},
+	}
+	for i, n := range notes {
+		c := RCAExamples[i]
+		note := domain.CellRCA{
+			ScorecardID: ScorecardID, MetricKey: c.MetricKey, SubjectID: c.SubjectID, Period: c.Period,
+			Text: n.text, Links: n.links, AuthorID: n.author.UserID, AuthorName: n.author.Name, Channel: domain.RCAChannelWeb,
+			CreatedAt: n.at, UpdatedAt: n.at, Basis: n.basis,
+		}
+		if errs := note.Validate(); len(errs) != 0 {
+			return fmt.Errorf("demo: RCA note on %s/%s: %v", c.MetricKey, c.SubjectID, errs)
+		}
+		if _, err := st.PutRCA(ctx, TenantID, note.Normalize(), 0); err != nil {
+			return fmt.Errorf("demo: RCA note on %s/%s: %w", c.MetricKey, c.SubjectID, err)
+		}
 	}
 	return nil
 }

@@ -13,7 +13,6 @@ import (
 	"opsvision/internal/demo"
 	"opsvision/internal/domain"
 	"opsvision/internal/period"
-	"opsvision/internal/records"
 	"opsvision/internal/store"
 )
 
@@ -68,6 +67,17 @@ func storedRCA(t *testing.T, e *testEnv, metric, subject string) (domain.CellRCA
 	return r, true
 }
 
+// clearDemoRCAs deletes the notes the demo seeds, for tests that write those
+// cells from scratch.
+func clearDemoRCAs(t *testing.T, e *testEnv) {
+	t.Helper()
+	for _, c := range demo.RCAExamples {
+		if err := e.store.DeleteRCA(context.Background(), demo.TenantID, demo.ScorecardID, c.MetricKey, c.SubjectID, c.Period, 1); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 // demoAudits lists every audit entry of the demo tenant, whose clock is demoNow.
 func demoAudits(t *testing.T, e *testEnv) []domain.AuditEntry {
 	t.Helper()
@@ -80,6 +90,7 @@ func demoAudits(t *testing.T, e *testEnv) []domain.AuditEntry {
 
 func TestPutCellRcaPermissions(t *testing.T) {
 	e := newDemoEnv(t)
+	clearDemoRCAs(t, e)
 	ctx := context.Background()
 	if err := e.store.PutTrackedItem(ctx, demo.TenantID, domain.TrackedItem{ID: "orphan-svc", KindID: "services", Name: "Orphan service"}); err != nil {
 		t.Fatal(err)
@@ -154,6 +165,7 @@ func TestPutCellRcaPermissions(t *testing.T) {
 
 func TestPutCellRcaValidation(t *testing.T) {
 	e := newDemoEnv(t)
+	clearDemoRCAs(t, e)
 	admin := e.tokens["admin"]
 	ok := rcaLink{"title": "Postmortem", "url": "https://docs.example/pm/2041"}
 	long := "https://docs.example/" + strings.Repeat("a", 2049-len("https://docs.example/"))
@@ -225,6 +237,7 @@ func TestPutCellRcaValidation(t *testing.T) {
 
 func TestPutCellRcaAudit(t *testing.T) {
 	e := newDemoEnv(t)
+	clearDemoRCAs(t, e)
 	admin := e.tokens["admin"]
 	links := []rcaLink{{"title": "Postmortem", "url": "https://docs.example/pm/2041"}}
 	e.expect(t, 200, admin, "PUT", demoRCA, rcaBody("uptime", "webhooks", "Queue saturated.", links, 0), nil)
@@ -285,58 +298,33 @@ func TestPutCellRcaAudit(t *testing.T) {
 	}
 }
 
-// incidentRecords stores an incident record type linked to uptime and one
-// snapshot of incidents from source incident-tracker, as of 2026-11-01.
-func incidentRecords(t *testing.T, e *testEnv) {
-	t.Helper()
-	ctx := context.Background()
-	rt := records.IncidentPreset()
-	rt.Explains = []domain.ExplainLink{{ScorecardID: demo.ScorecardID, MetricKey: "uptime", Mode: domain.ExplainDowntime, DownMeasure: "seconds_down", Where: "category != 'maintenance'"}}
-	if err := e.store.PutRecordType(ctx, demo.TenantID, rt, 0); err != nil {
-		t.Fatal(err)
-	}
-	asOf, _ := domain.ParseDate("2026-11-01")
-	snap := domain.Snapshot{ID: "snap-inc-1", RecordType: rt.ID, Source: "incident-tracker", AsOf: asOf, CreatedAt: time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC)}
-	incident := func(id, subject, category string, state domain.RecordState, start, end string) store.RecordRevisionWrite {
-		created, _ := domain.ParseDate(start[:10])
-		return store.RecordRevisionWrite{Source: "incident-tracker", ExternalID: id, Type: rt.ID, Rev: domain.RecordRevision{
-			AsOf: asOf, SnapshotID: snap.ID, Fields: domain.RecordFields{
-				SubjectKey: subject, Title: id + " title", Category: category, State: state, CreatedAt: created,
-				Attributes: map[string]any{records.AttrStartedAt: start, records.AttrEndedAt: end},
-			},
-		}}
-	}
-	if err := e.store.ApplySnapshot(ctx, demo.TenantID, snap, []store.RecordRevisionWrite{
-		incident("INC-2041", "Webhooks", "Incident", domain.StateDone, "2026-10-03T14:05:00Z", "2026-10-03T18:15:00Z"),
-		incident("INC-2055", "Webhooks", "maintenance", domain.StateDone, "2026-10-26T06:00:00Z", "2026-10-26T06:20:00Z"),
-		incident("INC-2058", "Webhooks", "Incident", domain.StateCancelled, "2026-10-28T03:00:00Z", "2026-10-28T03:30:00Z"),
-		incident("INC-1999", "Webhooks", "Incident", domain.StateDone, "2026-09-12T10:00:00Z", "2026-09-12T11:00:00Z"),
-		incident("INC-2060", "Search", "Incident", domain.StateDone, "2026-10-17T11:20:00Z", "2026-10-17T11:50:00Z"),
-	}); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestPutCellRcaBasis(t *testing.T) {
 	e := newDemoEnv(t)
+	clearDemoRCAs(t, e)
 	admin := e.tokens["admin"]
+
+	// The demo's linked incidents are counted: a cancelled incident and
+	// September's never count, and INC-2049 counts here and for Search.
 	e.expect(t, 200, admin, "PUT", demoRCA, rcaBody("uptime", "webhooks", "Queue saturated.", nil, 0), nil)
 	r, _ := storedRCA(t, e, "uptime", "webhooks")
-	if r.Basis.Display != "99.06%" || r.Basis.Status != "R" || r.Basis.ReportedMinutes == nil || *r.Basis.ReportedMinutes != 420 || len(r.Basis.Evidence) != 0 {
+	if r.Basis.Display != "99.06%" || r.Basis.Status != "R" || r.Basis.ReportedMinutes == nil || *r.Basis.ReportedMinutes != 420 {
 		t.Fatalf("basis = %+v (minutes %v)", r.Basis, r.Basis.ReportedMinutes)
+	}
+	// The tracker template fans every row out per component, so the keys
+	// may carry the component.
+	if ev := r.Basis.Evidence; len(ev) != 3 || !strings.HasPrefix(ev[0], "incident-tracker:INC-2041") ||
+		!strings.HasPrefix(ev[1], "incident-tracker:INC-2047") || !strings.HasPrefix(ev[2], "incident-tracker:INC-2049") {
+		t.Fatalf("evidence = %v", ev)
 	}
 	if !r.CreatedAt.Equal(demoNow) || !r.UpdatedAt.Equal(demoNow) {
 		t.Errorf("times = %v %v", r.CreatedAt, r.UpdatedAt)
 	}
 
-	// Linked incidents are counted: maintenance is filtered by the link,
-	// a cancelled incident and September's never count, Search's is not
-	// Webhooks'.
-	incidentRecords(t, e)
-	e.expect(t, 200, admin, "PUT", demoRCA, rcaBody("uptime", "webhooks", "Queue saturated.", nil, 1), nil)
-	r, _ = storedRCA(t, e, "uptime", "webhooks")
-	if strings.Join(r.Basis.Evidence, ",") != "incident-tracker:INC-2041" || *r.Basis.ReportedMinutes != 420 || !r.CreatedAt.Equal(demoNow) {
-		t.Fatalf("basis = %+v", r.Basis)
+	// Planned maintenance is filtered by the link.
+	e.expect(t, 200, admin, "PUT", demoRCA, rcaBody("uptime", "search", "DNS failures.", nil, 0), nil)
+	r, _ = storedRCA(t, e, "uptime", "search")
+	if len(r.Basis.Evidence) != 1 || !strings.HasPrefix(r.Basis.Evidence[0], "incident-tracker:INC-2049") || *r.Basis.ReportedMinutes != 60 {
+		t.Fatalf("search basis = %+v", r.Basis)
 	}
 
 	// A metric with no downtime has no reported minutes.
@@ -349,25 +337,32 @@ func TestPutCellRcaBasis(t *testing.T) {
 
 func TestLoadIncidents(t *testing.T) {
 	e := newDemoEnv(t)
-	incidentRecords(t, e)
 	got, err := e.api.loadIncidents(context.Background(), demo.TenantID, demo.ScorecardID, []string{"uptime", "deployment_uptime"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	var keys []string
-	for _, in := range got["uptime"]["webhooks"] {
-		keys = append(keys, in.ExternalID)
-		if !in.Cutoff.Equal(time.Date(2026, 11, 2, 0, 0, 0, 0, time.UTC)) || in.SubjectID != "webhooks" || in.Source != "incident-tracker" {
-			t.Errorf("%s = %+v", in.ExternalID, in)
+	keys := func(metric, subject string) string {
+		var out []string
+		for _, in := range got[metric][subject] {
+			out = append(out, in.ExternalID)
+			if !in.Cutoff.Equal(time.Date(2026, 11, 2, 0, 0, 0, 0, time.UTC)) || in.SubjectID != subject || in.Source != "incident-tracker" {
+				t.Errorf("%s = %+v", in.ExternalID, in)
+			}
 		}
+		return strings.Join(out, ",")
 	}
-	// Filtered by the link's where; cancelled incidents are left to the
-	// arithmetic, which drops them.
-	if strings.Join(keys, ",") != "INC-1999,INC-2041,INC-2058" {
-		t.Errorf("webhooks incidents = %v", keys)
+	// Every row fans out per component. Cancelled incidents are left to the
+	// arithmetic, which drops them; planned maintenance is filtered by the
+	// link's where.
+	if k := keys("uptime", "webhooks"); k != "INC-2003@Webhooks,INC-2041@Webhooks,INC-2047@Webhooks,INC-2049@Webhooks,INC-2058@Webhooks" {
+		t.Errorf("webhooks incidents = %v", k)
 	}
-	if len(got["uptime"]["search"]) != 1 || len(got["deployment_uptime"]) != 0 {
-		t.Errorf("incidents = %+v", got)
+	if k := keys("uptime", "search"); k != "INC-2049@Search" {
+		t.Errorf("search incidents = %v", k)
+	}
+	const relay = "@Notification Relay - Multi-Region Active"
+	if k := keys("deployment_uptime", "dep-notify-multi"); k != "INC-2036"+relay+",INC-2044"+relay {
+		t.Errorf("deployment incidents = %v", k)
 	}
 	none, err := e.api.loadIncidents(context.Background(), demo.TenantID, demo.ScorecardID, []string{"epics_on_time"})
 	if err != nil || len(none) != 0 {

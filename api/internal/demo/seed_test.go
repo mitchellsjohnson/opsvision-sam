@@ -2,7 +2,9 @@ package demo_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -10,12 +12,14 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"opsvision/internal/demo"
 	"opsvision/internal/domain"
 	"opsvision/internal/engine"
 	"opsvision/internal/orgtree"
 	"opsvision/internal/period"
+	"opsvision/internal/rca"
 	"opsvision/internal/recordimport"
 	"opsvision/internal/records"
 	"opsvision/internal/store"
@@ -741,13 +745,16 @@ func TestSeedRecordTypesAndSnapshots(t *testing.T) {
 		if errs := rt.Validate(); len(errs) != 0 {
 			t.Errorf("record type %s invalid: %v", rt.ID, errs)
 		}
+		if rt.ID == "incident" {
+			continue
+		}
 		if got := rt.TrackedFrom["tracker"]; got != mustPeriod(t, "2026-M07") {
 			t.Errorf("%s tracked from %v, want 2026-M07", rt.ID, got)
 		}
 	}
 	defect, ok := byID["defect"]
-	if !ok || byID["epic"].ID == "" || len(byID) != 2 {
-		t.Fatalf("record types = %+v, want defect and epic", byID)
+	if !ok || byID["epic"].ID == "" || byID["incident"].ID == "" || len(byID) != 3 {
+		t.Fatalf("record types = %+v, want defect, epic and incident", byID)
 	}
 	if !reflect.DeepEqual(defect.Priorities, []string{"P1", "P2", "P3", "P4"}) {
 		t.Errorf("defect priorities = %v", defect.Priorities)
@@ -1043,5 +1050,367 @@ func TestNovemberFixturePreview(t *testing.T) {
 	// Previews store nothing.
 	if recs, _ := st.ListRecords(context.Background(), id, "defect"); slices.ContainsFunc(recs, func(r domain.Record) bool { return r.ExternalID == "PAY-912" }) {
 		t.Error("preview stored a record")
+	}
+}
+
+// --- incidents and RCA notes ------------------------------------------------
+
+var oct2026 = month2026(10)
+
+func TestSeedIncidentTypeAndSnapshot(t *testing.T) {
+	st, id := seeded(t)
+	ctx := context.Background()
+
+	types, _ := st.ListRecordTypes(ctx, id)
+	i := slices.IndexFunc(types, func(rt domain.RecordType) bool { return rt.ID == "incident" })
+	if i < 0 {
+		t.Fatal("no incident record type")
+	}
+	rt := types[i]
+	want := []domain.ExplainLink{
+		{ScorecardID: demo.ScorecardID, MetricKey: "uptime", Mode: domain.ExplainDowntime, DownMeasure: "seconds_down", Where: "category != 'maintenance'"},
+		{ScorecardID: demo.ScorecardID, MetricKey: "deployment_uptime", Mode: domain.ExplainDowntime, DownMeasure: "seconds_down", Where: "category != 'maintenance'"},
+	}
+	if !reflect.DeepEqual(rt.Explains, want) {
+		t.Errorf("explains = %+v, want %+v", rt.Explains, want)
+	}
+	if errs := records.ValidateExplainWhere(rt); len(errs) != 0 {
+		t.Errorf("explain conditions: %v", errs)
+	}
+
+	snaps, _ := st.ListSnapshots(ctx, id, "incident")
+	if len(snaps) != 1 || snaps[0].AsOf.String() != "2026-11-01" || snaps[0].Source != "incident-tracker" {
+		t.Fatalf("incident snapshots = %+v, want one as of 2026-11-01 from incident-tracker", snaps)
+	}
+	if c := snaps[0].Counts; c["errors"] != 0 || c["unmatched"] != 0 || c["new"] == 0 {
+		t.Errorf("snapshot counts = %v", c)
+	}
+
+	recs, _ := st.ListRecords(ctx, id, "incident")
+	var fanOut []string
+	for _, r := range recs {
+		f := records.Latest(r)
+		if f.GroupKey == "INC-2049" {
+			fanOut = append(fanOut, r.ExternalID)
+		}
+		if !strings.HasPrefix(f.URL, "https://tracker.example/browse/INC-") {
+			t.Errorf("%s url = %q", r.ExternalID, f.URL)
+		}
+	}
+	slices.Sort(fanOut)
+	if !reflect.DeepEqual(fanOut, []string{"INC-2049@Search", "INC-2049@Webhooks"}) {
+		t.Errorf("INC-2049 records = %v, want two fan-out records", fanOut)
+	}
+
+	// The template the snapshot was read with is saved, so the tracker
+	// export is recognized on the next upload.
+	tpls, _ := st.ListTemplates(ctx, id)
+	if !slices.ContainsFunc(tpls, func(tp store.Template) bool {
+		return tp.Profile == "records" && strings.Contains(string(tp.Body), `"recordType":"incident"`)
+	}) {
+		t.Errorf("no saved incident template in %+v", tpls)
+	}
+}
+
+// demoIncidents returns the demo's incidents for a metric by subject, the
+// way the API reads them: the link's filter, the subject resolved at the
+// incident's start, and the source's cutoff.
+func demoIncidents(t *testing.T, st store.Store, tenantID, metric string) map[string][]rca.Incident {
+	t.Helper()
+	ctx := context.Background()
+	in := input(t, st, tenantID)
+	types, _ := st.ListRecordTypes(ctx, tenantID)
+	rt := types[slices.IndexFunc(types, func(rt domain.RecordType) bool { return rt.ID == "incident" })]
+	var cond *records.Cond
+	for _, l := range rt.Explains {
+		if l.MetricKey == metric {
+			c, err := records.CompileWhere(l.Where, rt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cond = c
+		}
+	}
+	snaps, _ := st.ListSnapshots(ctx, tenantID, "incident")
+	recs, _ := st.ListRecords(ctx, tenantID, "incident")
+	res := records.NewResolver(records.DeriveInput{Cal: cal, Tree: in.Tree, Items: in.Items})
+	out := map[string][]rca.Incident{}
+	for _, r := range recs {
+		f := records.Latest(r)
+		if ok, err := cond.Match(f); err != nil || !ok {
+			continue
+		}
+		inc, err := rca.FromRecord(r.Source, r.ExternalID, f, rca.Cutoff(snaps[0].AsOf))
+		if err != nil {
+			t.Fatal(err)
+		}
+		subject, problem := res.Resolve(f.SubjectKey, cal.MonthOf(*inc.Start))
+		if problem != "" {
+			t.Fatalf("%s: subject %q is %s", r.ExternalID, f.SubjectKey, problem)
+		}
+		inc.SubjectID = subject
+		out[subject] = append(out[subject], inc)
+	}
+	return out
+}
+
+func downtimeOf(t *testing.T, st store.Store, tenantID, metric, subject string, p period.Period, reported float64) rca.Downtime {
+	t.Helper()
+	w := rca.PeriodWindow(cal, p, time.UTC)
+	return rca.CountDowntime(w, w.Minutes(), reported, demoIncidents(t, st, tenantID, metric)[subject])
+}
+
+func keysOf(d rca.Downtime) []string {
+	var out []string
+	for _, c := range d.Items {
+		out = append(out, fmt.Sprintf("%s %.1f", c.Incident.Key, c.Minutes))
+	}
+	return out
+}
+
+func TestSeedIncidentsExplainOctober(t *testing.T) {
+	st, id := seeded(t)
+
+	// Webhooks, 420 minutes: INC-2041 250, INC-2047 and INC-2049 overlapping
+	// 25 minutes (split evenly), 40 not explained; the false alarm never counts.
+	wh := downtimeOf(t, st, id, "uptime", "webhooks", oct2026, 420)
+	if got, want := keysOf(wh), []string{"INC-2041 250.0", "INC-2047 112.5", "INC-2049 17.5"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("Webhooks items = %v, want %v", got, want)
+	}
+	if wh.Explained != 380 || wh.Unexplained != 40 || wh.Items[1].Overlaps["INC-2049"] != 25 {
+		t.Errorf("Webhooks = explained %v, unexplained %v, overlaps %v", wh.Explained, wh.Unexplained, wh.Items[1].Overlaps)
+	}
+
+	// Search, 60 minutes: INC-2049's fan-out record; the planned failover is
+	// filtered out.
+	se := downtimeOf(t, st, id, "uptime", "search", oct2026, 60)
+	if got := keysOf(se); !reflect.DeepEqual(got, []string{"INC-2049 30.0"}) || se.Unexplained != 30 {
+		t.Errorf("Search items = %v, unexplained %v", got, se.Unexplained)
+	}
+
+	// Analytics Ingest, 75 minutes: one 90-minute incident, 15 more than reported.
+	ai := downtimeOf(t, st, id, "uptime", "analytics-ingest", oct2026, 75)
+	if got := keysOf(ai); !reflect.DeepEqual(got, []string{"INC-2052 90.0"}) || ai.Excess != 15 {
+		t.Errorf("Analytics Ingest items = %v, excess %v", got, ai.Excess)
+	}
+
+	// Notification Relay - Multi-Region Active, 165 minutes: an incident from
+	// Sep 30 23:10 (its October part only) and one at 40% impact.
+	nr := downtimeOf(t, st, id, "deployment_uptime", "dep-notify-multi", oct2026, 165)
+	if got, want := keysOf(nr), []string{"INC-2044 72.0", "INC-2036 70.0"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("deployment items = %v, want %v", got, want)
+	}
+	if len(nr.Items) == 2 && (!nr.Items[1].StartedBefore || nr.Items[1].TotalMinutes != 120) {
+		t.Errorf("INC-2036 = %+v, want it to start before October", nr.Items[1])
+	}
+	if nr.Unexplained != 23 {
+		t.Errorf("deployment unexplained = %v, want 23", nr.Unexplained)
+	}
+
+	// September keeps incidents for history.
+	if sep := downtimeOf(t, st, id, "uptime", "notifications", month2026(9), 28); len(sep.Items) == 0 {
+		t.Error("no September incidents for history")
+	}
+}
+
+func cellOf(t *testing.T, in *engine.Input, metric, subject string, p period.Period) engine.Cell {
+	t.Helper()
+	v, err := engine.Compute(in, engine.ViewRequest{Periods: []period.Period{p}, SubjectIDs: []string{subject}, MetricKeys: []string{metric}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range v.Rows {
+		if r.MetricKey == metric && r.SubjectID == subject {
+			return r.Cells[0]
+		}
+	}
+	t.Fatalf("no row for %s / %s", metric, subject)
+	return engine.Cell{}
+}
+
+func TestSeedRCANotes(t *testing.T) {
+	st, id := seeded(t)
+	ctx := context.Background()
+	in := input(t, st, id)
+
+	if len(demo.RCAExamples) != 3 || len(demo.RCANeeded) != 2 {
+		t.Fatalf("examples %+v, needed %+v", demo.RCAExamples, demo.RCANeeded)
+	}
+	notes := make([]domain.CellRCA, len(demo.RCAExamples))
+	for i, c := range demo.RCAExamples {
+		n, err := st.GetRCA(ctx, id, demo.ScorecardID, c.MetricKey, c.SubjectID, c.Period)
+		if err != nil {
+			t.Fatalf("note on %+v: %v", c, err)
+		}
+		if errs := n.Validate(); len(errs) != 0 {
+			t.Errorf("note on %+v invalid: %v", c, errs)
+		}
+		if n.Revision != 1 || n.Channel != domain.RCAChannelWeb || n.AuthorName == "" || n.CreatedAt.IsZero() {
+			t.Errorf("note on %+v = %+v", c, n)
+		}
+		notes[i] = n
+	}
+	var authors []string
+	for _, n := range notes {
+		authors = append(authors, n.AuthorID)
+	}
+	if want := []string{"dev|admin", "dev|admin", "dev|contributor"}; !reflect.DeepEqual(authors, want) {
+		t.Errorf("authors = %v, want %v", authors, want)
+	}
+
+	// Webhooks: written against the cell as it is.
+	wh := notes[0]
+	if wh.MetricKey != "uptime" || wh.SubjectID != "webhooks" || wh.Period != oct2026 {
+		t.Fatalf("RCAExamples[0] = %+v, want Webhooks uptime in 2026-M10", demo.RCAExamples[0])
+	}
+	b := wh.Basis
+	if b.Display != "99.06%" || b.Status != "R" || b.ReportedMinutes == nil || *b.ReportedMinutes != 420 ||
+		!reflect.DeepEqual(b.Evidence, []string{"incident-tracker:INC-2041", "incident-tracker:INC-2047", "incident-tracker:INC-2049"}) {
+		t.Errorf("Webhooks basis = %+v", b)
+	}
+	if c := cellOf(t, in, "uptime", "webhooks", oct2026); c.Display != b.Display || c.Status != b.Status ||
+		c.Components["seconds_down"] != 420*60 {
+		t.Errorf("Webhooks October = %s %s %v; no seeded value may move", c.Display, c.Status, c.Components)
+	}
+
+	// Search: written when the value read 99.90%, so it reads stale.
+	se := notes[1]
+	if se.SubjectID != "search" || se.Basis.Display != "99.90%" || len(se.Basis.Evidence) != 0 {
+		t.Errorf("Search note = %+v", se)
+	}
+	if c := cellOf(t, in, "uptime", "search", oct2026); c.Display == se.Basis.Display {
+		t.Errorf("Search October = %s, want it to differ from the note's basis", c.Display)
+	}
+
+	// The Payments contributor's note on a product cell of epics on time
+	// that is not at its best, written against the cell as it is.
+	ep := demo.RCAExamples[2]
+	if ep.MetricKey != "epics_on_time" {
+		t.Fatalf("RCAExamples[2] = %+v", ep)
+	}
+	c := cellOf(t, in, ep.MetricKey, ep.SubjectID, ep.Period)
+	if c.Status == "" || c.Status == "G" {
+		t.Errorf("RCAExamples[2] cell = %s %q, want a status that is not the best", c.Display, c.Status)
+	}
+	if u, ok := in.Tree.Unit(ep.SubjectID); !ok || u.ParentID != "payments" {
+		t.Errorf("RCAExamples[2] subject %q is not a Payments product", ep.SubjectID)
+	}
+	if nb := notes[2].Basis; nb.Display != c.Display || nb.Status != c.Status || nb.ReportedMinutes != nil || nb.Evidence == nil {
+		t.Errorf("epics note basis = %+v, cell %s %s", nb, c.Display, c.Status)
+	}
+
+	// The needed cells have no note and are not at their best.
+	want := []demo.RCACell{
+		{MetricKey: "uptime", SubjectID: "analytics-ingest", Period: oct2026},
+		{MetricKey: "deployment_uptime", SubjectID: "dep-notify-multi", Period: oct2026},
+	}
+	if !reflect.DeepEqual(demo.RCANeeded, want) {
+		t.Errorf("RCANeeded = %+v, want %+v", demo.RCANeeded, want)
+	}
+	for _, n := range demo.RCANeeded {
+		if _, err := st.GetRCA(ctx, id, demo.ScorecardID, n.MetricKey, n.SubjectID, n.Period); !errors.Is(err, store.ErrNotFound) {
+			t.Errorf("%+v has a note: %v", n, err)
+		}
+		if c := cellOf(t, in, n.MetricKey, n.SubjectID, n.Period); c.Status == "" || c.Status == "G" {
+			t.Errorf("%+v = %s %q, want it short of its best", n, c.Display, c.Status)
+		}
+	}
+	if all, _ := st.ListRCAs(ctx, id, demo.ScorecardID, oct2026); len(all) != 3 {
+		t.Errorf("October notes = %d, want 3", len(all))
+	}
+}
+
+// TestSeedIncidentsMoveNothing checks the incidents leave every derived
+// value as it was: recalculating from the stored records writes nothing.
+func TestSeedIncidentsMoveNothing(t *testing.T) {
+	st, id := seeded(t)
+	tn, _ := st.GetTenant(context.Background(), id)
+	writes, err := recordimport.Recalculate(context.Background(), st, tn, demo.ScorecardID, func(period.Period) bool { return false }, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(writes) != 0 {
+		t.Errorf("recalculating the seeded demo writes %d points, first %+v", len(writes), writes[0].Point)
+	}
+}
+
+// withoutIncidents is a store that drops the incident snapshot, so seeding
+// through it leaves the demo as it was before its incidents were imported.
+type withoutIncidents struct{ store.Store }
+
+func (s withoutIncidents) ApplySnapshot(ctx context.Context, tenantID string, sn domain.Snapshot, revs []store.RecordRevisionWrite) error {
+	if sn.RecordType == "incident" {
+		return nil
+	}
+	return s.Store.ApplySnapshot(ctx, tenantID, sn, revs)
+}
+
+func incidentTemplate(t *testing.T, st store.Store, tenantID string) records.Template {
+	t.Helper()
+	tpls, _ := st.ListTemplates(context.Background(), tenantID)
+	for _, tp := range tpls {
+		var body records.Template
+		if tp.Profile == "records" && json.Unmarshal(tp.Body, &body) == nil && body.RecordType == "incident" {
+			return body
+		}
+	}
+	t.Fatal("no saved incident template")
+	return records.Template{}
+}
+
+func TestSeedIncidentStory(t *testing.T) {
+	ctx := context.Background()
+	st := memstore.New()
+	id, err := demo.Seed(ctx, withoutIncidents{st}, cal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recs, _ := st.ListRecords(ctx, id, "incident"); len(recs) != 0 {
+		t.Fatalf("%d incident records before the snapshot", len(recs))
+	}
+	tn, _ := st.GetTenant(ctx, id)
+	tpl := incidentTemplate(t, st, id)
+	f, err := os.Open(filepath.Join("..", "records", "testdata", "incidents_tracker.csv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	tbl, err := records.ReadCSV(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	asOf := domain.Date{Time: time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)}
+	p, err := recordimport.Build(ctx, st, tn, demo.ScorecardID, tpl, tbl, asOf, recordimport.Answers{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var texts []string
+	for _, l := range p.Story.Incidents {
+		texts = append(texts, l.Text)
+	}
+	want := []string{
+		"Oct · Analytics Ingest · 1 incident explains 1h 30m of 1h 15m reported",
+		"Oct · Search · 1 incident explains 30m of 1h 00m reported",
+		"Oct · Webhooks · 3 incidents explain 6h 20m of 7h 00m reported",
+	}
+	if !reflect.DeepEqual(texts, want) {
+		t.Errorf("incident lines = %q, want %q", texts, want)
+	}
+	if got := p.Rows.Text(); got != "6 rows → 7 records" {
+		t.Errorf("rows = %q", got)
+	}
+	if len(p.Writes) != 0 || p.Counts.Errors != 0 || p.Counts.Unmatched != 0 {
+		t.Errorf("writes %d, counts %+v", len(p.Writes), p.Counts)
+	}
+
+	if err := recordimport.Apply(ctx, st, tn, demo.ScorecardID, p, recordimport.Answers{}, demo.Users[0].UserID); err != nil {
+		t.Fatal(err)
+	}
+	again, err := recordimport.Build(ctx, st, tn, demo.ScorecardID, tpl, tbl, asOf, recordimport.Answers{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !again.Story.NothingChanged || len(again.Story.Incidents) != 0 {
+		t.Errorf("re-preview: nothing changed %v, incident lines %+v", again.Story.NothingChanged, again.Story.Incidents)
 	}
 }

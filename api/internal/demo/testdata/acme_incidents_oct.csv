@@ -1,0 +1,12 @@
+Issue key,Issue Type,Summary,Priority,Status,Components,Incident start,Incident end,Customer impact,Created,Resolved
+INC-1996,Incident,Notification fan-out backlog after queue resize,SEV-3,Resolved,Notifications,2026-09-09 13:12,2026-09-09 13:32,100%,2026-09-09 13:15,2026-09-09 16:00
+INC-2003,Incident,Webhook signature checks timing out,SEV-4,Resolved,Webhooks,2026-09-14 10:00,2026-09-14 10:05,100%,2026-09-14 10:02,2026-09-14 11:00
+INC-2008,Incident,Elevated 5xx after certificate rotation,SEV-2,Resolved,Public API,2026-09-22 08:40,2026-09-22 09:02,100%,2026-09-22 08:44,2026-09-22 12:00
+INC-2036,Incident,Cross-region replication stalled,SEV-2,Resolved,Notification Relay - Multi-Region Active,2026-09-30 23:10,2026-10-01 01:10,100%,2026-09-30 23:14,2026-10-01 09:00
+INC-2041,Incident,Webhook delivery queue saturated after config deploy,SEV-2,Resolved,Webhooks,2026-10-03 14:05,2026-10-03 18:15,100%,2026-10-03 14:09,2026-10-04 10:00
+INC-2044,Incident,Secondary region dropping a share of relayed messages,SEV-3,Resolved,Notification Relay - Multi-Region Active,2026-10-12 08:00,2026-10-12 11:00,40%,2026-10-12 08:06,2026-10-12 14:00
+INC-2047,Incident,Retry worker crash loop,SEV-3,Resolved,Webhooks,2026-10-17 09:40,2026-10-17 11:45,100%,2026-10-17 09:52,2026-10-17 15:30
+INC-2049,Incident,Regional DNS resolution failures,SEV-2,Resolved,"Webhooks, Search",2026-10-17 11:20,2026-10-17 11:50,100%,2026-10-17 11:22,2026-10-18 09:00
+INC-2052,Incident,Ingest lag from partition rebalance,SEV-3,Resolved,Analytics Ingest,2026-10-22 02:10,2026-10-22 03:40,100%,2026-10-22 02:31,2026-10-22 12:00
+INC-2055,Maintenance,Planned database failover,SEV-4,Resolved,Search,2026-10-26 06:00,2026-10-26 06:20,100%,2026-10-20 10:00,2026-10-26 06:30
+INC-2058,Incident,False alarm: synthetic check misconfigured,SEV-4,Cancelled,Webhooks,2026-10-28 03:00,2026-10-28 03:30,100%,2026-10-28 03:02,2026-10-28 08:00

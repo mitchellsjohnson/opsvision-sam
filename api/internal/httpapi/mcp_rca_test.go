@@ -98,7 +98,7 @@ func TestMCPCatalogRCATools(t *testing.T) {
 func TestMCPCannotDeleteRCA(t *testing.T) {
 	e := newDemoEnv(t)
 	admin := e.tokens["admin"]
-	e.expect(t, 200, admin, "PUT", demoRCA, rcaBody("uptime", "webhooks", "Queue saturated.", nil, 0), nil)
+	// The demo has a note on Webhooks.
 	status, raw := e.call(t, admin, "POST", "/mcp", map[string]any{
 		"jsonrpc": "2.0", "id": 1, "method": "tools/call",
 		"params": map[string]any{"name": "delete_cell_rca", "arguments": map[string]any{
