@@ -925,6 +925,8 @@ The demo (plan task T2c) gains an `incident` record type with `explains` links t
 
 ## 16. Open questions — recommended defaults (the maintainer can override)
 
+**Maintainer decisions (2026-11-20):** all four recommended defaults below are approved, including explicit sign-off on item 4 (MCP may write and edit RCA notes, labelled `via MCP`; delete stays off MCP).
+
 1. **Chase Green cells below 100% for downtime metrics?** Recommended: **no.** Show the arithmetic (`available`) and never chase; thresholds encode the SLO, and chasing noise inside it erodes compliance with the RCAs view. A later per-metric opt-in ("expect an RCA below 99.95%") can be added if wanted.
 2. **Tenant time zone?** Recommended: **UTC for v1**, labelled `UTC` everywhere, with templates reading local times through `timeZone`. `PeriodWindow(cal, p, loc)` is built now so a tenant zone is a field, not a refactor. Small remainders or excesses near month boundaries can appear when a monitoring tool's month is not UTC; the card shows them honestly.
 3. **Require a company-level note for item metrics?** Recommended: **no.** Optional for admins; when it exists it leads the Report's Why block. The worst three children plus Root causes are enough; requiring it creates a monthly chase.
