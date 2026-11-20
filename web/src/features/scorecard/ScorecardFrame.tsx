@@ -1,6 +1,7 @@
 import { Outlet, useParams } from 'react-router'
 import { useMe, useScorecards } from '../../api/queries'
 import { PlaceholderPage } from '../../pages/Placeholder'
+import { WhyCardProvider } from '../rca/WhyCardProvider'
 import { ControlBar } from './ControlBar'
 import { FocusDialog } from './FocusDialog'
 import { UploadRecords } from './ScorecardPage'
@@ -20,17 +21,19 @@ export function ScorecardFrame() {
   if (!scorecard) return <PlaceholderPage title="Scorecard not found" />
 
   return (
-    <div className="min-w-0">
-      {isAdmin && (
-        <div className="mb-3 flex justify-end">
-          <UploadRecords scorecardId={scorecard.id} />
+    <WhyCardProvider scorecardId={scorecard.id}>
+      <div className="min-w-0">
+        {isAdmin && (
+          <div className="mb-3 flex justify-end">
+            <UploadRecords scorecardId={scorecard.id} />
+          </div>
+        )}
+        <ControlBar scorecardId={scorecard.id} />
+        <div className="mt-4 min-w-0">
+          <FocusDialog />
+          <Outlet />
         </div>
-      )}
-      <ControlBar scorecardId={scorecard.id} />
-      <div className="mt-4 min-w-0">
-        <FocusDialog />
-        <Outlet />
       </div>
-    </div>
+    </WhyCardProvider>
   )
 }

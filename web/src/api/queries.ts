@@ -7,7 +7,7 @@ import {
   useQueryClient,
 } from '@tanstack/react-query'
 import { useCallback, useRef } from 'react'
-import type { ViewRequest } from '../lib/period'
+import { endMonth, type ViewRequest } from '../lib/period'
 import { apiErrorFromResponse } from './errors'
 import type { components } from './schema'
 import { useApi } from './useApi'
@@ -56,6 +56,22 @@ export type AssistantUsage = Schemas['AssistantUsage']
 export type AssistantSettings = Schemas['AssistantSettings']
 export type AssistantCredentialStatus = Schemas['AssistantCredentialStatus']
 export type ReportSummaryDraft = Schemas['ReportSummaryDraft']
+export type CellRca = Schemas['CellRca']
+export type RcaNote = Schemas['RcaNote']
+export type RcaLink = Schemas['RcaLink']
+export type CellRcaList = Schemas['CellRcaList']
+export type CellRcaDraft = Schemas['CellRcaDraft']
+export type CellRcaConflict = Schemas['CellRcaConflict']
+export type PutCellRcaRequest = Schemas['PutCellRcaRequest']
+/** One metric cell an RCA belongs to. */
+export type RcaCellRef = { metric: string; subject: string; period: string }
+export type RcaListState = 'needed' | 'stale' | 'written' | 'available' | 'all'
+export interface RcaListQuery {
+  period: string
+  scope?: string
+  state?: RcaListState
+  mine?: boolean
+}
 export interface OverrideCell {
   metricKey: string
   subjectId: string
@@ -89,6 +105,10 @@ export const keys = {
   reportMonths: (sc: string) => ['reportMonths', sc] as const,
   report: (sc: string, period: string, revision: string) => ['report', sc, period, revision] as const,
   reportSummary: (sc: string, period: string) => ['reportSummary', sc, period] as const,
+  rca: (sc: string, ref: RcaCellRef) => ['rca', sc, ref] as const,
+  rcas: (sc: string, q: RcaListQuery) =>
+    ['rcas', sc, q.period, { scope: q.scope ?? '', state: q.state ?? 'needed', mine: q.mine ?? false }] as const,
+  rcaCounts: (sc: string, period: string) => ['rca-counts', sc, period] as const,
   myTokens: ['myTokens'] as const,
   assistantCredential: ['assistantCredential'] as const,
   assistantSettings: ['assistantSettings'] as const,
@@ -834,8 +854,12 @@ export function useReportDocument(sc: string | undefined, period: string, revisi
     queryFn: () =>
       unwrap(
         api.GET('/scorecards/{sc}/reports/{period}', {
-          // Published revisions also return what the Overview counted (`standing`).
-          params: { path: { sc: sc ?? '', period }, query: revision === '' ? { standing: true } : { revision, standing: true } },
+          // Published revisions also return what the Overview counted (`standing`); live and
+          // published documents return the month's RCAs (`rcas`).
+          params: {
+            path: { sc: sc ?? '', period },
+            query: revision === '' ? { standing: true, rcas: true } : { revision, standing: true, rcas: true },
+          },
         }),
       ),
   })
@@ -1047,6 +1071,150 @@ export function useDraftReportSummary(sc: string, period: string) {
             params: { path: { sc, period, id: draft.id } },
             signal,
           }),
+        )
+      }
+      return draft
+    },
+  })
+}
+
+// ---- RCAs ---------------------------------------------------------------------
+
+type QueryClient = ReturnType<typeof useQueryClient>
+
+/** Whether a view query shows `period` (or, for a coarse period, the month that closes it). */
+function isViewOf(queryKey: readonly unknown[], sc: string, periods: readonly string[]): boolean {
+  if (queryKey[0] !== 'view' || queryKey[1] !== sc) return false
+  const req = queryKey[2] as ViewRequest | undefined
+  return req?.periods === undefined || req.periods.some((p) => periods.includes(p))
+}
+
+/**
+ * After a note changes: every card of that period (a roll-up lists its
+ * children's notes), the RCAs list and counts, the views that show the
+ * period, and the month's report.
+ */
+async function refreshRca(queryClient: QueryClient, sc: string, ref: RcaCellRef) {
+  const month = endMonth(ref.period)
+  const periods = [...new Set([ref.period, month])]
+  await Promise.all([
+    queryClient.invalidateQueries({
+      predicate: (q) =>
+        q.queryKey[0] === 'rca' && q.queryKey[1] === sc && (q.queryKey[2] as RcaCellRef | undefined)?.period === ref.period,
+    }),
+    ...periods.flatMap((p) => [
+      queryClient.invalidateQueries({ queryKey: ['rcas', sc, p] }),
+      queryClient.invalidateQueries({ queryKey: keys.rcaCounts(sc, p) }),
+    ]),
+    queryClient.invalidateQueries({ predicate: (q) => isViewOf(q.queryKey, sc, periods) }),
+    queryClient.invalidateQueries({ queryKey: ['report', sc, month] }),
+  ])
+}
+
+/** One cell's explanation and note; idle while `ref` is null. */
+export function useCellRca(sc: string, ref: RcaCellRef | null) {
+  const api = useApi()
+  return useQuery({
+    queryKey: keys.rca(sc, ref ?? { metric: '', subject: '', period: '' }),
+    enabled: ref !== null,
+    queryFn: () =>
+      unwrap(
+        api.GET('/scorecards/{sc}/rca', {
+          params: { path: { sc }, query: { metric: ref?.metric ?? '', subject: ref?.subject ?? '', period: ref?.period ?? '' } },
+        }),
+      ),
+  })
+}
+
+/**
+ * Saves a cell's note against the revision loaded (0 creates). A stale
+ * revision rejects with an ApiError of status 409 whose `body` is a
+ * `CellRcaConflict` carrying the note as stored now.
+ */
+export function usePutCellRca(sc: string) {
+  const api = useApi()
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (body: PutCellRcaRequest) => unwrap(api.PUT('/scorecards/{sc}/rca', { params: { path: { sc } }, body })),
+    onSuccess: async (note, body) => {
+      const ref = { metric: body.metric, subject: body.subject, period: body.period }
+      queryClient.setQueryData<CellRca>(keys.rca(sc, ref), (prev) =>
+        prev ? { ...prev, note, stale: false, staleReasons: [] } : prev,
+      )
+      await refreshRca(queryClient, sc, ref)
+    },
+  })
+}
+
+/** Deletes a cell's note (hard delete; the audit keeps it). 409 as for saving. */
+export function useDeleteCellRca(sc: string) {
+  const api = useApi()
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ expectedRevision, ...ref }: RcaCellRef & { expectedRevision: number }) =>
+      unwrap(api.DELETE('/scorecards/{sc}/rca', { params: { path: { sc }, query: { ...ref, expectedRevision } } })),
+    onSuccess: async (_data, vars) => {
+      const ref = { metric: vars.metric, subject: vars.subject, period: vars.period }
+      queryClient.setQueryData<CellRca>(keys.rca(sc, ref), (prev) =>
+        prev ? { ...prev, note: null, stale: false, staleReasons: [] } : prev,
+      )
+      await refreshRca(queryClient, sc, ref)
+    },
+  })
+}
+
+/** A period's RCAs, 200 rows a page (sorted by the server); `state` defaults to `needed`. */
+export function useCellRcas(sc: string, q: RcaListQuery) {
+  const api = useApi()
+  return useInfiniteQuery({
+    queryKey: keys.rcas(sc, q),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (last: CellRcaList) => last.nextCursor,
+    queryFn: ({ pageParam }) =>
+      unwrap(
+        api.GET('/scorecards/{sc}/rcas', {
+          params: {
+            path: { sc },
+            query: {
+              period: q.period,
+              ...(q.scope ? { scope: q.scope } : {}),
+              ...(q.state ? { state: q.state } : {}),
+              ...(q.mine ? { mine: true } : {}),
+              ...(pageParam === undefined ? {} : { cursor: pageParam }),
+            },
+          },
+        }),
+      ),
+  })
+}
+
+/** A period's RCA counts only (the RCAs tab pill); kept fresh for a minute. */
+export function useCellRcaCounts(sc: string | undefined, period: string) {
+  const api = useApi()
+  return useQuery({
+    queryKey: keys.rcaCounts(sc ?? '', period),
+    enabled: sc !== undefined && period !== '',
+    staleTime: 60_000,
+    queryFn: () =>
+      unwrap(api.GET('/scorecards/{sc}/rcas', { params: { path: { sc: sc ?? '' }, query: { period, countsOnly: true } } })),
+  })
+}
+
+/**
+ * Asks SAM to draft a cell's note and polls until it is written or fails.
+ * Nothing is saved: the editor shows the draft as a suggestion.
+ */
+export function useCellRcaDraft(sc: string) {
+  const api = useApi()
+  return useMutation({
+    mutationFn: async ({ ref, signal }: { ref: RcaCellRef; signal?: AbortSignal }) => {
+      let draft = await unwrap(
+        api.POST('/scorecards/{sc}/rca/draft', { params: { path: { sc } }, body: { ...ref }, signal }),
+      )
+      while (draft.pending) {
+        await wait(ASSISTANT_POLL_MS, signal)
+        draft = await unwrap(
+          api.GET('/scorecards/{sc}/rca/draft/{id}', { params: { path: { sc, id: draft.id } }, signal }),
         )
       }
       return draft
