@@ -86,7 +86,10 @@ export function conditionFields(rt: RecordType): ConditionField[] {
     { key: 'status', label: 'Status', kind: 'text' },
     { key: 'subjectKey', label: 'Product or team', kind: 'text' },
     { key: 'title', label: 'Title', kind: 'text' },
-    ...rt.attributes.map((a) => ({ key: a.key, label: a.name || a.key, kind: attr(a.type) })),
+    // Date-time attributes compare as instants, which the builder does not offer; write them under Advanced.
+    ...rt.attributes.flatMap((a) =>
+      a.type === 'datetime' ? [] : [{ key: a.key, label: a.name || a.key, kind: attr(a.type) }],
+    ),
     ...DATE_FIELDS.map((key) => ({ key, label: DATE_LABELS[key] ?? key, kind: 'date' as const })),
     ...Object.entries(NUMBER_LABELS).map(([key, label]) => ({ key, label, kind: 'number' as const })),
   ]

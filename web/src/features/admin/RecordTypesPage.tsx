@@ -28,7 +28,13 @@ const TYPE_OPTIONS: { value: AttributeDef['type']; label: string }[] = [
   { value: 'date', label: 'Date' },
 ]
 
-const TYPE_TEXT: Record<AttributeDef['type'], string> = { string: 'text', number: 'number', bool: 'yes or no', date: 'date' }
+const TYPE_TEXT: Record<AttributeDef['type'], string> = {
+  string: 'text',
+  number: 'number',
+  bool: 'yes or no',
+  date: 'date',
+  datetime: 'date and time',
+}
 
 const KEY_PATTERN = /^[a-z][a-z0-9_]*$/
 

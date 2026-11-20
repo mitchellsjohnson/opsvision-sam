@@ -92,6 +92,7 @@ type tenantData struct {
 	assistant       *domain.AssistantSettings
 	threads         map[threadKey]*storedThread
 	drafts          map[draftKey]domain.AssistantDraft
+	rcas            map[rcaKey]domain.CellRCA
 }
 
 type snapshotKey struct{ recordType, id string }

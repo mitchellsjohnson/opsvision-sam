@@ -95,6 +95,7 @@ func Run(t *testing.T, newStore func(t *testing.T) store.Store) {
 		{"AssistantDraftLifecycle", assistantDraftLifecycle},
 		{"AssistantDraftIsolation", assistantDraftIsolation},
 		{"AssistantDraftOneWriterWins", assistantDraftOneWriterWins},
+		{"RCAs", rcas},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) { c.fn(t, newStore(t)) })
@@ -2708,4 +2709,133 @@ func assistantDraftOneWriterWins(t *testing.T, s store.Store) {
 	if got.Revision != 2 || got.Text != fmt.Sprintf("writer-%d", w) {
 		t.Fatalf("draft = %+v, want writer-%d's text at revision 2", got, w)
 	}
+}
+
+func rcaNote(sc, metric, subject string, p period.Period, text string) domain.CellRCA {
+	mins := 420
+	return domain.CellRCA{
+		ScorecardID: sc, MetricKey: metric, SubjectID: subject, Period: p, Text: text,
+		Links:    []domain.RCALink{{Title: "Postmortem", URL: "https://docs.example/pm/1"}},
+		AuthorID: "user-a", AuthorName: "User A", Channel: domain.RCAChannelWeb,
+		CreatedAt: at(3), UpdatedAt: at(3),
+		Basis: domain.RCABasis{Display: "99.06%", Status: "R", Evidence: []string{"incident-tracker:INC-2041"}, ReportedMinutes: &mins},
+	}
+}
+
+func rcaKeys(rs []domain.CellRCA) []string {
+	out := []string{}
+	for _, r := range rs {
+		out = append(out, r.Period.String()+"/"+r.MetricKey+"/"+r.SubjectID)
+	}
+	return out
+}
+
+func rcas(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	tn := newTenant(t, s)
+	oct := month(2026, 10)
+
+	_, err := s.GetRCA(ctx, tn, "sc", "uptime", "webhooks", oct)
+	wantErr(t, err, store.ErrNotFound)
+	none, err := s.ListRCAs(ctx, tn, "sc", oct)
+	wantEmpty(t, "no notes", none, err)
+
+	n := rcaNote("sc", "uptime", "webhooks", oct, "Queue saturated after a config deploy.")
+	n.Revision = 9 // ignored
+	got, err := s.PutRCA(ctx, tn, n, 0)
+	must(t, err)
+	want := n
+	want.Revision = 1
+	wantEq(t, "create", got, want)
+	read, err := s.GetRCA(ctx, tn, "sc", "uptime", "webhooks", oct)
+	must(t, err)
+	wantEq(t, "round trip", read, want)
+
+	_, err = s.PutRCA(ctx, tn, n, 0)
+	wantErr(t, err, store.ErrConflict)
+	_, err = s.PutRCA(ctx, tn, rcaNote("sc", "uptime", "search", oct, "x"), 3)
+	wantErr(t, err, store.ErrConflict)
+
+	n.Text, n.UpdatedAt = "Queue saturated; retry worker crash loop.", at(4)
+	got, err = s.PutRCA(ctx, tn, n, 1)
+	must(t, err)
+	wantEq(t, "update revision", got.Revision, 2)
+	_, err = s.PutRCA(ctx, tn, n, 1)
+	wantErr(t, err, store.ErrConflict)
+	read, err = s.GetRCA(ctx, tn, "sc", "uptime", "webhooks", oct)
+	must(t, err)
+	wantEq(t, "updated", read.Text, "Queue saturated; retry worker crash loop.")
+	wantEq(t, "updated revision", read.Revision, 2)
+
+	wantErr(t, s.DeleteRCA(ctx, tn, "sc", "uptime", "webhooks", oct, 1), store.ErrConflict)
+	wantErr(t, s.DeleteRCA(ctx, tn, "sc", "uptime", "search", oct, 1), store.ErrNotFound)
+	if _, err := s.GetRCA(ctx, tn, "sc", "uptime", "webhooks", oct); err != nil {
+		t.Fatalf("a stale delete removed the note: %v", err)
+	}
+	must(t, s.DeleteRCA(ctx, tn, "sc", "uptime", "webhooks", oct, 2))
+	_, err = s.GetRCA(ctx, tn, "sc", "uptime", "webhooks", oct)
+	wantErr(t, err, store.ErrNotFound)
+	// A deleted note can be written again from revision 0.
+	_, err = s.PutRCA(ctx, tn, rcaNote("sc", "uptime", "webhooks", oct, "again"), 0)
+	must(t, err)
+
+	q := func(fy, i int) period.Period { return period.Period{Grain: period.Quarter, FY: fy, Index: i} }
+	h := func(fy, i int) period.Period { return period.Period{Grain: period.Half, FY: fy, Index: i} }
+	y := func(fy int) period.Period { return period.Period{Grain: period.Year, FY: fy} }
+	for _, c := range []struct {
+		metric, subject string
+		p               period.Period
+	}{
+		{"uptime", "search", oct}, {"epics_on_time", "checkout", oct},
+		{"uptime", "webhooks", month(2025, 10)}, {"uptime", "webhooks", month(2025, 11)},
+		{"uptime", "webhooks", month(2026, 11)}, {"uptime", "webhooks", month(2026, 1)},
+		{"design", "acme", q(2025, 3)}, {"design", "acme", q(2025, 4)}, {"design", "acme", q(2026, 3)}, {"design", "acme", q(2026, 4)},
+		{"roadmap", "acme", h(2026, 1)}, {"roadmap", "acme", h(2026, 2)}, {"plan", "acme", y(2025)}, {"plan", "acme", y(2026)},
+	} {
+		_, err := s.PutRCA(ctx, tn, rcaNote("sc", c.metric, c.subject, c.p, "note"), 0)
+		must(t, err)
+	}
+	_, err = s.PutRCA(ctx, tn, rcaNote("other-sc", "uptime", "webhooks", oct, "another scorecard"), 0)
+	must(t, err)
+
+	list, err := s.ListRCAs(ctx, tn, "sc", oct)
+	must(t, err)
+	wantEq(t, "one period, sorted", rcaKeys(list), []string{"2026-M10/epics_on_time/checkout", "2026-M10/uptime/search", "2026-M10/uptime/webhooks"})
+
+	list, err = s.ListRCAsRange(ctx, tn, "sc", month(2025, 11), oct)
+	must(t, err)
+	wantEq(t, "range", rcaKeys(list), []string{
+		"2025-M11/uptime/webhooks",
+		"2025-FY/plan/acme", "2025-Q4/design/acme",
+		"2026-M01/uptime/webhooks",
+		"2026-H1/roadmap/acme",
+		"2026-Q3/design/acme",
+		"2026-M10/epics_on_time/checkout", "2026-M10/uptime/search", "2026-M10/uptime/webhooks",
+	})
+	list, err = s.ListRCAsRange(ctx, tn, "sc", q(2026, 4), q(2026, 4))
+	must(t, err)
+	wantEq(t, "a quarter's range", rcaKeys(list), []string{
+		"2026-M10/epics_on_time/checkout", "2026-M10/uptime/search", "2026-M10/uptime/webhooks",
+		"2026-M11/uptime/webhooks",
+		"2026-FY/plan/acme", "2026-H2/roadmap/acme", "2026-Q4/design/acme",
+	})
+	for _, r := range list {
+		if r.ScorecardID != "sc" {
+			t.Fatalf("range listed a note of scorecard %q", r.ScorecardID)
+		}
+	}
+
+	other := newTenant(t, s)
+	_, err = s.GetRCA(ctx, other, "sc", "uptime", "search", oct)
+	wantErr(t, err, store.ErrNotFound)
+	none, err = s.ListRCAs(ctx, other, "sc", oct)
+	wantEmpty(t, "other tenant's period", none, err)
+	none, err = s.ListRCAsRange(ctx, other, "sc", month(2025, 1), month(2026, 12))
+	wantEmpty(t, "other tenant's range", none, err)
+	wantErr(t, s.DeleteRCA(ctx, other, "sc", "uptime", "search", oct, 1), store.ErrNotFound)
+	_, err = s.PutRCA(ctx, other, rcaNote("sc", "uptime", "search", oct, "theirs"), 1)
+	wantErr(t, err, store.ErrConflict)
+	read, err = s.GetRCA(ctx, tn, "sc", "uptime", "search", oct)
+	must(t, err)
+	wantEq(t, "mine kept", read.Text, "note")
 }

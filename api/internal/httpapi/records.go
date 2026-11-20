@@ -48,7 +48,81 @@ func apiRecordType(rt domain.RecordType) RecordType {
 	for src, p := range rt.TrackedFrom {
 		out.TrackedFrom[src] = p.String()
 	}
+	explains := make([]ExplainLink, 0, len(rt.Explains))
+	for _, l := range rt.Explains {
+		x := ExplainLink{ScorecardId: l.ScorecardID, MetricKey: l.MetricKey, Mode: ExplainLinkMode(l.Mode)}
+		if l.DownMeasure != "" {
+			x.DownMeasure = &l.DownMeasure
+		}
+		if l.Where != "" {
+			x.Where = &l.Where
+		}
+		explains = append(explains, x)
+	}
+	out.Explains = &explains
 	return out
+}
+
+// domainExplains converts the explain links of a request, trimmed.
+func domainExplains(in []ExplainLink) []domain.ExplainLink {
+	out := make([]domain.ExplainLink, 0, len(in))
+	for _, l := range in {
+		out = append(out, domain.ExplainLink{
+			ScorecardID: l.ScorecardId,
+			MetricKey:   l.MetricKey,
+			Mode:        string(l.Mode),
+			DownMeasure: strings.TrimSpace(derefString(l.DownMeasure)),
+			Where:       strings.TrimSpace(derefString(l.Where)),
+		})
+	}
+	return out
+}
+
+// checkExplainTargets records a problem for each explain link whose
+// scorecard does not exist, and for each down measure that no version of
+// the scorecard's metric references. A metric no version has is inert, so
+// its down measure is not checked.
+func (s *Server) checkExplainTargets(ctx context.Context, pr *problems, tenantID string, links []domain.ExplainLink) error {
+	versions := map[string][]domain.MethodologyVersion{}
+	for i, l := range links {
+		path := fmt.Sprintf("explains[%d]", i)
+		if !validID(l.ScorecardID) {
+			continue // the record type's own validation names it
+		}
+		vs, seen := versions[l.ScorecardID]
+		if !seen {
+			if _, err := s.store.GetScorecard(ctx, tenantID, l.ScorecardID); errors.Is(err, store.ErrNotFound) {
+				pr.add(path+".scorecardId", "scorecard %q does not exist", l.ScorecardID)
+				versions[l.ScorecardID] = nil
+				continue
+			} else if err != nil {
+				return err
+			}
+			var err error
+			if vs, err = s.store.ListVersions(ctx, tenantID, l.ScorecardID); err != nil {
+				return err
+			}
+			versions[l.ScorecardID] = vs
+		}
+		if l.DownMeasure == "" {
+			continue
+		}
+		known, uses := false, false
+		for _, v := range vs {
+			for _, m := range v.Content.Metrics {
+				if m.Key != l.MetricKey {
+					continue
+				}
+				known = true
+				ids, err := formula.Identifiers(m.Formula)
+				uses = uses || (err == nil && slices.Contains(ids, l.DownMeasure))
+			}
+		}
+		if known && !uses {
+			pr.add(path+".downMeasure", "%s's formula does not use %s", l.MetricKey, l.DownMeasure)
+		}
+	}
+	return nil
 }
 
 // ListRecordTypes lists the tenant's record types.
@@ -70,7 +144,7 @@ func (s *Server) ListRecordTypes(ctx context.Context, _ ListRecordTypesRequestOb
 
 // PutRecordType creates a record type (revision 0) or replaces the one the
 // client loaded. Attribute keys follow the domain rule, so camelCase is
-// allowed. Admins only.
+// allowed. An absent explains keeps the stored links. Admins only.
 func (s *Server) PutRecordType(ctx context.Context, req PutRecordTypeRequestObject) (PutRecordTypeResponseObject, error) {
 	p, err := tenantAdmin(ctx)
 	if err != nil {
@@ -106,18 +180,32 @@ func (s *Server) PutRecordType(ctx context.Context, req PutRecordTypeRequestObje
 		}
 		rt.TrackedFrom[src] = m
 	}
-	for _, e := range rt.Validate() {
-		pr.add(e.Path, "%s", e.Message)
-	}
-	if err := pr.err(); err != nil {
-		return nil, err
-	}
-
 	tenantID := p.Tenant.ID
 	before, _, err := s.recordType(ctx, tenantID, rt.ID)
 	if err != nil {
 		return nil, err
 	}
+	switch {
+	case b.Explains != nil:
+		rt.Explains = domainExplains(*b.Explains)
+	case before != nil:
+		rt.Explains = slices.Clone(before.Explains)
+	}
+	for _, e := range rt.Validate() {
+		pr.add(e.Path, "%s", e.Message)
+	}
+	if len(pr.list) == 0 {
+		for _, e := range records.ValidateExplainWhere(rt) {
+			pr.add(e.Path, "%s", e.Message)
+		}
+	}
+	if err := s.checkExplainTargets(ctx, &pr, tenantID, rt.Explains); err != nil {
+		return nil, err
+	}
+	if err := pr.err(); err != nil {
+		return nil, err
+	}
+
 	if before != nil {
 		path, msg, err := s.recordTypeEditInUse(ctx, tenantID, *before, rt)
 		if err != nil {

@@ -47,6 +47,24 @@ func TestToolSetIsReadOnlyAndExcludesPrivatePaths(t *testing.T) {
 	}
 }
 
+func TestToolSetReadsRCAsAndNeverDraftsThem(t *testing.T) {
+	catalog := []mcp.Tool{
+		tool("get_cell_rca", "GET", "/scorecards/{sc}/rca"),
+		tool("put_cell_rca", "PUT", "/scorecards/{sc}/rca"),
+		tool("delete_cell_rca", "DELETE", "/scorecards/{sc}/rca"),
+		tool("list_cell_rcas", "GET", "/scorecards/{sc}/rcas"),
+		tool("draft_cell_rca", "POST", "/scorecards/{sc}/rca/draft"),
+		tool("get_cell_rca_draft", "GET", "/scorecards/{sc}/rca/draft/{id}"),
+	}
+	var names []string
+	for _, tl := range ToolSet(catalog) {
+		names = append(names, tl.Name)
+	}
+	if want := []string{"get_cell_rca", "list_cell_rcas"}; !slices.Equal(names, want) {
+		t.Fatalf("ToolSet = %v, want %v", names, want)
+	}
+}
+
 func TestHelpToolsAreOffered(t *testing.T) {
 	defs := toolDefs(ToolSet([]mcp.Tool{tool("get_scorecard_view", "GET", "/scorecards/{sc}/view")}))
 	var names []string

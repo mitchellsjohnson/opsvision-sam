@@ -1546,3 +1546,163 @@ func TestHistoryMarksDeleted(t *testing.T) {
 		t.Errorf("a live revision carries deleted: %s", raw)
 	}
 }
+
+// ---- incidents: explains, date-times, time zones, units, fan-out -----------------------
+
+func incidentTypeBody(rev int, explains any) map[string]any {
+	b := map[string]any{
+		"id": "incident", "name": "Incident", "priorities": []string{"SEV1", "SEV2"}, "revision": rev,
+		"attributes": []map[string]string{
+			{"key": "startedAt", "name": "Started", "type": "datetime"},
+			{"key": "endedAt", "name": "Ended", "type": "datetime"},
+			{"key": "minutesDown", "name": "Minutes down", "type": "number"},
+		},
+		"trackedFrom": map[string]string{},
+	}
+	if explains != nil {
+		b["explains"] = explains
+	}
+	return b
+}
+
+type incidentTypeJSON struct {
+	Revision   int                 `json:"revision"`
+	Attributes []map[string]string `json:"attributes"`
+	Explains   []map[string]string `json:"explains"`
+}
+
+func TestRecordTypeExplainsAndDateTime(t *testing.T) {
+	e := newTestEnv(t)
+	seedRecords(t, e)
+	admin := e.tokens["t1-admin"]
+	link := map[string]string{"scorecardId": "sc", "metricKey": "defect_score", "mode": "downtime", "downMeasure": "defect_days", "where": "category != 'maintenance' && startedAt >= '2026-10-01T00:00:00Z'"}
+	var got incidentTypeJSON
+	e.expect(t, 200, admin, "PUT", "/record-types/incident", incidentTypeBody(0, []any{link}), &got)
+	if got.Revision != 1 || got.Attributes[0]["type"] != "datetime" || len(got.Explains) != 1 || got.Explains[0]["downMeasure"] != "defect_days" || got.Explains[0]["where"] != link["where"] {
+		t.Fatalf("created = %+v", got)
+	}
+	var list struct {
+		RecordTypes []incidentTypeJSON `json:"recordTypes"`
+	}
+	e.expect(t, 200, e.tokens["t1-viewer"], "GET", "/record-types", nil, &list)
+	var listed *incidentTypeJSON
+	for i := range list.RecordTypes {
+		if len(list.RecordTypes[i].Explains) > 0 {
+			listed = &list.RecordTypes[i]
+		}
+	}
+	if listed == nil || listed.Explains[0]["mode"] != "downtime" || listed.Explains[0]["scorecardId"] != "sc" {
+		t.Fatalf("listed = %+v", list.RecordTypes)
+	}
+	stored, _, err := e.api.recordType(context.Background(), "t1", "incident")
+	if err != nil || stored == nil || len(stored.Explains) != 1 || stored.Attributes[0].Type != domain.AttrDateTime {
+		t.Fatalf("stored = %+v, %v", stored, err)
+	}
+
+	// An absent explains keeps the stored links; [] removes them.
+	e.expect(t, 200, admin, "PUT", "/record-types/incident", incidentTypeBody(1, nil), &got)
+	if got.Revision != 2 || len(got.Explains) != 1 {
+		t.Fatalf("without explains = %+v", got)
+	}
+	e.expect(t, 200, admin, "PUT", "/record-types/incident", incidentTypeBody(2, []any{}), &got)
+	if got.Revision != 3 || len(got.Explains) != 0 {
+		t.Fatalf("explains [] = %+v", got)
+	}
+
+	for _, c := range []struct {
+		link map[string]string
+		path string
+	}{
+		{map[string]string{"scorecardId": "sc", "metricKey": "defect_score", "mode": "downtime", "where": "startedAt >= '2026-10-01'"}, "explains[0].where"},
+		{map[string]string{"scorecardId": "sc", "metricKey": "defect_score", "mode": "downtime", "downMeasure": "seconds_down"}, "explains[0].downMeasure"},
+		{map[string]string{"scorecardId": "sc", "metricKey": "defect_score", "mode": "sum"}, "explains[0].mode"},
+		{map[string]string{"scorecardId": "nope", "metricKey": "defect_score", "mode": "list"}, "explains[0].scorecardId"},
+		{map[string]string{"scorecardId": "sc", "metricKey": "Defect", "mode": "list"}, "explains[0].metricKey"},
+	} {
+		bad := e.expectError(t, 400, "invalid", admin, "PUT", "/record-types/incident", incidentTypeBody(3, []any{c.link}))
+		if !hasDetail(bad, c.path) {
+			t.Errorf("%v: details = %+v, want %s", c.link, bad.Error.Details, c.path)
+		}
+	}
+	// A link to a metric no version has is inert, so its down measure is not checked.
+	e.expect(t, 200, admin, "PUT", "/record-types/incident", incidentTypeBody(3, []any{
+		map[string]string{"scorecardId": "sc", "metricKey": "uptime", "mode": "downtime", "downMeasure": "seconds_down"},
+	}), nil)
+}
+
+func incidentTemplate() map[string]any {
+	return map[string]any{
+		"name": "Tracker incidents", "recordType": "incident", "source": "incident-tracker", "timeZone": "Europe/Berlin",
+		"file": map[string]any{"format": "csv", "headerRow": 1}, "fullExport": false,
+		"fields": map[string]any{
+			"externalId": map[string]any{"column": "Issue key"},
+			"title":      map[string]any{"column": "Summary"},
+			"state":      map[string]any{"column": "Status", "map": map[string]string{"Resolved": "done", "*": "open"}},
+			"subjectKey": map[string]any{"column": "Components", "separator": ","},
+			"createdAt":  map[string]any{"column": "Created", "dateFormats": []string{"2006-01-02 15:04"}},
+		},
+		"attributes": map[string]any{
+			"startedAt":   map[string]any{"column": "Incident start", "dateFormats": []string{"2006-01-02 15:04"}, "transform": "datetime"},
+			"endedAt":     map[string]any{"column": "Incident end", "dateFormats": []string{"2006-01-02 15:04"}, "transform": "datetime"},
+			"minutesDown": map[string]any{"column": "Seconds down", "unit": "s"},
+		},
+	}
+}
+
+func TestRecordsTemplateTimeZoneUnitSeparator(t *testing.T) {
+	e := newTestEnv(t)
+	seedRecords(t, e)
+	admin := e.tokens["t1-admin"]
+	e.expect(t, 200, admin, "PUT", "/record-types/incident", incidentTypeBody(0, nil), nil)
+	e.expect(t, 200, admin, "PUT", "/import-templates/incidents", map[string]any{"id": "incidents", "name": "Incidents", "profile": "records", "body": incidentTemplate()}, nil)
+	var list struct {
+		Templates []struct {
+			ID   string         `json:"id"`
+			Body map[string]any `json:"body"`
+		} `json:"templates"`
+	}
+	e.expect(t, 200, admin, "GET", "/import-templates", nil, &list)
+	if len(list.Templates) != 1 {
+		t.Fatalf("templates = %+v", list)
+	}
+	body := list.Templates[0].Body
+	fields, _ := body["fields"].(map[string]any)
+	attrs, _ := body["attributes"].(map[string]any)
+	if body["timeZone"] != "Europe/Berlin" || fields["subjectKey"].(map[string]any)["separator"] != "," || attrs["minutesDown"].(map[string]any)["unit"] != "s" {
+		t.Fatalf("body = %v", body)
+	}
+
+	// The wire types carry the new fields both ways.
+	var wire RecordTemplate
+	raw, _ := json.Marshal(incidentTemplate())
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		t.Fatal(err)
+	}
+	tpl, err := recordsTemplateOf(wire)
+	if err != nil || tpl.TimeZone != "Europe/Berlin" || tpl.Attributes["minutesDown"].Unit != "s" || tpl.Fields["subjectKey"].Separator != "," {
+		t.Fatalf("recordsTemplateOf = %+v, %v", tpl, err)
+	}
+	back, err := apiRecordTemplate(tpl)
+	if err != nil || back.TimeZone == nil || *back.TimeZone != "Europe/Berlin" || back.Attributes == nil || (*back.Attributes)["minutesDown"].Unit == nil {
+		t.Fatalf("apiRecordTemplate = %+v, %v", back, err)
+	}
+
+	for _, c := range []struct {
+		edit func(map[string]any)
+		path string
+	}{
+		{func(b map[string]any) { b["timeZone"] = "Local" }, "body.timeZone"},
+		{func(b map[string]any) { b["timeZone"] = "Mars/Olympus" }, "body.timeZone"},
+		{func(b map[string]any) {
+			b["attributes"].(map[string]any)["minutesDown"].(map[string]any)["unit"] = "days"
+		}, "body.attributes.minutesDown.unit"},
+		{func(b map[string]any) { b["attributes"].(map[string]any)["startedAt"].(map[string]any)["unit"] = "s" }, "body.attributes.startedAt.unit"},
+	} {
+		b := incidentTemplate()
+		c.edit(b)
+		got := e.expectError(t, 400, "invalid", admin, "PUT", "/import-templates/incidents", map[string]any{"id": "incidents", "name": "Incidents", "profile": "records", "body": b})
+		if !hasDetail(got, c.path) {
+			t.Errorf("details = %+v, want %s", got.Error.Details, c.path)
+		}
+	}
+}

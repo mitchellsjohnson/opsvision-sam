@@ -18,7 +18,10 @@ const mcpPath = "/v1/mcp"
 // mcpExcluded are the operations MCP does not offer as tools, by tool name
 // (the embedded spec's operationIds are capitalized by the generator).
 // Access tokens and assistant keys stay in the web app: a secret handled by
-// a tool would land in the model's context.
+// a tool would land in the model's context. Deleting an RCA note is a hard,
+// destructive write an injected incident title could steer an agent
+// towards, and an MCP client is already a model, so it needs no RCA drafts
+// run on the user's key.
 var mcpExcluded = map[string]bool{
 	"list_my_tokens":                 true,
 	"create_my_token":                true,
@@ -26,6 +29,9 @@ var mcpExcluded = map[string]bool{
 	"get_my_assistant_credential":    true,
 	"put_my_assistant_credential":    true,
 	"delete_my_assistant_credential": true,
+	"delete_cell_rca":                true,
+	"draft_cell_rca":                 true,
+	"get_cell_rca_draft":             true,
 }
 
 var mcpCatalog = sync.OnceValues(func() ([]mcp.Tool, error) {

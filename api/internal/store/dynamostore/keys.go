@@ -10,6 +10,7 @@ import (
 
 	"opsvision/internal/domain"
 	"opsvision/internal/period"
+	"opsvision/internal/store"
 )
 
 // This file is the single source of truth for the table's key layout. The
@@ -58,6 +59,7 @@ const (
 	prefixThread        = "ATHREAD#"
 	prefixThreadMsg     = "AMSG#"
 	prefixDraft         = "ADRAFT#"
+	prefixRCA           = "RCA#"
 
 	versionMarker = "#VER#"
 )
@@ -168,6 +170,29 @@ func histSK(p period.Period, measure, subject string, rev int) string {
 
 func overrideSK(p period.Period, metric, subject string) string {
 	return prefixOverride + p.String() + "#" + metric + "#" + subject
+}
+
+// rcaPK is the partition of every RCA note of one scorecard.
+func rcaPK(tid, scID string) string { return "T#" + tid + "#SC#" + scID + "#RCA" }
+
+// rcaMonth is the fiscal month a period ends in, as "YYYY-MM": RCA sort
+// keys start with it so a range of months, with every quarter, half and
+// year ending inside it, is one BETWEEN query.
+func rcaMonth(fy, m int) string { return fmt.Sprintf("%04d-%02d", fy, m) }
+
+// rcaPeriodPrefix is the SK prefix shared by the notes of one period.
+func rcaPeriodPrefix(p period.Period) string {
+	return prefixRCA + rcaMonth(store.RCAPeriodEnd(p)) + "#" + p.String() + "#"
+}
+
+func rcaSK(p period.Period, metric, subject string) string {
+	return rcaPeriodPrefix(p) + metric + "#" + subject
+}
+
+// rcaRangeBounds are inclusive SK bounds for the notes of periods ending in
+// from's first month through to's last month; '~' sorts after every period.
+func rcaRangeBounds(from, to period.Period) (lo, hi string) {
+	return prefixRCA + rcaMonth(store.RCAPeriodStart(from)) + "#", prefixRCA + rcaMonth(store.RCAPeriodEnd(to)) + "#~"
 }
 
 // auditPK is the partition of one calendar month (UTC) of audit entries.

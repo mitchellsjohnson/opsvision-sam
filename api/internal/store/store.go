@@ -405,6 +405,86 @@ type RecordStore interface {
 	ListSnapshots(ctx context.Context, tenantID, recordType string) ([]domain.Snapshot, error)
 }
 
+// RCAStore holds the RCA notes of scorecard cells, one per (scorecard,
+// period, metric, subject). A note's Revision counts its saves.
+type RCAStore interface {
+	// GetRCA returns one note; ErrNotFound when there is none.
+	GetRCA(ctx context.Context, tenantID, scorecardID, metricKey, subjectID string, p period.Period) (domain.CellRCA, error)
+	// PutRCA saves r with optimistic concurrency like PutReportSummary:
+	// expectedRevision 0 creates it with Revision 1 (ErrConflict if it
+	// exists); otherwise expectedRevision must equal the stored Revision
+	// (ErrConflict when it does not or the note is gone), which becomes
+	// expectedRevision+1. r.Revision is ignored; the returned note carries
+	// the new one.
+	PutRCA(ctx context.Context, tenantID string, r domain.CellRCA, expectedRevision int) (domain.CellRCA, error)
+	// DeleteRCA removes a note whose Revision is expectedRevision:
+	// ErrNotFound when there is none, ErrConflict when its revision differs.
+	DeleteRCA(ctx context.Context, tenantID, scorecardID, metricKey, subjectID string, p period.Period, expectedRevision int) error
+	// ListRCAs returns the notes of one period, sorted by metric then subject.
+	ListRCAs(ctx context.Context, tenantID, scorecardID string, p period.Period) ([]domain.CellRCA, error)
+	// ListRCAsRange returns, in one query, the notes of every period (of any
+	// grain) that ends within from's first month through to's last month,
+	// sorted as SortRCAs does.
+	ListRCAsRange(ctx context.Context, tenantID, scorecardID string, from, to period.Period) ([]domain.CellRCA, error)
+}
+
+// RCAPeriodEnd returns the last fiscal month of p as (fiscal year, month
+// index 1-12): a quarter's third, a half's sixth, a year's twelfth. It needs
+// no calendar, because periods are numbered in fiscal months.
+func RCAPeriodEnd(p period.Period) (fy, month int) {
+	switch p.Grain {
+	case period.Quarter:
+		return p.FY, p.Index * 3
+	case period.Half:
+		return p.FY, p.Index * 6
+	case period.Year:
+		return p.FY, 12
+	}
+	return p.FY, p.Index
+}
+
+// RCAPeriodStart returns the first fiscal month of p as (fiscal year, month
+// index 1-12).
+func RCAPeriodStart(p period.Period) (fy, month int) {
+	switch p.Grain {
+	case period.Quarter:
+		return p.FY, p.Index*3 - 2
+	case period.Half:
+		return p.FY, p.Index*6 - 5
+	case period.Year:
+		return p.FY, 1
+	}
+	return p.FY, p.Index
+}
+
+// RCAInRange reports whether p ends within from's first month through to's
+// last month, the range ListRCAsRange lists.
+func RCAInRange(p, from, to period.Period) bool {
+	ord := func(fy, m int) int { return fy*12 + m }
+	end := ord(RCAPeriodEnd(p))
+	return end >= ord(RCAPeriodStart(from)) && end <= ord(RCAPeriodEnd(to))
+}
+
+// SortRCAs sorts notes by the month their period ends, then by the period
+// string (2026-FY, 2026-H2, 2026-M12, 2026-Q4 for periods ending together),
+// then metric, then subject. It is the order of the DynamoDB sort key.
+func SortRCAs(rs []domain.CellRCA) {
+	slices.SortFunc(rs, func(a, b domain.CellRCA) int {
+		afy, am := RCAPeriodEnd(a.Period)
+		bfy, bm := RCAPeriodEnd(b.Period)
+		if c := (afy*12 + am) - (bfy*12 + bm); c != 0 {
+			return c
+		}
+		if c := strings.Compare(a.Period.String(), b.Period.String()); c != 0 {
+			return c
+		}
+		if c := strings.Compare(a.MetricKey, b.MetricKey); c != 0 {
+			return c
+		}
+		return strings.Compare(a.SubjectID, b.SubjectID)
+	})
+}
+
 // Store is the full persistence surface.
 type Store interface {
 	TenantStore
@@ -421,6 +501,7 @@ type Store interface {
 	AssistantStore
 	AssistantThreadStore
 	AssistantDraftStore
+	RCAStore
 }
 
 // SortDrafts sorts drafts in list order: newest CreatedAt first, then ID
