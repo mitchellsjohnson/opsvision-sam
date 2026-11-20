@@ -32,6 +32,26 @@ describe('ItemName', () => {
     expect(tail!.className).toContain('max-w-[calc(100%-4ch)]')
   })
 
+  it('the gap before the tail is drawn at the end of the head, so a cut head’s ellipsis takes it: no double gap', () => {
+    const { container } = render(<ItemName name={NAME} />)
+    const root = container.querySelector('[data-name]')!
+    const [head] = [...root.children] as HTMLElement[]
+    // `[data-name-head]::after` (index.css) draws a no-break space inside the truncating head.
+    expect(head!.hasAttribute('data-name-head')).toBe(true)
+    expect(head!.className).toContain('truncate')
+    // The tail's own leading space stays in the text, not drawn.
+    const gap = root.querySelector('[data-gap]')!
+    expect(gap.textContent).toBe(' ')
+    expect(gap.className).toContain('hidden')
+    expect(root.textContent).toBe(NAME)
+  })
+
+  it('a name with no head draws no gap', () => {
+    const { container } = render(<ItemName name="Edge Cache" />)
+    expect(container.querySelector('[data-name-head]')).toBeNull()
+    expect(container.querySelector('[data-gap]')).toBeNull()
+  })
+
   it('a name with no head is all tail, truncated at its end', () => {
     const { container } = render(<ItemName name="Edge Cache" />)
     const root = container.querySelector('[data-name]')!

@@ -1,7 +1,8 @@
 import type { components } from '../../../api/schema'
 import type { Move } from '../charts/chartTheme'
 import { headerChange } from '../charts/points'
-import type { Column } from '../columns'
+import { monthsOf, parsePeriod } from '../../../lib/period'
+import { endOrdinal, type Column } from '../columns'
 import { cellKey } from '../viewHelpers'
 import { cellReported, type StatusScaleEntry } from './statusAtScope'
 import { buildBoardRow, type BoardCell } from './statusBoard'
@@ -98,7 +99,7 @@ export function buildItemRows(
       if (!reported) {
         for (let i = columns.length - 2; i >= 0; i--) {
           const c = r.cells.find((x) => cellKey(x) === columns[i]!.key)
-          if (c && c.naReason === '' && c.value != null) {
+          if (c && c.naReason === '' && (c.value != null || c.status !== '')) {
             lastReported = { label: columns[i]!.label, fullLabel: columns[i]!.fullLabel, display: c.display, index: i }
             break
           }
@@ -122,6 +123,25 @@ export function buildItemRows(
         lastReported,
       }
     })
+}
+
+/**
+ * Whether a short column label (`Q3`, `Sep`) could name two periods of the
+ * window: it repeats in `columns`, or they span more than 12 months. Then a
+ * label naming one of them carries the year (`Last Q3 FY2025`).
+ */
+export function labelsNeedYear(columns: Column[]): boolean {
+  const shown = columns.filter((c) => !c.ytd)
+  if (new Set(shown.map((c) => c.label)).size < shown.length) return true
+  const first = parsePeriod(shown[0]?.period)
+  const last = parsePeriod(shown[shown.length - 1]?.period)
+  if (!first || !last) return false
+  return endOrdinal(last) - endOrdinal(first) + monthsOf(first).length > 12
+}
+
+/** `Sep`, or `Sep 2025` / `Q3 FY2025` when the window's labels need the year. */
+export function lastReportedLabel(last: NonNullable<ItemRow['lastReported']>, columns: Column[]): string {
+  return labelsNeedYear(columns) ? last.fullLabel : last.label
 }
 
 const byName = (a: ItemRow, b: ItemRow) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id)

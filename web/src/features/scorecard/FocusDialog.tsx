@@ -12,7 +12,7 @@ import { Breakdown } from './Breakdown'
 import { defaultStatusScale, MOVE_CLASS } from './charts/chartTheme'
 import { FOCUS_CHART_HEIGHT, MetricChart, type ChartParts } from './charts/MetricChart'
 import { formatMoneyCompact } from './charts/moneyPlan'
-import { buildPoints, headerChange } from './charts/points'
+import { buildPoints, halfChange, headerChange } from './charts/points'
 import { RANGES, rangeChange, rangeColumns, rangeMonths, type RangeKey } from './charts/ranges'
 import { multiSeriesHeader } from './charts/seriesLayout'
 import { isSparse } from './charts/sparse'
@@ -41,7 +41,7 @@ import {
   type ItemSort,
 } from './logic/itemGrid'
 import { defaultLayout } from './logic/layout'
-import { nounForms, nounFromId, type NounForms } from './logic/nouns'
+import { nounForms, nounFromId, valueHeader, type NounForms } from './logic/nouns'
 import { cellReported, statusAtScope, type StatusScaleEntry } from './logic/statusAtScope'
 import { buildBoardRow } from './logic/statusBoard'
 import { columnUnit, sinceText } from './logic/statusText'
@@ -135,11 +135,6 @@ function ItemNoun({ metric, children }: { metric: Metric; children: (noun: NounF
 }
 
 const capitalized = (text: string) => text.charAt(0).toUpperCase() + text.slice(1).toLowerCase()
-
-/** The value column's header in a drill-in's monthly values: the metric name's last word, `Uptime`. */
-function unitWord(metricName: string): string {
-  return capitalized(metricName.trim().split(/\s+/).at(-1) ?? 'Value')
-}
 
 /**
  * A sparse ratio metric's parts column (§7): the denominator measure's first word
@@ -442,7 +437,7 @@ function MetricFocus({
   const chartChildren = !scopeReported && reportedChildren.length > 0
   const chartRows = drillRow ? [drillRow.row] : chartChildren ? reportedChildren : chartRow ? [chartRow] : []
   // The board row and coarse status here keep the old noun strings; the value row's caption and worst-line count use `withNouns`.
-  const noun = head?.chartKind === 'uptime' ? 'services' : scope && children.length > 0 ? 'segments' : 'items'
+  const noun = children.some((ch) => ch.subjectKind === 'item') ? 'items' : scope && children.length > 0 ? 'segments' : 'items'
   const scopeStatus = (forms: NounForms) => statusAtScope({ scope: scope ?? { cells: [] }, children, columnKey, scale, noun: forms })
   const atScope = head ? scopeStatus(nounForms(undefined, 'item')) : null
 
@@ -667,7 +662,7 @@ function MetricFocus({
       }).cells
     : []
   const since = sinceText(boardCells, boardCells.length - 1, trendColumns, statusLabel)
-  const change = scope && cell?.display ? headerChange(scope, cell, fy) : null
+  const change = scope && cell?.display ? halfChange(headerChange(scope, cell, fy), columnKey) : null
   const goal = head && cell?.target != null ? formatMetricValue(head.format, cell.target) : ''
   const ytd = scope?.cells.find((c) => c.ytd && c.period === selectedColumn?.period)?.display ?? ''
   const unitOf = (measure: string) => versionContent?.measures.find((m) => m.key === measure)?.unit ?? ''
@@ -985,7 +980,7 @@ function MetricFocus({
             columns={trendColumns}
             scale={statusColors}
             format={head.format}
-            valueLabel={unitWord(head.metricName)}
+            valueLabel={valueHeader(head.metricName)}
             open={monthsOpen}
             onOpenChange={setMonthsOpen}
           />

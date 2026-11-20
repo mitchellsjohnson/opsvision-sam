@@ -6,17 +6,17 @@ import { LayoutDashboard } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { keys, useItemKinds, useMe, useOrgLevels, useOrgUnits, useVersions, useView } from '../../api/queries'
 import type { components } from '../../api/schema'
-import { lastMonth, monthLabel, monthsOf, parent, parsePeriod, periodLabel, prev, type Grain, type Period } from '../../lib/period'
+import { lastMonth, monthLabel, monthsOf, parent, parsePeriod, periodLabel, type Grain, type Period } from '../../lib/period'
 import { StatusChip } from '../../ui/status'
 import { usePeriodState } from '../../shell/usePeriodState'
 import { NeedsAttention, type AttentionMeta } from './AttentionCard'
 import { buildTrendColumns, shortLabel, type Column } from './columns'
 import { formatMetricValue } from './format'
 import { needsAttention } from './logic/needsAttention'
-import { chartTheme, defaultStatusScale, MOVE_CLASS, type Move } from './charts/chartTheme'
+import { chartTheme, defaultStatusScale, MOVE_CLASS } from './charts/chartTheme'
 import { MetricChart } from './charts/MetricChart'
 import { formatMoneyCompact, overPlanPhrase } from './charts/moneyPlan'
-import { buildPoints, headerChange } from './charts/points'
+import { buildPoints, halfChange, headerChange } from './charts/points'
 import { multiSeriesHeader, noTotalNote } from './charts/seriesLayout'
 import { versionBoundaries } from './charts/versionMarkers'
 import { LAYOUT_BUTTON } from './CustomizeBar'
@@ -71,14 +71,6 @@ function WithItemKinds({ children }: { children: (kindName: (id: string | undefi
 function ItemKindsLoader() {
   useItemKinds()
   return null
-}
-
-/** `vs H2 FY25`: a half's change names the half it compares with in full, since there are so few (§5.2). */
-function halfChange(change: { text: string; move: Move } | null, counted: string): { text: string; move: Move } | null {
-  const p = parsePeriod(counted)
-  if (!change || p?.grain !== 'half') return change
-  const before = prev(p)
-  return { ...change, text: change.text.replace(/ vs H\d$/, ` vs H${before.index} FY${String(before.fy).slice(-2)}`) }
 }
 
 const NO_KINDS = () => undefined

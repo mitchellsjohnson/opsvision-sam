@@ -1,4 +1,5 @@
 import type { components } from '../../../api/schema'
+import { parsePeriod, prev } from '../../../lib/period'
 import type { Column } from '../columns'
 import { changeText, metricDecimals, overrideSentence } from '../format'
 import { cellKey } from '../viewHelpers'
@@ -60,6 +61,14 @@ export function buildPoints(row: ViewRow, columns: Column[], fyStart: number): C
 }
 
 /** The current period's change and which way it moved the value, judged by the metric's direction. */
+/** `vs H2 FY25`: a half's change names the half it compares with in full, since there are so few (§5.2). */
+export function halfChange(change: { text: string; move: Move } | null, counted: string): { text: string; move: Move } | null {
+  const p = parsePeriod(counted)
+  if (!change || p?.grain !== 'half') return change
+  const before = prev(p)
+  return { ...change, text: change.text.replace(/ vs H\d$/, ` vs H${before.index} FY${String(before.fy).slice(-2)}`) }
+}
+
 export function headerChange(row: ViewRow, cell: CellT | undefined, fyStart: number): { text: string; move: Move } | null {
   if (!cell || cell.change === null) return null
   const text = cellChange(row, cell, fyStart)

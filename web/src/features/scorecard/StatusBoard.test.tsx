@@ -244,7 +244,7 @@ describe('StatusBoard', () => {
     expect(within(row).getByText('worst of 21 services · 3 not reported')).toBeTruthy()
   })
 
-  it('on a phone, the stacked row names the worst item beside its value', () => {
+  it('on a phone, the stacked row gives the worst item its own line under the metric name', () => {
     measuredAt(262)
     const uptime = boardRow(
       'uptime',
@@ -253,12 +253,44 @@ describe('StatusBoard', () => {
       { worst: { name: 'Webhooks', display: '99.06%' }, caption: 'worst of 21 services' },
     )
     renderBoard({ rows: [uptime] })
-    const value = within(screen.getByTestId('name-row-uptime')).getByTestId('stacked-value')
-    expect(value.textContent).toBe('Webhooks99.06%')
-    // The item's name needs more room than a value alone; the metric's name wraps beside it.
-    expect(value.className).toContain('max-w-[60%]')
-    expect(within(value).getByText('99.06%').className).toContain('shrink-0')
-    expect(within(value).getByText('Webhooks').className).toContain('truncate')
+    const nameRow = screen.getByTestId('name-row-uptime')
+    expect(within(nameRow).getByTestId('stacked-value').textContent).toBe('99.06%')
+    const worst = within(nameRow).getByTestId('stacked-worst')
+    expect(worst.textContent).toBe('Webhooks · worst of 21 services')
+    expect(worst.querySelector('[data-name]')!.textContent).toBe('Webhooks')
+  })
+
+  it('at 360 the worst deployment keeps its ending and the count on its own line', () => {
+    measuredAt(310)
+    render(
+      <Tooltip.Provider>
+        <StatusBoard label="12-month status" columns={MONTHS} rows={[deploymentsRow()]} scale={DEPLOYMENT_SCALE} onOpen={vi.fn()} />
+      </Tooltip.Provider>,
+    )
+    const nameRow = screen.getByTestId('name-row-deployment_uptime')
+    expect(within(nameRow).getByTestId('stacked-value').textContent).toBe('99.63%')
+    const worst = within(nameRow).getByTestId('stacked-worst')
+    const name = worst.querySelector<HTMLElement>('[data-name]')!
+    expect(name.textContent).toBe('Notification Relay - Multi-Region Active')
+    expect(name.lastElementChild!.textContent).toBe(' - Multi-Region Active')
+    const count = name.nextElementSibling as HTMLElement
+    expect(count.textContent).toBe(' · 1 of 21 Red')
+    expect(count.className).toContain('shrink-0')
+  })
+
+  it('a metric that stopped reporting reads Last Jul 77% in Current, not No data', () => {
+    const stopped = boardRow(
+      'nps',
+      'Net promoter score',
+      MONTHS.map((c, i) => (i <= 8 ? status(c, 'R', '77%') : empty(c, 'missing'))),
+    )
+    renderBoard({ rows: [stopped] })
+    const current = screen.getByTestId('ribbon-nps').querySelector('td:last-child')!
+    expect(current.textContent).toBe('Last Jul 77%')
+    cleanup()
+    measuredAt(262)
+    renderBoard({ rows: [stopped] })
+    expect(within(screen.getByTestId('name-row-nps')).getByTestId('stacked-value').textContent).toBe('Last Jul 77%')
   })
 
   it('shortens a fiscal year header too narrow for its full name, keeping the full name for screen readers', () => {
@@ -350,7 +382,7 @@ describe('StatusBoard', () => {
     measuredAt(936)
     const uptime = boardRow('uptime', 'Uptime', MONTHS.map((c) => status(c, 'R')), {
       current: '',
-      worst: { name: 'Webhooks', display: '99.06%', of: { same: 1, total: 24, notReported: 0 } },
+      worst: { name: 'Ledger', display: '99.06%', of: { same: 1, total: 24, notReported: 0 } },
     })
     render(
       <Tooltip.Provider>
@@ -358,7 +390,7 @@ describe('StatusBoard', () => {
       </Tooltip.Provider>,
     )
     const current = screen.getByTestId('ribbon-uptime').querySelector('td:last-child')!
-    expect([...current.children].map((l) => l.textContent)).toEqual(['99.06%', 'Webhooks · 1 of 24 Red'])
+    expect([...current.children].map((l) => l.textContent)).toEqual(['99.06%', 'Ledger · 1 of 24 Red'])
   })
 
   it('a one-column fiscal year reads in its short form, however wide the column', () => {

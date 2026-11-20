@@ -6,8 +6,8 @@ import { textWidth, uiFont, useFontsReady } from '../../ui/textWidth'
 import { useElementWidth } from '../../ui/useElementWidth'
 import { chartTheme, statusFill } from './charts/chartTheme'
 import type { Column } from './columns'
-import { groupItems, itemSummary, tileExceptions, type ItemRow } from './logic/itemGrid'
-import { itemGridLayout } from './logic/itemGridLayout'
+import { groupItems, itemSummary, labelsNeedYear, lastReportedLabel, tileExceptions, type ItemRow } from './logic/itemGrid'
+import { CELL_MIN, itemGridLayout } from './logic/itemGridLayout'
 import { countNoun, type NounForms } from './logic/nouns'
 import { columnUnit, sinceText, thresholdText } from './logic/statusText'
 import { TileFrame } from './TileFrame'
@@ -19,14 +19,15 @@ type StatusRule = components['schemas']['StatusRule']
 /** Rows pad 6px each side inside the tile. */
 const ROW_PAD = 12
 const MAX_ROWS = 5
-/** Tiles narrower than this (phones) stack each row: name and value, the cells below. */
-const STACK_BELOW = 400
+/** Tiles narrower than this (phones) stack each row: name and value, the cells below. A half-width tile at 1024 is 398px. */
+const STACK_BELOW = 360
 /** The name column's floor before the tile gives up months for it. */
 const NAME_FLOOR = 200
-/** Windows longer than this name the year in `Last Dec 2025`. */
-const YEAR_AFTER = 12
+/** A tile too wide to stack may give its name this little room, so 6 months still fit beside it. */
+const NAME_FLOOR_MIN = 140
+const INLINE_MONTHS = 6
 
-/** A stopped row's value: `Last Sep`; with the year in a window longer than a year. */
+/** A stopped row's value: `Last Sep`; with the year when the window's labels need it (`labelsNeedYear`). */
 function lastText(r: ItemRow, long: boolean): string {
   return r.lastReported ? `Last ${long ? r.lastReported.fullLabel : r.lastReported.label}` : ''
 }
@@ -76,7 +77,7 @@ export function ItemSummaryTile({ head, rows, columns, scale, direction, noun, r
   const selected = columns[columns.length - 1]
   const unit = columnUnit(selected, 1)
 
-  const long = columns.length > YEAR_AFTER
+  const long = labelsNeedYear(columns)
   const fontsReady = useFontsReady()
 
   const summary = itemSummary(rows, scale)
@@ -141,8 +142,9 @@ export function ItemSummaryTile({ head, rows, columns, scale, direction, noun, r
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `fontsReady` asks for a new measurement.
   }, [rows, columns, direction, scale, bestKey, long, fontsReady])
-  const layout = itemGridLayout(width > 0 ? width - ROW_PAD : 0, columns.length, needs, {
-    nameFloor: NAME_FLOOR,
+  const inner = width > 0 ? width - ROW_PAD : 0
+  const layout = itemGridLayout(inner, columns.length, needs, {
+    nameFloor: Math.max(NAME_FLOOR_MIN, Math.min(NAME_FLOOR, inner - INLINE_MONTHS * CELL_MIN - needs.value)),
     stackBelow: STACK_BELOW - ROW_PAD,
   })
   const offset = columns.length - layout.count
@@ -158,7 +160,7 @@ export function ItemSummaryTile({ head, rows, columns, scale, direction, noun, r
     if (r.reported) return `Open ${r.name} trend: ${r.display}, ${r.status ? (statusLabel(r.status) ?? r.status) : 'not rated'}`
     if (r.current.kind === 'na') return `Open ${r.name} trend: not applicable this ${unit}${r.current.naReason ? `, ${r.current.naReason}` : ''}`
     const last = r.lastReported
-      ? `last ${r.lastReported.label} ${r.lastReported.display}`
+      ? `last ${[lastReportedLabel(r.lastReported, columns), r.lastReported.display].filter(Boolean).join(' ')}`
       : `no reports in ${columns.length} ${columnUnit(selected, columns.length)}`
     return `Open ${r.name} trend: not reported this ${unit}, ${last}`
   }

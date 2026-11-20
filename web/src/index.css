@@ -15,6 +15,11 @@
   }
 }
 
+/* ItemName draws the gap before its tail at the end of the head, so a cut head's ellipsis takes the gap with it. */
+[data-name-head]::after {
+  content: '\00a0';
+}
+
 /* A new card rises into place; people who ask for less motion get none. */
 @media (prefers-reduced-motion: no-preference) {
   .ov-enter {

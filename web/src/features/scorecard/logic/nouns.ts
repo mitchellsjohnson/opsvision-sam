@@ -51,3 +51,17 @@ export function nounFromId(id: string): NounForms {
 export function countNoun(n: number, forms: NounForms): string {
   return `${n} ${n === 1 ? forms.one : forms.many}`
 }
+
+const JOINING = new Set(['per', 'of', 'on', 'vs', 'versus', 'in', 'for', 'to', 'by', 'at', 'from', 'with', 'within'])
+
+/**
+ * A column header for a metric's values: the name's last word (`Deployment
+ * uptime` → `Uptime`), or `Value` when a joining word comes before it
+ * (`Incidents per service`), where the last word does not name the value.
+ */
+export function valueHeader(metricName: string): string {
+  const words = metricName.trim().split(/\s+/).filter(Boolean)
+  const last = words.at(-1)
+  if (!last || words.slice(1).some((w) => JOINING.has(w.toLowerCase()))) return 'Value'
+  return last.charAt(0).toUpperCase() + last.slice(1).toLowerCase()
+}

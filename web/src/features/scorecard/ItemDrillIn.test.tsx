@@ -5,7 +5,7 @@ import { MemoryRouter } from 'react-router'
 import { describe, expect, it, vi } from 'vitest'
 import { axe } from 'vitest-axe'
 import { DEPLOYMENT_NOUN, DEPLOYMENT_SCALE, deploymentGroup, deploymentRows } from '../../test/deploymentFixtures'
-import { buildMonthTrendColumns } from './columns'
+import { buildMonthTrendColumns, buildTrendColumns } from './columns'
 import { ItemDrillIn, type ItemDrillInProps } from './ItemDrillIn'
 import { buildItemRows } from './logic/itemGrid'
 
@@ -40,6 +40,20 @@ function draw(over: Partial<ItemDrillInProps> = {}) {
   )
   return { ...utils, onStep }
 }
+
+describe('ItemDrillIn value row', () => {
+  it('quarter view: a stopped item names the year of a repeated quarter', () => {
+    const q = buildTrendColumns('2026-Q3', 1)
+    const quarterRows = deploymentRows(columns).map((r) => ({
+      ...r,
+      frequency: 'quarterly' as const,
+      cells: q.map((c, i) => ({ ...r.cells[0]!, period: c.period, value: i === 3 ? 99.98 : null, display: i === 3 ? '99.98%' : '', status: i === 3 ? 'G' : '' })),
+    }))
+    const partner = buildItemRows(quarterRows, q, DEPLOYMENT_SCALE, deploymentGroup, 1).find((r) => r.id === 'dep-partner-sandbox')!
+    draw({ head: quarterRows[0]!, row: partner, columns: q, position: { index: null, total: 0 } })
+    expect(screen.getByTestId('drill-value-row').textContent).toContain('Last Q3 FY2025 · 99.98%')
+  })
+})
 
 describe('ItemDrillIn stepper', () => {
   it('names the neighbours, shows the position and steps on press', async () => {

@@ -24,7 +24,7 @@ import { textWidth, uiFont, useFontsReady } from '../../ui/textWidth'
 import { useElementWidth } from '../../ui/useElementWidth'
 import { chartTheme } from './charts/chartTheme'
 import type { Column } from './columns'
-import { filterItems, groupItems, itemSummary, type ItemRow, type ItemSort } from './logic/itemGrid'
+import { filterItems, groupItems, itemSummary, labelsNeedYear, type ItemRow, type ItemSort } from './logic/itemGrid'
 import { CHIP_MD_WIDTH, itemGridLayout, type ItemGridNeeds } from './logic/itemGridLayout'
 import { countNoun, nounForms, type NounForms } from './logic/nouns'
 import { cellName, fiscalGroups, streakAt } from './logic/statusBoard'
@@ -40,8 +40,6 @@ const NARROW = 640
 const EXTRA_WIDTH = 112
 /** The filter appears once there are more items than fit in a glance. */
 const FILTER_MIN = 12
-/** Windows longer than this name the year in `Last Dec 2025`. */
-const YEAR_AFTER = 12
 
 /** Each item's org unit name (`useItems` + `useOrgUnits`); `Unassigned` when it has none, '' until known. */
 export function useItemGroups(): (itemId: string) => string {
@@ -80,7 +78,7 @@ function notReportedText(r: ItemRow, long: boolean, stacked: boolean): string {
   if (r.current.kind === 'na') return 'n/a'
   const last = r.lastReported
   if (!last) return ''
-  return `Last ${long ? last.fullLabel : last.label}${stacked ? '' : ` ${last.display}`}`
+  return `Last ${long ? last.fullLabel : last.label}${stacked || !last.display ? '' : ` ${last.display}`}`
 }
 
 /** Each column's need in px (§2.2), measured from the texts the rows will show. */
@@ -420,7 +418,7 @@ export function ItemGrid({
     [measure],
   )
   const narrow = width > 0 && width < NARROW
-  const long = columns.length > YEAR_AFTER
+  const long = labelsNeedYear(columns)
   const fontsReady = useFontsReady()
   const groupNoun = useGroupNoun(rows)
   // Measured once per set of texts (and again once web fonts load), not on every filter keystroke.

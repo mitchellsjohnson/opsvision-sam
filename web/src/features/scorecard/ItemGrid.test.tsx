@@ -507,6 +507,28 @@ describe('ItemGrid: the 21 deployments', () => {
     expect(valueOf(long, 'dep-search-legacy')).toBe('Last Dec 2025 99.20%')
   })
 
+  it('quarter view: a repeated quarter carries its year (Last Q3 FY2025)', () => {
+    width.value = 1294
+    const q = buildTrendColumns('2026-Q3', 1)
+    const quarterly = (id: string, name: string, values: (number | null)[]): ViewRow => ({
+      ...service(id, name, null),
+      frequency: 'quarterly',
+      cells: q.map((c, i) => cellOf(id, c.period, values[i] ?? null)),
+    })
+    const rows = buildItemRows(
+      [
+        quarterly('dep-pay-eu', 'Payments Gateway - EU Region Primary', [100, 100, 100, 100, 100, 100, 100, 99.99]),
+        quarterly('dep-partner', 'Partner API Gateway - Sandbox Environment', [99.98, 99.98, 99.98, 99.98]),
+      ],
+      q,
+      DEPLOYMENT_SCALE,
+      deploymentGroup,
+      1,
+    )
+    renderDeployments({ rows, cols: q })
+    expect(valueOf(screen.getByRole('grid'), 'dep-partner')).toBe('Last Q3 FY2025 99.98%')
+  })
+
   it('silent group is last and collapsed; Show opens it and keeps focus on the button', async () => {
     width.value = 1294
     renderDeployments()

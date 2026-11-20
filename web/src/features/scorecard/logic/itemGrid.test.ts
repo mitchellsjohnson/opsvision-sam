@@ -6,6 +6,7 @@ import {
   buildItemRows,
   filterItems,
   itemSummary,
+  labelsNeedYear,
   parseItemSort,
   partitionItems,
   sortItems,
@@ -99,6 +100,27 @@ describe('buildItemRows', () => {
     const rs = rows()
     expect(rs.find((r) => r.id === 'push')).toMatchObject({ reported: false, status: '', lastReported: { label: 'Sep', display: '99.98%' } })
     expect(rs.find((r) => r.id === 'report')).toMatchObject({ reported: false, lastReported: null })
+  })
+
+  it('not reported: a status with no value counts as the last report', () => {
+    const statusOnly = item('flags', 'Feature Flags', null, null, { '2026-M08': [99.95, ''] })
+    Object.assign(statusOnly.cells.find((c) => c.period === '2026-M08')!, { value: null })
+    const [r] = buildItemRows([statusOnly], columns, scale, () => 'Platform', 1)
+    expect(r!.lastReported).toMatchObject({ label: 'Aug', display: '', index: 9 })
+  })
+})
+
+describe('labelsNeedYear', () => {
+  it('12 months, or 4 quarters with no repeat: the short label is enough', () => {
+    expect(labelsNeedYear(buildTrendColumns('2026-M10', 1))).toBe(false)
+    expect(labelsNeedYear(buildTrendColumns('2026-Q3', 1).slice(-4))).toBe(false)
+  })
+
+  it('a repeated short label, or more than 12 months: the label carries the year', () => {
+    expect(labelsNeedYear(buildTrendColumns('2026-Q3', 1))).toBe(true)
+    expect(labelsNeedYear(buildMonthTrendColumns('2026-M10', 13, 1))).toBe(true)
+    expect(labelsNeedYear(buildMonthTrendColumns('2026-M10', 24, 1))).toBe(true)
+    expect(labelsNeedYear(buildTrendColumns('2026-H2', 1))).toBe(true)
   })
 })
 

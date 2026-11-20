@@ -1,15 +1,22 @@
 import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { axe } from 'vitest-axe'
 import type { components } from '../../api/schema'
 import { AttentionCard, NeedsAttention, type AttentionMeta } from './AttentionCard'
+import { chartTheme } from './charts/chartTheme'
 import { buildTrendColumns } from './columns'
 import type { RankedItem } from './logic/needsAttention'
 import type { BoardCell } from './logic/statusBoard'
 
 type StatusLevel = components['schemas']['StatusLevel']
+
+/** The mini board's measured width; 0 (not measured) unless a test sets it. */
+const width = vi.hoisted(() => ({ value: 0 }))
+vi.mock('../../ui/useElementWidth', () => ({
+  useElementWidth: () => [() => {}, width.value],
+}))
 
 const SCALE: StatusLevel[] = [
   { key: 'G', label: 'Green', color: '#137A3A', rank: 1 },
@@ -163,6 +170,75 @@ describe('AttentionCard', () => {
     expect(names[2]!.lastElementChild!.className).toContain('whitespace-pre')
     expect(board.querySelector('[title]')).toBeNull()
     expect(within(card).getByTestId('attention-why').textContent).toBe('Webhooks: Red in 4 of the last 12 months')
+  })
+
+  describe('mini board fits its card', () => {
+    const LONG: AttentionMeta['items'] = {
+      worst: { name: 'Search Indexer - Production Cluster A-1', display: '99.20%', status: 'R' },
+      distribution: '8 of 21 Green · ◆ 1 Red · 12 not reported',
+      rows: [
+        { id: 'a1', name: 'Search Indexer - Production Cluster A-1', display: '99.20%', cells: RED_FROM_JUL },
+        { id: 'eu', name: 'Payments Gateway - EU Region Primary', display: '99.85%', cells: RED_FROM_JUL },
+        { id: 'web', name: 'Webhook Dispatcher - US Region Primary', display: '99.87%', cells: RED_FROM_JUL },
+      ],
+      why: 'Search Indexer - Production Cluster A-1: Red in 4 of the last 12 months',
+    }
+    const renderLong = () =>
+      renderCard({
+        item: ranked({ metricKey: 'uptime', name: 'Deployment uptime', reason: '1 deployment Red' }),
+        meta: { ...META, items: LONG, trend: null, why: null, threshold: '' },
+      })
+    const px = (template: string) => template.split(' ').map((t) => Number(/^(\d+)px$/.exec(t)?.[1] ?? NaN))
+
+    afterEach(() => {
+      width.value = 0
+    })
+
+    it('a 458px board keeps a name column of at least 140px and halves to the last 6 months', () => {
+      width.value = 458
+      renderLong()
+      const board = screen.getByTestId('attention-mini-board')
+      expect(board.dataset.stacked).toBe('false')
+      const rows = board.querySelectorAll('[data-mini-row]')
+      expect(rows).toHaveLength(3)
+      const cols = px((rows[0] as HTMLElement).style.gridTemplateColumns)
+      expect(cols[0]).toBeGreaterThanOrEqual(140)
+      expect(cols.reduce((a, b) => a + b, 0)).toBe(458)
+      for (const r of rows) expect(r.querySelectorAll('[data-kind]')).toHaveLength(6)
+    })
+
+    it('a 240px board stacks: name and value on a line, 6 cells below, each wide enough for its letter', () => {
+      width.value = 240
+      renderLong()
+      const board = screen.getByTestId('attention-mini-board')
+      expect(board.dataset.stacked).toBe('true')
+      for (const r of board.querySelectorAll('[data-mini-row]')) {
+        const cells = r.querySelector('[data-cells]') as HTMLElement
+        expect(cells.querySelectorAll('[data-kind]')).toHaveLength(6)
+        const [cell] = px(cells.style.gridTemplateColumns.replace(/repeat\(\d+, (\d+px)\)/, '$1'))
+        expect(cell).toBeGreaterThanOrEqual(18)
+        expect(cells.textContent).toBe('YYRRRR')
+      }
+    })
+
+    it('cells too narrow for a letter draw the shape only', () => {
+      width.value = 12
+      renderLong()
+      const cells = screen.getByTestId('attention-mini-board').querySelector('[data-cells]')!
+      expect(cells.textContent).toBe(chartTheme(SCALE, 'R').shape)
+    })
+
+    it('the Worst name is one line through ItemName, never broken inside a word', () => {
+      width.value = 458
+      renderLong()
+      const value = screen.getByTestId('attention-value')
+      const name = value.querySelector('[data-name]')!
+      expect(name.textContent).toBe('Search Indexer - Production Cluster A-1')
+      expect(name.lastElementChild!.textContent).toBe(' - Production Cluster A-1')
+      expect(value.querySelector('.break-words')).toBeNull()
+      // On a narrow card the name takes its own line under `Worst` rather than shrink below 16rem.
+      expect(value.querySelector('[data-worst-name]')!.className).toContain('min-w-[min(100%,16rem)]')
+    })
   })
 
   it('has no axe violations, full or compact', async () => {

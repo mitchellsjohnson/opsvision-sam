@@ -9,7 +9,7 @@ import { buildPoints } from './charts/points'
 import { RatioChart } from './charts/RatioChart'
 import type { VersionMarker } from './charts/versionMarkers'
 import type { Column } from './columns'
-import { ITEM_PARAM, type ItemRow } from './logic/itemGrid'
+import { ITEM_PARAM, lastReportedLabel, type ItemRow } from './logic/itemGrid'
 import type { NounForms } from './logic/nouns'
 import { columnUnit, sinceText, thresholdText } from './logic/statusText'
 
@@ -224,7 +224,7 @@ export function ItemDrillIn({
               {row.current.kind === 'na'
                 ? row.current.naReason
                 : row.lastReported
-                  ? `Last ${row.lastReported.label} · ${row.lastReported.display}`
+                  ? [`Last ${lastReportedLabel(row.lastReported, columns)}`, row.lastReported.display].filter(Boolean).join(' · ')
                   : `No reports in ${columns.length} ${unit(columns.length)}`}
             </span>
           </>

@@ -2,7 +2,7 @@ import type { components } from '../../../api/schema'
 import { useElementWidth } from '../../../ui/useElementWidth'
 import type { ChartSize } from './chartParts'
 import { barFill, chartTheme } from './chartTheme'
-import { changeScale, keptLabels, SIDE_LABEL, worseText, type ChangeBar } from './changeBars'
+import { changeLabelTop, changeScale, keptLabels, SIDE_LABEL, worseText, type ChangeBar } from './changeBars'
 
 type StatusLevel = components['schemas']['StatusLevel']
 
@@ -38,6 +38,7 @@ export function ChangeBars({
   const values = bars.flatMap((b) => (b.worse === null ? [] : [b.worse]))
   const y = changeScale(height, values, red, size === 'focus')
   const zero = y(0)
+  const redY = red !== null && red > 0 ? y(red) : null
   const worst = Math.max(...scale.map((s) => s.rank))
   const best = Math.min(...scale.map((s) => s.rank))
   const redColor = chartTheme(scale, scale.find((s) => s.rank === worst)?.key ?? 'R').color
@@ -64,7 +65,7 @@ export function ChangeBars({
       </p>
       <div ref={measure} data-role="change-plot" className="relative" style={{ height, marginLeft: inset.left, marginRight: inset.right }}>
         <div data-role="zero-line" className="absolute inset-x-0 border-t border-ink/55" style={{ top: zero }} />
-        {red !== null && red > 0 && <div data-role="red-line" className="absolute inset-x-0 border-t border-dashed" style={{ top: y(red), borderColor: redColor }} />}
+        {redY !== null && <div data-role="red-line" className="absolute inset-x-0 border-t border-dashed" style={{ top: redY, borderColor: redColor }} />}
         {ticks.map((t) => (
           <span key={t} data-role="side-label" className={side} style={{ top: y(t) - SIDE_LABEL / 2 }}>
             {worseText(t)}
@@ -99,7 +100,7 @@ export function ChangeBars({
                   <span
                     data-role="change-label"
                     className={`absolute ${edge} text-[10px] leading-3 font-semibold whitespace-nowrap text-ink tabular-nums`}
-                    style={up ? { top: top - 12 } : { top: top + barHeight + 1 }}
+                    style={up ? { top: changeLabelTop(top, redY) } : { top: top + barHeight + 1 }}
                   >
                     {worseText(b.worse!)}
                   </span>

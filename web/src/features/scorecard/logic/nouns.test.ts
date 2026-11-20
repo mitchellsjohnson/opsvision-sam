@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { countNoun, nounForms, nounFromId } from './nouns'
+import { countNoun, nounForms, nounFromId, valueHeader } from './nouns'
 
 describe('nounFromId', () => {
   it.each([
@@ -45,5 +45,19 @@ describe('countNoun', () => {
     expect(countNoun(1, services)).toBe('1 service')
     expect(countNoun(3, services)).toBe('3 services')
     expect(countNoun(0, services)).toBe('0 services')
+  })
+})
+
+describe('valueHeader', () => {
+  it('the metric name’s last word when it names the value', () => {
+    expect(valueHeader('Deployment uptime')).toBe('Uptime')
+    expect(valueHeader('Weighted defect score')).toBe('Score')
+  })
+
+  it('Value when the last word follows a joining word, so it does not name the value', () => {
+    expect(valueHeader('Incidents per service')).toBe('Value')
+    expect(valueHeader('Spend vs plan')).toBe('Value')
+    expect(valueHeader('Incident postmortems on time')).toBe('Value')
+    expect(valueHeader('')).toBe('Value')
   })
 })

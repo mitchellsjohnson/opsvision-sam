@@ -321,6 +321,7 @@ function AppShellBody() {
             activeId={tenant?.id}
             canSwitch={auth.canSwitchTenant}
             onSwitch={auth.switchTenant}
+            nameHidden={phone}
           />
           <DropdownMenu.Root>
             <DropdownMenu.Trigger
@@ -329,7 +330,7 @@ function AppShellBody() {
                 focusOnDark,
               )}
             >
-              <span className="truncate">{me.data?.name ?? 'Account'}</span>
+              <span className="truncate whitespace-nowrap">{me.data?.name ?? 'Account'}</span>
               <ChevronDown aria-hidden="true" size={16} className="shrink-0" />
             </DropdownMenu.Trigger>
             <DropdownMenu.Portal>
@@ -342,6 +343,7 @@ function AppShellBody() {
                   <DropdownMenu.Label className="px-2 py-1 text-xs text-ink/80">
                     {me.data.email}
                     {me.data.role ? ` · ${me.data.role}` : ''}
+                    {phone && tenant?.name && <span className="block">{tenant.name}</span>}
                   </DropdownMenu.Label>
                 )}
                 <DropdownMenu.Separator className="my-1 h-px bg-ink/15" />

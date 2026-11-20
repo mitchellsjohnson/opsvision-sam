@@ -254,6 +254,38 @@ describe('ItemSummaryTile', () => {
     expect((await axe(document.body)).violations).toEqual([])
   })
 
+  it('quarter view: a stopped row names the year of a repeated quarter (Last Q4 FY2025)', () => {
+    width.value = 900
+    const q = buildTrendColumns('2026-Q3', 1)
+    const quarterly = (sid: string, name: string, values: (number | null)[]): ViewRow => ({
+      ...service(sid, name, null),
+      frequency: 'quarterly',
+      cells: q.map((c, i) => cellOf(sid, c.period, values[i] ?? null)),
+    })
+    const services = [
+      quarterly('svc-web', 'Web service', [99.99, 99.99, 99.99, 99.99, 99.99, 99.99, 99.99, 99.2]),
+      quarterly('svc-partner', 'Partner API Gateway', [99.98, 99.98, 99.98, 99.98, 99.98]),
+    ]
+    render(
+      <main>
+        <ItemSummaryTile
+          head={services[0]!}
+          rows={buildItemRows(services, q, SCALE, () => 'Platform', 1)}
+          columns={q}
+          scale={SCALE}
+          direction="higher_better"
+          noun={NOUN}
+          rule={RULE}
+          onExpand={vi.fn()}
+          onOpenItem={vi.fn()}
+        />
+      </main>,
+    )
+    const row = screen.getByRole('button', { name: /^Open Partner API Gateway trend/ })
+    expect(row.querySelector('[data-value]')!.textContent).toBe('Last Q4 FY2025')
+    expect(row.getAttribute('aria-label')).toBe('Open Partner API Gateway trend: not reported this quarter, last Q4 FY2025 99.98%')
+  })
+
   it('has no axe violations stacked', async () => {
     width.value = 300
     renderTile()
@@ -326,6 +358,13 @@ describe('ItemSummaryTile', () => {
       const name = rowButtons()[1]!.querySelector('[data-name]')!
       expect(name.lastElementChild!.textContent).toBe(' - US Region Primary')
       expect(name.querySelector('.line-clamp-2')).toBeNull()
+    })
+
+    it('a half-width tile at 1024 (398px inside) stays inline', () => {
+      width.value = 398
+      renderDeployments()
+      expect(screen.getByTestId('item-tile-board').getAttribute('data-stacked')).toBe('false')
+      expect(screen.getByTestId('item-tile-months')).toBeTruthy()
     })
 
     it('at 358px the rows stack: name and value on a line, six cells below', () => {

@@ -28,13 +28,15 @@ export interface StatusCellProps {
   size?: 'md' | 'sm' | 'xs'
   /** A `span` hidden from assistive technology, with no handlers: the enclosing control names the status. */
   decorative?: boolean
+  /** `shape` draws the status's shape instead of its letter, for cells too narrow for the letter. */
+  glyph?: 'letter' | 'shape'
   tip?: ReactNode
   grid?: GridCellProps
   onOpen?: (el: HTMLElement) => void
 }
 
 /** One period's status: the tier fill and letter, a hatch for n/a, a dot for no data. */
-export function StatusCell({ cell, name, scale, size = 'md', decorative = false, tip, grid, onOpen }: StatusCellProps) {
+export function StatusCell({ cell, name, scale, size = 'md', decorative = false, glyph = 'letter', tip, grid, onOpen }: StatusCellProps) {
   const fill = cell.kind === 'status' ? statusFill(scale, cell.status) : null
   const className = clsx(
     'flex w-full items-center justify-center rounded-[3px] border border-transparent text-[11px] font-semibold leading-none',
@@ -49,7 +51,7 @@ export function StatusCell({ cell, name, scale, size = 'md', decorative = false,
       : undefined
   const content = (
     <>
-      {fill && chartTheme(scale, cell.status).letter}
+      {fill && chartTheme(scale, cell.status)[glyph === 'shape' ? 'shape' : 'letter']}
       {cell.kind === 'missing' && <NoDataDot />}
     </>
   )

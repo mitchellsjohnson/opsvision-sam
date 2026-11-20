@@ -2,7 +2,17 @@ import { describe, expect, it } from 'vitest'
 import type { components } from '../../../api/schema'
 import { buildTrendColumns, coarseColumns } from '../columns'
 import { defaultStatusScale } from './chartTheme'
-import { changeBarsFor, changeCaption, changeEdges, changeScale, changeSummary, isChangeRow, keptLabels, worseText } from './changeBars'
+import {
+  changeBarsFor,
+  changeCaption,
+  changeEdges,
+  changeLabelTop,
+  changeScale,
+  changeSummary,
+  isChangeRow,
+  keptLabels,
+  worseText,
+} from './changeBars'
 
 type ViewRow = components['schemas']['ViewRow']
 type Cell = components['schemas']['Cell']
@@ -139,6 +149,28 @@ describe('keptLabels', () => {
     expect([...keptLabels([red(10), red(11, '+26%')], 19, 12)]).toEqual([11])
     const yellow = (index: number) => ({ index, rank: 2, text: '+2%' })
     expect([...keptLabels([yellow(0), yellow(1), red(11)], 19, 12)].sort((a, b) => a - b)).toEqual([1, 11])
+  })
+
+  it('neighbours keep a 4px gap: labels that would touch (+2%+2%) keep only the latest', () => {
+    const yellow = (index: number) => ({ index, rank: 2, text: '+2%' })
+    expect([...keptLabels([yellow(4), yellow(5)], 20, 12)]).toEqual([5])
+    expect([...keptLabels([yellow(4), yellow(5)], 24, 12)].sort((a, b) => a - b)).toEqual([4, 5])
+  })
+})
+
+describe('changeLabelTop', () => {
+  it('above its bar when that clears the Red line', () => {
+    expect(changeLabelTop(10, 30)).toBe(-2)
+    expect(changeLabelTop(50, 30)).toBe(38)
+  })
+
+  it('a label that would print across the Red line is lifted clear above it', () => {
+    expect(changeLabelTop(36, 30)).toBe(30 - 13)
+    expect(changeLabelTop(31, 30)).toBe(30 - 13)
+  })
+
+  it('no Red line: above its bar', () => {
+    expect(changeLabelTop(36, null)).toBe(24)
   })
 })
 

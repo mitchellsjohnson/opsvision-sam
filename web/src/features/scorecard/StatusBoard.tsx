@@ -1,9 +1,11 @@
 import clsx from 'clsx'
 import { Fragment, useEffect, useId, useMemo, useRef, useSyncExternalStore, type FocusEvent, type RefObject } from 'react'
+import { textWidth, uiFont, useFontsReady } from '../../ui/textWidth'
 import { useElementWidth } from '../../ui/useElementWidth'
 import { ItemName, Legend, RollUp, StatusCell, StatusCellTip, StatusChip, useGridNavigation, type StatusLevel } from '../../ui/status'
 import { MOVE_CLASS } from './charts/chartTheme'
 import type { Column } from './columns'
+import { labelsNeedYear } from './logic/itemGrid'
 import { boardLayout, cellName, fiscalGroups, fiscalLabel, rowName, streakAt, type BoardRow } from './logic/statusBoard'
 import { columnUnit } from './logic/statusText'
 
@@ -12,43 +14,60 @@ export { StatusCellTip, type StatusCellTipProps } from '../../ui/status'
 const ROW_HOVER = 'hover:bg-ink/[0.035] focus-within:bg-ink/[0.035]'
 /** The Current cell's `pl-3`. */
 const VALUE_PAD = 12
-const CAPTION_PX = 11
 
-let measureContext: CanvasRenderingContext2D | null | undefined
-
-/**
- * A caption's width at 11px in the page's font; without a canvas (tests), half
- * an em a character, about the page font's average.
- */
-function captionWidth(parts: { text: string; weight: number }[]): number {
-  if (measureContext === undefined) measureContext = document.createElement('canvas').getContext('2d')
-  const ctx = measureContext
-  if (!ctx) return parts.reduce((sum, p) => sum + p.text.length * CAPTION_PX * 0.5, 0)
-  const family = getComputedStyle(document.body).fontFamily || 'sans-serif'
-  return parts.reduce((sum, p) => {
-    ctx.font = `${p.weight} ${CAPTION_PX}px ${family}`
-    return sum + ctx.measureText(p.text).width
-  }, 0)
+/** `1 of 21 Red` beside the worst item: how many share its status; '' without the counts. */
+function worstCount(row: BoardRow, scale: StatusLevel[]): string {
+  const last = row.counted ?? row.cells[row.cells.length - 1]
+  if (!row.worst?.of || last?.kind !== 'status') return ''
+  const label = scale.find((s) => s.key === last.status)?.label ?? last.status
+  return `${row.worst.of.same} of ${row.worst.of.total} ${label}`
 }
 
-function CurrentValue({ row, scale, compact, room }: { row: BoardRow; scale: StatusLevel[]; compact: boolean; room: number }) {
+/** `Last Jul 77%` for a row whose last report is before the selected period; '' when none is in the window. */
+function lastReportedText(row: BoardRow, columns: Column[]): string {
+  for (let i = row.cells.length - 1; i >= 0; i--) {
+    const cell = row.cells[i]!
+    if (cell.kind !== 'status' && cell.kind !== 'unrated') continue
+    const column = columns[i]
+    if (!column) return ''
+    return [`Last ${labelsNeedYear(columns) ? column.fullLabel : column.label}`, cell.display].filter(Boolean).join(' ')
+  }
+  return ''
+}
+
+/** On a phone, the worst item's own line under the metric name: its name, keeping the ending, then the count. */
+function StackedWorst({ row, scale }: { row: BoardRow; scale: StatusLevel[] }) {
+  if (row.current || !row.worst) return null
+  const count = worstCount(row, scale) || row.caption
+  return (
+    <span data-testid="stacked-worst" className="flex min-w-0 text-[11px] text-ink/70">
+      <ItemName name={row.worst.name} className="font-medium text-ink/80" />
+      {count && <span className="shrink-0 whitespace-pre">{` · ${count}`}</span>}
+    </span>
+  )
+}
+
+function CurrentValue({
+  row,
+  scale,
+  columns,
+  compact,
+  room,
+}: {
+  row: BoardRow
+  scale: StatusLevel[]
+  columns: Column[]
+  compact: boolean
+  room: number
+}) {
   const last = row.counted ?? row.cells[row.cells.length - 1]
   if (!row.current && row.worst && compact) {
-    return (
-      <span className="flex min-w-0 items-baseline justify-end gap-1">
-        <ItemName name={row.worst.name} className="text-[11px] text-ink/70" />
-        <span className="shrink-0 text-sm font-semibold tabular-nums">{row.worst.display}</span>
-      </span>
-    )
+    return <span className="text-sm font-semibold tabular-nums">{row.worst.display}</span>
   }
-  if (!row.current && row.worst?.of && last?.kind === 'status') {
-    const label = scale.find((s) => s.key === last.status)?.label ?? last.status
-    const count = `${row.worst.of.same} of ${row.worst.of.total} ${label}`
-    const oneLine =
-      captionWidth([
-        { text: row.worst.name, weight: 500 },
-        { text: ` · ${count}`, weight: 400 },
-      ]) <= room
+  const count = !row.current && row.worst ? worstCount(row, scale) : ''
+  if (!row.current && row.worst && count) {
+    const font = uiFont(400, 11)
+    const oneLine = textWidth(row.worst.name, uiFont(500, 11)) + textWidth(` · ${count}`, font) <= room
     if (!oneLine) {
       // Too narrow for both: the name gets the line to itself, so ItemName keeps more of it, and the count goes under.
       return (
@@ -122,9 +141,12 @@ function CurrentValue({ row, scale, compact, room }: { row: BoardRow; scale: Sta
       </>
     )
   }
+  const stopped = last?.kind === 'missing' && !row.counted ? lastReportedText(row, columns) : ''
   return (
     <>
-      <span className={clsx('text-[11px] text-ink/70', !compact && 'block')}>{last?.kind === 'na' ? 'n/a' : 'No data'}</span>
+      <span className={clsx('text-[11px] text-ink/70', !compact && 'block')}>
+        {last?.kind === 'na' ? 'n/a' : stopped || 'No data'}
+      </span>
       {row.caption && !compact && <span className="block truncate text-[11px] text-ink/70">{row.caption}</span>}
     </>
   )
@@ -218,6 +240,8 @@ export function StatusBoard({ label, columns, rows, scale, onOpen, categories: a
   const headingId = useId()
   const noteId = useId()
   const [measure, width] = useElementWidth<HTMLDivElement>()
+  // Captions measured with a fallback font are measured again once the web font loads.
+  useFontsReady()
   const tableRef = useRef<HTMLTableElement>(null)
   const theadRef = useRef<HTMLTableSectionElement>(null)
   useStuckMark(theadRef)
@@ -467,7 +491,7 @@ export function StatusBoard({ label, columns, rows, scale, onOpen, categories: a
                         </th>
                         {renderCells(row)}
                         <td className="py-1 pl-3 text-right align-middle">
-                          <CurrentValue row={row} scale={scale} compact={false} room={layout.valueWidth - VALUE_PAD} />
+                          <CurrentValue row={row} scale={scale} columns={columns} compact={false} room={layout.valueWidth - VALUE_PAD} />
                         </td>
                       </tr>
                     )
@@ -484,13 +508,11 @@ export function StatusBoard({ label, columns, rows, scale, onOpen, categories: a
                             <span title={row.name} className={clsx('line-clamp-2 min-w-0 break-words font-medium', muted && 'text-ink/70')}>
                               {row.name}
                             </span>
-                            <span
-                              data-testid="stacked-value"
-                              className={clsx(!row.current && row.worst ? 'max-w-[60%]' : 'max-w-[45%]', 'shrink-0 truncate')}
-                            >
-                              <CurrentValue row={row} scale={scale} compact room={0} />
+                            <span data-testid="stacked-value" className="max-w-[45%] shrink-0 truncate">
+                              <CurrentValue row={row} scale={scale} columns={columns} compact room={0} />
                             </span>
                           </span>
+                          <StackedWorst row={row} scale={scale} />
                         </td>
                       </tr>
                       <tr data-testid={`ribbon-${row.key}`} aria-label={named} className={clsx(ROW_HOVER, '[tr:hover+&]:bg-ink/[0.035]')}>

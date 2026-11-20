@@ -414,6 +414,19 @@ describe('OverviewPage', () => {
       expect(cards).toHaveLength(3)
       expect(cards[2]!.textContent).toContain('Due by Jan 2027')
     })
+
+    it('full screen names the half it compares with as the tile does (vs H2 FY25)', async () => {
+      server.use(
+        http.get(`${API}/v1/scorecards/sc-main/versions`, () => HttpResponse.json({ versions: a11yVersions })),
+        ...viewHandlers({ respond: (u) => HttpResponse.json(addHalves(buildView(u.searchParams))) }),
+      )
+      renderApp(<App />, { route: ROUTE })
+      await screen.findByRole('heading', { name: 'Overview', level: 1 })
+      const tile = await waitFor(() => metricTile('Accessibility compliance'))
+      await userEvent.setup().click(within(tile).getByRole('button', { name: 'Expand Accessibility compliance' }))
+      const dialog = await screen.findByRole('dialog')
+      expect(await within(dialog).findByText('+2 pts vs H2 FY25')).toBeTruthy()
+    })
   })
 
   it('a metric card shows its change once, beside the value', async () => {

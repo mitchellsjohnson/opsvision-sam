@@ -22,7 +22,7 @@ import clsx from 'clsx'
 import { Check, ChevronDown, ChevronUp, EllipsisVertical, GripVertical, LayoutDashboard } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { ApiError } from '../../api/errors'
-import { useLayout, usePutDefaultLayout, usePutLayout } from '../../api/queries'
+import { useLayout, usePutDefaultLayout, useSaveLayout } from '../../api/queries'
 import type { components } from '../../api/schema'
 import { menuItemHighlight } from '../../ui/focus'
 import { useElementWidth } from '../../ui/useElementWidth'
@@ -365,7 +365,7 @@ export function LayoutGrid({
   renderHeaderActions,
 }: LayoutGridProps) {
   const layout = useLayout(scorecardId)
-  const putLayout = usePutLayout(scorecardId)
+  const saveLayout = useSaveLayout(scorecardId)
   const putDefault = usePutDefaultLayout(scorecardId)
   const [saveError, setSaveError] = useState('')
   const [editing, setEditing] = useState(false)
@@ -429,10 +429,9 @@ export function LayoutGrid({
 
   const persist = useCallback(
     async (items: LayoutItem[]) => {
-      const revision = layout.data?.revision ?? 0
       setSaveError('')
       try {
-        await putLayout.mutateAsync({ items, expectedRevision: revision })
+        await saveLayout(items)
       } catch (err) {
         // The layout goes back, so a row waiting to take focus at its new place never gets there.
         refocus.current = null
@@ -445,7 +444,7 @@ export function LayoutGrid({
         setSaveError(`We couldn’t save your layout, so we put it back. ${err instanceof Error ? err.message : ''}`.trim())
       }
     },
-    [layout, putLayout],
+    [layout, saveLayout],
   )
 
   const onUpdate = useCallback(

@@ -14,16 +14,19 @@ export interface TenantSwitcherProps {
   /** Whether the session can switch to a tenant; defaults to no. */
   canSwitch?: (tenantId: string) => boolean
   onSwitch?: (tenantId: string) => void
+  /** Phones: the icon alone, the name for screen readers only, so the top bar stays one line. */
+  nameHidden?: boolean
 }
 
 /** Shows the active tenant; a menu when the user belongs to several. */
-export function TenantSwitcher({ tenants, activeId, canSwitch, onSwitch }: TenantSwitcherProps) {
+export function TenantSwitcher({ tenants, activeId, canSwitch, onSwitch, nameHidden = false }: TenantSwitcherProps) {
   const active = tenants.find((t) => t.id === activeId)
+  const nameClass = nameHidden ? 'sr-only' : 'whitespace-nowrap'
   if (tenants.length <= 1) {
     return (
-      <span className="flex items-center gap-2 text-sm">
-        <Building2 aria-hidden="true" size={16} />
-        <span>
+      <span className="flex shrink-0 items-center gap-2 text-sm">
+        <Building2 aria-hidden="true" size={16} className="shrink-0" />
+        <span className={nameClass}>
           <span className="sr-only">Tenant: </span>
           {active?.name ?? tenants[0]?.name ?? ''}
         </span>
@@ -34,12 +37,12 @@ export function TenantSwitcher({ tenants, activeId, canSwitch, onSwitch }: Tenan
     <DropdownMenu.Root>
       <DropdownMenu.Trigger
         className={clsx(
-          'flex items-center gap-2 rounded-md px-2 py-1 text-sm hover:bg-white/10',
+          'flex shrink-0 items-center gap-2 rounded-md px-2 py-1 text-sm hover:bg-white/10',
           focusOnDark,
         )}
       >
-        <Building2 aria-hidden="true" size={16} />
-        <span>
+        <Building2 aria-hidden="true" size={16} className="shrink-0" />
+        <span className={nameClass}>
           <span className="sr-only">Tenant: </span>
           {active?.name ?? 'Select tenant'}
         </span>

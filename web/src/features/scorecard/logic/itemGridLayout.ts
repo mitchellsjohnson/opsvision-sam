@@ -33,7 +33,7 @@ export interface ItemGridLayout {
 export const CHIP_MD_WIDTH = 28
 
 /** 24px cells plus a 2px gutter each side: the smallest target WCAG 2.2 allows. */
-const CELL_MIN = 28
+export const CELL_MIN = 28
 /** Cells grow to this before anything else gets more; past it only once every column is full. */
 const CELL_MAX = 96
 /** Stacked rows have no name beside the cells, so the cells may grow wider. */

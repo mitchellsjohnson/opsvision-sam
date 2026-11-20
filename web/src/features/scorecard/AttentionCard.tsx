@@ -1,11 +1,14 @@
 import clsx from 'clsx'
-import { useId, useSyncExternalStore, type CSSProperties } from 'react'
+import { useId, useMemo, useSyncExternalStore, type CSSProperties } from 'react'
 import { Link } from 'react-router'
 import type { components } from '../../api/schema'
 import { ItemName, StatusCell, StatusChip, type StatusLevel } from '../../ui/status'
+import { textWidth, uiFont, useFontsReady } from '../../ui/textWidth'
+import { useElementWidth } from '../../ui/useElementWidth'
 import { statusIntervals } from './charts/bands'
 import { chartTheme, MOVE_CLASS, type Move } from './charts/chartTheme'
 import { focusReturnRef } from './focusTrigger'
+import { itemGridLayout } from './logic/itemGridLayout'
 import type { RankedItem } from './logic/needsAttention'
 import type { BoardCell } from './logic/statusBoard'
 
@@ -67,6 +70,10 @@ export interface AttentionCardProps {
 }
 
 const PLOT_HEIGHT = 56
+/** The mini board's name column floor before it gives up months. */
+const MINI_NAME_FLOOR = 140
+/** A cell narrower than this inside its gutters draws its status's shape, not its letter. */
+const LETTER_MIN = 14
 
 /** The 56px trend: bands at 9%, a dotted goal, the line and its current point. Decorative; the summary carries it. */
 function TrendLine({ trend, scale }: { trend: AttentionTrend; scale: StatusLevel[] }) {
@@ -175,25 +182,76 @@ function Ribbon({ cells, labels, scale, compact }: { cells: BoardCell[]; labels:
   )
 }
 
-/** The worst three items: name, a row of 14px cells and the value. Decorative; the distribution line says it. */
+/**
+ * The worst three items: name, a row of 14px cells and the value, laid out as
+ * the uptime tile is (`itemGridLayout`): names keep at least 140px and the
+ * months halve to fit; with no room for 6 months beside the name, each item
+ * stacks. Decorative; the distribution line says it.
+ */
 function MiniBoard({ rows, scale }: { rows: AttentionItems['rows']; scale: StatusLevel[] }) {
-  const count = rows[0]?.cells.length ?? 0
+  const [measure, width] = useElementWidth<HTMLDivElement>()
+  const fontsReady = useFontsReady()
+  const total = rows[0]?.cells.length ?? 0
+  const needs = useMemo(
+    () => ({
+      name: Math.max(0, ...rows.map((r) => textWidth(r.name, uiFont(500, 12)))) + 4,
+      group: 0,
+      value: Math.max(40, ...rows.map((r) => textWidth(r.display, uiFont(600, 12)) + 8)),
+      extra: 0,
+    }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `fontsReady` asks for a new measurement.
+    [rows, fontsReady],
+  )
+  const layout = itemGridLayout(width, total, needs, { nameFloor: MINI_NAME_FLOOR, stackBelow: 0 })
+  const offset = total - layout.count
+  // Cells have a 1px gutter each side.
+  const glyph = layout.cellWidth - 2 < LETTER_MIN ? 'shape' : 'letter'
+  const cellsStyle: CSSProperties = { gridTemplateColumns: `repeat(${layout.count}, ${layout.cellWidth}px)` }
   return (
     <div
+      ref={measure}
       data-testid="attention-mini-board"
+      data-stacked={String(layout.stacked)}
       aria-hidden="true"
-      className="mt-1 grid items-center gap-x-0.5 gap-y-1 text-xs"
-      style={{ gridTemplateColumns: `minmax(0, 96px) repeat(${count}, minmax(0, 1fr)) 56px` }}
+      className="mt-1 flex min-w-0 flex-col gap-1 overflow-hidden text-xs"
     >
-      {rows.map((r) => (
-        <div key={r.id} className="contents">
-          <ItemName name={r.name} className="pr-1 font-medium" />
-          {r.cells.map((cell) => (
-            <StatusCell key={cell.key} cell={cell} name="" scale={scale} size="xs" decorative />
-          ))}
-          <span className="text-right font-semibold tabular-nums">{r.display}</span>
-        </div>
-      ))}
+      {rows.map((r) => {
+        const cells = (
+          <span data-cells="" className={clsx('grid', layout.stacked && 'col-span-2')} style={cellsStyle}>
+            {r.cells.slice(offset).map((cell) => (
+              <span key={cell.key} className="px-px">
+                <StatusCell cell={cell} name="" scale={scale} size="xs" decorative glyph={glyph} />
+              </span>
+            ))}
+          </span>
+        )
+        const value = <span className="whitespace-nowrap pl-2 text-right font-semibold tabular-nums">{r.display}</span>
+        return (
+          <div
+            key={r.id}
+            data-mini-row=""
+            className={clsx('grid items-center', layout.stacked && 'grid-cols-[minmax(0,1fr)_auto] gap-y-0.5')}
+            style={
+              layout.stacked
+                ? undefined
+                : { gridTemplateColumns: `${layout.nameWidth}px ${layout.count * layout.cellWidth}px ${layout.valueWidth}px` }
+            }
+          >
+            <ItemName name={r.name} className="pr-1 font-medium" />
+            {layout.stacked ? (
+              <>
+                {value}
+                {cells}
+              </>
+            ) : (
+              <>
+                {cells}
+                {value}
+              </>
+            )}
+          </div>
+        )
+      })}
     </div>
   )
 }
@@ -228,9 +286,12 @@ export function AttentionCard({ item, meta, href, compact }: AttentionCardProps)
     items.worst ? (
       <>
         {/* On phones the name takes its own line, so the value and chip stay together. */}
-        <span className={clsx('inline-flex min-w-0 items-baseline gap-x-2', compact && 'basis-full')}>
-          <span className="text-xs text-ink/70">Worst</span>
-          <span className={clsx('font-semibold break-words', compact ? 'text-sm' : 'text-base')}>{items.worst.name}</span>
+        {/* The name moves under `Worst` rather than shrink below 16rem beside it. */}
+        <span className={clsx('flex min-w-0 max-w-full flex-wrap items-baseline gap-x-2', compact && 'basis-full')}>
+          <span className="shrink-0 text-xs text-ink/70">Worst</span>
+          <span data-worst-name="" className="min-w-[min(100%,16rem)] flex-1">
+            <ItemName name={items.worst.name} className={clsx('font-semibold', compact ? 'text-sm' : 'text-base')} />
+          </span>
         </span>
         <span className={valueSize}>{items.worst.display}</span>
         {items.worst.status && <SpokenChip status={items.worst.status} scale={scale} size="lg" />}

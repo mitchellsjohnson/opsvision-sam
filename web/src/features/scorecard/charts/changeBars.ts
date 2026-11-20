@@ -1,5 +1,6 @@
 import type { components } from '../../../api/schema'
 import { parsePeriod } from '../../../lib/period'
+import { textWidth, uiFont } from '../../../ui/textWidth'
 import type { Column } from '../columns'
 import { cellKey } from '../viewHelpers'
 
@@ -103,18 +104,20 @@ export function changeScale(height: number, values: number[], red: number | null
   return (v) => zero - k * v
 }
 
-/** A bar label's width: 10px semibold, about 6px a character, and 2px apart. */
-const labelWidth = (text: string) => text.length * 6 + 2
+/** The least room between two bar labels. */
+const LABEL_GAP = 4
 
 /**
  * Which bars keep their label when the columns are too narrow for all of
  * them: the worst status first, then the latest, each kept only when it
- * clears the labels already kept. Unmeasured (`slot` 0), every candidate.
+ * stays 4px clear of the labels already kept (measured at 10px semibold).
+ * Unmeasured (`slot` 0), every candidate.
  */
 export function keptLabels(candidates: { index: number; rank: number; text: string }[], slot: number, count: number): Set<number> {
   if (slot <= 0) return new Set(candidates.map((c) => c.index))
+  const font = uiFont(600, 10)
   const span = (c: { index: number; text: string }) => {
-    const w = labelWidth(c.text)
+    const w = textWidth(c.text, font)
     // The first and last labels sit inside their column's outer edge.
     const center = c.index === 0 ? w / 2 : c.index === count - 1 ? slot * count - w / 2 : (c.index + 0.5) * slot
     return [center - w / 2, center + w / 2] as const
@@ -123,9 +126,20 @@ export function keptLabels(candidates: { index: number; rank: number; text: stri
   const out = new Set<number>()
   for (const c of [...candidates].sort((a, b) => b.rank - a.rank || b.index - a.index)) {
     const [x0, x1] = span(c)
-    if (kept.some(([k0, k1]) => x0 < k1 && k0 < x1)) continue
+    if (kept.some(([k0, k1]) => x0 < k1 + LABEL_GAP && k0 < x1 + LABEL_GAP)) continue
     kept.push([x0, x1])
     out.add(c.index)
   }
   return out
+}
+
+/**
+ * The top of an up bar's label: on its 12px line just above the bar, or,
+ * when that line would cross the dashed Red line at `redY`, lifted clear
+ * above it. `changeScale` keeps the Red line low enough for the lift.
+ */
+export function changeLabelTop(barTop: number, redY: number | null): number {
+  const top = barTop - SIDE_LABEL
+  if (redY === null || top > redY + 1 || top + SIDE_LABEL < redY) return top
+  return redY - SIDE_LABEL - 1
 }

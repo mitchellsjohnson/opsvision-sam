@@ -6,6 +6,7 @@ import {
   useQuery,
   useQueryClient,
 } from '@tanstack/react-query'
+import { useCallback, useRef } from 'react'
 import type { ViewRequest } from '../lib/period'
 import { apiErrorFromResponse } from './errors'
 import type { components } from './schema'
@@ -701,30 +702,59 @@ export function useLayout(sc: string | undefined) {
 }
 
 /**
- * Persists overview tile order. The new order shows at once and is put back
- * if the save fails; callers handle 409 by refetching.
+ * Persists overview tile order, one request at a time. The new order shows at
+ * once. A save asked for while one is in flight waits, keeping only the latest
+ * order, and then goes with the revision the earlier save returned, so quick
+ * moves never conflict with each other. The promise of the save that started
+ * the run settles when the run ends and rejects on its first failure, after the
+ * order shown before the run is put back (callers handle 409 by refetching);
+ * a save that joined a running one resolves at once.
  */
-export function usePutLayout(sc: string) {
+export function useSaveLayout(sc: string): (items: Schemas['LayoutItem'][]) => Promise<void> {
   const api = useApi()
   const queryClient = useQueryClient()
-  return useMutation({
-    mutationFn: (body: Schemas['PutLayoutRequest']) =>
-      unwrap(api.PUT('/me/layouts/{sc}', { params: { path: { sc } }, body })),
-    onMutate: async (body) => {
-      await queryClient.cancelQueries({ queryKey: keys.layout(sc) })
-      const previous = queryClient.getQueryData<Schemas['LayoutResponse']>(keys.layout(sc))
-      queryClient.setQueryData<Schemas['LayoutResponse']>(keys.layout(sc), (prev) =>
-        prev ? { ...prev, items: body.items } : prev,
-      )
-      return { previous }
+  const queue = useRef<{ running: boolean; next: Schemas['LayoutItem'][] | null }>({ running: false, next: null })
+  return useCallback(
+    async (items) => {
+      const key = keys.layout(sc)
+      const show = (shown: Schemas['LayoutItem'][]) =>
+        queryClient.setQueryData<Schemas['LayoutResponse']>(key, (prev) => (prev ? { ...prev, items: shown } : prev))
+      const q = queue.current
+      if (q.running) {
+        q.next = items
+        show(items)
+        return
+      }
+      q.running = true
+      q.next = null
+      const previous = queryClient.getQueryData<Schemas['LayoutResponse']>(key)
+      let revision = previous?.revision ?? 0
+      show(items)
+      let pending: Schemas['LayoutItem'][] | null = items
+      try {
+        await queryClient.cancelQueries({ queryKey: key })
+        pending = q.next ?? items
+        q.next = null
+        show(pending)
+        while (pending) {
+          const saved = await unwrap(
+            api.PUT('/me/layouts/{sc}', { params: { path: { sc } }, body: { items: pending, expectedRevision: revision } }),
+          )
+          revision = saved.revision
+          pending = q.next
+          q.next = null
+          queryClient.setQueryData(key, pending ? { ...saved, items: pending } : saved)
+        }
+      } catch (err) {
+        q.next = null
+        if (previous) queryClient.setQueryData(key, previous)
+        throw err
+      } finally {
+        q.running = false
+      }
     },
-    onError: (_err, _body, context) => {
-      if (context?.previous) queryClient.setQueryData(keys.layout(sc), context.previous)
-    },
-    onSuccess: (data) => {
-      queryClient.setQueryData(keys.layout(sc), data)
-    },
-  })
+    [api, queryClient, sc],
+  )
 }
 
 /** The caller's preferences; `defaultScope` is '' for the company. */

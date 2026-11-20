@@ -599,6 +599,57 @@ describe('Customize layout on phones', () => {
     expect(order.indexOf('metric:uptime')).toBe(7)
   })
 
+  it('quick moves during a slow save keep every move: one save at a time, the latest order, the returned revision', async () => {
+    const puts: Array<{ items: LayoutItem[]; expectedRevision: number }> = []
+    let release: () => void = () => {}
+    const gate = new Promise<void>((r) => (release = r))
+    let revision = 1
+    const user = await phoneCustomize()
+    server.use(
+      http.put(`${API}/v1/me/layouts/:sc`, async ({ request }) => {
+        const body = (await request.json()) as { items: LayoutItem[]; expectedRevision: number }
+        puts.push(body)
+        if (puts.length === 1) await gate
+        if (body.expectedRevision !== revision) {
+          return HttpResponse.json({ error: { code: 'conflict', message: 'stale', details: [] } }, { status: 409 })
+        }
+        revision += 1
+        return HttpResponse.json({ items: body.items, revision, source: 'user', defaultRevision: 0 })
+      }),
+    )
+    const order = () => screen.getAllByTestId('customize-row').map((r) => r.dataset.layoutItem)
+    await user.click(screen.getByRole('button', { name: 'Move Uptime down' }))
+    await user.click(screen.getByRole('button', { name: 'Move Uptime down' }))
+    await user.click(screen.getByRole('button', { name: 'Move Uptime down' }))
+    expect(order().indexOf('metric:uptime')).toBe(9)
+    expect(puts).toHaveLength(1)
+    release()
+    await waitFor(() => expect(puts).toHaveLength(2))
+    expect(puts[1]!.expectedRevision).toBe(2)
+    await waitFor(() => expect(revision).toBe(3))
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(order().indexOf('metric:uptime')).toBe(9)
+    const saved = puts[1]!.items.filter((i) => !i.hidden).map((i) => i.id)
+    expect(saved.indexOf('metric:uptime')).toBe(order().indexOf('metric:uptime'))
+    expect(screen.getByTestId('customize-live').textContent).toBe('Moved Uptime to position 10 of 16')
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Move Uptime down' }))
+  })
+
+  it('a failed move puts the row back and keeps focus on its button', async () => {
+    const user = await phoneCustomize()
+    server.use(
+      http.put(`${API}/v1/me/layouts/:sc`, () =>
+        HttpResponse.json({ error: { code: 'internal', message: 'The server had a problem.', details: [] } }, { status: 500 }),
+      ),
+    )
+    await user.click(screen.getByRole('button', { name: 'Move Uptime down' }))
+    expect((await screen.findByRole('alert')).textContent).toMatch(/couldn’t save your layout/i)
+    await waitFor(() =>
+      expect(screen.getAllByTestId('customize-row').map((r) => r.dataset.layoutItem).indexOf('metric:uptime')).toBe(6),
+    )
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Move Uptime down' }))
+  })
+
   it('the button at either end is disabled', async () => {
     await phoneCustomize()
     expect((screen.getByRole('button', { name: 'Move Health this month up' }) as HTMLButtonElement).disabled).toBe(true)

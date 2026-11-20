@@ -537,6 +537,18 @@ describe('AppShell on a phone', () => {
     expect(screen.getByRole('banner').firstElementChild).toBe(button)
   })
 
+  it('keeps the top bar to one line: the tenant is an icon named for screen readers, and the account menu names it', async () => {
+    phone()
+    phoneShell()
+    const account = await screen.findByRole('button', { name: /Test admin/ })
+    const header = screen.getByRole('banner')
+    const tenantName = within(header).getByText('Example Co')
+    expect(tenantName.className).toContain('sr-only')
+    expect(account.querySelector('.truncate')!.className).toContain('whitespace-nowrap')
+    await userEvent.setup().click(account)
+    expect((await screen.findByRole('menu')).textContent).toContain('Example Co')
+  })
+
   it('opens the expanded navigation in a drawer and focuses its first link', async () => {
     phone()
     phoneShell()
