@@ -25,6 +25,9 @@ export interface DialogShortcutHandlers {
   table: () => void
   copyLink: () => void
   present: () => void
+  /** `J` and `K`: the next and previous item, in a drill-in only. */
+  nextItem?: () => void
+  prevItem?: () => void
 }
 
 function readEnabled(): boolean {
@@ -38,7 +41,8 @@ function readEnabled(): boolean {
 
 /**
  * Single-key shortcuts inside a dialog: arrows for previous and next, `1`–`5`
- * for ranges, `T` table, `L` copy link, `P` present. Never with Cmd, Ctrl or
+ * for ranges, `T` table, `L` copy link, `P` present, `J`/`K` next and
+ * previous item. Never with Cmd, Ctrl or
  * Alt (so the browser's own shortcuts keep working), never on auto-repeat,
  * never inside the controls in `IGNORE`, and switchable off (WCAG 2.1.4).
  */
@@ -86,6 +90,8 @@ export function useDialogShortcuts(
         if (key === 't') action = h.table
         else if (key === 'l') action = h.copyLink
         else if (key === 'p') action = h.present
+        else if (key === 'j') action = h.nextItem
+        else if (key === 'k') action = h.prevItem
       }
       if (!action) return
       e.preventDefault()

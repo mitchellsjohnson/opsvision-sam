@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { useRef } from 'react'
 import { describe, expect, it, vi } from 'vitest'
@@ -173,6 +173,40 @@ describe('useDialogShortcuts', () => {
     screen.getByRole('button', { name: 'Plain' }).focus()
     await user.keyboard('p')
     expect(h.present).toHaveBeenCalledTimes(1)
+  })
+
+  it('J and K step to the next and previous item', async () => {
+    const h = { ...handlers(), nextItem: vi.fn<() => void>(), prevItem: vi.fn<() => void>() }
+    render(<Harness h={h} />)
+    const user = userEvent.setup()
+    screen.getByRole('button', { name: 'Plain' }).focus()
+    await user.keyboard('j')
+    expect(h.nextItem).toHaveBeenCalledTimes(1)
+    await user.keyboard('K')
+    expect(h.prevItem).toHaveBeenCalledTimes(1)
+    expect(h.next).not.toHaveBeenCalled()
+    expect(h.prev).not.toHaveBeenCalled()
+  })
+
+  it('J and K are ignored with modifiers, inside inputs and grids, and without item handlers', async () => {
+    const h = { ...handlers(), nextItem: vi.fn<() => void>(), prevItem: vi.fn<() => void>() }
+    render(<Harness h={h} />)
+    const user = userEvent.setup()
+    screen.getByRole('button', { name: 'Plain' }).focus()
+    await user.keyboard('{Meta>}j{/Meta}{Control>}k{/Control}{Alt>}j{/Alt}')
+    screen.getByRole('textbox', { name: 'Filter' }).focus()
+    await user.keyboard('jk')
+    screen.getByRole('gridcell', { name: 'Cell' }).focus()
+    await user.keyboard('jk')
+    expect(h.nextItem).not.toHaveBeenCalled()
+    expect(h.prevItem).not.toHaveBeenCalled()
+    cleanup()
+
+    const plain = handlers()
+    render(<Harness h={plain} />)
+    screen.getByRole('button', { name: 'Plain' }).focus()
+    await user.keyboard('jk')
+    none(plain)
   })
 
   it('ignores keys from outside its element', async () => {

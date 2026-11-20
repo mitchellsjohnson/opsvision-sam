@@ -2,7 +2,7 @@ import * as Dialog from '@radix-ui/react-dialog'
 import { X } from 'lucide-react'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router'
-import { useMe, useOrgLevels, useOrgUnits, useScorecards, useVersions, useView } from '../../api/queries'
+import { useItemKinds, useMe, useOrgLevels, useOrgUnits, useScorecards, useVersions, useView } from '../../api/queries'
 import type { components } from '../../api/schema'
 import { parsePeriod, periodLabel } from '../../lib/period'
 import { usePeriodState } from '../../shell/usePeriodState'
@@ -10,7 +10,8 @@ import { StatusChip } from '../../ui/status'
 import { useAskSam } from '../assistant/useAssistant'
 import { Breakdown } from './Breakdown'
 import { defaultStatusScale, MOVE_CLASS } from './charts/chartTheme'
-import { FOCUS_CHART_HEIGHT, MetricChart } from './charts/MetricChart'
+import { FOCUS_CHART_HEIGHT, MetricChart, type ChartParts } from './charts/MetricChart'
+import { formatMoneyCompact } from './charts/moneyPlan'
 import { buildPoints, headerChange } from './charts/points'
 import { RANGES, rangeChange, rangeColumns, rangeMonths, type RangeKey } from './charts/ranges'
 import { multiSeriesHeader } from './charts/seriesLayout'
@@ -27,10 +28,20 @@ import { formatMetricValue } from './format'
 import { ItemDrillIn } from './ItemDrillIn'
 import { itemGridCsv, itemGridSvg } from './itemExports'
 import { ItemGrid, SegmentedControl, useItemGroups } from './ItemGrid'
+import { ItemMonths } from './ItemMonths'
 import { periodStatus } from './logic/coarse'
-import { buildItemRows, ITEM_PARAM, parseItemSort, SORT_PARAM, sortItems, type ItemSort } from './logic/itemGrid'
+import {
+  buildItemRows,
+  ITEM_PARAM,
+  parseItemSort,
+  partitionItems,
+  SORT_PARAM,
+  sortItems,
+  visibleItemOrder,
+  type ItemSort,
+} from './logic/itemGrid'
 import { defaultLayout } from './logic/layout'
-import { nounForms, type NounForms } from './logic/nouns'
+import { nounForms, nounFromId, type NounForms } from './logic/nouns'
 import { cellReported, statusAtScope, type StatusScaleEntry } from './logic/statusAtScope'
 import { buildBoardRow } from './logic/statusBoard'
 import { columnUnit, sinceText } from './logic/statusText'
@@ -38,8 +49,8 @@ import { Kbd, MoreMenu } from './MoreMenu'
 import { RangeStrip } from './RangeStrip'
 import { TablePage } from './TablePage'
 import { useDialogShortcuts } from './useDialogShortcuts'
-import { useItemNoun, useLevelNoun } from './useNouns'
-import { cellKey, groupRows, metricScope } from './viewHelpers'
+import { useLevelNoun } from './useNouns'
+import { cellKey, groupRows, metricScope, ratioParts } from './viewHelpers'
 import { useScorecardViewRequest } from './viewRequest'
 
 type ScorecardView = components['schemas']['ScorecardView']
@@ -112,9 +123,39 @@ function spanLabel(columns: Column[]): string {
   return columns.length === 1 ? columns[0]!.label : `${columns[0]!.label}–${columns[columns.length - 1]!.label}`
 }
 
-/** The item kind's noun for a metric reported for tracked items; mounted only then, so other metrics never ask for item kinds. */
+/**
+ * The item kind's noun for a metric reported for tracked items, from the kind's name, else its id
+ * (`deployments`); mounted only then, so other metrics never ask for item kinds.
+ */
 function ItemNoun({ metric, children }: { metric: Metric; children: (noun: NounForms) => ReactNode }) {
-  return children(useItemNoun(metric))
+  const kinds = useItemKinds()
+  const kindId = metric.reportedAt.find((s) => s.kind === 'item_kind')?.id
+  const name = kindId ? kinds.data?.find((k) => k.id === kindId)?.name : undefined
+  return children(name ? nounForms(name, 'item') : kindId ? nounFromId(kindId) : nounForms(undefined, 'item'))
+}
+
+const capitalized = (text: string) => text.charAt(0).toUpperCase() + text.slice(1).toLowerCase()
+
+/** The value column's header in a drill-in's monthly values: the metric name's last word, `Uptime`. */
+function unitWord(metricName: string): string {
+  return capitalized(metricName.trim().split(/\s+/).at(-1) ?? 'Value')
+}
+
+/**
+ * A sparse ratio metric's parts column (§7): the denominator measure's first word
+ * (`Postmortems due` → `Postmortems`), and for the value what the metric name, or
+ * else the numerator measure's name, says after that word (`… postmortems on time` →
+ * `On time`); the metric name's last word when neither repeats it.
+ */
+function chartParts(metricName: string, numerator: { key: string; name: string }, denominator: { key: string; name: string }): ChartParts {
+  const denominatorLabel = capitalized(denominator.name.trim().split(/\s+/)[0] || denominator.key)
+  const after = (name: string) => {
+    const words = name.trim().split(/\s+/)
+    const at = words.findIndex((w) => w.toLowerCase() === denominatorLabel.toLowerCase())
+    return at >= 0 && at < words.length - 1 ? words.slice(at + 1).join(' ') : ''
+  }
+  const value = after(metricName) || after(numerator.name) || (metricName.trim().split(/\s+/).at(-1) ?? '')
+  return { valueLabel: capitalized(value), denominatorLabel, numerator: numerator.key, denominator: denominator.key }
 }
 
 /** How long an announcement stays in the live region before it gives way (to `Loading chart`, say). */
@@ -153,10 +194,13 @@ function MetricFocus({
   metricKey,
   layout,
   frameRef,
+  escapeRef,
 }: {
   metricKey: string
   layout: LayoutMetric[]
   frameRef: RefObject<HTMLDivElement | null>
+  /** What Escape does before closing the dialog; true when it handled the key. */
+  escapeRef: RefObject<(() => boolean) | null>
 }) {
   const { sc } = useParams()
   const scorecardId = sc ?? ''
@@ -169,12 +213,17 @@ function MetricFocus({
   const [announcement, announce, clearAnnouncement] = useAnnouncer()
   const [toast, setToast] = useState('')
   const bodyRef = useRef<HTMLDivElement>(null)
-  // Item views: the filter and the grid's scroll position live here, so they survive the drill-in.
+  // Item views: the filter, the silent group's open state and the grid's scroll position live here, so they survive the drill-in.
   const [filter, setFilter] = useState('')
+  const [silentOpen, setSilentOpen] = useState(false)
   const [restoreId, setRestoreId] = useState('')
   const gridScroll = useRef(0)
-  // The item whose drill-in was last on screen: a change into a drill-in moves focus to its heading (§6.6).
+  // A drill-in's Monthly values stay open or shut for the dialog session.
+  const [monthsOpen, setMonthsOpen] = useState(false)
+  // The item whose drill-in was last on screen: a change into a drill-in moves focus to its heading (§6.6),
+  // except a step to the previous or next item, which keeps focus where it was.
   const shownSubject = useRef('')
+  const stepping = useRef('')
   const headingRef = useRef<HTMLHeadingElement>(null)
   const groupOf = useItemGroups()
   const sam = useAskSam()
@@ -283,7 +332,9 @@ function MetricFocus({
     const was = shownSubject.current
     shownSubject.current = drilling ? subject : ''
     const body = bodyRef.current
-    if (drilling && was !== subject && headingRef.current) {
+    const stepped = stepping.current !== '' && stepping.current === subject
+    if (stepped) stepping.current = ''
+    if (drilling && was !== subject && headingRef.current && !stepped) {
       if (body) body.scrollTop = 0
       headingRef.current.focus()
     } else if (!drilling && was !== '' && body) {
@@ -293,6 +344,7 @@ function MetricFocus({
 
   const openItem = (id: string) => {
     gridScroll.current = bodyRef.current?.scrollTop ?? 0
+    stepping.current = ''
     setRestoreId(id)
     setParams(
       (prev) => {
@@ -320,6 +372,53 @@ function MetricFocus({
       { replace: true },
     )
   }
+  // The grid's visible order (sort, filter, the silent group only while open) is the order the drill-in steps through (§4).
+  const allSilent = itemRows.length > 0 && partitionItems(itemRows, itemColumns).silent.length === itemRows.length
+  const itemOrder = isItems
+    ? visibleItemOrder(itemRows, {
+        columns: itemColumns,
+        filter,
+        sort,
+        direction: head?.direction ?? 'higher_better',
+        scale,
+        silentOpen: silentOpen || allSilent,
+      })
+    : []
+  const itemName = (id: string) => itemRows.find((r) => r.id === id)?.name ?? id
+  const neighbour = (id: string | undefined) => (id ? { id, name: itemName(id) } : undefined)
+  const at = drilling ? itemOrder.indexOf(subject) : -1
+  const position = {
+    index: at >= 0 ? at : null,
+    total: itemOrder.length,
+    prev: neighbour(at > 0 ? itemOrder[at - 1] : undefined),
+    // Not in the order: Next goes to its first item.
+    next: neighbour(at >= 0 ? itemOrder[at + 1] : itemOrder[0]),
+  }
+  // Replaces the drill-in's history entry and keeps its state, so Back still returns to the grid in one step.
+  const stepTo = (id: string) => {
+    stepping.current = id
+    setParams(
+      (prev) => {
+        const next = new URLSearchParams(prev)
+        next.set(ITEM_PARAM, id)
+        return next
+      },
+      { replace: true, state: location.state },
+    )
+    announce(`${itemName(id)}, ${itemOrder.indexOf(id) + 1} of ${itemOrder.length}`)
+  }
+  useLayoutEffect(() => {
+    escapeRef.current = drilling
+      ? () => {
+          backToGrid()
+          return true
+        }
+      : null
+    return () => {
+      escapeRef.current = null
+    }
+  })
+
   const changeSort = (next: ItemSort) =>
     setParams(
       (prev) => {
@@ -342,14 +441,15 @@ function MetricFocus({
   const reportedChildren = children.filter((ch) => cellReported(ch.cells.find((c) => cellKey(c) === columnKey)))
   const chartChildren = !scopeReported && reportedChildren.length > 0
   const chartRows = drillRow ? [drillRow.row] : chartChildren ? reportedChildren : chartRow ? [chartRow] : []
+  // The board row, coarse status and multi-series header here keep the old noun strings; the value row's caption uses `withNouns`.
   const noun = head?.chartKind === 'uptime' ? 'services' : scope && children.length > 0 ? 'segments' : 'items'
-  const atScope = head
-    ? statusAtScope({ scope: scope ?? { cells: [] }, children, columnKey, scale, noun })
-    : null
+  const scopeStatus = (forms: NounForms) => statusAtScope({ scope: scope ?? { cells: [] }, children, columnKey, scale, noun: forms })
+  const atScope = head ? scopeStatus(nounForms(undefined, 'item')) : null
 
   // The metric as defined in the version in force for the selected column.
   const versionId = (cell ?? children.map((ch) => ch.cells.find((c) => cellKey(c) === columnKey)).find(Boolean))?.versionId
-  const metric = versions.data?.versions.find((v) => v.id === versionId)?.content.metrics.find((m) => m.key === metricKey)
+  const versionContent = versions.data?.versions.find((v) => v.id === versionId)?.content
+  const metric = versionContent?.metrics.find((m) => m.key === metricKey)
   const reported = metric?.reportedAt[0]
   const reportedLevel = reported?.kind === 'level' ? levels.data?.find((l) => l.id === reported.id)?.name : undefined
   const levelNoun = nounForms(reportedLevel, 'unit')
@@ -387,6 +487,7 @@ function MetricFocus({
       return next
     })
     setFilter('')
+    setSilentOpen(false)
     setRestoreId('')
     announce(`${target.name}, ${layout.indexOf(target) + 1} of ${layout.length}`)
   }
@@ -509,6 +610,17 @@ function MetricFocus({
 
   const rangeShown = monthly && !sparse && !gridShown && !multiSeries && !noReports
   const itemRangeShown = monthly && gridShown
+  /** A range's row and columns, ending at the strip's last month (YTD: that month's year to date); null until known. */
+  const rangeWindow = (key: RangeKey): { row: components['schemas']['ViewRow']; columns: Column[] } | null => {
+    const span = rangeMonths(key, stripTo?.period ?? period.period)
+    // In a drill-in, the item's own.
+    const row = drillRow?.row ?? scope
+    const shown = rangeColumns(shownColumns, span, stripTo?.key)
+    if (shown.length === span) return row ? { row, columns: shown } : null
+    // Longer than the window shown: known once 24 months have loaded.
+    const longRow = drillRow ? longView.data?.rows.find((r) => r.metricKey === metricKey && r.subjectId === drillRow.id) : longScope
+    return longRow ? { row: longRow, columns: rangeColumns(longColumns, span, stripTo?.key) } : null
+  }
 
   const shortcuts = useDialogShortcuts(
     frameRef,
@@ -526,6 +638,8 @@ function MetricFocus({
       table: openTable,
       copyLink: () => void copyLink(),
       present,
+      nextItem: drilling ? () => position.next && stepTo(position.next.id) : undefined,
+      prevItem: drilling ? () => position.prev && stepTo(position.prev.id) : undefined,
     },
     { rangeKeys: gridShown ? 3 : 5 },
   )
@@ -556,6 +670,20 @@ function MetricFocus({
   const change = scope && cell?.display ? headerChange(scope, cell, fy) : null
   const goal = head && cell?.target != null ? formatMetricValue(head.format, cell.target) : ''
   const ytd = scope?.cells.find((c) => c.ytd && c.period === selectedColumn?.period)?.display ?? ''
+  const unitOf = (measure: string) => versionContent?.measures.find((m) => m.key === measure)?.unit ?? ''
+  const nameOfMeasure = (measure: string) => versionContent?.measures.find((m) => m.key === measure)?.name ?? measure
+  // `$12.7M spent of $12.2M planned`, when a money plan's formula is a ratio of the cell's two measures (§6).
+  const moneyParts = head?.chartKind === 'money_plan' && cell ? ratioParts(metric?.formula, cell.components) : null
+  const planned =
+    moneyParts && cell
+      ? `${formatMoneyCompact(cell.components[moneyParts[0]]!, unitOf(moneyParts[0]))} spent of ${formatMoneyCompact(cell.components[moneyParts[1]]!, unitOf(moneyParts[1]))} planned`
+      : ''
+  // A sparse ratio metric's parts column (§7), from its latest cell that carries both measures.
+  const partsCell = sparse && chartRow ? [...chartRow.cells].reverse().find((c) => !c.ytd && Object.keys(c.components).length === 2) : undefined
+  const ratio = partsCell && metric ? ratioParts(metric.formula, partsCell.components) : null
+  const parts = ratio
+    ? chartParts(metric?.name ?? head?.metricName ?? '', { key: ratio[0], name: nameOfMeasure(ratio[0]) }, { key: ratio[1], name: nameOfMeasure(ratio[1]) })
+    : undefined
   const status = atScope?.status ?? ''
   // No company value: the value row leads with the worst of the lines shown (§7.6).
   const worstSeries = multiSeries ? multiSeriesHeader(chartRows, columnKey, statusColors, (k) => statusLabel(k) ?? k, noun) : null
@@ -623,6 +751,8 @@ function MetricFocus({
               headingRef={headingRef}
               fy={fy}
               markers={markers}
+              position={position}
+              onStep={stepTo}
             />
           ) : (
             <ItemGrid
@@ -639,6 +769,8 @@ function MetricFocus({
               onOpenItem={openItem}
               restoreId={restoreId}
               announce={announce}
+              silentOpen={silentOpen}
+              onSilentOpen={setSilentOpen}
               range={
                 itemRangeShown
                   ? {
@@ -715,12 +847,14 @@ function MetricFocus({
                   <span>{change.text}</span>
                 </span>
               )}
-              {atScope?.caption && <span className="text-sm text-ink/70">{atScope.caption}</span>}
+              {atScope?.caption &&
+                withNouns(({ children: forms }) => <span className="text-sm text-ink/70">{scopeStatus(forms).caption}</span>)}
             </>
           )}
           {since && !worstSeries?.worst && <span className="text-sm text-ink/70">{since}</span>}
           {goal && <span className="text-sm text-ink/70">Goal {goal}</span>}
           {ytd && <span className="text-sm text-ink/70">YTD {ytd}</span>}
+          {planned && <span className="text-sm text-ink/70">{planned}</span>}
         </div>
         <div data-chart-region="" className="mt-2" aria-busy={view.isPlaceholderData || undefined}>
           <MetricChart
@@ -737,6 +871,8 @@ function MetricFocus({
             fiscalYearStartMonth={fy}
             header={false}
             markers={markers}
+            parts={parts}
+            selectedPeriod={monthGrain ? period.period : undefined}
           />
         </div>
       </>
@@ -819,19 +955,31 @@ function MetricFocus({
           hidden={!rangeShown}
           caption={stripTo ? `Change from the first month in each range to ${stripTo.fullLabel}` : ''}
           changeFor={(key) => {
-            // Each range ends at the strip's last month; YTD is that month's year to date.
-            const span = rangeMonths(key, stripTo?.period ?? period.period)
-            // In a drill-in, the change is the item's own.
-            const row = drillRow?.row ?? scope
-            const shown = rangeColumns(shownColumns, span, stripTo?.key)
-            if (shown.length === span) return row ? rangeChange(row, shown) : null
-            // Longer than the window shown: known once 24 months have loaded.
-            const longRow = drillRow
-              ? longView.data?.rows.find((r) => r.metricKey === metricKey && r.subjectId === drillRow.id)
-              : longScope
-            return longRow ? rangeChange(longRow, rangeColumns(longColumns, span, stripTo?.key)) : null
+            const w = rangeWindow(key)
+            return w ? rangeChange(w.row, w.columns) : null
           }}
+          noDataFor={
+            drillRow
+              ? (key) => {
+                  const w = rangeWindow(key)
+                  const first = w?.columns[0]
+                  const c = first ? w.row.cells.find((x) => cellKey(x) === first.key) : undefined
+                  return w !== null && !(c && c.naReason === '' && c.value != null)
+                }
+              : undefined
+          }
         />
+        {drillRow && head && (
+          <ItemMonths
+            row={drillRow.row}
+            columns={trendColumns}
+            scale={statusColors}
+            format={head.format}
+            valueLabel={unitWord(head.metricName)}
+            open={monthsOpen}
+            onOpenChange={setMonthsOpen}
+          />
+        )}
         {!isItems && details}
         {/* The switch shows at every width; the key hints only where there is a keyboard to use them. */}
         <div data-hints="" className="mt-6 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] leading-4 text-ink/70">
@@ -840,6 +988,12 @@ function MetricFocus({
               <span data-hint="" className="hidden sm:inline">
                 <Kbd>←</Kbd> <Kbd>→</Kbd> previous / next metric
               </span>
+              {drilling &&
+                withNouns(({ children: forms }) => (
+                  <span data-hint="" className="hidden sm:inline">
+                    <Kbd>J</Kbd> <Kbd>K</Kbd> next / previous {forms.one}
+                  </span>
+                ))}
               {(rangeShown || itemRangeShown) && (
                 <span data-hint="" className="hidden sm:inline">
                   <Kbd>1</Kbd>–<Kbd>{itemRangeShown ? '3' : '5'}</Kbd> range
@@ -854,7 +1008,7 @@ function MetricFocus({
             </>
           )}
           <span data-hint="" className="hidden sm:inline">
-            <Kbd>Esc</Kbd> close
+            <Kbd>Esc</Kbd> {drilling ? withNouns(({ children: forms }) => `back to all ${forms.many}`) : 'close'}
           </span>
           <button
             type="button"
@@ -894,6 +1048,7 @@ export function FocusDialog() {
   const layout = useMemo(() => (layoutView.data ? metricsInLayout(layoutView.data) : []), [layoutView.data])
 
   const frameRef = useRef<HTMLDivElement>(null)
+  const escapeRef = useRef<(() => boolean) | null>(null)
 
   const close = useCallback(() => {
     setParams((prev) => {
@@ -919,10 +1074,12 @@ export function FocusDialog() {
             e.preventDefault()
             if (!frameRef.current?.contains(document.activeElement)) frameRef.current?.focus()
           }}
-          // Escape in a filter with text clears the filter (the field does that) instead of closing the dialog.
+          // Escape in a filter with text clears the filter (the field does that); in a drill-in it goes back to
+          // the grid; only then does it close the dialog.
           onEscapeKeyDown={(e) => {
             const t = e.target
             if (t instanceof HTMLInputElement && t.type === 'search' && t.value !== '') e.preventDefault()
+            else if (escapeRef.current?.()) e.preventDefault()
           }}
           onCloseAutoFocus={(e) => {
             if (focusReturnRef.current) {
@@ -955,7 +1112,7 @@ export function FocusDialog() {
               </div>
             </>
           ) : focusId ? (
-            <MetricFocus metricKey={focusId} layout={layout} frameRef={frameRef} />
+            <MetricFocus metricKey={focusId} layout={layout} frameRef={frameRef} escapeRef={escapeRef} />
           ) : null}
         </Dialog.Content>
       </Dialog.Portal>

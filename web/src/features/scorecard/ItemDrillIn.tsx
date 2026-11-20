@@ -1,4 +1,5 @@
-import { useId, type MouseEvent, type RefObject } from 'react'
+import { ChevronLeft, ChevronRight } from 'lucide-react'
+import { useId, useLayoutEffect, useRef, type MouseEvent, type RefObject } from 'react'
 import { Link, useSearchParams } from 'react-router'
 import type { components } from '../../api/schema'
 import { StatusChip, type StatusLevel } from '../../ui/status'
@@ -30,18 +31,58 @@ export interface ItemDrillInProps {
   fy: number
   /** Methodology changes within the columns. */
   markers?: VersionMarker[]
+  /**
+   * Where the item sits in the grid's visible order (§4): `index` null when it
+   * is not in it (its group shut, or filtered out); `prev` and `next` absent
+   * at the ends. Not in the order, `next` is the order's first item.
+   */
+  position: { index: number | null; total: number; prev?: { id: string; name: string }; next?: { id: string; name: string } }
+  onStep: (itemId: string) => void
 }
+
+const STEP =
+  'inline-flex size-8 items-center justify-center rounded-md text-ink/80 hover:bg-ink/5 disabled:cursor-default disabled:text-ink/30 disabled:hover:bg-transparent'
 
 /**
  * One item's trend in place of the grid (§6.6): a breadcrumb back to all
  * items, the item's name as the heading with its group and its own rule (the
- * rule after per-subject bands), the value row, and the focus line chart
- * banded by that rule.
+ * rule after per-subject bands), a stepper to the previous and next item
+ * (§4), the value row, and the focus line chart banded by that rule.
  */
-export function ItemDrillIn({ head, row, columns, scale, noun, total, onBack, headingRef, fy, markers = [] }: ItemDrillInProps) {
+export function ItemDrillIn({
+  head,
+  row,
+  columns,
+  scale,
+  noun,
+  total,
+  onBack,
+  headingRef,
+  fy,
+  markers = [],
+  position,
+  onStep,
+}: ItemDrillInProps) {
   const headingId = useId()
   const [params] = useSearchParams()
   const reduced = usePrefersReducedMotion()
+  const prevRef = useRef<HTMLButtonElement>(null)
+  const nextRef = useRef<HTMLButtonElement>(null)
+  // The button pressed, and the item it was pressed on: once the step lands on an end, focus moves to the other button.
+  const pressed = useRef<{ which: 'prev' | 'next'; from: string } | null>(null)
+  useLayoutEffect(() => {
+    const p = pressed.current
+    if (!p || p.from === row.id) return
+    pressed.current = null
+    if (p.which === 'next' && !position.next) prevRef.current?.focus()
+    else if (p.which === 'prev' && !position.prev) nextRef.current?.focus()
+  })
+  const step = (which: 'prev' | 'next') => {
+    const target = position[which]
+    if (!target) return
+    pressed.current = { which, from: row.id }
+    onStep(target.id)
+  }
   const statusLabel = (key: string) => scale.find((s) => s.key === key)?.label
   const worst = [...scale].sort((a, b) => b.rank - a.rank)[0]
   const worstLabel = worst?.label ?? worst?.key ?? ''
@@ -84,29 +125,60 @@ export function ItemDrillIn({ head, row, columns, scale, noun, total, onBack, he
 
   return (
     <section aria-labelledby={headingId} data-testid="item-drill-in">
-      <nav aria-label="Breadcrumb" className="flex flex-wrap items-baseline gap-x-1.5 gap-y-1 text-xs">
-        <Link to={{ search: back.toString() }} onClick={goBack} className="font-medium text-accent-deep hover:underline">
-          <span aria-hidden="true">‹ </span>
-          All {total} {total === 1 ? noun.one : noun.many}
-        </Link>
-        <span aria-hidden="true" className="text-ink/70">
-          /
-        </span>
-        <h3 id={headingId} ref={headingRef} tabIndex={-1} className="text-sm font-semibold text-ink outline-none">
-          {row.name}
-        </h3>
+      <div data-testid="drill-crumbs" className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs">
+        {/* On phones the breadcrumb takes its own line; the details and the stepper share the next, so no line starts with a stray `·`. */}
+        <nav aria-label="Breadcrumb" className="flex min-w-0 flex-wrap items-baseline gap-x-1.5 gap-y-1 max-sm:basis-full">
+          <Link to={{ search: back.toString() }} onClick={goBack} className="font-medium text-accent-deep hover:underline">
+            <span aria-hidden="true">‹ </span>
+            All {total} {total === 1 ? noun.one : noun.many}
+          </Link>
+          <span aria-hidden="true" className="text-ink/70">
+            /
+          </span>
+          <h3 id={headingId} ref={headingRef} tabIndex={-1} className="text-sm font-semibold text-ink outline-none">
+            {row.name}
+          </h3>
+        </nav>
         {(row.group || threshold) && (
           <>
-            {/* On phones the details take their own line, so it never starts with a stray `·`. */}
             <span aria-hidden="true" className="hidden text-ink/70 sm:inline">
               ·
             </span>
-            <span data-testid="drill-details" className="text-ink/70 max-sm:basis-full">
+            <span data-testid="drill-details" className="min-w-0 text-ink/70 max-sm:flex-1">
               {[row.group, threshold].filter(Boolean).join(' · ')}
             </span>
           </>
         )}
-      </nav>
+        <div role="group" aria-label={`Step through ${noun.many}`} className="ml-auto flex shrink-0 items-center gap-0.5">
+          <button
+            ref={prevRef}
+            type="button"
+            disabled={!position.prev}
+            aria-label={position.prev ? `Previous ${noun.one}: ${position.prev.name}` : `Previous ${noun.one}`}
+            aria-keyshortcuts="K"
+            title={`Previous ${noun.one} (K)`}
+            className={STEP}
+            onClick={() => step('prev')}
+          >
+            <ChevronLeft aria-hidden="true" className="size-4" />
+          </button>
+          <span className="min-w-14 text-center text-xs text-ink/70 tabular-nums">
+            {position.index === null ? '–' : `${position.index + 1} of ${position.total}`}
+          </span>
+          <button
+            ref={nextRef}
+            type="button"
+            disabled={!position.next}
+            aria-label={position.next ? `Next ${noun.one}: ${position.next.name}` : `Next ${noun.one}`}
+            aria-keyshortcuts="J"
+            title={`Next ${noun.one} (J)`}
+            className={STEP}
+            onClick={() => step('next')}
+          >
+            <ChevronRight aria-hidden="true" className="size-4" />
+          </button>
+        </div>
+      </div>
       <div data-testid="drill-value-row" className="mt-2 flex flex-wrap items-baseline gap-x-3 gap-y-1">
         {row.reported ? (
           <>

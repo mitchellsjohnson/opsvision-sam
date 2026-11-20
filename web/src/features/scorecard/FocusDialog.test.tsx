@@ -11,6 +11,7 @@ import { AuthContext } from '../../auth/context'
 import { meFor, orgUnits, tenant } from '../../test/fixtures'
 import { API, server, state } from '../../test/server'
 import { newQueryClient, renderApp, testAuth } from '../../test/utils'
+import { deploymentRows } from '../../test/deploymentFixtures'
 import {
   addQuarterly,
   addServiceUptime,
@@ -22,6 +23,7 @@ import {
   viewHandlers,
 } from '../../test/viewFixtures'
 import { FOCUS_CHART_HEIGHT } from './charts/MetricChart'
+import type { Column } from './columns'
 
 type MethodologyVersion = components['schemas']['MethodologyVersion']
 type Metric = components['schemas']['Metric']
@@ -889,8 +891,8 @@ describe('FocusDialog: item metrics', () => {
     expect(seen.some((u) => u.searchParams.has('subjects'))).toBe(false)
     const drill = within(dialog).getByTestId('item-drill-in')
     expect(within(drill).getByTestId('drill-details').textContent).toBe('Platform · Green at 99.90% or better')
-    // On phones the details take their own line, so no line starts with the separator.
-    expect(within(drill).getByTestId('drill-details').className).toContain('max-sm:basis-full')
+    // On phones the breadcrumb takes its own line, so the details line never starts with the separator.
+    expect(within(drill).getByRole('navigation', { name: 'Breadcrumb' }).className).toContain('max-sm:basis-full')
     expect(within(drill).getByRole('link', { name: 'All 2 services' })).toBeTruthy()
     expect(within(drill).getByTestId('metric-chart').dataset.size).toBe('focus')
     expect(within(dialog).queryByRole('grid')).toBeNull()
@@ -989,6 +991,10 @@ describe('FocusDialog: item metrics', () => {
     await waitFor(() => expect(document.activeElement).toBe(heading))
     expect(search(router).get('item')).toBe('svc-web')
 
+    // Escape in a drill-in goes back to the grid; a second one closes.
+    await user.keyboard('{Escape}')
+    await within(dialog).findByRole('grid')
+    await waitFor(() => expect(document.activeElement?.getAttribute('aria-label')).toBe('Web service, Oct 2026: Red, 99.20%'))
     await user.keyboard('{Escape}')
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
     expect(search(router).get('focus')).toBeNull()
@@ -1116,5 +1122,330 @@ describe('FocusDialog: item metrics', () => {
     expect(req.searchParams.getAll('metrics')).toEqual([QUARTERLY_METRIC.key])
     expect(req.searchParams.getAll('periods')).toEqual(['2024-Q4', '2025-Q1', '2025-Q2', '2025-Q3', '2025-Q4', '2026-Q1', '2026-Q2', '2026-Q3'])
     expect(req.searchParams.getAll('ytd')).toEqual([])
+  })
+})
+
+/** ver-1 with `deployment_uptime`, reported for the `deployments` item kind (whose name the tenant has not given). */
+const deploymentVersions: MethodologyVersion[] = versions.map((v) =>
+  v.id !== 'ver-1'
+    ? v
+    : {
+        ...v,
+        content: {
+          ...v.content,
+          metrics: [
+            ...v.content.metrics,
+            {
+              ...v.content.metrics[0]!,
+              key: 'deployment_uptime',
+              name: 'Deployment uptime',
+              format: 'percent2',
+              reportedAt: [{ kind: 'item_kind', id: 'deployments' }],
+              rule: UPTIME_RULE,
+            },
+          ],
+        },
+      },
+)
+
+/** The demo's 21 deployments, in Delivery, for every month asked for. */
+function addDeployments(view: ScorecardView): ScorecardView {
+  const columns = view.periods.map((period) => ({ key: period, period }) as Column)
+  for (const row of deploymentRows(columns)) {
+    for (const c of row.cells) c.rule = UPTIME_RULE
+    view.rows.push({ ...row, categoryId: 'delivery' })
+  }
+  return view
+}
+
+function deploymentHandlers() {
+  return [
+    http.get(`${API}/v1/scorecards/sc-main/versions`, () => HttpResponse.json({ versions: deploymentVersions })),
+    ...viewHandlers({ respond: (u) => HttpResponse.json(addDeployments(buildView(u.searchParams))) }),
+    // No kind named: the noun comes from the kind's id.
+    http.get(`${API}/v1/item-kinds`, () => HttpResponse.json({ itemKinds: [] })),
+  ]
+}
+
+const NOTIFY = 'Notification Relay - Multi-Region Active'
+const WEST = 'Identity Service - Staging Mirror West'
+const PORTAL = 'Customer Portal - Private Cloud Tenant Suite'
+const DR = 'Identity Service - Disaster Recovery Standby'
+const DEPLOYMENTS = `${OVERVIEW}&focus=deployment_uptime`
+
+async function openDeployments(route = DEPLOYMENTS) {
+  server.use(...deploymentHandlers())
+  const router = renderRouted(route)
+  const dialog = await screen.findByRole('dialog', { name: 'Deployment uptime' })
+  return { router, dialog, user: userEvent.setup() }
+}
+
+const stepButton = (dialog: HTMLElement, which: 'Previous' | 'Next') =>
+  within(dialog).getByRole('button', { name: new RegExp(`^${which} deployment`) }) as HTMLButtonElement
+const activeLabel = () => document.activeElement?.getAttribute('aria-label') ?? ''
+
+describe('FocusDialog: stepping through items', () => {
+  it('steps to the next item by replace, keeping the history state and focus; All returns with one step back', async () => {
+    const { router, dialog, user } = await openDeployments()
+    const grid = await within(dialog).findByRole('grid')
+    await user.click(within(grid).getByRole('button', { name: `${NOTIFY}, Oct 2026: Red, 99.63%` }))
+    await within(dialog).findByRole('heading', { level: 3, name: NOTIFY })
+    expect(within(dialog).getByText('1 of 13')).toBeTruthy()
+
+    await user.click(within(dialog).getByRole('button', { name: `Next deployment: ${WEST}` }))
+    await within(dialog).findByRole('heading', { level: 3, name: WEST })
+    expect(search(router).get('item')).toBe('dep-identity-west')
+    expect(router.state.historyAction).toBe('REPLACE')
+    expect((router.state.location.state as { itemGrid?: boolean } | null)?.itemGrid).toBe(true)
+    expect(document.activeElement).toBe(within(dialog).getByRole('button', { name: `Next deployment: ${PORTAL}` }))
+    expect(within(dialog).getByTestId('dialog-live').textContent).toBe(`${WEST}, 2 of 13`)
+    expect(within(dialog).getByText('2 of 13')).toBeTruthy()
+
+    await user.click(within(dialog).getByRole('link', { name: 'All 21 deployments' }))
+    await within(dialog).findByRole('grid')
+    expect(router.state.historyAction).toBe('POP')
+    expect(search(router).get('item')).toBeNull()
+    expect(search(router).get('focus')).toBe('deployment_uptime')
+    await waitFor(() => expect(activeLabel()).toBe(`${WEST}, Oct 2026: Green, 99.97%`))
+  })
+
+  it('J and K step; at the first item K does nothing and Previous is disabled', async () => {
+    const { router, dialog, user } = await openDeployments(`${DEPLOYMENTS}&item=dep-notify-multi`)
+    const heading = await within(dialog).findByRole('heading', { level: 3, name: NOTIFY })
+    await waitFor(() => expect(document.activeElement).toBe(heading))
+    expect(within(dialog).getByText('1 of 13')).toBeTruthy()
+    expect(stepButton(dialog, 'Previous').disabled).toBe(true)
+    await user.keyboard('k')
+    expect(search(router).get('item')).toBe('dep-notify-multi')
+    await user.keyboard('j')
+    await within(dialog).findByRole('heading', { level: 3, name: WEST })
+    expect(within(dialog).getByText('2 of 13')).toBeTruthy()
+    // Focus stays where it was: the heading, now naming the next item.
+    expect(document.activeElement?.tagName).toBe('H3')
+    await user.keyboard('k')
+    await within(dialog).findByRole('heading', { level: 3, name: NOTIFY })
+    const hints = within(dialog).getByRole('switch', { name: 'Shortcuts: On' }).closest('[data-hints]')!
+    expect(hints.textContent).toContain('J K next / previous deployment')
+    expect(hints.textContent).toContain('Esc back to all deployments')
+  })
+
+  it('the order follows the sort and the filter: the last match has Next disabled', async () => {
+    const { dialog, user } = await openDeployments(`${DEPLOYMENTS}&sort=name`)
+    await within(dialog).findByRole('grid')
+    await user.type(within(dialog).getByRole('searchbox', { name: 'Filter deployments' }), 'Identity')
+    await waitFor(() => expect(rowNames(within(dialog).getByRole('grid'))).toEqual([
+      'Identity Service - Production East',
+      WEST,
+      DR,
+    ]))
+    await user.click(within(dialog).getByRole('button', { name: new RegExp(`^${DR}, Oct 2026`) }))
+    await within(dialog).findByRole('heading', { level: 3, name: DR })
+    expect(within(dialog).getByText('3 of 3')).toBeTruthy()
+    expect(stepButton(dialog, 'Next').disabled).toBe(true)
+    expect(stepButton(dialog, 'Previous').getAttribute('aria-label')).toBe(`Previous deployment: ${WEST}`)
+  })
+
+  it('an item not in the order reads a dash; Previous is disabled and Next goes to the first item', async () => {
+    const { router, dialog, user } = await openDeployments(`${DEPLOYMENTS}&item=dep-edge-cache`)
+    await within(dialog).findByRole('heading', { level: 3, name: 'Edge Cache' })
+    expect(within(within(dialog).getByRole('group', { name: 'Step through deployments' })).getByText('–')).toBeTruthy()
+    expect(stepButton(dialog, 'Previous').disabled).toBe(true)
+    await user.click(within(dialog).getByRole('button', { name: `Next deployment: ${NOTIFY}` }))
+    await within(dialog).findByRole('heading', { level: 3, name: NOTIFY })
+    expect(search(router).get('item')).toBe('dep-notify-multi')
+    expect(within(dialog).getByText('1 of 13')).toBeTruthy()
+  })
+
+  it('Escape from a silent item opens its group and focuses its cell; a second Escape closes', async () => {
+    const { router, dialog, user } = await openDeployments(`${DEPLOYMENTS}&item=dep-edge-cache`)
+    const heading = await within(dialog).findByRole('heading', { level: 3, name: 'Edge Cache' })
+    await waitFor(() => expect(document.activeElement).toBe(heading))
+    await user.keyboard('{Escape}')
+    await within(dialog).findByRole('grid')
+    expect(screen.getByRole('dialog', { name: 'Deployment uptime' })).toBeTruthy()
+    await waitFor(() => expect(activeLabel()).toMatch(/^Edge Cache, Oct 2026/))
+    expect(within(dialog).getByTestId('dialog-live').textContent).toBe('Showing 8 more deployments')
+    expect(search(router).get('item')).toBeNull()
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+  })
+
+  it('the open silent group survives the drill-in, joins the order, and resets on another metric', async () => {
+    const { dialog, user } = await openDeployments()
+    await within(dialog).findByRole('grid')
+    await user.click(within(dialog).getByRole('button', { name: 'Show 8 deployments' }))
+    await user.click(within(dialog).getByRole('button', { name: /^Edge Cache, Oct 2026/ }))
+    await within(dialog).findByRole('heading', { level: 3, name: 'Edge Cache' })
+    expect(within(dialog).getByText('18 of 21')).toBeTruthy()
+    await user.click(within(dialog).getByRole('link', { name: 'All 21 deployments' }))
+    const grid = await within(dialog).findByRole('grid')
+    expect(within(grid).getByRole('button', { name: 'Hide' }).getAttribute('aria-expanded')).toBe('true')
+
+    await user.click(within(dialog).getByRole('button', { name: /^Next metric/ }))
+    await user.click(within(await screen.findByRole('dialog', { name: 'Defect rate' })).getByRole('button', { name: /^Previous metric/ }))
+    const again = await within(await screen.findByRole('dialog', { name: 'Deployment uptime' })).findByRole('grid')
+    expect(within(again).getByRole('button', { name: 'Show 8 deployments' })).toBeTruthy()
+  })
+
+  it('names items by their kind: deployments, not services', async () => {
+    const { dialog } = await openDeployments()
+    await within(dialog).findByRole('grid')
+    await waitFor(() => expect(within(dialog).getByText('8 of 21 deployments Green')).toBeTruthy())
+    expect(dialog.textContent).not.toMatch(/services/)
+  })
+
+  it('Export CSV on the grid lists every item, the silent included', async () => {
+    const blobs: Blob[] = []
+    vi.spyOn(URL, 'createObjectURL').mockImplementation((b) => {
+      blobs.push(b as Blob)
+      return 'blob:csv'
+    })
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {})
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    try {
+      const { dialog } = await openDeployments()
+      await within(dialog).findByRole('grid')
+      const { user, menu } = await openMore(dialog)
+      await user.click(within(menu).getByRole('menuitem', { name: 'Export CSV' }))
+      await waitFor(() => expect(blobs).toHaveLength(1))
+      const lines = (await blobs[0]!.text()).replace(/^\uFEFF/, '').trim().split('\r\n')
+      expect(lines).toHaveLength(22)
+      expect(lines.some((l) => l.startsWith('"Edge Cache"'))).toBe(true)
+    } finally {
+      vi.restoreAllMocks()
+    }
+  })
+
+  it('a drill-in shows Monthly values under the range strip, shut by default and open across steps', async () => {
+    const { dialog, user } = await openDeployments(`${DEPLOYMENTS}&item=dep-notify-multi`)
+    await within(dialog).findByRole('heading', { level: 3, name: NOTIFY })
+    const toggle = within(dialog).getByRole('button', { name: 'Monthly values' })
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    const strip = within(dialog).getByRole('group', { name: 'Range' })
+    expect(strip.compareDocumentPosition(toggle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    await user.click(toggle)
+    const table = within(dialog).getByRole('table', { name: 'Monthly values' })
+    expect(within(table).getAllByRole('columnheader').map((h) => h.textContent)).toEqual(['Month', 'Uptime', 'Status', 'Change'])
+    await user.click(within(dialog).getByRole('button', { name: `Next deployment: ${WEST}` }))
+    await within(dialog).findByRole('heading', { level: 3, name: WEST })
+    expect(within(dialog).getByRole('button', { name: 'Monthly values' }).getAttribute('aria-expanded')).toBe('true')
+  })
+
+  it('a range whose first month has no value for the item says No data then', async () => {
+    const { dialog } = await openDeployments(`${DEPLOYMENTS}&item=dep-identity-west`)
+    await within(dialog).findByRole('heading', { level: 3, name: WEST })
+    const strip = within(dialog).getByRole('group', { name: 'Range' })
+    // First reported in Aug 2026: 3M starts there; 6M and 12M start before it.
+    expect(within(strip).getByRole('button', { name: /^3M, / }).getAttribute('aria-disabled')).toBeNull()
+    expect(within(strip).getByRole('button', { name: '6M, no data then' }).getAttribute('aria-disabled')).toBe('true')
+    expect(within(strip).getByRole('button', { name: '12M, no data then' })).toBeTruthy()
+  })
+
+  it('the drill-in dialog has no axe violations', async () => {
+    const { dialog } = await openDeployments(`${DEPLOYMENTS}&item=dep-notify-multi`)
+    await within(dialog).findByRole('heading', { level: 3, name: NOTIFY })
+    await within(dialog).findByRole('navigation', { name: 'Metrics' })
+    expect((await axe(dialog)).violations).toEqual([])
+  })
+})
+
+describe('FocusDialog: chart props', () => {
+  const REASON = 'No major incident needed a postmortem this month'
+  /** Valued months as [value, on time, due, status]; every other month is n/a. */
+  const VALUED: Record<string, [number, number, number, string]> = {
+    '2025-M12': [80, 4, 5, 'Y'],
+    '2026-M03': [100, 1, 1, 'G'],
+    '2026-M06': [60, 3, 5, 'R'],
+    '2026-M08': [100, 3, 3, 'G'],
+    '2026-M10': [80, 4, 5, 'Y'],
+  }
+  const withMeasures = (names: Record<string, { name: string; unit: string }>, metricName?: string): MethodologyVersion[] =>
+    versions.map((v) =>
+      v.id !== 'ver-1'
+        ? v
+        : {
+            ...v,
+            content: {
+              ...v.content,
+              measures: v.content.measures.map((m) => (names[m.key] ? { ...m, ...names[m.key] } : m)),
+              metrics: v.content.metrics.map((m) => (m.key === 'on_time_pct' && metricName ? { ...m, name: metricName } : m)),
+            },
+          },
+    )
+
+  it('a sparse ratio metric’s full-screen table carries its parts', async () => {
+    server.use(
+      http.get(`${API}/v1/scorecards/sc-main/versions`, () =>
+        HttpResponse.json({
+          versions: withMeasures(
+            { closed: { name: 'Postmortems on time', unit: 'count' }, total: { name: 'Postmortems due', unit: 'count' } },
+            'Incident postmortems on time',
+          ),
+        }),
+      ),
+      ...viewHandlers({
+        respond: (u) => {
+          const view = buildView(u.searchParams)
+          for (const r of view.rows.filter((x) => x.metricKey === 'on_time_pct')) {
+            r.metricName = 'Incident postmortems on time'
+            for (const c of r.cells) {
+              if (c.ytd) continue
+              const v = VALUED[c.period]
+              Object.assign(
+                c,
+                v
+                  ? { value: v[0], display: `${v[0]}%`, status: v[3], naReason: '', change: null, changeKind: '', components: { closed: v[1], total: v[2] } }
+                  : { value: null, display: '', status: '', naReason: REASON, change: null, changeKind: '', components: {} },
+              )
+            }
+          }
+          return HttpResponse.json(view)
+        },
+      }),
+    )
+    renderApp(<App />, { route: `${OVERVIEW}&focus=on_time_pct` })
+    const dialog = await screen.findByRole('dialog', { name: 'Incident postmortems on time' })
+    const header = await within(dialog).findByRole('columnheader', { name: 'Postmortems' })
+    const table = header.closest('table')!
+    expect(within(table).getAllByRole('columnheader').map((h) => h.textContent)).toEqual(['Month', 'On time', 'Postmortems', 'Status', 'Change vs previous report'])
+  })
+
+  it('a quarterly metric’s chart gets the selected month, so the next quarter shows as due', async () => {
+    server.use(
+      http.get(`${API}/v1/scorecards/sc-main/versions`, () => HttpResponse.json({ versions: quarterlyVersions })),
+      ...viewHandlers({ respond: (u) => HttpResponse.json(addQuarterly(buildView(u.searchParams))) }),
+    )
+    renderRouted(`${OVERVIEW}&focus=${QUARTERLY_METRIC.key}`)
+    const dialog = await screen.findByRole('dialog', { name: QUARTERLY_METRIC.name })
+    // jsdom gives the plot no size, so its `due Jan` label is not drawn here (the chart's own tests draw it);
+    // the ribbon's dashed slot after Q3 FY26 comes from the same selected month.
+    await waitFor(() => {
+      const cells = [...dialog.querySelectorAll<HTMLElement>('[data-testid="status-ribbon"] > *')]
+      expect(cells.map((c) => c.dataset.status).at(-1)).toBe('ghost')
+    })
+  })
+
+  it('a money plan’s value row says what was spent of what was planned, in compact amounts', async () => {
+    server.use(
+      http.get(`${API}/v1/scorecards/sc-main/versions`, () =>
+        HttpResponse.json({ versions: withMeasures({ closed: { name: 'Actual spend', unit: '$k' }, total: { name: 'Planned spend', unit: '$k' } }) }),
+      ),
+      ...viewHandlers({
+        respond: (u) => {
+          const view = buildView(u.searchParams)
+          for (const r of view.rows.filter((x) => x.metricKey === 'on_time_pct')) {
+            r.chartKind = 'money_plan'
+            if (r.subjectId !== 'root') continue
+            const oct = r.cells.find((c) => c.period === '2026-M10' && !c.ytd)
+            if (oct) Object.assign(oct, { value: 103.7, display: '104%', components: { closed: 12668, total: 12211 } })
+          }
+          return HttpResponse.json(view)
+        },
+      }),
+    )
+    renderApp(<App />, { route: `${OVERVIEW}&focus=on_time_pct` })
+    const dialog = await screen.findByRole('dialog', { name: /On-time delivery/ })
+    const row = await within(dialog).findByTestId('focus-value-row')
+    await waitFor(() => expect(row.textContent).toContain('$12.7M spent of $12.2M planned'))
   })
 })
