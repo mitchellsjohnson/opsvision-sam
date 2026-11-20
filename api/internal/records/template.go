@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
+	// Templates name IANA zones, and the Lambda image may have no zoneinfo.
+	_ "time/tzdata"
 
 	"opsvision/internal/domain"
 )
@@ -13,8 +16,10 @@ import (
 // placeholders) names the source. Map translates raw values, with "*" as the
 // fallback. Default replaces an empty cell and is used as is (it is not
 // mapped). DateFormats are Go layouts tried in order. Separator splits a list
-// column (priorDueDates). Transform applies to attributes only: nonEmpty,
-// number, bool, date, text.
+// column (priorDueDates); on subjectKey it fans a row out to one record per
+// listed subject. Transform applies to attributes only: nonEmpty, number,
+// bool, date, datetime, text. Unit converts a number attribute holding a
+// duration to minutes: s, min or h.
 type FieldMap struct {
 	Column      string            `json:"column,omitempty"`
 	Constant    string            `json:"constant,omitempty"`
@@ -24,7 +29,11 @@ type FieldMap struct {
 	DateFormats []string          `json:"dateFormats,omitempty"`
 	Separator   string            `json:"separator,omitempty"`
 	Transform   string            `json:"transform,omitempty"`
+	Unit        string            `json:"unit,omitempty"`
 }
+
+// Duration units for FieldMap.Unit, as minutes per unit.
+var durationUnits = map[string]float64{"s": 1.0 / 60, "min": 1, "h": 60}
 
 // FileSpec describes the export file. Format is "csv" or "xlsx"; Sheet names
 // the worksheet (empty means the first visible one); HeaderRow is the 1-based
@@ -43,16 +52,28 @@ type SkipRule struct {
 }
 
 // Template maps one export format to one record type. It is stored and edited
-// as JSON; see the records design, section 6.
+// as JSON; see the records design, section 6. TimeZone is the IANA zone in
+// which date-times written without an offset are read (empty means UTC).
 type Template struct {
 	Name       string              `json:"name"`
 	RecordType string              `json:"recordType"`
 	Source     string              `json:"source"`
 	File       FileSpec            `json:"file"`
 	FullExport bool                `json:"fullExport"`
+	TimeZone   string              `json:"timeZone,omitempty"`
 	Fields     map[string]FieldMap `json:"fields"`
 	Attributes map[string]FieldMap `json:"attributes,omitempty"`
 	SkipRows   []SkipRule          `json:"skipRows,omitempty"`
+}
+
+// location returns the template's time zone; ok is false for a name that is
+// not an IANA zone (the machine's "Local" zone is not one).
+func (t Template) location() (*time.Location, bool) {
+	if t.TimeZone == "Local" {
+		return nil, false
+	}
+	loc, err := time.LoadLocation(t.TimeZone)
+	return loc, err == nil
 }
 
 // How a built-in field's cell is read.
@@ -111,6 +132,7 @@ const (
 	TransformNumber   = "number"
 	TransformBool     = "bool"
 	TransformDate     = "date"
+	TransformDateTime = "datetime"
 	TransformText     = "text"
 )
 
@@ -127,6 +149,8 @@ func transformFor(fm FieldMap, typ domain.AttrType) string {
 		return TransformBool
 	case domain.AttrDate:
 		return TransformDate
+	case domain.AttrDateTime:
+		return TransformDateTime
 	}
 	return TransformText
 }
@@ -141,6 +165,8 @@ func transformType(tr string) (domain.AttrType, bool) {
 		return domain.AttrNumber, true
 	case TransformDate:
 		return domain.AttrDate, true
+	case TransformDateTime:
+		return domain.AttrDateTime, true
 	case TransformText:
 		return domain.AttrString, true
 	}
@@ -175,6 +201,9 @@ func (t Template) Validate(rt domain.RecordType) []domain.ValidationError {
 	if t.File.HeaderRow < 0 {
 		add("file.headerRow", "header row must be 1 or more")
 	}
+	if _, ok := t.location(); !ok {
+		add("timeZone", "time zone %q is not an IANA name such as UTC or America/New_York", t.TimeZone)
+	}
 
 	for _, spec := range fieldSpecs {
 		if _, ok := t.Fields[spec.name]; !ok && spec.required {
@@ -198,6 +227,9 @@ func (t Template) Validate(rt domain.RecordType) []domain.ValidationError {
 		checkMapCase(path, fm, add)
 		if fm.Transform != "" {
 			add(path+".transform", "transform applies to attributes only")
+		}
+		if fm.Unit != "" {
+			add(path+".unit", "unit applies to number attributes only")
 		}
 		switch spec.kind {
 		case vkState:
@@ -237,13 +269,22 @@ func (t Template) Validate(rt domain.RecordType) []domain.ValidationError {
 		checkSource(path, fm, add)
 		checkDateFormats(path, fm, add)
 		checkMapCase(path, fm, add)
+		if fm.Unit != "" {
+			_, known := durationUnits[fm.Unit]
+			switch {
+			case def.Type != domain.AttrNumber:
+				add(path+".unit", "unit applies to number attributes only")
+			case !known:
+				add(path+".unit", "unit must be s, min, or h, got %q", fm.Unit)
+			}
+		}
 		if fm.Transform == "" {
 			continue
 		}
 		got, known := transformType(fm.Transform)
 		switch {
 		case !known:
-			add(path+".transform", "transform must be nonEmpty, number, bool, date, or text, got %q", fm.Transform)
+			add(path+".transform", "transform must be nonEmpty, number, bool, date, datetime, or text, got %q", fm.Transform)
 		case got != def.Type:
 			add(path+".transform", "transform %q produces a %s, but attribute %q is a %s", fm.Transform, got, key, def.Type)
 		}

@@ -55,12 +55,16 @@ type SavedTemplate struct {
 //   - MatchedTemplateID is the saved template this file looks like. Added are
 //     the file's columns that template does not use; Missing are the columns it
 //     uses that the file lacks (all optional ones, or the file is not a match).
+//   - AttributeGuesses holds guesses for the type's start and end date-time
+//     attributes (incidents), with Field set to the attribute key; a column
+//     may also hold a built-in field (the start is often the created date).
 type Inspection struct {
 	Headers           []string
 	RowCount          int
 	Samples           [][]string
 	SuggestedType     string
 	Guesses           []ColumnGuess
+	AttributeGuesses  []ColumnGuess
 	Values            map[string][]ValueCount
 	DateFormats       map[string][]string
 	AmbiguousDates    []string
@@ -120,6 +124,14 @@ var synonymTable = []fieldSynonyms{
 }
 
 var dateFields = map[string]bool{"createdAt": true, "completedAt": true, "dueAt": true, "committedAt": true}
+
+// attributeSynonyms are the header synonyms of the incident preset's
+// date-time attributes, in normalized form, in the order attributes claim
+// columns.
+var attributeSynonyms = []fieldSynonyms{
+	{AttrStartedAt, []string{"incident start", "started at", "start time", "started", "start", "started on", "outage start", "impact start", "began"}},
+	{AttrEndedAt, []string{"incident end", "ended at", "resolved at", "end time", "ended", "resolved on", "ended on", "outage end", "impact end"}},
+}
 
 // Inspect looks at a dropped file and returns what the guided setup needs: a
 // guess for each column, suggested meanings for priority and status values,
@@ -205,6 +217,17 @@ func Inspect(tbl Table, types []domain.RecordType, saved []SavedTemplate) Inspec
 	if g, ok := byField["subjectKey"]; ok {
 		in.Values["subjectKey"] = ins.valueCounts(ins.index[g.Column], false, func(string) string { return "" })
 	}
+	if pt != nil {
+		in.AttributeGuesses = ins.guessAttributes(*pt)
+		for _, g := range in.AttributeGuesses {
+			if _, done := in.DateFormats[g.Column]; done {
+				continue
+			}
+			if layouts, _ := ins.dateLayouts(ins.index[g.Column]); len(layouts) > 0 {
+				in.DateFormats[g.Column] = layouts
+			}
+		}
+	}
 
 	if match != nil {
 		in.Draft = cloneTemplate(match.T)
@@ -212,6 +235,32 @@ func Inspect(tbl Table, types []domain.RecordType, saved []SavedTemplate) Inspec
 		in.Draft = draftTemplate(tbl, rt, in)
 	}
 	return in
+}
+
+// guessAttributes guesses the columns of rt's start and end date-time
+// attributes by exact header synonym. Columns already holding a built-in
+// field may be used.
+func (ins *inspector) guessAttributes(rt domain.RecordType) []ColumnGuess {
+	var out []ColumnGuess
+	claimed := map[int]bool{}
+	for _, as := range attributeSynonyms {
+		if k, ok := rt.FieldKind(as.field); !ok || k != domain.AttrDateTime {
+			continue
+		}
+	syns:
+		for _, syn := range as.syns {
+			for i, h := range ins.tbl.Headers {
+				h = strings.TrimSpace(h)
+				if ins.index[h] != i || claimed[i] || normHeader(h) != syn {
+					continue
+				}
+				claimed[i] = true
+				out = append(out, ColumnGuess{Field: as.field, Column: h, Confidence: confSynonym, Samples: ins.info(i).samples()})
+				break syns
+			}
+		}
+	}
+	return out
 }
 
 // inspector holds the lazily computed per-column statistics for one file.
@@ -769,6 +818,12 @@ func draftTemplate(tbl Table, rt *domain.RecordType, in Inspection) Template {
 			}
 		}
 		t.Fields[g.Field] = fm
+	}
+	for _, g := range in.AttributeGuesses {
+		if t.Attributes == nil {
+			t.Attributes = map[string]FieldMap{}
+		}
+		t.Attributes[g.Field] = FieldMap{Column: g.Column, DateFormats: append([]string(nil), in.DateFormats[g.Column]...)}
 	}
 	return t
 }

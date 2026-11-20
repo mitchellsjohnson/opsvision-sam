@@ -1,0 +1,73 @@
+{
+  "tracker": {
+    "name": "Tracker incidents export",
+    "recordType": "incident",
+    "source": "incident-tracker",
+    "file": { "format": "csv", "headerRow": 1 },
+    "fullExport": false,
+    "timeZone": "UTC",
+    "fields": {
+      "externalId":  { "column": "Issue key" },
+      "title":       { "column": "Summary" },
+      "category":    { "column": "Issue Type" },
+      "priority":    { "column": "Priority", "map": { "SEV-1": "SEV1", "SEV-2": "SEV2", "SEV-3": "SEV3", "SEV-4": "SEV4" } },
+      "status":      { "column": "Status" },
+      "state":       { "column": "Status", "map": { "Resolved": "done", "Closed": "done", "Cancelled": "cancelled", "*": "open" } },
+      "subjectKey":  { "column": "Components", "separator": "," },
+      "createdAt":   { "column": "Incident start", "dateFormats": ["2006-01-02 15:04"] },
+      "completedAt": { "column": "Resolved", "dateFormats": ["2006-01-02 15:04"] },
+      "url":         { "template": "https://tracker.example/browse/{Issue key}" }
+    },
+    "attributes": {
+      "startedAt": { "column": "Incident start", "dateFormats": ["2006-01-02 15:04"] },
+      "endedAt":   { "column": "Incident end", "dateFormats": ["2006-01-02 15:04"] },
+      "impactPct": { "column": "Customer impact" }
+    }
+  },
+  "oncall": {
+    "name": "On-call incidents export",
+    "recordType": "incident",
+    "source": "oncall",
+    "file": { "format": "csv", "headerRow": 1 },
+    "fullExport": false,
+    "fields": {
+      "externalId":  { "column": "incident_number" },
+      "title":       { "column": "title" },
+      "priority":    { "column": "urgency", "map": { "high": "SEV2", "low": "SEV4" } },
+      "status":      { "column": "status" },
+      "state":       { "column": "status", "map": { "resolved": "done", "*": "open" } },
+      "subjectKey":  { "column": "service_name" },
+      "createdAt":   { "column": "created_on" },
+      "completedAt": { "column": "resolved_on" },
+      "url":         { "column": "html_url" }
+    },
+    "attributes": {
+      "startedAt": { "column": "created_on" },
+      "endedAt":   { "column": "resolved_on" }
+    }
+  },
+  "status_page": {
+    "name": "Status page incidents export",
+    "recordType": "incident",
+    "source": "status-page",
+    "file": { "format": "csv", "headerRow": 1 },
+    "fullExport": false,
+    "timeZone": "UTC",
+    "fields": {
+      "externalId":  { "column": "Incident ID" },
+      "title":       { "column": "Name" },
+      "priority":    { "column": "Impact", "map": { "critical": "SEV1", "major": "SEV2", "minor": "SEV3", "none": "SEV4" } },
+      "status":      { "column": "Status" },
+      "state":       { "column": "Status", "map": { "resolved": "done", "*": "open" } },
+      "subjectKey":  { "column": "Affected components", "separator": ";" },
+      "createdAt":   { "column": "Started at", "dateFormats": ["2006-01-02 15:04"] },
+      "completedAt": { "column": "Resolved at", "dateFormats": ["2006-01-02 15:04"] },
+      "url":         { "column": "Shortlink" }
+    },
+    "attributes": {
+      "startedAt": { "column": "Started at", "dateFormats": ["2006-01-02 15:04"] },
+      "endedAt":   { "column": "Resolved at", "dateFormats": ["2006-01-02 15:04"] },
+      "impactPct": { "column": "Component impact", "map": { "major_outage": "100", "partial_outage": "50", "degraded_performance": "25" } }
+    }
+  }
+}

@@ -2,11 +2,16 @@ package records
 
 import (
 	"fmt"
+	"maps"
 	"regexp"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 
 	"opsvision/internal/domain"
+	"opsvision/internal/xlsx"
 )
 
 // Row problem kinds.
@@ -50,8 +55,18 @@ var placeholder = regexp.MustCompile(`\{([^{}]+)\}`)
 // value is left out until it is answered), and both rows of a duplicate ID
 // are left out. A missing column behind a required field is a single problem
 // on row 0 and no rows. Rows come back in file order.
+//
+// When subjectKey has a separator, each row fans out to one record per listed
+// subject (each listed once, ignoring case), with external ID
+// "{key}@{subject as written}" and GroupKey "{key}"; the records share the
+// row's number and every other field.
 func Normalize(t Template, rt domain.RecordType, tbl Table) (rows []Row, skipped int, problems []RowProblem) {
-	n := &normalizer{t: t, rt: rt, tbl: tbl, cols: map[string]int{}, allowSerial: tbl.Format == "xlsx"}
+	loc, ok := t.location()
+	if !ok {
+		return nil, 0, []RowProblem{{Kind: ProblemError, Field: "timeZone", Value: t.TimeZone,
+			Message: fmt.Sprintf("time zone %q is not an IANA name such as UTC or America/New_York", t.TimeZone)}}
+	}
+	n := &normalizer{t: t, rt: rt, tbl: tbl, cols: map[string]int{}, allowSerial: tbl.Format == "xlsx", loc: loc}
 	for i, h := range tbl.Headers {
 		h = strings.TrimSpace(h)
 		if _, dup := n.cols[h]; !dup && h != "" {
@@ -89,9 +104,11 @@ func Normalize(t Template, rt domain.RecordType, tbl Table) (rows []Row, skipped
 			skipped++
 			continue
 		}
-		row, probs := n.row(num, cells)
+		out, probs := n.row(num, cells)
 		problems = append(problems, probs...)
-		all = append(all, built{row: row, excluded: len(probs) > 0})
+		for _, row := range out {
+			all = append(all, built{row: row, excluded: len(probs) > 0})
+		}
 	}
 
 	// Duplicate identities, judged over every kept row that has an ID, so a
@@ -145,6 +162,7 @@ type normalizer struct {
 	tbl         Table
 	cols        map[string]int
 	allowSerial bool
+	loc         *time.Location
 }
 
 // cell returns the trimmed text of the named column in cells, "" when the
@@ -281,10 +299,11 @@ func (b *rowBuilder) unmapped(fm FieldMap, field, raw string) {
 	b.problem(ProblemUnmappedValue, fm, field, raw, "value %q%s has no mapping for %s", raw, where(fm), field)
 }
 
-func (n *normalizer) row(num int, cells []string) (Row, []RowProblem) {
+func (n *normalizer) row(num int, cells []string) ([]Row, []RowProblem) {
 	b := &rowBuilder{n: n, num: num, cells: cells}
 	f := domain.RecordFields{}
 	var id string
+	var fanOut []subjectPart
 
 	for _, spec := range fieldSpecs {
 		fm, ok := n.t.Fields[spec.name]
@@ -293,6 +312,10 @@ func (n *normalizer) row(num int, cells []string) (Row, []RowProblem) {
 		}
 		switch spec.kind {
 		case vkText:
+			if spec.name == "subjectKey" && fm.Separator != "" {
+				fanOut = b.subjects(fm)
+				continue
+			}
 			val, raw, unmapped := b.text(fm)
 			switch {
 			case unmapped:
@@ -346,9 +369,72 @@ func (n *normalizer) row(num int, cells []string) (Row, []RowProblem) {
 			}
 		}
 	}
+	if isIncidentType(n.rt) {
+		b.incidentChecks(f)
+	}
 
 	row := Row{RowNum: num, Source: n.t.Source, ExternalID: id, Type: n.t.RecordType, Fields: f}
-	return row, b.probs
+	if fanOut == nil {
+		return []Row{row}, b.probs
+	}
+	rows := make([]Row, len(fanOut))
+	for i, part := range fanOut {
+		r := row
+		r.Fields.Attributes = maps.Clone(f.Attributes)
+		r.Fields.PriorDueDates = slices.Clone(f.PriorDueDates)
+		r.Fields.SubjectKey = part.subject
+		if id != "" {
+			r.ExternalID = id + "@" + part.written
+			r.Fields.GroupKey = id
+		}
+		rows[i] = r
+	}
+	return rows, b.probs
+}
+
+// subjectPart is one subject a fanned-out row lists: as written, and after
+// the map.
+type subjectPart struct{ written, subject string }
+
+// subjects splits a subjectKey on fm.Separator: each part trimmed, empty ones
+// dropped, each listed once ignoring case, and each passed through the map.
+// A row that lists none, or a part no map covers, is a problem; the parts
+// that read are still returned so a duplicate ID is still reported.
+func (b *rowBuilder) subjects(fm FieldMap) []subjectPart {
+	rawVal := b.n.raw(fm, b.cells)
+	if rawVal == "" {
+		rawVal = strings.TrimSpace(fm.Default)
+	}
+	var out []subjectPart
+	seen := map[string]bool{}
+	for _, part := range strings.Split(rawVal, fm.Separator) {
+		part = strings.TrimSpace(part)
+		if part == "" || seen[strings.ToLower(part)] {
+			continue
+		}
+		seen[strings.ToLower(part)] = true
+		subject := part
+		if fm.Map != nil {
+			v, ok := mapLookup(fm.Map, part)
+			if !ok {
+				b.unmapped(fm, "subjectKey", part)
+				continue
+			}
+			subject = strings.TrimSpace(v)
+		}
+		if subject == "" {
+			b.requiredProblem(fm, "subjectKey")
+			continue
+		}
+		out = append(out, subjectPart{written: part, subject: subject})
+	}
+	if len(out) == 0 && !b.hasProblemFor("subjectKey") {
+		b.requiredProblem(fm, "subjectKey")
+	}
+	if out == nil {
+		return []subjectPart{}
+	}
+	return out
 }
 
 func (b *rowBuilder) hasProblemFor(field string) bool {
@@ -567,6 +653,9 @@ func (b *rowBuilder) attribute(fm FieldMap, def domain.AttributeDef) (any, bool)
 			b.problem(ProblemError, fm, key, val, "%s%s: %v", key, where(fm), err)
 			return nil, false
 		}
+		if per, ok := durationUnits[fm.Unit]; ok {
+			v = scaled(v, per)
+		}
 		return v, true
 	case TransformBool:
 		v, ok := parseBool(val)
@@ -586,6 +675,58 @@ func (b *rowBuilder) attribute(fm FieldMap, def domain.AttributeDef) (any, bool)
 			return nil, false
 		}
 		return d, true
+	case TransformDateTime:
+		at, err := ParseDateTime(val, fm.DateFormats, b.n.loc, b.n.allowSerial)
+		if err != nil {
+			b.problem(ProblemError, fm, key, val, "%s%s: %v", key, where(fm), err)
+			return nil, false
+		}
+		return at.UTC().Format(time.RFC3339), true
 	}
 	return val, true
+}
+
+// zonedLayouts are the date-time forms always accepted with an offset.
+var zonedLayouts = []string{time.RFC3339Nano, "2006-01-02T15:04Z07:00"}
+
+// localLayouts are the date-time forms always accepted without an offset;
+// they are read in the template's zone. A date alone is not among them.
+var localLayouts = []string{"2006-01-02T15:04:05", "2006-01-02T15:04", "2006-01-02 15:04:05", "2006-01-02 15:04"}
+
+// ParseDateTime reads an instant from an export cell. It tries formats (Go
+// layouts) in order, then RFC 3339 with an offset, then ISO date-times
+// without one, then, when allowSerial is set, a spreadsheet serial with a
+// time of day. A value with an offset keeps it; one without is read in loc
+// (UTC when nil). Only an explicit format may read a date alone, as midnight.
+func ParseDateTime(s string, formats []string, loc *time.Location, allowSerial bool) (time.Time, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return time.Time{}, fmt.Errorf("date and time is empty")
+	}
+	if loc == nil {
+		loc = time.UTC
+	}
+	for _, layout := range formats {
+		if t, err := time.ParseInLocation(layout, s, loc); err == nil {
+			return t, nil
+		}
+	}
+	for _, layout := range zonedLayouts {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t, nil
+		}
+	}
+	for _, layout := range localLayouts {
+		if t, err := time.ParseInLocation(layout, s, loc); err == nil {
+			return t, nil
+		}
+	}
+	if allowSerial && serialPattern.MatchString(s) {
+		if f, err := strconv.ParseFloat(s, 64); err == nil && f >= minSerialDate && f <= maxSerialDate {
+			if t := xlsx.SerialToDate(f); !t.IsZero() {
+				return time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), 0, loc), nil
+			}
+		}
+	}
+	return time.Time{}, fmt.Errorf("%q is not a date and time I can read", s)
 }

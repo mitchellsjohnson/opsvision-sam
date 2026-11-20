@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -771,5 +773,168 @@ func TestTemplateWithAnswers(t *testing.T) {
 	}
 	if _, err := TemplateWithAnswers(epicTemplate(), rt, Answers{ValueMaps: map[string]map[string]string{"priority": {"x": "P1"}}}); err == nil {
 		t.Error("an answer for an unmapped field did not fail")
+	}
+}
+
+// incidentFixture is the epic fixture plus the incident preset and one
+// product per service named in the sample incident exports.
+func incidentFixture(t *testing.T) *fixture {
+	t.Helper()
+	f := newFixture(t)
+	if err := f.st.PutRecordType(f.ctx, acme.ID, records.IncidentPreset(), 0); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"Webhooks", "Search", "Analytics Ingest", "Notifications", "Checkout API", "Push Gateway", "Media CDN"} {
+		u := domain.OrgUnit{ID: strings.ToLower(strings.ReplaceAll(name, " ", "-")), Name: name, LevelID: "product", ParentID: "commerce", SourceKeys: []string{name}}
+		if err := f.st.PutOrgUnit(f.ctx, acme.ID, u); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return f
+}
+
+func incidentSample(t *testing.T, name, file string) (records.Template, records.Table) {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("..", "records", "testdata", "incidents_templates.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tpls map[string]records.Template
+	if err := json.Unmarshal(b, &tpls); err != nil {
+		t.Fatal(err)
+	}
+	fh, err := os.Open(filepath.Join("..", "records", "testdata", file))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fh.Close()
+	tbl, err := records.ReadCSV(fh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tpls[name], tbl
+}
+
+func TestIncidentFanOutRowCounts(t *testing.T) {
+	f := incidentFixture(t)
+	tpl, tbl := incidentSample(t, "tracker", "incidents_tracker.csv")
+	f.tpl = tpl
+	p := f.build(tbl, "2026-11-01", Answers{})
+	if p.Rows != (RowCounts{Source: 6, Records: 7}) {
+		t.Fatalf("rows = %+v, want 6 source rows and 7 records", p.Rows)
+	}
+	if p.Counts.New != 7 || p.Counts.Errors != 0 || p.Counts.Unmatched != 0 || len(p.Problems) != 0 {
+		t.Fatalf("counts = %+v, problems = %+v", p.Counts, p.Problems)
+	}
+}
+
+func TestDateTimeAttributeRoundTripsThroughThePlan(t *testing.T) {
+	f := incidentFixture(t)
+	tpl, tbl := incidentSample(t, "tracker", "incidents_tracker.csv")
+	f.tpl = tpl
+	p := f.build(tbl, "2026-11-01", Answers{})
+	var planned domain.RecordFields
+	for _, w := range p.Revisions {
+		if w.ExternalID == "INC-2049@Search" {
+			planned = w.Rev.Fields
+		}
+	}
+	if planned.Attributes["startedAt"] != "2026-10-17T11:20:00Z" || planned.GroupKey != "INC-2049" {
+		t.Fatalf("planned INC-2049@Search = %+v", planned)
+	}
+	f.apply(p, Answers{})
+	recs, err := f.st.ListRecords(f.ctx, acme.ID, "incident")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stored *domain.Record
+	for i := range recs {
+		if recs[i].ExternalID == "INC-2049@Search" {
+			stored = &recs[i]
+		}
+	}
+	if stored == nil || len(recs) != 7 {
+		t.Fatalf("stored %d records, INC-2049@Search %v", len(recs), stored)
+	}
+	got := records.Latest(*stored)
+	if got.Attributes["startedAt"] != "2026-10-17T11:20:00Z" || got.Attributes["endedAt"] != "2026-10-17T11:50:00Z" || got.GroupKey != "INC-2049" {
+		t.Fatalf("stored INC-2049@Search = %+v", got)
+	}
+	if at, ok, err := records.FieldDateTime(got, "startedAt"); err != nil || !ok || !at.Equal(time.Date(2026, 10, 17, 11, 20, 0, 0, time.UTC)) {
+		t.Fatalf("FieldDateTime = %v, %v, %v", at, ok, err)
+	}
+}
+
+func TestIncidentSamplesReuploadUnchanged(t *testing.T) {
+	f := incidentFixture(t)
+	samples := []struct{ name, file string }{
+		{"tracker", "incidents_tracker.csv"},
+		{"oncall", "incidents_oncall.csv"},
+		{"status_page", "incidents_status_page.csv"},
+	}
+	want := map[string]int{"tracker": 7, "oncall": 3, "status_page": 3}
+	for _, s := range samples {
+		tpl, tbl := incidentSample(t, s.name, s.file)
+		f.tpl = tpl
+		first := f.build(tbl, "2026-11-01", Answers{})
+		if first.Counts.New != want[s.name] || first.Counts.Errors != 0 || first.Counts.Unmatched != 0 {
+			t.Fatalf("%s first upload counts = %+v, problems %+v", s.name, first.Counts, first.Problems)
+		}
+		f.apply(first, Answers{})
+		again := f.build(tbl, "2026-11-01", Answers{})
+		if again.Counts != (Counts{Unchanged: want[s.name]}) || len(again.Revisions) != 0 {
+			t.Fatalf("%s re-upload counts = %+v, revisions %v", s.name, again.Counts, revisionIDs(again.Revisions))
+		}
+		later := f.build(tbl, "2026-11-08", Answers{})
+		if later.Counts != (Counts{Unchanged: want[s.name]}) || len(later.Revisions) != 0 {
+			t.Fatalf("%s later re-upload counts = %+v", s.name, later.Counts)
+		}
+	}
+}
+
+func TestFullExportFanOutIsNotMissing(t *testing.T) {
+	f := incidentFixture(t)
+	tpl, tbl := incidentSample(t, "tracker", "incidents_tracker.csv")
+	tpl.FullExport = true
+	f.tpl = tpl
+	const status, impact = 4, 8
+	row := slices.IndexFunc(tbl.Rows, func(r []string) bool { return r[0] == "INC-2049" })
+	open := tbl
+	open.Rows = slices.Clone(tbl.Rows)
+	open.Rows[row] = slices.Clone(tbl.Rows[row])
+	open.Rows[row][status] = "Investigating"
+	f.load(open, "2026-11-01")
+
+	// The next export still lists INC-2049, but its row has an error: both of
+	// its open fan-out records are in the file, so neither is missing.
+	broken := open
+	broken.Rows = slices.Clone(open.Rows)
+	broken.Rows[row] = slices.Clone(open.Rows[row])
+	broken.Rows[row][impact] = "0%"
+	again := f.build(broken, "2026-11-08", Answers{})
+	if again.Counts.Errors != 1 || again.Counts.Missing != 0 || len(again.Missing) != 0 {
+		t.Fatalf("errors %d, missing %v; fan-out records of rows in the file are not missing", again.Counts.Errors, again.Missing)
+	}
+
+	// Dropping the row makes both records missing.
+	dropped := open
+	dropped.Rows = slices.Delete(slices.Clone(open.Rows), row, row+1)
+	gone := f.build(dropped, "2026-11-08", Answers{})
+	if want := []string{"INC-2049@Search", "INC-2049@Webhooks"}; !reflect.DeepEqual(gone.Missing, want) {
+		t.Fatalf("missing = %v, want %v", gone.Missing, want)
+	}
+}
+
+func TestDateOrderAnswerReachesDateTimeAttributes(t *testing.T) {
+	tpl, _ := incidentSample(t, "tracker", "incidents_tracker.csv")
+	got, err := TemplateWithAnswers(tpl, records.IncidentPreset(), Answers{DateOrder: "mdy"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fm := got.Attributes["startedAt"].DateFormats; len(fm) != 3 || fm[0] != "01/02/2006" || fm[2] != "2006-01-02 15:04" {
+		t.Errorf("startedAt formats = %v", fm)
+	}
+	if fm := got.Attributes["impactPct"].DateFormats; len(fm) != 0 {
+		t.Errorf("a number attribute got date formats: %v", fm)
 	}
 }

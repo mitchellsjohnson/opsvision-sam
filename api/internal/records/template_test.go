@@ -215,6 +215,91 @@ func TestTemplateValidate(t *testing.T) {
 	})
 }
 
+func TestTemplateTimeZoneAndUnit(t *testing.T) {
+	rt := IncidentPreset()
+	base := func() Template { return incidentTemplates(t)["tracker"] }
+	if errs := base().Validate(rt); errs != nil {
+		t.Fatalf("tracker template: %v", errs)
+	}
+
+	t.Run("time zone", func(t *testing.T) {
+		for _, tz := range []string{"", "UTC", "America/New_York", "Europe/Berlin"} {
+			tpl := base()
+			tpl.TimeZone = tz
+			if errs := tpl.Validate(rt); errs != nil {
+				t.Errorf("time zone %q: %v", tz, errs)
+			}
+		}
+		for _, tz := range []string{"Local", "Mars/Olympus", "utc+2", "../etc/passwd"} {
+			tpl := base()
+			tpl.TimeZone = tz
+			if !slicesContains(problemPaths(tpl.Validate(rt)), "timeZone") {
+				t.Errorf("time zone %q accepted", tz)
+			}
+		}
+	})
+	t.Run("unit", func(t *testing.T) {
+		for _, u := range []string{"s", "min", "h"} {
+			tpl := base()
+			tpl.Attributes["minutesDown"] = FieldMap{Column: "Down", Unit: u}
+			if errs := tpl.Validate(rt); errs != nil {
+				t.Errorf("unit %q: %v", u, errs)
+			}
+		}
+		tpl := base()
+		tpl.Attributes["minutesDown"] = FieldMap{Column: "Down", Unit: "days"}
+		if !slicesContains(problemPaths(tpl.Validate(rt)), "attributes.minutesDown.unit") {
+			t.Error("unit days accepted")
+		}
+		tpl = base()
+		tpl.Attributes["startedAt"] = FieldMap{Column: "Incident start", Unit: "min"}
+		if !slicesContains(problemPaths(tpl.Validate(rt)), "attributes.startedAt.unit") {
+			t.Error("unit on a datetime attribute accepted")
+		}
+		tpl = base()
+		tpl.Fields["title"] = FieldMap{Column: "Summary", Unit: "min"}
+		if !slicesContains(problemPaths(tpl.Validate(rt)), "fields.title.unit") {
+			t.Error("unit on a built-in field accepted")
+		}
+	})
+	t.Run("datetime transform", func(t *testing.T) {
+		tpl := base()
+		tpl.Attributes["startedAt"] = FieldMap{Column: "Incident start", Transform: "datetime"}
+		if errs := tpl.Validate(rt); errs != nil {
+			t.Errorf("datetime transform: %v", errs)
+		}
+		tpl.Attributes["startedAt"] = FieldMap{Column: "Incident start", Transform: "date"}
+		if !slicesContains(problemPaths(tpl.Validate(rt)), "attributes.startedAt.transform") {
+			t.Error("a date transform feeding a datetime attribute was accepted")
+		}
+	})
+	t.Run("json", func(t *testing.T) {
+		b, _ := json.Marshal(base())
+		for _, want := range []string{`"timeZone":"UTC"`, `"separator":","`} {
+			if !strings.Contains(string(b), want) {
+				t.Errorf("json %s missing %s", b, want)
+			}
+		}
+		b, _ = json.Marshal(FieldMap{Column: "Down", Unit: "s"})
+		if string(b) != `{"column":"Down","unit":"s"}` {
+			t.Errorf("unit marshals as %s", b)
+		}
+		b, _ = json.Marshal(specTemplate(t))
+		if strings.Contains(string(b), "timeZone") || strings.Contains(string(b), `"unit"`) {
+			t.Errorf("empty timeZone and unit should be omitted: %s", b)
+		}
+	})
+}
+
+func slicesContains(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
 func TestTemplateValidateMapCaseCollisions(t *testing.T) {
 	tpl := specTemplate(t)
 	defect := defectType

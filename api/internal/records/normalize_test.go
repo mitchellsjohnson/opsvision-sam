@@ -557,6 +557,134 @@ func TestAttributeTransforms(t *testing.T) {
 	}
 }
 
+// outageType has a datetime and a duration attribute.
+var outageType = domain.RecordType{ID: "outage", Name: "Outage", Attributes: []domain.AttributeDef{
+	{Key: "startedAt", Name: "Started", Type: domain.AttrDateTime},
+	{Key: "minutesDown", Name: "Minutes down", Type: domain.AttrNumber},
+}}
+
+func TestDateTimeAttributes(t *testing.T) {
+	headers := []string{"Key", "Product", "Status", "Created", "Start"}
+	tbl := csvTable(headers,
+		[]string{"O-1", "Checkout", "Open", "2026-10-08", "2026-10-08 21:14"},
+		[]string{"O-2", "Checkout", "Open", "2026-10-08", "2026-10-08T21:14:00-04:00"},
+		[]string{"O-3", "Checkout", "Open", "2026-10-08", "2026-10-09T01:14:00Z"},
+		[]string{"O-4", "Checkout", "Open", "2026-10-08", "10/08/2026 9:14 PM"},
+		[]string{"O-5", "Checkout", "Open", "2026-10-08", ""},
+		[]string{"O-6", "Checkout", "Open", "2026-10-08", "2026-10-08"},
+		[]string{"O-7", "Checkout", "Open", "2026-10-08", "sometime"},
+	)
+	tpl := miniTemplate(nil)
+	tpl.RecordType = "outage"
+	tpl.TimeZone = "America/New_York"
+	tpl.Attributes = map[string]FieldMap{"startedAt": {Column: "Start", DateFormats: []string{"01/02/2006 3:04 PM"}}}
+	if errs := tpl.Validate(outageType); errs != nil {
+		t.Fatal(errs)
+	}
+	rows, _, problems := Normalize(tpl, outageType, tbl)
+	got := map[string]any{}
+	for _, r := range rows {
+		got[r.ExternalID] = r.Fields.Attributes["startedAt"]
+	}
+	// Zone-less values read in the template's zone; written offsets win.
+	want := map[string]any{
+		"O-1": "2026-10-09T01:14:00Z", "O-2": "2026-10-09T01:14:00Z", "O-3": "2026-10-09T01:14:00Z",
+		"O-4": "2026-10-09T01:14:00Z", "O-5": nil,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("startedAt = %v, want %v", got, want)
+	}
+	// A date alone is not a date and time, unless the template lists a date-only layout.
+	if len(problems) != 2 || problems[0].RowNum != 7 || problems[1].RowNum != 8 || problems[0].Field != "startedAt" {
+		t.Fatalf("problems = %+v", problems)
+	}
+	tpl.Attributes["startedAt"] = FieldMap{Column: "Start", DateFormats: []string{"2006-01-02"}}
+	rows, _, _ = Normalize(tpl, outageType, csvTable(headers, []string{"O-6", "Checkout", "Open", "2026-10-08", "2026-10-08"}))
+	if len(rows) != 1 || rows[0].Fields.Attributes["startedAt"] != "2026-10-08T04:00:00Z" {
+		t.Fatalf("explicit date-only layout: rows = %+v", rows)
+	}
+
+	// The default zone is UTC.
+	tpl.TimeZone = ""
+	tpl.Attributes["startedAt"] = FieldMap{Column: "Start"}
+	rows, _, _ = Normalize(tpl, outageType, csvTable(headers, []string{"O-1", "Checkout", "Open", "2026-10-08", "2026-10-08 21:14"}))
+	if len(rows) != 1 || rows[0].Fields.Attributes["startedAt"] != "2026-10-08T21:14:00Z" {
+		t.Fatalf("UTC default: rows = %+v", rows)
+	}
+}
+
+func TestDateTimeFromSpreadsheetSerial(t *testing.T) {
+	tpl := miniTemplate(nil)
+	tpl.File.Format = "xlsx"
+	tpl.Attributes = map[string]FieldMap{"startedAt": {Column: "Start"}}
+	tbl := csvTable([]string{"Key", "Product", "Status", "Created", "Start"},
+		[]string{"O-1", "Checkout", "Open", "2026-10-08", "46303.5"})
+	tbl.Format = "xlsx"
+	rows, _, problems := Normalize(tpl, outageType, tbl)
+	if len(problems) != 0 || len(rows) != 1 {
+		t.Fatalf("rows=%+v problems=%+v", rows, problems)
+	}
+	if got := rows[0].Fields.Attributes["startedAt"]; got != "2026-10-08T12:00:00Z" {
+		t.Fatalf("serial 46303.5 = %#v", got)
+	}
+}
+
+func TestDurationUnits(t *testing.T) {
+	headers := []string{"Key", "Product", "Status", "Created", "Down"}
+	for unit, raw := range map[string]string{"": "90", "min": "90", "s": "5400", "h": "1.5"} {
+		tpl := miniTemplate(nil)
+		tpl.RecordType = "outage"
+		tpl.Attributes = map[string]FieldMap{"minutesDown": {Column: "Down", Unit: unit}}
+		if errs := tpl.Validate(outageType); errs != nil {
+			t.Fatalf("unit %q: %v", unit, errs)
+		}
+		rows, _, problems := Normalize(tpl, outageType, csvTable(headers, []string{"O-1", "Checkout", "Open", "2026-10-08", raw}))
+		if len(problems) != 0 || len(rows) != 1 || rows[0].Fields.Attributes["minutesDown"] != float64(90) {
+			t.Fatalf("unit %q, %s: rows=%+v problems=%+v", unit, raw, rows, problems)
+		}
+	}
+}
+
+func TestSubjectKeyFanOut(t *testing.T) {
+	headers := []string{"Key", "Product", "Status", "Created"}
+	tpl := miniTemplate(map[string]FieldMap{
+		"subjectKey": {Column: "Product", Separator: ";", Map: map[string]string{"CHK": "Checkout", "*": "Billing"}},
+	})
+	tbl := csvTable(headers,
+		[]string{"D-1", "CHK; Ledger ;chk;", "Open", "2026-05-01"},
+		[]string{"D-2", " ; ", "Open", "2026-05-01"},
+		[]string{"D-3", "CHK", "Open", "2026-05-01"},
+	)
+	rows, _, problems := Normalize(tpl, defectType, tbl)
+	var ids, subjects []string
+	for _, r := range rows {
+		ids = append(ids, r.ExternalID)
+		subjects = append(subjects, r.Fields.SubjectKey)
+		if r.Fields.GroupKey != strings.SplitN(r.ExternalID, "@", 2)[0] {
+			t.Errorf("%s: group key %q", r.ExternalID, r.Fields.GroupKey)
+		}
+	}
+	// Each listed service once (compared ignoring case), mapped per part; the
+	// identity keeps the service as written.
+	if want := []string{"D-1@CHK", "D-1@Ledger", "D-3@CHK"}; !reflect.DeepEqual(ids, want) {
+		t.Fatalf("ids = %v, want %v", ids, want)
+	}
+	if want := []string{"Checkout", "Billing", "Checkout"}; !reflect.DeepEqual(subjects, want) {
+		t.Fatalf("subjects = %v, want %v", subjects, want)
+	}
+	if len(problems) != 1 || problems[0].RowNum != 3 || problems[0].Field != "subjectKey" {
+		t.Fatalf("problems = %+v", problems)
+	}
+
+	// Two rows with the same key are still duplicates.
+	_, _, problems = Normalize(tpl, defectType, csvTable(headers,
+		[]string{"D-1", "CHK", "Open", "2026-05-01"},
+		[]string{"D-1", "CHK", "Open", "2026-05-01"}))
+	if len(problems) != 2 || problems[0].Kind != ProblemDuplicateID || problems[0].Value != "D-1@CHK" {
+		t.Fatalf("duplicate problems = %+v", problems)
+	}
+}
+
 func TestNonEmptyTransform(t *testing.T) {
 	tpl := miniTemplate(nil)
 	tpl.Attributes = map[string]FieldMap{"customerTicket": {Column: "Linked", Transform: "nonEmpty"}}

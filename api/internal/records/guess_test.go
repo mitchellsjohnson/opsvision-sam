@@ -31,6 +31,59 @@ func valuesOf(in Inspection, field string) map[string]ValueCount {
 	return out
 }
 
+func attributeGuessFor(in Inspection, key string) (ColumnGuess, bool) {
+	for _, g := range in.AttributeGuesses {
+		if g.Field == key {
+			return g, true
+		}
+	}
+	return ColumnGuess{}, false
+}
+
+func TestGuessIncidentTimes(t *testing.T) {
+	incident := IncidentPreset()
+	cases := []struct{ start, end string }{
+		{"Incident start", "Incident end"},
+		{"started_at", "resolved_on"},
+		{"Started at", "Resolved at"},
+	}
+	for _, tc := range cases {
+		tbl := csvTable([]string{"Key", "Component", tc.start, tc.end},
+			[]string{"INC-1", "Webhooks", "2026-10-03 14:05", "2026-10-03 18:15"},
+			[]string{"INC-2", "Search", "2026-10-17 11:20", "2026-10-17 11:50"})
+		in := Inspect(tbl, []domain.RecordType{incident}, nil)
+		s, ok := attributeGuessFor(in, "startedAt")
+		if !ok || s.Column != tc.start || s.Confidence < 0.9 {
+			t.Errorf("%q: startedAt guess = %+v, %v", tc.start, s, ok)
+		}
+		e, ok := attributeGuessFor(in, "endedAt")
+		if !ok || e.Column != tc.end {
+			t.Errorf("%q: endedAt guess = %+v, %v", tc.end, e, ok)
+		}
+		if fm := in.Draft.Attributes["startedAt"]; fm.Column != tc.start || len(fm.DateFormats) == 0 {
+			t.Errorf("%q: draft attribute = %+v", tc.start, fm)
+		}
+		if errs := in.Draft.Validate(incident); hasPathIn(errs, "attributes.startedAt") || hasPathIn(errs, "attributes.endedAt") {
+			t.Errorf("%q: draft attributes invalid: %v", tc.start, errs)
+		}
+	}
+
+	// Other record types get no attribute guesses.
+	tbl := csvTable([]string{"Key", "Started at"}, []string{"D-1", "2026-10-03 14:05"})
+	if in := Inspect(tbl, []domain.RecordType{defectType}, nil); len(in.AttributeGuesses) != 0 || in.Draft.Attributes != nil {
+		t.Errorf("defect type got attribute guesses: %+v", in.AttributeGuesses)
+	}
+}
+
+func hasPathIn(errs []domain.ValidationError, prefix string) bool {
+	for _, e := range errs {
+		if strings.HasPrefix(e.Path, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 func TestGuessTrackerHeaders(t *testing.T) {
 	tbl := readFixtureCSV(t, "defects.csv")
 	in := Inspect(tbl, []domain.RecordType{workType, defectType}, nil)

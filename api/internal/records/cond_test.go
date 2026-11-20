@@ -3,6 +3,7 @@ package records
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"opsvision/internal/domain"
 )
@@ -201,6 +202,102 @@ func TestWhereDates(t *testing.T) {
 	if mustMatch(t, slipped, domain.RecordFields{PriorDueDates: []domain.Date{day("2026-12-31")}}) {
 		t.Error("missing dueAt should not match in")
 	}
+}
+
+func TestWhereDateTimes(t *testing.T) {
+	rt := IncidentPreset()
+	compile := func(src string) *Cond {
+		t.Helper()
+		c, err := CompileWhere(src, rt)
+		if err != nil {
+			t.Fatalf("CompileWhere(%q): %v", src, err)
+		}
+		return c
+	}
+	at := func(start string) domain.RecordFields {
+		return domain.RecordFields{Attributes: map[string]any{"startedAt": start}}
+	}
+
+	from := compile("startedAt >= '2026-10-01T00:00:00Z'")
+	cases := []struct {
+		start string
+		want  bool
+	}{
+		{"2026-10-01T00:00:00Z", true},
+		{"2026-09-30T23:59:00Z", false},
+		{"2026-10-17T11:20:00Z", true},
+	}
+	for _, tc := range cases {
+		if got := mustMatch(t, from, at(tc.start)); got != tc.want {
+			t.Errorf("startedAt %s >= Oct 1: %v, want %v", tc.start, got, tc.want)
+		}
+	}
+	// Instants compare as instants, whatever offset the literal is written in.
+	if !mustMatch(t, compile("startedAt < '2026-09-30T20:00:00-04:00'"), at("2026-09-30T23:59:00Z")) {
+		t.Error("23:59Z is before 20:00-04:00 (00:00Z)")
+	}
+	if !mustMatch(t, compile("startedAt == '2026-10-01T02:00:00+02:00'"), at("2026-10-01T00:00:00Z")) {
+		t.Error("equal instants in two offsets should be equal")
+	}
+	if !mustMatch(t, compile("startedAt in ['2026-10-01T00:00:00Z', '2026-10-02T00:00:00Z']"), at("2026-10-02T00:00:00Z")) {
+		t.Error("in [...] of instants should match")
+	}
+	// Two datetime fields compare with each other; a missing one never matches.
+	ended := compile("endedAt > startedAt && category != 'maintenance'")
+	if !mustMatch(t, ended, domain.RecordFields{Category: "incident", Attributes: map[string]any{"startedAt": "2026-10-01T00:00:00Z", "endedAt": "2026-10-01T01:00:00Z"}}) {
+		t.Error("endedAt > startedAt should match")
+	}
+	if mustMatch(t, ended, at("2026-10-01T00:00:00Z")) || mustMatch(t, from, domain.RecordFields{}) {
+		t.Error("a missing datetime should not match")
+	}
+	if mustMatch(t, compile("!(startedAt >= '2026-10-01T00:00:00Z')"), domain.RecordFields{}) {
+		t.Error("! of an unknown comparison should stay unknown")
+	}
+
+	for src, want := range map[string]string{
+		"startedAt >= '2026-10-01'":           "date and time",
+		"startedAt >= 'soon'":                 "date and time",
+		"startedAt >= '2026-10-01T00:00:00'":  "date and time",
+		"startedAt in ['2026-10-01']":         "date and time",
+		"startedAt >= createdAt":              "date and time",
+		"startedAt > 5":                       "mismatched types",
+		"createdAt >= '2026-10-01T00:00:00Z'": "mismatched types",
+		"'2026-10-01' <= endedAt":             "date and time",
+	} {
+		_, err := CompileWhere(src, rt)
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("CompileWhere(%q) error = %v, want it to mention %q", src, err, want)
+		}
+	}
+}
+
+func TestFieldDateTimeAndText(t *testing.T) {
+	f := domain.RecordFields{GroupKey: "INC-2049", Attributes: map[string]any{"startedAt": "2026-10-09T01:14:00Z"}}
+	got, ok, err := FieldDateTime(f, "startedAt")
+	if err != nil || !ok || !got.Equal(time.Date(2026, 10, 9, 1, 14, 0, 0, time.UTC)) || got.Location() != time.UTC {
+		t.Fatalf("FieldDateTime = %v, %v, %v", got, ok, err)
+	}
+	if _, ok, err := FieldDateTime(f, "endedAt"); ok || err != nil {
+		t.Fatalf("missing endedAt = %v, %v", ok, err)
+	}
+	if _, _, err := FieldDateTime(domain.RecordFields{Attributes: map[string]any{"startedAt": "2026-10-09"}}, "startedAt"); err == nil {
+		t.Fatal("a date-only value read as a datetime did not fail")
+	}
+	if s, ok, err := FieldText(f, "startedAt", domain.AttrDateTime); err != nil || !ok || s != "2026-10-09T01:14:00Z" {
+		t.Fatalf("FieldText = %q, %v, %v", s, ok, err)
+	}
+	if !mustMatch(t, mustCompileFor(t, "groupKey == 'INC-2049'", IncidentPreset()), f) {
+		t.Error("groupKey should be usable in conditions")
+	}
+}
+
+func mustCompileFor(t *testing.T, src string, rt domain.RecordType) *Cond {
+	t.Helper()
+	c, err := CompileWhere(src, rt)
+	if err != nil {
+		t.Fatalf("CompileWhere(%q): %v", src, err)
+	}
+	return c
 }
 
 func TestFieldDate(t *testing.T) {

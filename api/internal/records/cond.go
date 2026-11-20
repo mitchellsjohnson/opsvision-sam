@@ -217,7 +217,8 @@ func compileWhere(src string, rt domain.RecordType, missing map[string]bool) (*C
 	for name, kind := range c.fields {
 		typed[name] = zeroOf(kind)
 	}
-	if _, err := expr.Compile(src, expr.Env(typed), expr.AsBool()); err != nil {
+	instants := &instantPatcher{fields: c.fields}
+	if _, err := expr.Compile(src, expr.Env(typed), expr.AsBool(), expr.Patch(instants)); err != nil {
 		return nil, whereError(err)
 	}
 
@@ -232,6 +233,7 @@ func compileWhere(src string, rt domain.RecordType, missing map[string]bool) (*C
 		expr.Function(fnAnd, logicAnd, new(func(any, any) any)),
 		expr.Function(fnOr, logicOr, new(func(any, any) any)),
 		expr.Function(fnNot, logicNot, new(func(any) any)),
+		expr.Patch(instants),
 		expr.Patch(&unknownPatcher{fields: c.fields, missing: missing}),
 	)
 	if err != nil {
@@ -322,6 +324,9 @@ func (c *Cond) check(n ast.Node, rt domain.RecordType) error {
 		default:
 			return fmt.Errorf("operator %q is not allowed", n.Operator)
 		}
+		if err := checkInstants(n, rt); err != nil {
+			return err
+		}
 		if c.lenient {
 			return nil
 		}
@@ -406,6 +411,100 @@ func checkKnownValues(n *ast.BinaryNode, rt domain.RecordType) error {
 	return nil
 }
 
+// isComparison reports whether op compares two values.
+func isComparison(op string) bool {
+	switch op {
+	case "==", "!=", "<", "<=", ">", ">=", "in":
+		return true
+	}
+	return false
+}
+
+// instantLiteral reads s as an RFC 3339 instant with an offset.
+func instantLiteral(s string) (time.Time, bool) {
+	t, err := time.Parse(time.RFC3339Nano, s)
+	return t.UTC(), err == nil
+}
+
+// checkInstants requires a date-time field compared with a literal to be
+// compared with an RFC 3339 instant ('2026-10-01T00:00:00Z'), and never with
+// a date field: an instant and a calendar day do not compare.
+func checkInstants(n *ast.BinaryNode, rt domain.RecordType) error {
+	if !isComparison(n.Operator) {
+		return nil
+	}
+	check := func(field, other ast.Node) error {
+		id, ok := field.(*ast.IdentifierNode)
+		if !ok {
+			return nil
+		}
+		if k, _ := fieldKind(rt, id.Value); k != domain.AttrDateTime {
+			return nil
+		}
+		var lits []ast.Node
+		switch o := other.(type) {
+		case *ast.StringNode:
+			lits = []ast.Node{o}
+		case *ast.ArrayNode:
+			lits = o.Nodes
+		case *ast.IdentifierNode:
+			if k, _ := fieldKind(rt, o.Value); k == domain.AttrDate {
+				return fmt.Errorf("%s is a date and time; compare it with another date and time, not with %s, a date", id.Value, o.Value)
+			}
+		}
+		for _, l := range lits {
+			if s, ok := l.(*ast.StringNode); ok {
+				if _, ok := instantLiteral(s.Value); !ok {
+					return fmt.Errorf("compare %s with a date and time such as '2026-10-01T00:00:00Z', not '%s'", id.Value, s.Value)
+				}
+			}
+		}
+		return nil
+	}
+	if err := check(n.Left, n.Right); err != nil {
+		return err
+	}
+	return check(n.Right, n.Left)
+}
+
+// instantPatcher replaces the string literals compared with a date-time
+// field by the instants they name, so they type-check and compare as
+// time.Time.
+type instantPatcher struct {
+	fields map[string]domain.AttrType
+}
+
+func (p *instantPatcher) Visit(node *ast.Node) {
+	n, ok := (*node).(*ast.BinaryNode)
+	if !ok || !isComparison(n.Operator) {
+		return
+	}
+	if p.isDateTime(n.Left) {
+		p.patch(&n.Right)
+	}
+	if p.isDateTime(n.Right) {
+		p.patch(&n.Left)
+	}
+}
+
+func (p *instantPatcher) isDateTime(n ast.Node) bool {
+	id, ok := n.(*ast.IdentifierNode)
+	return ok && p.fields[id.Value] == domain.AttrDateTime
+}
+
+func (p *instantPatcher) patch(side *ast.Node) {
+	switch s := (*side).(type) {
+	case *ast.StringNode:
+		if t, ok := instantLiteral(s.Value); ok {
+			ast.Patch(side, &ast.ConstantNode{Value: t})
+		}
+	case *ast.ArrayNode:
+		for i := range s.Nodes {
+			p.patch(&s.Nodes[i])
+		}
+	}
+}
+
 func contains(list []string, s string) bool {
 	for _, v := range list {
 		if v == s {
@@ -428,7 +527,7 @@ func fieldKind(rt domain.RecordType, name string) (domain.AttrType, bool) {
 // numbers are nil, except number attributes, which are 0.
 func nullable(name string, kind domain.AttrType) bool {
 	switch kind {
-	case domain.AttrDate:
+	case domain.AttrDate, domain.AttrDateTime:
 		return true
 	case domain.AttrNumber:
 		var none domain.RecordFields
@@ -445,7 +544,7 @@ func zeroOf(kind domain.AttrType) any {
 		return float64(0)
 	case domain.AttrBool:
 		return false
-	case domain.AttrDate:
+	case domain.AttrDate, domain.AttrDateTime:
 		return time.Time{}
 	case kindDateList:
 		return []time.Time{}
@@ -466,6 +565,18 @@ func FieldDate(f domain.RecordFields, name string) (domain.Date, bool, error) {
 		return domain.Date{}, false, nil
 	}
 	return domain.Date{Time: t}, true, nil
+}
+
+// FieldDateTime returns the date-time attribute name of f as a UTC instant,
+// and false when it is missing. It fails when the attribute holds a value
+// that is not an RFC 3339 date-time.
+func FieldDateTime(f domain.RecordFields, name string) (time.Time, bool, error) {
+	v, err := attrValue(name, domain.AttrDateTime, f.Attributes[name])
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	t, ok := v.(time.Time)
+	return t, ok, nil
 }
 
 // FieldText returns the field or attribute name of f as text, as conditions
@@ -490,6 +601,9 @@ func FieldText(f domain.RecordFields, name string, kind domain.AttrType) (string
 	case bool:
 		return strconv.FormatBool(v), true, nil
 	case time.Time:
+		if kind == domain.AttrDateTime {
+			return v.UTC().Format(time.RFC3339), true, nil
+		}
 		return v.Format(time.DateOnly), true, nil
 	}
 	return "", false, nil
@@ -508,6 +622,8 @@ func fieldValue(f domain.RecordFields, name string, kind domain.AttrType) (any, 
 	switch name {
 	case "subjectKey":
 		return f.SubjectKey, nil
+	case "groupKey":
+		return f.GroupKey, nil
 	case "title":
 		return f.Title, nil
 	case "category":
@@ -582,15 +698,31 @@ func datePtrValue(d *domain.Date) any {
 }
 
 // attrValue converts the stored attribute v to kind. A missing attribute is
-// the zero value of its type; a missing date is no date (nil).
+// the zero value of its type; a missing date or date-time is none (nil). A
+// date-time is a UTC time.Time; it is stored as an RFC 3339 string.
 func attrValue(key string, kind domain.AttrType, v any) (any, error) {
 	if v == nil {
-		if kind == domain.AttrDate {
+		if kind == domain.AttrDate || kind == domain.AttrDateTime {
 			return nil, nil
 		}
 		return zeroOf(kind), nil
 	}
 	switch kind {
+	case domain.AttrDateTime:
+		switch d := v.(type) {
+		case time.Time:
+			if d.IsZero() {
+				return nil, nil
+			}
+			return d.UTC(), nil
+		case string:
+			if d == "" {
+				return nil, nil
+			}
+			if t, err := time.Parse(time.RFC3339, d); err == nil {
+				return t.UTC(), nil
+			}
+		}
 	case domain.AttrString:
 		if s, ok := v.(string); ok {
 			return s, nil

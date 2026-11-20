@@ -145,6 +145,111 @@ func TestRecordTypeAttributeKeysAcceptCamelCase(t *testing.T) {
 	}
 }
 
+func incidentType() RecordType {
+	return RecordType{
+		ID: "incident", Name: "Incident", Priorities: []string{"SEV1", "SEV2"},
+		Attributes: []AttributeDef{
+			{Key: "startedAt", Name: "Started", Type: AttrDateTime},
+			{Key: "endedAt", Name: "Ended", Type: AttrDateTime},
+			{Key: "minutesDown", Name: "Minutes down", Type: AttrNumber},
+		},
+		Explains: []ExplainLink{
+			{ScorecardID: "service-fulfillment", MetricKey: "uptime", Mode: ExplainDowntime, DownMeasure: "seconds_down", Where: "category != 'maintenance'"},
+			{ScorecardID: "service-fulfillment", MetricKey: "postmortems_on_time", Mode: ExplainList},
+		},
+	}
+}
+
+func TestDateTimeAttributeType(t *testing.T) {
+	if !AttrDateTime.Valid() || AttrDateTime != "datetime" {
+		t.Fatalf("AttrDateTime = %q, valid %v", AttrDateTime, AttrDateTime.Valid())
+	}
+	if errs := incidentType().Validate(); errs != nil {
+		t.Fatalf("incident type rejected: %v", errs)
+	}
+	if k, ok := incidentType().FieldKind("startedAt"); !ok || k != AttrDateTime {
+		t.Fatalf("FieldKind(startedAt) = %q, %v", k, ok)
+	}
+}
+
+func TestGroupKeyIsABuiltInField(t *testing.T) {
+	if k, ok := (RecordType{}).FieldKind("groupKey"); !ok || k != AttrString {
+		t.Fatalf("FieldKind(groupKey) = %q, %v", k, ok)
+	}
+	rt := validRecordType()
+	rt.Attributes[0].Key = "groupKey"
+	if !hasPath(rt.Validate(), "attributes[0].key") {
+		t.Fatal("an attribute may not shadow groupKey")
+	}
+	b, _ := json.Marshal(RecordFields{SubjectKey: "Webhooks", GroupKey: "INC-2049"})
+	if !strings.Contains(string(b), `"groupKey":"INC-2049"`) {
+		t.Fatalf("json %s has no groupKey", b)
+	}
+	b, _ = json.Marshal(RecordFields{SubjectKey: "Webhooks"})
+	if strings.Contains(string(b), "groupKey") {
+		t.Fatalf("an empty groupKey should be omitted: %s", b)
+	}
+}
+
+func TestExplainLinksJSON(t *testing.T) {
+	b, err := json.Marshal(incidentType())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"explains":[`, `"scorecardId":"service-fulfillment"`, `"metricKey":"uptime"`,
+		`"mode":"downtime"`, `"downMeasure":"seconds_down"`, `"where":"category != 'maintenance'"`, `"mode":"list"`} {
+		if !strings.Contains(string(b), want) {
+			t.Errorf("json %s missing %s", b, want)
+		}
+	}
+	b, _ = json.Marshal(validRecordType())
+	if strings.Contains(string(b), "explains") {
+		t.Fatalf("a type without links should omit explains: %s", b)
+	}
+}
+
+func TestExplainLinksValidate(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(*RecordType)
+		path   string
+	}{
+		{"unknown mode", func(r *RecordType) { r.Explains[0].Mode = "sum" }, "explains[0].mode"},
+		{"missing mode", func(r *RecordType) { r.Explains[0].Mode = "" }, "explains[0].mode"},
+		{"missing scorecard", func(r *RecordType) { r.Explains[0].ScorecardID = "" }, "explains[0].scorecardId"},
+		{"missing metric", func(r *RecordType) { r.Explains[0].MetricKey = "" }, "explains[0].metricKey"},
+		{"bad metric key", func(r *RecordType) { r.Explains[0].MetricKey = "Up Time" }, "explains[0].metricKey"},
+		{"downtime without times or minutes", func(r *RecordType) { r.Attributes = nil }, "explains[0].mode"},
+		{"downtime with a date, not a datetime", func(r *RecordType) {
+			r.Attributes = []AttributeDef{{Key: "startedAt", Name: "S", Type: AttrDate}, {Key: "endedAt", Name: "E", Type: AttrDate}}
+		}, "explains[0].mode"},
+		{"down measure on a list link", func(r *RecordType) { r.Explains[1].DownMeasure = "seconds_down" }, "explains[1].downMeasure"},
+		{"duplicate link", func(r *RecordType) { r.Explains[1] = r.Explains[0] }, "explains[1]"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rt := incidentType()
+			rt.Explains = append([]ExplainLink(nil), rt.Explains...)
+			tc.mutate(&rt)
+			if errs := rt.Validate(); !hasPath(errs, tc.path) {
+				t.Fatalf("want error at %q, got %v", tc.path, errs)
+			}
+		})
+	}
+
+	// Either the two times or the minutes are enough for a downtime link.
+	minutesOnly := incidentType()
+	minutesOnly.Attributes = []AttributeDef{{Key: "minutesDown", Name: "Minutes down", Type: AttrNumber}}
+	if errs := minutesOnly.Validate(); errs != nil {
+		t.Fatalf("minutesDown alone rejected: %v", errs)
+	}
+	timesOnly := incidentType()
+	timesOnly.Attributes = timesOnly.Attributes[:2]
+	if errs := timesOnly.Validate(); errs != nil {
+		t.Fatalf("startedAt and endedAt alone rejected: %v", errs)
+	}
+}
+
 func TestFieldKindOmitsPriorDueDates(t *testing.T) {
 	if k, ok := validRecordType().FieldKind("priorDueDates"); ok {
 		t.Fatalf("FieldKind reports priorDueDates as a plain %q field", k)

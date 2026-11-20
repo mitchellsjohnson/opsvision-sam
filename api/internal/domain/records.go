@@ -85,18 +85,20 @@ func (s RecordState) Valid() bool {
 // AttrType is the type of a custom record attribute.
 type AttrType string
 
-// Attribute types.
+// Attribute types. A datetime is an instant, stored as an RFC 3339 UTC
+// string; a date is a calendar day.
 const (
-	AttrString AttrType = "string"
-	AttrNumber AttrType = "number"
-	AttrBool   AttrType = "bool"
-	AttrDate   AttrType = "date"
+	AttrString   AttrType = "string"
+	AttrNumber   AttrType = "number"
+	AttrBool     AttrType = "bool"
+	AttrDate     AttrType = "date"
+	AttrDateTime AttrType = "datetime"
 )
 
 // Valid reports whether t is a known attribute type.
 func (t AttrType) Valid() bool {
 	switch t {
-	case AttrString, AttrNumber, AttrBool, AttrDate:
+	case AttrString, AttrNumber, AttrBool, AttrDate, AttrDateTime:
 		return true
 	}
 	return false
@@ -112,14 +114,37 @@ type AttributeDef struct {
 // PriorityNone is the implicit priority of a record with no priority.
 const PriorityNone = "none"
 
+// Explain link modes for ExplainLink.Mode.
+const (
+	// ExplainDowntime explains a metric's gap in minutes from the records'
+	// start and end times or durations.
+	ExplainDowntime = "downtime"
+	// ExplainList lists the overlapping records with no arithmetic.
+	ExplainList = "list"
+)
+
+// ExplainLink says that a record type's records explain one metric of one
+// scorecard. DownMeasure optionally names the measure holding the reported
+// downtime; Where filters the records with the records expression engine.
+type ExplainLink struct {
+	ScorecardID string `json:"scorecardId"`
+	MetricKey   string `json:"metricKey"`
+	Mode        string `json:"mode"`
+	DownMeasure string `json:"downMeasure,omitempty"`
+	Where       string `json:"where,omitempty"`
+}
+
 // RecordType is a tenant-level kind of record (defect, epic, ...). TrackedFrom
 // is keyed by record source; PriorityNone is always an implicit priority.
+// Explains links the type to the metrics its records explain; it changes no
+// value, so it is not versioned.
 type RecordType struct {
 	ID          string                   `json:"id"`
 	Name        string                   `json:"name"`
 	Priorities  []string                 `json:"priorities"`
 	Attributes  []AttributeDef           `json:"attributes"`
 	TrackedFrom map[string]period.Period `json:"trackedFrom"`
+	Explains    []ExplainLink            `json:"explains,omitempty"`
 	Revision    int                      `json:"revision"`
 }
 
@@ -127,6 +152,7 @@ type RecordType struct {
 // conditions, buckets, and sums to their kinds. Attributes are separate.
 var recordFieldKinds = map[string]AttrType{
 	"subjectKey":     AttrString,
+	"groupKey":       AttrString,
 	"title":          AttrString,
 	"category":       AttrString,
 	"priority":       AttrString,
@@ -255,16 +281,60 @@ func (rt RecordType) Validate() []ValidationError {
 		}
 	}
 
+	v.checkExplains(rt)
+
 	if len(v.errs) == 0 {
 		return nil
 	}
 	return v.errs
 }
 
+// checkExplains checks the structure of rt's explain links. The where
+// conditions are compiled by the records package, and DownMeasure is checked
+// against the metric's formula by the caller, which has the methodology.
+func (v *validator) checkExplains(rt RecordType) {
+	hasType := func(key string, typ AttrType) bool {
+		for _, a := range rt.Attributes {
+			if a.Key == key && a.Type == typ {
+				return true
+			}
+		}
+		return false
+	}
+	timed := (hasType("startedAt", AttrDateTime) && hasType("endedAt", AttrDateTime)) || hasType("minutesDown", AttrNumber)
+	seen := map[[2]string]bool{}
+	for i, l := range rt.Explains {
+		path := fmt.Sprintf("explains[%d]", i)
+		if l.ScorecardID == "" {
+			v.add(path+".scorecardId", "scorecard is required")
+		}
+		v.checkKey(path+".metricKey", l.MetricKey)
+		switch l.Mode {
+		case ExplainDowntime:
+			if !timed {
+				v.add(path+".mode", "downtime links need startedAt and endedAt (date and time) or minutesDown (number) attributes")
+			}
+		case ExplainList:
+			if l.DownMeasure != "" {
+				v.add(path+".downMeasure", "a down measure applies to downtime links only")
+			}
+		default:
+			v.add(path+".mode", "mode must be %s or %s, got %q", ExplainDowntime, ExplainList, l.Mode)
+		}
+		k := [2]string{l.ScorecardID, l.MetricKey}
+		if seen[k] && l.ScorecardID != "" && l.MetricKey != "" {
+			v.add(path, "metric %q of scorecard %q is already linked", l.MetricKey, l.ScorecardID)
+		}
+		seen[k] = true
+	}
+}
+
 // RecordFields is the canonical record format: one record's state as of one
-// snapshot.
+// snapshot. GroupKey is set on the records a multi-service row fans out to
+// (the row's own key); it is for display and grouping only.
 type RecordFields struct {
 	SubjectKey     string         `json:"subjectKey"`
+	GroupKey       string         `json:"groupKey,omitempty"`
 	Title          string         `json:"title,omitempty"`
 	Category       string         `json:"category,omitempty"`
 	Priority       string         `json:"priority,omitempty"`

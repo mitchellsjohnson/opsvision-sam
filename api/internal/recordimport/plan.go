@@ -72,6 +72,10 @@ type Answers struct {
 // Counts summarizes a plan's rows. Missing counts records, not rows.
 type Counts struct{ New, Changed, Unchanged, Skipped, Missing, Unmatched, Errors int }
 
+// RowCounts compares the file's rows that read with the records they make:
+// a row that lists several subjects fans out to one record each.
+type RowCounts struct{ Source, Records int }
+
 // ParentMatch is a product or team value that matches a parent unit, with
 // the number of rows carrying it.
 type ParentMatch struct {
@@ -86,6 +90,7 @@ type Plan struct {
 	Snapshot  domain.Snapshot
 	Revisions []store.RecordRevisionWrite
 	Counts    Counts
+	Rows      RowCounts
 	Problems  []records.RowProblem
 	Unmatched []records.SubjectSuggestion
 	Parents   []ParentMatch
@@ -145,7 +150,13 @@ func withAnswers(t records.Template, rt domain.RecordType, ans Answers) (records
 			}
 		}
 		for _, a := range rt.Attributes {
-			if fm, ok := t.Attributes[a.Key]; ok && a.Type == domain.AttrDate && (fm.Transform == "" || fm.Transform == records.TransformDate) {
+			fm, ok := t.Attributes[a.Key]
+			if !ok {
+				continue
+			}
+			switch {
+			case a.Type == domain.AttrDate && (fm.Transform == "" || fm.Transform == records.TransformDate),
+				a.Type == domain.AttrDateTime && (fm.Transform == "" || fm.Transform == records.TransformDateTime):
 				t.Attributes[a.Key] = prepend(fm)
 			}
 		}
@@ -435,9 +446,10 @@ var placeholder = regexp.MustCompile(`\{([^{}]+)\}`)
 
 // fileIDs reads the external ID of every row of tbl, whether or not the row
 // normalizes, so a full export's missing records are judged on the file as
-// written.
+// written. A row that fans out has the ID of each record it makes.
 func fileIDs(t records.Template, tbl records.Table) map[string]bool {
 	fm := t.Fields["externalId"]
+	subject := t.Fields["subjectKey"]
 	cols := map[string]int{}
 	for i, h := range tbl.Headers {
 		if h = strings.TrimSpace(h); h != "" {
@@ -461,8 +473,18 @@ func fileIDs(t records.Template, tbl records.Table) map[string]bool {
 		case fm.Template != "":
 			id = placeholder.ReplaceAllStringFunc(fm.Template, func(m string) string { return cell(row, m[1:len(m)-1]) })
 		}
-		if id = strings.TrimSpace(id); id != "" {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if subject.Separator == "" || subject.Column == "" {
 			out[id] = true
+			continue
+		}
+		for _, part := range strings.Split(cell(row, subject.Column), subject.Separator) {
+			if part = strings.TrimSpace(part); part != "" {
+				out[id+"@"+part] = true
+			}
 		}
 	}
 	return out
@@ -516,6 +538,11 @@ func Build(ctx context.Context, st store.Store, tenant domain.Tenant, scorecardI
 	rows, skipped, problems := records.Normalize(tpl, rt, tbl)
 	p.Counts.Skipped = skipped
 	p.Problems = problems
+	sourceRows := map[int]bool{}
+	for _, r := range rows {
+		sourceRows[r.RowNum] = true
+	}
+	p.Rows = RowCounts{Source: len(sourceRows), Records: len(rows)}
 	fileProblem := false
 	errRows := map[int]bool{}
 	newValues := map[string]map[string]int{}
