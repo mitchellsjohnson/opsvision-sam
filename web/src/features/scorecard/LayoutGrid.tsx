@@ -19,7 +19,7 @@ import {
 import { CSS } from '@dnd-kit/utilities'
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import clsx from 'clsx'
-import { Check, EllipsisVertical, GripVertical, LayoutDashboard } from 'lucide-react'
+import { Check, ChevronDown, ChevronUp, EllipsisVertical, GripVertical, LayoutDashboard } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { ApiError } from '../../api/errors'
 import { useLayout, usePutDefaultLayout, usePutLayout } from '../../api/queries'
@@ -28,7 +28,7 @@ import { menuItemHighlight } from '../../ui/focus'
 import { useElementWidth } from '../../ui/useElementWidth'
 import { CustomizeBar, LAYOUT_BUTTON } from './CustomizeBar'
 import { applyLayout, defaultLayout, type LayoutCategory, type LayoutMetric } from './logic/layout'
-import { moveBlock, reorderSectionDrop } from './logic/layoutReorder'
+import { blockRange, moveBlock, reorderSectionDrop } from './logic/layoutReorder'
 
 type LayoutItem = components['schemas']['LayoutItem']
 
@@ -51,6 +51,8 @@ export interface LayoutGridProps {
 }
 
 const MOBILE_MAX_WIDTH = '(max-width: 767px)'
+/** Below this width Customize mode shows compact rows instead of the tiles (§12). */
+const PHONE_MAX_WIDTH = '(max-width: 639px)'
 /** The toolbar's inset from the tile edge (right-2) plus room between it and the header. */
 const TOOLBAR_GAP = 16
 const PINNED = ['widget:health', 'widget:needs']
@@ -81,6 +83,128 @@ function labelFor(id: string, labels: Record<string, string>): string {
   if (id.startsWith('section:')) return id.slice('section:'.length)
   if (id.startsWith('metric:')) return id.slice('metric:'.length)
   return id
+}
+
+/** Whether a media query matches, kept in sync; false without `matchMedia`. */
+function useMedia(query: string): boolean {
+  const [matches, setMatches] = useState(() => typeof window !== 'undefined' && !!window.matchMedia && window.matchMedia(query).matches)
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return
+    const mq = window.matchMedia(query)
+    const sync = () => setMatches(mq.matches)
+    sync()
+    mq.addEventListener('change', sync)
+    return () => mq.removeEventListener('change', sync)
+  }, [query])
+  return matches
+}
+
+/** The ids of the shown blocks, in display order. */
+function shownOrder(items: LayoutItem[], shown: Set<string>): string[] {
+  return displayOrder(items)
+    .map((i) => i.id)
+    .filter((id) => shown.has(id))
+}
+
+/**
+ * Moves a block one place up or down among the shown blocks: past hidden or
+ * empty blocks, and past pinned ones, until its shown position changes.
+ * Null at either end.
+ */
+function shiftAmong(items: LayoutItem[], id: string, where: 'up' | 'down', shown: Set<string>): LayoutItem[] | null {
+  const before = shownOrder(items, shown).indexOf(id)
+  let next = items
+  for (let step = 0; step < items.length; step++) {
+    const moved = moveBlock(next, next.findIndex((i) => i.id === id), where)
+    if (moved === next) return null
+    next = moved
+    if (shownOrder(next, shown).indexOf(id) !== before) return next
+  }
+  return null
+}
+
+function moveToBottom(items: LayoutItem[], index: number): LayoutItem[] {
+  const [start, end] = blockRange(items, index)
+  return [...items.slice(0, start), ...items.slice(end + 1), ...items.slice(start, end + 1)]
+}
+
+const GHOST_BUTTON =
+  'flex size-8 shrink-0 items-center justify-center rounded-md text-ink/80 hover:bg-ink/[0.06] hover:text-ink disabled:opacity-40 disabled:hover:bg-transparent'
+
+interface CompactRowProps {
+  item: LayoutItem
+  label: string
+  indented: boolean
+  up: LayoutItem[] | null
+  down: LayoutItem[] | null
+  onMove: (next: LayoutItem[], control: 'up' | 'down' | 'menu') => void
+  onHide: () => void
+  allItems: LayoutItem[]
+}
+
+/** One block in Customize mode on a phone: its title, Move up and down, and a menu; never its content. */
+function CompactRow({ item, label, indented, up, down, onMove, onHide, allItems }: CompactRowProps) {
+  const isSection = item.id.startsWith('section:')
+  const name = isSection ? `section ${label}` : label
+  const index = allItems.findIndex((i) => i.id === item.id)
+  return (
+    <li
+      data-testid="customize-row"
+      data-layout-item={item.id}
+      className={clsx(
+        'flex min-h-14 items-center gap-1 rounded-lg border border-dashed border-accent/45 bg-white px-3 py-2',
+        indented && 'ml-3',
+      )}
+    >
+      {isSection ? (
+        <p className="min-w-0 flex-1 text-xs font-semibold uppercase tracking-wide text-ink/70">Section · {label}</p>
+      ) : (
+        <p className="line-clamp-2 min-w-0 flex-1 text-sm font-semibold">{label}</p>
+      )}
+      <button
+        type="button"
+        data-move="up"
+        className={GHOST_BUTTON}
+        aria-label={`Move ${name} up`}
+        disabled={!up}
+        onClick={() => up && onMove(up, 'up')}
+      >
+        <ChevronUp aria-hidden size={16} />
+      </button>
+      <button
+        type="button"
+        data-move="down"
+        className={GHOST_BUTTON}
+        aria-label={`Move ${name} down`}
+        disabled={!down}
+        onClick={() => down && onMove(down, 'down')}
+      >
+        <ChevronDown aria-hidden size={16} />
+      </button>
+      <DropdownMenu.Root>
+        <DropdownMenu.Trigger
+          data-move="menu"
+          className={clsx(GHOST_BUTTON, 'data-[state=open]:bg-cream')}
+          aria-label={`Layout options for ${name}`}
+        >
+          <EllipsisVertical aria-hidden size={16} />
+        </DropdownMenu.Trigger>
+        <DropdownMenu.Portal>
+          <DropdownMenu.Content align="end" sideOffset={4} className="z-50 min-w-48 rounded-lg border border-ink/20 bg-white p-1 shadow-lg">
+            <DropdownMenu.Item className={MENU_ITEM} onSelect={onHide}>
+              {isSection ? 'Hide section header' : 'Hide'}
+            </DropdownMenu.Item>
+            <DropdownMenu.Item className={MENU_ITEM} onSelect={() => onMove(moveBlock(allItems, index, 'top'), 'menu')}>
+              Move to top
+            </DropdownMenu.Item>
+            <DropdownMenu.Item className={MENU_ITEM} onSelect={() => onMove(moveToBottom(allItems, index), 'menu')}>
+              Move to bottom
+            </DropdownMenu.Item>
+          </DropdownMenu.Content>
+        </DropdownMenu.Portal>
+      </DropdownMenu.Root>
+    </li>
+  )
 }
 
 interface SortableTileProps {
@@ -231,6 +355,10 @@ export function LayoutGrid({
   const customizeRef = useRef<HTMLButtonElement>(null)
   // A tile picked up with the keyboard: Esc cancels the move, not the mode.
   const dragging = useRef(false)
+  const phone = useMedia(PHONE_MAX_WIDTH)
+  const [moved, setMoved] = useState('')
+  // A compact row moved from one of its controls: that control gets focus back once the row is in its new place.
+  const refocus = useRef<{ id: string; control: 'up' | 'down' | 'menu'; position: number } | null>(null)
 
   const fallback = useMemo(
     () => defaultLayout(categories, metricsByCategory),
@@ -258,6 +386,8 @@ export function LayoutGrid({
 
   const leave = useCallback(() => {
     setEditing(false)
+    setMoved('')
+    refocus.current = null
     customizeRef.current?.focus()
   }, [])
 
@@ -338,6 +468,19 @@ export function LayoutGrid({
 
   const visible = displayOrder(merged)
   const hidden = hiddenCount(merged)
+  const compact = editing && phone
+
+  useEffect(() => {
+    const target = refocus.current
+    if (!target) return
+    const rows = [...document.querySelectorAll<HTMLElement>('[data-testid="customize-row"]')]
+    const row = rows.find((r) => r.dataset.layoutItem === target.id)
+    if (!row || rows.indexOf(row) !== target.position) return
+    refocus.current = null
+    const button = row.querySelector<HTMLButtonElement>(`[data-move="${target.control}"]`)
+    const other = row.querySelector<HTMLButtonElement>(`[data-move="${target.control === 'up' ? 'down' : 'up'}"]`)
+    ;(button && !button.disabled ? button : (other ?? button))?.focus()
+  })
 
   const categoryOf = useMemo(() => {
     const map = new Map<string, string>()
@@ -390,6 +533,22 @@ export function LayoutGrid({
     sectionAbove.set(item.id, section)
   }
 
+  const nodes = visible.flatMap((item) => {
+    const node = renderNode(item)
+    return node ? [{ item, node }] : []
+  })
+  const shownIds = new Set(nodes.map((n) => n.item.id))
+
+  const moveRow = (id: string, next: LayoutItem[], control: 'up' | 'down' | 'menu') => {
+    const order = shownOrder(next, shownIds)
+    const position = order.indexOf(id)
+    if (position === shownOrder(merged, shownIds).indexOf(id)) return
+    refocus.current = { id, control, position }
+    const label = labelFor(id, itemLabels)
+    setMoved(`Moved ${id.startsWith('section:') ? `section ${label}` : label} to position ${position + 1} of ${order.length}`)
+    void persist(next)
+  }
+
   return (
     <>
       {renderHeaderActions ? renderHeaderActions(customize) : <div className="mt-4 flex justify-end">{customize}</div>}
@@ -409,59 +568,78 @@ export function LayoutGrid({
             onDone={leave}
           />
         )}
-        <DndContext
-          sensors={sensors}
-          collisionDetection={closestCenter}
-          accessibility={{
-            announcements,
-            screenReaderInstructions: {
-              draggable: 'Press Space to pick up. Use the arrow keys to move, Space to drop, Escape to cancel.',
-            },
-          }}
-          onDragStart={() => (dragging.current = true)}
-          onDragCancel={() => (dragging.current = false)}
-          onDragEnd={onDragEnd}
-        >
-          <SortableContext items={visible.map((i) => i.id)} strategy={rectSortingStrategy}>
-            <div className={clsx('grid grid-cols-[minmax(0,1fr)] gap-4 sm:grid-cols-2', editing && 'gap-y-6 pt-2')}>
-              {visible.map((item) => {
-                const node = renderNode(item)
-                if (!node) return null
-                const label = labelFor(item.id, itemLabels)
-                const span = item.size === 'wide' ? 'sm:col-span-2' : ''
-                const isMetric = item.id.startsWith('metric:')
-                const metricKey = item.id.slice('metric:'.length)
-                const eyebrow = isMetric && categoryOf.get(item.id) !== sectionAbove.get(item.id) ? (metricCategories[metricKey] ?? '') : ''
-                return (
-                  <div key={item.id} className={clsx('min-w-0', span)}>
-                    <SortableTile
-                      id={item.id}
-                      item={item}
-                      label={label}
-                      editing={editing}
-                      onUpdate={onUpdate}
-                      allItems={merged}
-                    >
-                      {eyebrow ? (
-                        <div className="flex h-full flex-col">
-                          <p
-                            data-eyebrow=""
-                            className="mb-1 text-[11px] font-semibold uppercase leading-4 tracking-[0.04em] text-ink/70"
-                          >
-                            {eyebrow}
-                          </p>
-                          <div className="min-h-0 flex-1">{node}</div>
-                        </div>
-                      ) : (
-                        node
-                      )}
-                    </SortableTile>
-                  </div>
-                )
-              })}
-            </div>
-          </SortableContext>
-        </DndContext>
+        {compact ? (
+          <ol aria-label="Layout order" className="flex flex-col gap-2">
+            {nodes.map(({ item }) => (
+              <CompactRow
+                key={item.id}
+                item={item}
+                label={labelFor(item.id, itemLabels)}
+                indented={item.id.startsWith('metric:') && sectionAbove.get(item.id) !== ''}
+                up={shiftAmong(merged, item.id, 'up', shownIds)}
+                down={shiftAmong(merged, item.id, 'down', shownIds)}
+                onMove={(next, control) => moveRow(item.id, next, control)}
+                onHide={() => void persist(merged.map((i) => (i.id === item.id ? { ...i, hidden: true } : i)))}
+                allItems={merged}
+              />
+            ))}
+          </ol>
+        ) : (
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCenter}
+            accessibility={{
+              announcements,
+              screenReaderInstructions: {
+                draggable: 'Press Space to pick up. Use the arrow keys to move, Space to drop, Escape to cancel.',
+              },
+            }}
+            onDragStart={() => (dragging.current = true)}
+            onDragCancel={() => (dragging.current = false)}
+            onDragEnd={onDragEnd}
+          >
+            <SortableContext items={visible.map((i) => i.id)} strategy={rectSortingStrategy}>
+              <div className={clsx('grid grid-cols-[minmax(0,1fr)] gap-4 sm:grid-cols-2', editing && 'gap-y-6 pt-2')}>
+                {nodes.map(({ item, node }) => {
+                  const label = labelFor(item.id, itemLabels)
+                  const span = item.size === 'wide' ? 'sm:col-span-2' : ''
+                  const isMetric = item.id.startsWith('metric:')
+                  const metricKey = item.id.slice('metric:'.length)
+                  const eyebrow = isMetric && categoryOf.get(item.id) !== sectionAbove.get(item.id) ? (metricCategories[metricKey] ?? '') : ''
+                  return (
+                    <div key={item.id} className={clsx('min-w-0', span)}>
+                      <SortableTile
+                        id={item.id}
+                        item={item}
+                        label={label}
+                        editing={editing}
+                        onUpdate={onUpdate}
+                        allItems={merged}
+                      >
+                        {eyebrow ? (
+                          <div className="flex h-full flex-col">
+                            <p
+                              data-eyebrow=""
+                              className="mb-1 text-[11px] font-semibold uppercase leading-4 tracking-[0.04em] text-ink/70"
+                            >
+                              {eyebrow}
+                            </p>
+                            <div className="min-h-0 flex-1">{node}</div>
+                          </div>
+                        ) : (
+                          node
+                        )}
+                      </SortableTile>
+                    </div>
+                  )
+                })}
+              </div>
+            </SortableContext>
+          </DndContext>
+        )}
+        <p role="status" data-testid="customize-live" className="sr-only">
+          {editing ? moved : ''}
+        </p>
       </div>
     </>
   )

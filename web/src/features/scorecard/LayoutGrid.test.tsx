@@ -8,6 +8,7 @@ import { App } from '../../App'
 import { API, server, state } from '../../test/server'
 import { renderApp } from '../../test/utils'
 import { viewHandlers } from '../../test/viewFixtures'
+import { LayoutGrid } from './LayoutGrid'
 import { defaultLayout } from './logic/layout'
 
 type LayoutItem = components['schemas']['LayoutItem']
@@ -463,6 +464,13 @@ describe('Customize layout mode', () => {
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Customize layout' }))
   })
 
+  it('on desktop, tiles keep their content and handle; no compact rows', async () => {
+    await renderDefault()
+    await customize(userEvent.setup())
+    expect(screen.queryByRole('button', { name: /^Move (?!.*Space to pick up).* (up|down)$/ })).toBeNull()
+    expect(tileOf(/On-time delivery/)).toBeTruthy()
+  })
+
   it('pins Health, then Needs attention, to the top', async () => {
     const fallback = baseFallback()
     const health = fallback.find((i) => i.id === 'widget:health')!
@@ -476,5 +484,160 @@ describe('Customize layout mode', () => {
       'Move Health this month. Space to pick up',
       'Move Needs attention. Space to pick up',
     ])
+  })
+})
+
+describe('Customize layout on phones', () => {
+  const CATEGORIES = [
+    { id: 'engineering', name: 'Engineering' },
+    { id: 'design', name: 'Design' },
+    { id: 'product', name: 'Product' },
+  ]
+  const METRICS: Record<string, { key: string; name: string }[]> = {
+    engineering: [
+      { key: 'deploys', name: 'Deployment frequency' },
+      { key: 'incidents', name: 'Incidents resolved on time' },
+      { key: 'uptime', name: 'Uptime' },
+      { key: 'defects', name: 'Weighted defect score' },
+    ],
+    design: [
+      { key: 'a11y', name: 'Accessibility compliance' },
+      { key: 'csat', name: 'Customer satisfaction' },
+    ],
+    product: [
+      { key: 'nps', name: 'Net promoter score' },
+      { key: 'adoption', name: 'Feature adoption' },
+      { key: 'spend', name: 'Spend vs plan' },
+    ],
+  }
+  const LABELS: Record<string, string> = {
+    'widget:health': 'Health this month',
+    'widget:ribbon': '12-month status',
+    'widget:needs': 'Needs attention',
+    'widget:unreported': 'Not reported',
+    ...Object.fromEntries(CATEGORIES.map((c) => [`section:${c.id}`, c.name])),
+    ...Object.fromEntries(Object.values(METRICS).flat().map((m) => [`metric:${m.key}`, m.name])),
+  }
+  const content = (id: string) => <div data-testid={`content-${id}`}>{LABELS[id]} content</div>
+
+  function mockPhone() {
+    Object.defineProperty(window, 'matchMedia', {
+      writable: true,
+      configurable: true,
+      value: (query: string) => ({
+        matches: /max-width: (639|767)px/.test(query),
+        media: query,
+        onchange: null,
+        addListener: () => {},
+        removeListener: () => {},
+        addEventListener: () => {},
+        removeEventListener: () => {},
+        dispatchEvent: () => false,
+      }),
+    })
+  }
+
+  /** 16 blocks: three widgets, three sections with nine tiles, and Not reported; Uptime is 7th. */
+  function renderPhone(onPut?: (body: { items: LayoutItem[]; expectedRevision: number }) => void) {
+    mockPhone()
+    server.use(...layoutHandlers({ onPut }))
+    return renderApp(
+      <LayoutGrid
+        scorecardId="sc-main"
+        categories={CATEGORIES}
+        metricsByCategory={METRICS}
+        isAdmin
+        itemLabels={LABELS}
+        metricCategories={{}}
+        renderHealth={() => content('widget:health')}
+        renderRibbon={() => content('widget:ribbon')}
+        renderNeeds={() => content('widget:needs')}
+        renderUnreported={() => content('widget:unreported')}
+        renderSection={(id) => content(`section:${id}`)}
+        renderMetric={(key) => content(`metric:${key}`)}
+      />,
+    )
+  }
+
+  async function phoneCustomize(onPut?: (body: { items: LayoutItem[]; expectedRevision: number }) => void) {
+    renderPhone(onPut)
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: 'Customize layout' }))
+    return user
+  }
+
+  it('renders every block as a compact row with Move up, Move down and a menu, and no tile content', async () => {
+    await phoneCustomize()
+    expect(screen.queryByTestId('content-metric:uptime')).toBeNull()
+    expect(screen.queryAllByTestId(/^content-/)).toEqual([])
+    const rows = screen.getAllByTestId('customize-row')
+    expect(rows).toHaveLength(16)
+    const uptime = rows.find((r) => r.dataset.layoutItem === 'metric:uptime')!
+    expect(within(uptime).getByText('Uptime').className).toContain('line-clamp-2')
+    expect(uptime.className).toContain('min-h-14')
+    expect(uptime.className).toContain('border-dashed')
+    expect(uptime.className).toContain('ml-3')
+    expect(within(uptime).getByRole('button', { name: 'Move Uptime up' }).className).toContain('size-8')
+    expect(within(uptime).getByRole('button', { name: 'Move Uptime down' })).toBeTruthy()
+    expect(within(uptime).getByRole('button', { name: 'Layout options for Uptime' })).toBeTruthy()
+    const section = rows.find((r) => r.dataset.layoutItem === 'section:engineering')!
+    expect(within(section).getByText('Section · Engineering').className).toContain('uppercase')
+    expect(section.className).not.toContain('ml-3')
+    // No drag handles: one column, moved by buttons.
+    expect(screen.queryByRole('button', { name: /Space to pick up/ })).toBeNull()
+  })
+
+  it('Move down keeps focus on the moved row’s button, announces the new position and saves', async () => {
+    const puts: Array<{ items: LayoutItem[]; expectedRevision: number }> = []
+    const user = await phoneCustomize((body) => puts.push(body))
+    await user.click(screen.getByRole('button', { name: 'Move Uptime down' }))
+    await waitFor(() => expect(screen.getByTestId('customize-live').textContent).toBe('Moved Uptime to position 8 of 16'))
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Move Uptime down' }))
+    const ids = puts.at(-1)!.items.map((i) => i.id)
+    expect(ids.indexOf('metric:uptime')).toBe(ids.indexOf('metric:defects') + 1)
+    const order = screen.getAllByTestId('customize-row').map((r) => r.dataset.layoutItem)
+    expect(order.indexOf('metric:uptime')).toBe(7)
+  })
+
+  it('the button at either end is disabled', async () => {
+    await phoneCustomize()
+    expect((screen.getByRole('button', { name: 'Move Health this month up' }) as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByRole('button', { name: 'Move Not reported down' }) as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByRole('button', { name: 'Move Not reported up' }) as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('moving a row to the end disables its button and keeps focus on the row', async () => {
+    const user = await phoneCustomize()
+    await user.click(screen.getByRole('button', { name: 'Move Spend vs plan down' }))
+    await waitFor(() => expect(screen.getByTestId('customize-live').textContent).toBe('Moved Spend vs plan to position 16 of 16'))
+    expect((screen.getByRole('button', { name: 'Move Spend vs plan down' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Move Spend vs plan up' }))
+  })
+
+  it('the menu hides a tile or moves it to the top or bottom; no size options', async () => {
+    const puts: Array<{ items: LayoutItem[]; expectedRevision: number }> = []
+    const user = await phoneCustomize((body) => puts.push(body))
+    await user.click(screen.getByRole('button', { name: 'Layout options for Uptime' }))
+    const menu = await screen.findByRole('menu')
+    expect(within(menu).getAllByRole('menuitem').map((i) => i.textContent)).toEqual(['Hide', 'Move to top', 'Move to bottom'])
+    expect(within(menu).queryByRole('menuitemradio')).toBeNull()
+    await user.click(within(menu).getByRole('menuitem', { name: 'Move to bottom' }))
+    await waitFor(() => expect(puts).toHaveLength(1))
+    expect(puts[0]!.items.at(-1)!.id).toBe('metric:uptime')
+  })
+
+  it('Esc leaves the mode and returns focus to Customize layout', async () => {
+    const user = await phoneCustomize()
+    screen.getByRole('button', { name: 'Move Uptime down' }).focus()
+    await user.keyboard('{Escape}')
+    expect(screen.queryByRole('region', { name: 'Customize layout' })).toBeNull()
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Customize layout' }))
+    expect(screen.getByTestId('content-metric:uptime')).toBeTruthy()
+  })
+
+  it('has no axe violations', async () => {
+    const { container } = renderPhone()
+    await userEvent.setup().click(await screen.findByRole('button', { name: 'Customize layout' }))
+    expect((await axe(container)).violations).toEqual([])
   })
 })

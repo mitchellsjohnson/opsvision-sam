@@ -5,7 +5,8 @@ import { buildPoints, headerChange, type ChartPoint } from '../charts/points'
 import { coarserGrain, endOrdinal, FREQUENCY_GRAIN, type Column } from '../columns'
 import { notDueCaption, periodStatus } from './coarse'
 import { worstChildren } from './drivers'
-import { statusAtScope, type StatusScaleEntry } from './statusAtScope'
+import type { NounForms } from './nouns'
+import { cellReported, statusAtScope, type StatusScaleEntry } from './statusAtScope'
 import { cellKey } from '../viewHelpers'
 
 type ViewRow = components['schemas']['ViewRow']
@@ -41,8 +42,12 @@ export interface BoardRow {
   change: { text: string; move: Move } | null
   /** A coarse metric's counted period, which the Current column and roll-up read instead of the last cell. */
   counted?: BoardCell
-  /** With no scope value, the child whose status the row shows: the Current column leads with its value. */
-  worst?: { name: string; display: string }
+  /**
+   * With no scope value, the child whose status the row shows: the Current
+   * column leads with its value. `of`: how many children share its status,
+   * out of all of them, and how many did not report.
+   */
+  worst?: { name: string; display: string; of?: { same: number; total: number; notReported: number } }
 }
 
 /** Inline rows keep at least this much for the metric name; cells grow only once it is comfortable. */
@@ -123,10 +128,14 @@ export function fiscalGroups(columns: Column[]): FiscalGroup[] {
 const FY_FULL = 52
 const FY_SHORT = 34
 
-/** A fiscal year header that fits `cellWidth` per column: `FY2026`, `FY26`, then `’26`; in full before measuring. */
+/**
+ * A fiscal year header that fits `cellWidth` per column: `FY2026`, `FY26`,
+ * then `’26`; in full before measuring. A one-column year is never longer
+ * than `FY26`: its padding leaves too little for `FY2026` in any column.
+ */
 export function fiscalLabel(group: FiscalGroup, cellWidth: number | null): string {
   const room = cellWidth === null ? Infinity : group.span * cellWidth
-  if (room >= FY_FULL) return group.label
+  if (room >= FY_FULL && group.span > 1) return group.label
   const yy = String(group.fy).slice(-2)
   return room >= FY_SHORT ? `FY${yy}` : `’${yy}`
 }
@@ -185,7 +194,7 @@ export function buildBoardRow({
   scope: ViewRow | null
   head: ViewRow
   children: ViewRow[]
-  noun: 'segments' | 'services' | 'items'
+  noun: NounForms | 'segments' | 'services' | 'items'
   columns: Column[]
   scale: StatusScaleEntry[]
   fyStart: number
@@ -210,7 +219,12 @@ export function buildBoardRow({
   // With no scope value, the worst reported child and its value; none when the status is the scope's own.
   const worstAt = (columnKey: string, at: BoardCell | undefined): BoardRow['worst'] => {
     if (!at || at.kind !== 'status' || at.display) return undefined
-    return worstChildValue(children, columnKey, scale, head.direction)
+    const worst = worstChildValue(children, columnKey, scale, head.direction)
+    if (!worst) return undefined
+    const cells = children.map((ch) => ch.cells.find((c) => cellKey(c) === columnKey))
+    const reported = cells.filter((c) => cellReported(c))
+    const same = reported.filter((c) => c!.status === at.status).length
+    return { ...worst, of: { same, total: children.length, notReported: children.length - reported.length } }
   }
 
   const last = columns[columns.length - 1]
@@ -263,6 +277,24 @@ export function buildBoardRow({
     change: scope && current?.display ? headerChange(scope, currentCell, fyStart) : null,
     ...(worst && { worst }),
   }
+}
+
+/**
+ * The accessible name of a row that answers with its worst child:
+ * `Deployment uptime, Oct 2026: 99.63%, Red; worst Notification Relay - Multi-Region Active; 1 of 21 Red; 12 not reported`.
+ * Undefined for a row with its own value.
+ */
+export function rowName(row: BoardRow, column: Column, statusLabel: (key: string) => string | undefined): string | undefined {
+  const at = row.counted ?? row.cells[row.cells.length - 1]
+  if (row.current || !row.worst?.of || at?.kind !== 'status') return undefined
+  const label = statusLabel(at.status) ?? at.status
+  const { same, total, notReported } = row.worst.of
+  return [
+    `${row.name}, ${column.fullLabel}: ${row.worst.display}, ${label}`,
+    `worst ${row.worst.name}`,
+    `${same} of ${total} ${label}`,
+    ...(notReported > 0 ? [`${notReported} not reported`] : []),
+  ].join('; ')
 }
 
 /** A change phrase for speech: `-12 pts vs Sep` reads `down 12 pts vs Sep`. */

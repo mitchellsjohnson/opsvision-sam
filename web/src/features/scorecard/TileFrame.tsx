@@ -2,6 +2,7 @@ import clsx from 'clsx'
 import { Maximize2 } from 'lucide-react'
 import { useRef, type ReactNode } from 'react'
 import type { components } from '../../api/schema'
+import { SCROLL_MARGIN } from './SectionHeader'
 
 type ViewRow = components['schemas']['ViewRow']
 
@@ -40,6 +41,7 @@ export function TileFrame({ head, threshold, value, extras, context, footer, onE
     // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions
     <article
       aria-label={head.metricName}
+      style={{ scrollMarginTop: SCROLL_MARGIN }}
       className={clsx(
         'flex h-full min-w-0 flex-col gap-2 rounded-lg border border-ink/20 bg-white p-4',
         !empty && 'cursor-pointer hover:border-accent',

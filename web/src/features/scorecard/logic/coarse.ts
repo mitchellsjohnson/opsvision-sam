@@ -9,6 +9,7 @@ import {
   type Column,
 } from '../columns'
 import { cellKey } from '../viewHelpers'
+import type { NounForms } from './nouns'
 import { cellReported, statusAtScope, type StatusScaleEntry } from './statusAtScope'
 import { columnUnit } from './statusText'
 
@@ -165,7 +166,7 @@ export function periodStatus(input: {
   selected: Column
   coarse: Column[]
   scale: StatusScaleEntry[]
-  noun: 'segments' | 'services' | 'items'
+  noun: NounForms | 'segments' | 'services' | 'items'
   fy: number
 }): PeriodStatus {
   const { scope, children, frequency, selected, coarse, scale, noun, fy } = input
@@ -201,7 +202,7 @@ function coarsePeriodStatus({
   selected: Column
   coarse: Column[]
   scale: StatusScaleEntry[]
-  noun: 'segments' | 'services' | 'items'
+  noun: NounForms | 'segments' | 'services' | 'items'
   fy: number
 }): PeriodStatus {
   const captions = new Map<string, string>()

@@ -112,6 +112,11 @@ describe('TileFrame', () => {
     expect(within(tile).queryByTestId('chart')).toBeNull()
   })
 
+  it('sits clear of the sticky control bar when scrolled to', () => {
+    frame()
+    expect(screen.getByRole('article', { name: 'On-time delivery' }).style.scrollMarginTop).toBe('calc(var(--control-bar-h, 0px) + 16px)')
+  })
+
   it('has no axe violations', async () => {
     const { container } = frame({ context: 'Reported quarterly', footer: <a href="#x">Enter data</a> })
     expect((await axe(container)).violations).toEqual([])

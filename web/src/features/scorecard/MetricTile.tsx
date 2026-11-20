@@ -5,6 +5,7 @@ import { Sparkline, type SparklinePoint } from '../../ui/Sparkline'
 import { StatusBadge } from '../../ui/StatusBadge'
 import type { Column } from './columns'
 import { changeText, formatMetricValue, overrideSentence, withDirection } from './format'
+import { SCROLL_MARGIN } from './SectionHeader'
 import { cellKey, plainNumber, ratioParts } from './viewHelpers'
 
 type Schemas = components['schemas']
@@ -97,6 +98,7 @@ export function MetricTile({ row, columns, metric, fiscalYearStartMonth, statusL
     <Link
       to={to}
       id={`tile-${row.metricKey}`}
+      style={{ scrollMarginTop: SCROLL_MARGIN }}
       className="block h-full rounded-lg border border-ink/20 bg-white p-4 hover:border-accent hover:shadow-sm"
     >
       <h3 className="text-base font-semibold">{row.metricName}</h3>

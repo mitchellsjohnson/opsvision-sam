@@ -1,20 +1,22 @@
 import { useEffect, useMemo, useRef } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router'
+import { skipToken, useQuery } from '@tanstack/react-query'
 import clsx from 'clsx'
 import { LayoutDashboard } from 'lucide-react'
 import type { ReactNode } from 'react'
-import { useItemKinds, useMe, useOrgLevels, useOrgUnits, useVersions, useView } from '../../api/queries'
+import { keys, useItemKinds, useMe, useOrgLevels, useOrgUnits, useVersions, useView } from '../../api/queries'
 import type { components } from '../../api/schema'
-import { lastMonth, monthLabel, monthsOf, parent, parsePeriod, periodLabel, type Grain, type Period } from '../../lib/period'
+import { lastMonth, monthLabel, monthsOf, parent, parsePeriod, periodLabel, prev, type Grain, type Period } from '../../lib/period'
 import { StatusChip } from '../../ui/status'
 import { usePeriodState } from '../../shell/usePeriodState'
 import { NeedsAttention, type AttentionMeta } from './AttentionCard'
 import { buildTrendColumns, shortLabel, type Column } from './columns'
 import { formatMetricValue } from './format'
 import { needsAttention } from './logic/needsAttention'
-import { chartTheme, defaultStatusScale, MOVE_CLASS } from './charts/chartTheme'
+import { chartTheme, defaultStatusScale, MOVE_CLASS, type Move } from './charts/chartTheme'
 import { MetricChart } from './charts/MetricChart'
-import { headerChange } from './charts/points'
+import { formatMoneyCompact, overPlanPhrase } from './charts/moneyPlan'
+import { buildPoints, headerChange } from './charts/points'
 import { multiSeriesHeader, noTotalNote } from './charts/seriesLayout'
 import { versionBoundaries } from './charts/versionMarkers'
 import { LAYOUT_BUTTON } from './CustomizeBar'
@@ -38,7 +40,7 @@ import {
 } from './logic/standings'
 import { columnUnit, thresholdText } from './logic/statusText'
 import { cellReported, type StatusScaleEntry } from './logic/statusAtScope'
-import { cellKey, groupRows, plainNumber, ratioParts } from './viewHelpers'
+import { cellKey, groupRows, ratioParts } from './viewHelpers'
 import { useScorecardViewRequest } from './viewRequest'
 import { StatusBoard } from './StatusBoard'
 import { buildBoardRow } from './logic/statusBoard'
@@ -47,6 +49,7 @@ type Schemas = components['schemas']
 type ViewRow = Schemas['ViewRow']
 type Cell = Schemas['Cell']
 type Frequency = Schemas['Frequency']
+type ItemKind = Schemas['ItemKind']
 
 const HEALTH_TITLE: Record<Grain, string> = {
   month: 'Health this month',
@@ -62,6 +65,20 @@ const FIRST_TILE = '[data-layout-item^="metric:"] article button[aria-label^="Ex
 function WithItemKinds({ children }: { children: (kindName: (id: string | undefined) => string | undefined) => ReactNode }) {
   const kinds = useItemKinds()
   return children((id) => (id ? kinds.data?.find((k) => k.id === id)?.name : undefined))
+}
+
+/** Asks for the item kinds while the view has item rows, so captions can name them. */
+function ItemKindsLoader() {
+  useItemKinds()
+  return null
+}
+
+/** `vs H2 FY25`: a half's change names the half it compares with in full, since there are so few (§5.2). */
+function halfChange(change: { text: string; move: Move } | null, counted: string): { text: string; move: Move } | null {
+  const p = parsePeriod(counted)
+  if (!change || p?.grain !== 'half') return change
+  const before = prev(p)
+  return { ...change, text: change.text.replace(/ vs H\d$/, ` vs H${before.index} FY${String(before.fy).slice(-2)}`) }
 }
 
 const NO_KINDS = () => undefined
@@ -172,11 +189,6 @@ function coarseContext(counted: Column, fy: number): string {
   return `Latest: ${counted.fullLabel} (${span}) · ${shortLabel(next, fy)} due by ${shortMonth(monthAfter(next), fy)}`
 }
 
-/** `$1,150k` for a `$k` measure, else `1,150 hours`. */
-function amount(value: number, unit: string): string {
-  return unit.startsWith('$') ? `$${plainNumber(value)}${unit.slice(1)}` : `${plainNumber(value)} ${unit}`.trim()
-}
-
 /** The last column with a value in `row`, for a metric that stopped reporting. */
 function lastValued(row: ViewRow | null, columns: Column[]): { index: number; cell: Cell } | null {
   for (let i = columns.length - 1; i >= 0; i--) {
@@ -195,6 +207,8 @@ export function OverviewPage() {
   const orgUnits = useOrgUnits()
   const orgLevels = useOrgLevels()
   const versions = useVersions(scorecardId)
+  // Read only: `ItemKindsLoader` asks for them while the view has item rows.
+  const itemKinds = useQuery<ItemKind[]>({ queryKey: keys.itemKinds, queryFn: skipToken }).data
   const fy = period.fiscalYearStartMonth
   const scale: StatusScaleEntry[] = useMemo(
     () => (me.data?.tenant?.statusScale?.map((s) => ({ key: s.key, rank: s.rank })) ?? defaultStatusScale().map((s) => ({ key: s.key, rank: s.rank }))),
@@ -263,7 +277,10 @@ export function OverviewPage() {
     fy,
     scale,
     versions: versions.data?.versions,
+    itemKinds,
+    orgLevels: orgLevels.data ?? [],
   })
+  const hasItems = metrics.some((m) => m.isItems && m.kindId)
 
   const byRank = [...statusColors].sort((a, b) => a.rank - b.rank)
   const bestKey = byRank[0]?.key ?? ''
@@ -390,31 +407,38 @@ export function OverviewPage() {
     const chartChildren = !scopeReported && reportedChildren.length > 0
     const levelName = orgLevels.data?.find((l) => l.depth === (children[0]?.depth ?? -1))?.name
     // Several lines and no company value anywhere in the window: a metric with no company total (§7.6).
-    const seriesNoun = noun === 'items' && children[0]?.subjectKind === 'unit' ? nounForms(levelName, 'unit').many : noun
+    const seriesNoun = noun.many
     const noTotal = chartChildren && reportedChildren.length > 1 && !columns.some((c) => cellReported(scopeCell(scope, c.key)))
+    const chartRow = scope ?? emptyScope(head)
+    const chartRows = chartChildren ? reportedChildren : [chartRow]
+    // Twice-yearly and yearly tiles show period cards (§5.2), which already say which period counts and which is due.
+    const cards = meta.coarse.length > 0 && columns.length <= 3 && chartRows.length === 1
     const scopeNote = noTotal
       ? noTotalNote(reportedChildren.length, seriesNoun, head.definition ?? '')
       : chartChildren && scope
-        ? `Company total not reported; ${reportedChildren.length} ${noun} reported`
+        ? `Company total not reported; ${countNoun(reportedChildren.length, noun)} reported`
         : shownStatus && status && meta.coarse.length > 0
-          ? [coarseContext(status.counted, fy), ...status.caption.split(' · ').slice(1)].join(' · ')
+          ? [...(cards ? [] : [coarseContext(status.counted, fy)]), ...status.caption.split(' · ').slice(1)].join(' · ') || undefined
           : (shownStatus && status?.caption) || undefined
-    const chartRow = scope ?? emptyScope(head)
-    const chartRows = chartChildren ? reportedChildren : [chartRow]
     const worstSeries =
       chartRows.length > 1 ? multiSeriesHeader(chartRows, columnKey, statusColors, (k) => statusLabel(k) ?? k, seriesNoun) : null
     const ytdCell = scope ? ytdCellFor(scope) : undefined
     const ytdDisplay = ytdCell?.display ? `YTD ${ytdCell.display}` : null
     const moneyPlan = head.chartKind === 'money_plan'
-    // `$1,150k spent of $1,000k planned`, when the formula is a ratio of the cell's two measures (§7.4).
+    // `$12.7M spent of $12.2M planned · over plan in 12 of the last 12 months`, when the formula is a ratio of
+    // the cell's two measures (§6); the framed chart leaves its own over-plan line to this one.
     const version = versions.data?.versions.find((v) => v.id === (cell?.versionId || view.data.versionByPeriod[columnKey]))
     const parts = moneyPlan && cell ? ratioParts(version?.content.metrics.find((x) => x.key === key)?.formula, cell.components) : null
     const unitOf = (measure: string) => version?.content.measures.find((x) => x.key === measure)?.unit ?? ''
     const planned = parts
-      ? `${amount(cell!.components[parts[0]]!, unitOf(parts[0]))} spent of ${amount(cell!.components[parts[1]]!, unitOf(parts[1]))} planned`
+      ? `${formatMoneyCompact(cell!.components[parts[0]]!, unitOf(parts[0]))} spent of ${formatMoneyCompact(cell!.components[parts[1]]!, unitOf(parts[1]))} planned`
       : null
-    const extras = [ytdDisplay, planned].filter(Boolean).join(' · ') || null
-    const threshold = thresholdOf(meta, noun === 'services' ? nounForms('services', 'item') : nounForms(levelName, 'unit'))
+    const moneyLine = moneyPlan
+      ? [planned, overPlanPhrase(buildPoints(chartRow, columns, fy), columns)].filter(Boolean).join(' · ') || undefined
+      : undefined
+    const extras = ytdDisplay
+    const context = [moneyLine, scopeNote].filter(Boolean).join(' · ') || undefined
+    const threshold = thresholdOf(meta, noun)
     const kind = status?.notReported?.kind
     const state = kind === 'window' ? 'window' : kind === 'stopped' ? 'stopped' : 'normal'
 
@@ -444,20 +468,19 @@ export function OverviewPage() {
     }
 
     if (meta.isItems) {
-      const tile = (kindName: (id: string | undefined) => string | undefined) => (
+      return (
         <ItemSummaryTile
           head={head}
           rows={itemRowsOf(meta, scale, fy)}
           columns={columns}
           scale={statusColors}
           direction={head.direction}
-          noun={nounForms(kindName(meta.kindId), 'item')}
+          noun={noun}
           rule={meta.rule}
           onExpand={(trigger) => openFocus(key, trigger)}
           onOpenItem={(itemId, trigger) => openItem(key, itemId, trigger)}
         />
       )
-      return meta.kindId ? <WithItemKinds>{tile}</WithItemKinds> : tile(NO_KINDS)
     }
 
     let value: ReactNode
@@ -495,7 +518,7 @@ export function OverviewPage() {
         </>
       )
     } else {
-      const change = headerChange(chartRow, cell, fy)
+      const change = halfChange(headerChange(chartRow, cell, fy), columnKey)
       value = (
         <>
           <span data-testid="header-value" className="text-[28px] font-semibold leading-9 tabular-nums">
@@ -527,7 +550,7 @@ export function OverviewPage() {
         threshold={threshold}
         value={value}
         extras={state === 'normal' ? extras : undefined}
-        context={scopeNote}
+        context={context}
         onExpand={(trigger) => openFocus(key, trigger)}
         state={state}
       >
@@ -543,6 +566,7 @@ export function OverviewPage() {
           fiscalYearStartMonth={fy}
           framed
           markers={versionBoundaries(versions.data?.versions ?? [], columns, key, period.restate)}
+          selectedPeriod={period.period}
         />
       </TileFrame>
     )
@@ -666,6 +690,7 @@ export function OverviewPage() {
 
   return (
     <div>
+      {hasItems && <ItemKindsLoader />}
       <LayoutGrid
         renderHeaderActions={(button) => <OverviewHeader parts={headerParts as string[]} actions={button} />}
         scorecardId={scorecardId}
@@ -717,6 +742,7 @@ export function OverviewPage() {
               rows={rows}
               scale={statusColors}
               onOpen={openFocus}
+              categories={groups.map((g) => ({ id: g.id, name: g.name }))}
             />
           )
         }}
@@ -730,7 +756,7 @@ export function OverviewPage() {
           if (!g || !g.metrics.some((m) => metricShown(m.key))) return null
           return (
             <SectionHeader
-              id={`overview-cat-${g.id}`}
+              categoryId={g.id}
               name={g.name}
               rows={boardRows.filter((r) => r.category.id === g.id)}
               scale={statusColors}

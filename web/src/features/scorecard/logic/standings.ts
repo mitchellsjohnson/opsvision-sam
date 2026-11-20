@@ -6,7 +6,7 @@ import { cellKey, columnsFor, groupRows, metricScope } from '../viewHelpers'
 import { periodStatus, type PeriodStatus } from './coarse'
 import { buildItemRows, itemSummary, type ItemRow } from './itemGrid'
 import { streakMonths, type NeedsAttentionItem } from './needsAttention'
-import { countNoun, nounForms } from './nouns'
+import { countNoun, nounForms, nounFromId, type NounForms } from './nouns'
 import { buildBoardRow, type BoardRow } from './statusBoard'
 import type { StatusScaleEntry } from './statusAtScope'
 import { sinceText } from './statusText'
@@ -18,12 +18,38 @@ type Cell = Schemas['Cell']
 type MetricDef = Schemas['Metric']
 type MethodologyVersion = Schemas['MethodologyVersion']
 
-export type MetricNoun = 'segments' | 'services' | 'items'
+export type MetricNoun = NounForms
 
-export function metricNoun(chartKind: string, scope: ViewRow | null, children: ViewRow[]): MetricNoun {
-  if (chartKind === 'uptime') return 'services'
-  if (scope && children.length > 0) return 'segments'
-  return 'items'
+const LEGACY: Record<'segments' | 'services' | 'items', NounForms> = {
+  segments: { one: 'segment', many: 'segments' },
+  services: { one: 'service', many: 'services' },
+  items: { one: 'item', many: 'items' },
+}
+
+/**
+ * What a metric's children are called in captions (§3.3): for items, the
+ * item kind's name, else the kind id from the metric's `reportedAt`; for
+ * units, the children's org level; else `item` / `unit`. Without `o`, the
+ * words callers had before (`services`, `segments`, `items`).
+ */
+export function metricNoun(
+  chartKind: string,
+  scope: ViewRow | null,
+  children: ViewRow[],
+  o?: { metric?: MetricDef; itemKinds?: { id: string; name: string }[]; levelName?: string },
+): NounForms {
+  if (!o) {
+    if (chartKind === 'uptime') return LEGACY.services
+    return scope && children.length > 0 ? LEGACY.segments : LEGACY.items
+  }
+  const kindId = o.metric?.reportedAt.find((s) => s.kind === 'item_kind')?.id
+  if (kindId || children.some((c) => c.subjectKind === 'item')) {
+    const name = kindId ? o.itemKinds?.find((k) => k.id === kindId)?.name : undefined
+    if (name) return nounForms(name, 'item')
+    return kindId ? nounFromId(kindId) : nounForms(undefined, 'item')
+  }
+  if (children.length > 0) return nounForms(o.levelName, 'unit')
+  return nounForms(undefined, 'item')
 }
 
 function scopeCell(row: ViewRow | null, columnKey: string): Cell | undefined {
@@ -74,6 +100,10 @@ export function metricStandings(input: {
   fy: number
   scale: StatusScaleEntry[]
   versions?: MethodologyVersion[]
+  /** The item kinds' names, for item metrics' nouns; their ids stand in without them. */
+  itemKinds?: { id: string; name: string }[]
+  /** The org levels, for unit children's nouns. */
+  orgLevels?: { depth: number; name: string }[]
 }): Standings {
   const { view, period, fy, scale } = input
   const trend = buildTrendColumns(period, fy)
@@ -88,11 +118,17 @@ export function metricStandings(input: {
   }
   const metricDef = (metricKey: string, versionId: string): MetricDef | undefined =>
     input.versions?.find((v) => v.id === versionId)?.content.metrics.find((x) => x.key === metricKey)
+  const levelName = (children: ViewRow[]) => input.orgLevels?.find((l) => l.depth === (children[0]?.depth ?? -1))?.name
 
   const metrics = groupRows(view).flatMap((g) =>
     g.metrics.map((m): MetricStanding => {
       const { scope, children, head } = metricScope(m.rows)
-      const noun = metricNoun(head.chartKind, scope, children)
+      const nounDef = metricDef(head.metricKey, view.versionByPeriod[selected?.key ?? ''] ?? '')
+      // Callers that pass neither kinds nor levels (the report) keep their words unless the metric names its kind.
+      const legacy = !input.itemKinds && !input.orgLevels && !nounDef?.reportedAt.some((s) => s.kind === 'item_kind')
+      const noun = legacy
+        ? metricNoun(head.chartKind, scope, children)
+        : metricNoun(head.chartKind, scope, children, { metric: nounDef, itemKinds: input.itemKinds, levelName: levelName(children) })
       const columns = columnsFor(head.frequency, selectedGrain, trend, coarseByGrain)
       const coarse = columns === trend ? [] : columns
       const status = selected

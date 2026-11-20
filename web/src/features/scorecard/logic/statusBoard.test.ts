@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import type { components } from '../../../api/schema'
+import { DEPLOYMENT_NOUN, deploymentRows } from '../../../test/deploymentFixtures'
 import { buildTrendColumns, coarseColumns } from '../columns'
-import { boardLayout, buildBoardRow, cellName, fiscalGroups, fiscalLabel, streakAt, type BoardCell } from './statusBoard'
+import { boardLayout, buildBoardRow, cellName, fiscalGroups, fiscalLabel, rowName, streakAt, type BoardCell } from './statusBoard'
 
 type ViewRow = components['schemas']['ViewRow']
 type Cell = components['schemas']['Cell']
@@ -202,9 +203,27 @@ describe('buildBoardRow', () => {
       fyStart: 1,
     })
     // Two are Red; the lower value is worse for a higher-is-better metric.
-    expect(board.worst).toEqual({ name: 'Webhooks', display: '99.06%' })
+    expect(board.worst).toEqual({ name: 'Webhooks', display: '99.06%', of: { same: 2, total: 4, notReported: 1 } })
     expect(board.current).toBe('')
     expect(board.caption).toBe('worst of 3 services · 1 not reported')
+  })
+
+  it('takes the children’s noun as forms', () => {
+    const scope = row([], { subjectId: 'root' })
+    const child = (id: string, s: string) => row([cell('2026-M10', { status: s, display: '90%' })], { subjectId: id, subjectName: id, depth: 1 })
+    const board = buildBoardRow({
+      key: 'm',
+      category: { id: 'delivery', name: 'Delivery' },
+      scope,
+      head: scope,
+      children: [child('a', 'G'), child('b', 'Y')],
+      noun: { one: 'product', many: 'products' },
+      columns,
+      scale: SCALE,
+      fyStart: 1,
+    })
+    expect(board.caption).toBe('worst of 2 products')
+    expect(board.worst).toEqual({ name: 'b', display: '90%', of: { same: 1, total: 2, notReported: 0 } })
   })
 
   it('has no worst child when the scope reports its own value', () => {
@@ -230,9 +249,12 @@ describe('fiscalLabel', () => {
   const group = { fy: 2026, label: 'FY2026', start: 0, span: 1 }
 
   it('names the year in full when it fits, else shortens it, so a one-column year never truncates', () => {
-    expect(fiscalLabel(group, null)).toBe('FY2026')
-    expect(fiscalLabel(group, 64)).toBe('FY2026')
+    expect(fiscalLabel({ ...group, span: 2 }, null)).toBe('FY2026')
+    expect(fiscalLabel({ ...group, span: 2 }, 64)).toBe('FY2026')
     expect(fiscalLabel({ ...group, span: 4 }, 40)).toBe('FY2026')
+    // One column: the short form, measured or not.
+    expect(fiscalLabel(group, null)).toBe('FY26')
+    expect(fiscalLabel(group, 64)).toBe('FY26')
     expect(fiscalLabel(group, 40)).toBe('FY26')
     expect(fiscalLabel(group, 28)).toBe('’26')
   })
@@ -307,7 +329,7 @@ describe('buildBoardRow coarse', () => {
       coarse: quarters,
     })
     expect(b2.counted?.status).toBe('Y')
-    expect(b2.worst).toEqual({ name: 'Unit B', display: '75%' })
+    expect(b2.worst).toEqual({ name: 'Unit B', display: '75%', of: { same: 1, total: 2, notReported: 0 } })
   })
 
   it('in a quarter view, a half sits in its last quarter', () => {
@@ -417,5 +439,65 @@ describe('cellName', () => {
     expect(cellName('Uptime', column, { ...status('R'), caption: 'worst of 9 services' }, label)).toBe(
       'Uptime, Sep 2026: Red, worst of 9 services',
     )
+  })
+})
+
+describe('rowName', () => {
+  const label = (k: string) => ({ G: 'Green', Y: 'Yellow', R: 'Red' })[k]
+
+  it('names an item row by its worst item, how many share its status, and how many did not report', () => {
+    const columns = buildTrendColumns('2026-M10', 1)
+    const items = deploymentRows(columns)
+    const head = items[0]!
+    const board = buildBoardRow({
+      key: 'deployment_uptime',
+      category: { id: 'eng', name: 'Engineering' },
+      scope: null,
+      head,
+      children: items,
+      noun: DEPLOYMENT_NOUN,
+      columns,
+      scale: SCALE,
+      fyStart: 1,
+    })
+    expect(board.caption).toBe('worst of 9 deployments · 12 not reported')
+    expect(board.worst).toEqual({
+      name: 'Notification Relay - Multi-Region Active',
+      display: '99.63%',
+      of: { same: 1, total: 21, notReported: 12 },
+    })
+    expect(rowName(board, columns.at(-1)!, label)).toBe(
+      'Deployment uptime, Oct 2026: 99.63%, Red; worst Notification Relay - Multi-Region Active; 1 of 21 Red; 12 not reported',
+    )
+  })
+
+  it('leaves out the not-reported part when every child reported, and is undefined for a row with its own value', () => {
+    const columns = buildTrendColumns('2026-M10', 1).slice(-1)
+    const scope = row([], { subjectId: 'root' })
+    const child = (id: string, s: string) => row([cell('2026-M10', { status: s, display: '90%' })], { subjectId: id, subjectName: id, depth: 1 })
+    const board = buildBoardRow({
+      key: 'm',
+      category: { id: 'delivery', name: 'Delivery' },
+      scope,
+      head: scope,
+      children: [child('Unit A', 'R'), child('Unit B', 'G')],
+      noun: 'segments',
+      columns,
+      scale: SCALE,
+      fyStart: 1,
+    })
+    expect(rowName(board, columns[0]!, label)).toBe('On-time delivery, Oct 2026: 90%, Red; worst Unit A; 1 of 2 Red')
+    const own = buildBoardRow({
+      key: 'm',
+      category: { id: 'delivery', name: 'Delivery' },
+      scope: row([cell('2026-M10')]),
+      head: scope,
+      children: [],
+      noun: 'items',
+      columns,
+      scale: SCALE,
+      fyStart: 1,
+    })
+    expect(rowName(own, columns[0]!, label)).toBeUndefined()
   })
 })

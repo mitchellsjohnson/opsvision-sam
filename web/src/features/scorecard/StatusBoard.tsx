@@ -1,10 +1,10 @@
 import clsx from 'clsx'
-import { Fragment, useId, useRef, type FocusEvent } from 'react'
+import { Fragment, useEffect, useId, useRef, type FocusEvent, type RefObject } from 'react'
 import { useElementWidth } from '../../ui/useElementWidth'
-import { Legend, RollUp, StatusCell, StatusCellTip, StatusChip, useGridNavigation, type StatusLevel } from '../../ui/status'
+import { ItemName, Legend, RollUp, StatusCell, StatusCellTip, StatusChip, useGridNavigation, type StatusLevel } from '../../ui/status'
 import { MOVE_CLASS } from './charts/chartTheme'
 import type { Column } from './columns'
-import { boardLayout, cellName, fiscalGroups, fiscalLabel, streakAt, type BoardRow } from './logic/statusBoard'
+import { boardLayout, cellName, fiscalGroups, fiscalLabel, rowName, streakAt, type BoardRow } from './logic/statusBoard'
 import { columnUnit } from './logic/statusText'
 
 export { StatusCellTip, type StatusCellTipProps } from '../../ui/status'
@@ -16,11 +16,21 @@ function CurrentValue({ row, scale, compact }: { row: BoardRow; scale: StatusLev
   if (!row.current && row.worst && compact) {
     return (
       <span className="flex min-w-0 items-baseline justify-end gap-1">
-        <span title={row.worst.name} className="min-w-0 truncate text-[11px] text-ink/70">
-          {row.worst.name}
-        </span>
+        <ItemName name={row.worst.name} className="text-[11px] text-ink/70" />
         <span className="shrink-0 text-sm font-semibold tabular-nums">{row.worst.display}</span>
       </span>
+    )
+  }
+  if (!row.current && row.worst?.of && last?.kind === 'status') {
+    const label = scale.find((s) => s.key === last.status)?.label ?? last.status
+    return (
+      <>
+        <span className="block text-sm font-semibold tabular-nums">{row.worst.display}</span>
+        <span className="flex min-w-0 justify-end text-[11px] text-ink/70">
+          <ItemName name={row.worst.name} className="font-medium text-ink/80" />
+          <span className="shrink-0 whitespace-pre">{` · ${row.worst.of.same} of ${row.worst.of.total} ${label}`}</span>
+        </span>
+      </>
     )
   }
   if (!row.current && row.worst) {
@@ -90,6 +100,37 @@ export interface StatusBoardProps {
   scale: StatusLevel[]
   /** Opens the metric's full-screen chart; `trigger` gets focus back on close. */
   onOpen: (metricKey: string, trigger: HTMLElement) => void
+  /** Every category in order, so one a filter leaves without rows still shows, reading `none match`; from the rows when absent. */
+  categories?: { id: string; name: string }[]
+}
+
+/** Scrolls to a category's section and moves focus to its heading (`SectionHeader`). */
+function goToSection(categoryId: string) {
+  const heading = document.getElementById(`section-${categoryId}`)
+  if (!heading) return
+  heading.scrollIntoView?.({ block: 'start' })
+  heading.focus({ preventScroll: true })
+}
+
+/** Marks the header while it is stuck under the control bar, in the DOM, so scrolling never re-renders the board. */
+function useStuckMark(ref: RefObject<HTMLElement | null>) {
+  useEffect(() => {
+    const el = ref.current
+    const table = el?.closest('table')
+    if (!el || !table) return
+    const update = () => {
+      const top = parseFloat(getComputedStyle(el).top) || 0
+      const stuck = table.getBoundingClientRect().top < top && el.getBoundingClientRect().top <= top + 0.5
+      el.toggleAttribute('data-stuck', stuck)
+    }
+    update()
+    window.addEventListener('scroll', update, { passive: true })
+    window.addEventListener('resize', update)
+    return () => {
+      window.removeEventListener('scroll', update)
+      window.removeEventListener('resize', update)
+    }
+  }, [ref])
 }
 
 /**
@@ -98,11 +139,13 @@ export interface StatusBoardProps {
  * color: the best status is a soft tint, the worst a solid fill. One tab
  * stop; arrow keys move between cells and Enter opens the metric.
  */
-export function StatusBoard({ label, columns, rows, scale, onOpen }: StatusBoardProps) {
+export function StatusBoard({ label, columns, rows, scale, onOpen, categories: allCategories }: StatusBoardProps) {
   const headingId = useId()
   const noteId = useId()
   const [measure, width] = useElementWidth<HTMLDivElement>()
   const tableRef = useRef<HTMLTableElement>(null)
+  const theadRef = useRef<HTMLTableSectionElement>(null)
+  useStuckMark(theadRef)
   const hoveredHeader = useRef<HTMLElement | null>(null)
   // The cell whose dialog is open: its tooltip stays shut when focus comes back on close.
   const reopening = useRef<HTMLElement | null>(null)
@@ -128,7 +171,7 @@ export function StatusBoard({ label, columns, rows, scale, onOpen }: StatusBoard
     onOpen: (rowId, _col, el) => open(rowId, el),
   })
 
-  const categories: { id: string; name: string; rows: BoardRow[] }[] = []
+  const categories: { id: string; name: string; rows: BoardRow[] }[] = (allCategories ?? []).map((c) => ({ ...c, rows: [] }))
   for (const row of rows) {
     const group = categories.find((c) => c.id === row.category.id)
     if (group) group.rows.push(row)
@@ -228,7 +271,11 @@ export function StatusBoard({ label, columns, rows, scale, onOpen }: StatusBoard
               ))}
               {inline && <col style={{ width: layout.valueWidth }} />}
             </colgroup>
-            <thead>
+            <thead
+              ref={theadRef}
+              className="sticky z-10 bg-white data-[stuck]:[&>tr:last-child>*]:border-b [&>tr:last-child>*]:border-b-ink/10"
+              style={{ top: 'var(--control-bar-h, 0px)' }}
+            >
               {groups.length > 0 && (
                 <tr>
                   <td className={inline ? undefined : 'p-0'} />
@@ -304,16 +351,35 @@ export function StatusBoard({ label, columns, rows, scale, onOpen }: StatusBoard
                 {grouped && (
                   <tr>
                     <th scope="rowgroup" colSpan={colSpan} className="border-b border-ink/10 pb-1 pt-3 text-left">
-                      <span className="text-[11px] font-semibold uppercase tracking-wide text-ink/70">{category.name}</span>
-                      <RollUp rows={category.rows} scale={scale} />
+                      {category.rows.length > 0 ? (
+                        <>
+                          <a
+                            href={`#section-${category.id}`}
+                            className="inline-flex min-h-6 items-center align-middle text-[11px] font-semibold uppercase tracking-wide text-ink/70 hover:underline"
+                            onClick={(e) => {
+                              e.preventDefault()
+                              goToSection(category.id)
+                            }}
+                          >
+                            {category.name}
+                          </a>
+                          <RollUp rows={category.rows} scale={scale} />
+                        </>
+                      ) : (
+                        <>
+                          <span className="text-[11px] font-semibold uppercase tracking-wide text-ink/70">{category.name}</span>{' '}
+                          <span className="text-xs font-normal text-ink/70">· none match</span>
+                        </>
+                      )}
                     </th>
                   </tr>
                 )}
                 {category.rows.map((row) => {
                   const muted = row.cells.slice(offset).every((c) => c.kind === 'missing' || c.kind === 'notDue')
+                  const named = shown[lastIndex] ? rowName(row, shown[lastIndex], statusLabel) : undefined
                   if (inline) {
                     return (
-                      <tr key={row.key} data-testid={`ribbon-${row.key}`} className={ROW_HOVER}>
+                      <tr key={row.key} data-testid={`ribbon-${row.key}`} aria-label={named} className={ROW_HOVER}>
                         <th scope="row" title={row.name} className={clsx('py-1 pr-3 text-left align-middle font-medium', muted && 'text-ink/70')}>
                           <span className="line-clamp-2 break-words">{row.name}</span>
                         </th>
@@ -336,13 +402,16 @@ export function StatusBoard({ label, columns, rows, scale, onOpen }: StatusBoard
                             <span title={row.name} className={clsx('line-clamp-2 min-w-0 break-words font-medium', muted && 'text-ink/70')}>
                               {row.name}
                             </span>
-                            <span data-testid="stacked-value" className="max-w-[45%] shrink-0 truncate">
+                            <span
+                              data-testid="stacked-value"
+                              className={clsx(!row.current && row.worst ? 'max-w-[60%]' : 'max-w-[45%]', 'shrink-0 truncate')}
+                            >
                               <CurrentValue row={row} scale={scale} compact />
                             </span>
                           </span>
                         </td>
                       </tr>
-                      <tr data-testid={`ribbon-${row.key}`} className={clsx(ROW_HOVER, '[tr:hover+&]:bg-ink/[0.035]')}>
+                      <tr data-testid={`ribbon-${row.key}`} aria-label={named} className={clsx(ROW_HOVER, '[tr:hover+&]:bg-ink/[0.035]')}>
                         <th scope="row" className="w-0 max-w-0 overflow-hidden p-0">
                           <span className="sr-only">{row.name}</span>
                         </th>

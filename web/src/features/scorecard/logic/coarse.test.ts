@@ -219,6 +219,34 @@ describe('periodStatus', () => {
     expect(s).toMatchObject({ status: 'R', caption: 'Q3 FY2026 · worst of 2 segments', notReported: null })
   })
 
+  it('takes the children’s noun as forms, worded as the old strings were', () => {
+    const child = (id: string, period: string, status: string) =>
+      row([cell(period, { subjectId: id, status })], { subjectId: id, subjectName: id, depth: 1 })
+    const products = { one: 'product', many: 'products' }
+    const coarse = periodStatus({
+      scope: row([]),
+      children: [child('a', '2026-Q3', 'G'), child('b', '2026-Q3', 'R'), row([], { subjectId: 'c', depth: 1 })],
+      frequency: 'quarterly',
+      selected: monthColumn('2026-M10'),
+      coarse: quarters('2026-M10'),
+      scale: SCALE,
+      noun: products,
+      fy: 1,
+    })
+    expect(coarse.caption).toBe('Q3 FY2026 · worst of 2 products · 1 not reported')
+    const month = periodStatus({
+      scope: row([], { frequency: 'monthly' }),
+      children: [child('a', '2026-M10', 'Y')],
+      frequency: 'monthly',
+      selected: monthColumn('2026-M10'),
+      coarse: [],
+      scale: SCALE,
+      noun: products,
+      fy: 1,
+    })
+    expect(month).toMatchObject({ status: 'Y', caption: 'worst of 1 product' })
+  })
+
   it('monthly reported: the shared rule’s status and caption', () => {
     expect(monthly([cell('2026-M10', { status: 'Y' })])).toMatchObject({
       status: 'Y',

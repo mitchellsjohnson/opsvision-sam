@@ -3,9 +3,10 @@ import { act, cleanup, render, screen, waitFor, within } from '@testing-library/
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { axe } from 'vitest-axe'
+import { DEPLOYMENT_NOUN, DEPLOYMENT_SCALE, deploymentRows } from '../../test/deploymentFixtures'
 import { buildTrendColumns, type Column } from './columns'
 import { StatusBoard, StatusCellTip } from './StatusBoard'
-import type { BoardCell, BoardRow } from './logic/statusBoard'
+import { buildBoardRow, type BoardCell, type BoardRow } from './logic/statusBoard'
 
 const SCALE = [
   { key: 'G', label: 'On track', color: '#137A3A', rank: 1 },
@@ -254,6 +255,8 @@ describe('StatusBoard', () => {
     renderBoard({ rows: [uptime] })
     const value = within(screen.getByTestId('name-row-uptime')).getByTestId('stacked-value')
     expect(value.textContent).toBe('Webhooks99.06%')
+    // The item's name needs more room than a value alone; the metric's name wraps beside it.
+    expect(value.className).toContain('max-w-[60%]')
     expect(within(value).getByText('99.06%').className).toContain('shrink-0')
     expect(within(value).getByText('Webhooks').className).toContain('truncate')
   })
@@ -268,6 +271,97 @@ describe('StatusBoard', () => {
     expect(header.querySelector('[aria-hidden="true"]')!.textContent).toBe('FY25')
     expect(header.getAttribute('title')).toBe('FY2025')
     expect(within(grid).getByRole('columnheader', { name: 'FY2026' }).textContent).toBe('FY2026')
+  })
+
+  it('keeps the year and month headers in view under the control bar while the board scrolls', () => {
+    renderBoard()
+    const thead = screen.getByRole('grid').querySelector('thead')!
+    expect(thead.className).toContain('sticky')
+    expect(thead.className).toContain('bg-white')
+    expect(thead.style.top).toBe('var(--control-bar-h, 0px)')
+  })
+
+  it('an item row’s Current caption names the worst item, keeping its ending, then how many share its status', () => {
+    const columns = MONTHS
+    const items = deploymentRows(columns)
+    const deployments = buildBoardRow({
+      key: 'deployment_uptime',
+      category: { id: 'eng', name: 'Engineering' },
+      scope: null,
+      head: items[0]!,
+      children: items,
+      noun: DEPLOYMENT_NOUN,
+      columns,
+      scale: DEPLOYMENT_SCALE,
+      fyStart: 1,
+    })
+    render(
+      <Tooltip.Provider>
+        <StatusBoard label="12-month status" columns={columns} rows={[deployments]} scale={DEPLOYMENT_SCALE} onOpen={vi.fn()} />
+      </Tooltip.Provider>,
+    )
+    const row = screen.getByTestId('ribbon-deployment_uptime')
+    expect(within(row).getByText('99.63%').className).toContain('tabular-nums')
+    const name = row.querySelector<HTMLElement>('[data-name]')!
+    expect(name.textContent).toBe('Notification Relay - Multi-Region Active')
+    const count = name.nextElementSibling as HTMLElement
+    expect(count.textContent).toBe(' · 1 of 21 Red')
+    expect(count.className).toContain('shrink-0')
+    expect(screen.queryByText(/12 not reported/)).toBeNull()
+    expect(screen.getByRole('row', { name: /; 12 not reported$/ })).toBe(row)
+    expect(row.getAttribute('aria-label')).toBe(
+      'Deployment uptime, Oct 2026: 99.63%, Red; worst Notification Relay - Multi-Region Active; 1 of 21 Red; 12 not reported',
+    )
+  })
+
+  it('a one-column fiscal year reads in its short form, however wide the column', () => {
+    measuredAt(1150)
+    // H2 FY2025 … H1 FY2027: FY2025 and FY2027 have one half each, in 64px columns.
+    renderBoard({ columns: buildTrendColumns('2027-H1', 1), label: '4-half status' })
+    const grid = screen.getByRole('grid', { name: '4-half status' })
+    const header = within(grid).getByRole('columnheader', { name: 'FY2025' })
+    expect(header.querySelector('[aria-hidden="true"]')!.textContent).toBe('FY25')
+    expect(within(grid).getByRole('columnheader', { name: 'FY2026' }).textContent).toBe('FY2026')
+  })
+
+  it('each category label links to its section and moves focus to the section’s heading', async () => {
+    render(
+      <Tooltip.Provider>
+        <StatusBoard label="12-month status" columns={MONTHS} rows={rowsFor(MONTHS)} scale={SCALE} onOpen={vi.fn()} />
+        <h2 id="section-product" tabIndex={-1}>
+          Product
+        </h2>
+      </Tooltip.Provider>,
+    )
+    const link = screen.getByRole('link', { name: 'Product' })
+    expect(link.getAttribute('href')).toBe('#section-product')
+    expect(link.className).toContain('hover:underline')
+    await userEvent.setup().click(link)
+    expect(document.activeElement).toBe(screen.getByRole('heading', { level: 2, name: 'Product' }))
+  })
+
+  it('a category the filter leaves empty keeps its label and reads none match', () => {
+    const rows = rowsFor(MONTHS).filter((r) => r.category.id !== 'design')
+    render(
+      <Tooltip.Provider>
+        <StatusBoard
+          label="12-month status"
+          columns={MONTHS}
+          rows={rows}
+          scale={SCALE}
+          onOpen={vi.fn()}
+          categories={[
+            { id: 'delivery', name: 'Delivery' },
+            { id: 'product', name: 'Product' },
+            { id: 'design', name: 'Design' },
+          ]}
+        />
+      </Tooltip.Provider>,
+    )
+    const design = screen.getByRole('rowheader', { name: /^Design/ })
+    expect(design.textContent).toBe('Design · none match')
+    expect(within(design).getByText('· none match').className).toContain('text-xs')
+    expect(within(design).queryByRole('link')).toBeNull()
   })
 
   it('rolls each category up as quiet text naming only exceptions', () => {
@@ -329,6 +423,9 @@ describe('StatusBoard', () => {
   it('is one tab stop; arrow keys move between cells', async () => {
     renderBoard()
     const user = userEvent.setup()
+    // The first category's label links to its section; the grid is the next stop.
+    await user.tab()
+    expect(document.activeElement?.textContent).toBe('Delivery')
     await user.tab()
     expect(document.activeElement?.getAttribute('aria-label')).toBe(SELECTED_EPICS)
     await user.keyboard('{ArrowLeft}')
