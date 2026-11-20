@@ -680,11 +680,32 @@ describe('FocusDialog', () => {
     const dialog = await screen.findByRole('dialog', { name: /On-time delivery/i })
     const row = await within(dialog).findByTestId('focus-value-row')
     await waitFor(() => expect(row.textContent).toMatch(/^Worst ?Unit A ?70\.0%/))
-    expect(row.textContent).toContain('1 of 2 segments Red')
+    // With no org levels to name them, the children are units, as on the tile.
+    expect(row.textContent).toContain('1 of 2 units Red')
     // Each segment's streak is its own; the header does not pick one.
     expect(row.textContent).not.toContain(' since ')
     // Several lines have no one change per range, so the strip goes (§8.5).
     expect(within(dialog).queryByRole('group', { name: 'Range' })).toBeNull()
+  })
+
+  it('with no company value, the worst line’s count names the children by their org level, as the tile does', async () => {
+    server.use(
+      http.get(`${API}/v1/org/levels`, () => HttpResponse.json({ levels: [{ id: 'l1', name: 'Products', depth: 1 }] })),
+      ...viewHandlers({
+        respond: (u) => {
+          const view = buildView(u.searchParams)
+          const root = view.rows.find((r) => r.metricKey === 'on_time_pct' && r.subjectId === 'root')!
+          const oct = root.cells.find((c) => c.period === '2026-M10' && !c.ytd)
+          if (oct) Object.assign(oct, { value: null, display: '', status: '', naReason: '', components: {} })
+          return HttpResponse.json(view)
+        },
+      }),
+    )
+    renderApp(<App />, { route: `${OVERVIEW}&focus=on_time_pct` })
+    const dialog = await screen.findByRole('dialog', { name: /On-time delivery/i })
+    const row = await within(dialog).findByTestId('focus-value-row')
+    await waitFor(() => expect(row.textContent).toContain('1 of 2 products Red'))
+    expect(row.textContent).not.toMatch(/segments|units/)
   })
 
   /** On-time delivery with no values after `last` in any row, or none at all when `last` is null. */
@@ -1408,6 +1429,50 @@ describe('FocusDialog: chart props', () => {
     const header = await within(dialog).findByRole('columnheader', { name: 'Postmortems' })
     const table = header.closest('table')!
     expect(within(table).getAllByRole('columnheader').map((h) => h.textContent)).toEqual(['Month', 'On time', 'Postmortems', 'Status', 'Change vs previous report'])
+  })
+
+  it('the parts come from the latest cell that is a ratio of the formula’s measures, past one that carries others', async () => {
+    server.use(
+      http.get(`${API}/v1/scorecards/sc-main/versions`, () =>
+        HttpResponse.json({
+          versions: withMeasures(
+            { closed: { name: 'Postmortems on time', unit: 'count' }, total: { name: 'Postmortems due', unit: 'count' } },
+            'Incident postmortems on time',
+          ),
+        }),
+      ),
+      ...viewHandlers({
+        respond: (u) => {
+          const view = buildView(u.searchParams)
+          for (const r of view.rows.filter((x) => x.metricKey === 'on_time_pct')) {
+            r.metricName = 'Incident postmortems on time'
+            for (const c of r.cells) {
+              if (c.ytd) continue
+              const v = VALUED[c.period]
+              Object.assign(
+                c,
+                v
+                  ? { value: v[0], display: `${v[0]}%`, status: v[3], naReason: '', change: null, changeKind: '', components: { closed: v[1], total: v[2] } }
+                  : { value: null, display: '', status: '', naReason: REASON, change: null, changeKind: '', components: {} },
+              )
+              // The latest cell carries two measures, but not the formula's.
+              if (c.period === '2026-M10') c.components = { reopened: 1, waived: 4 }
+            }
+          }
+          return HttpResponse.json(view)
+        },
+      }),
+    )
+    renderApp(<App />, { route: `${OVERVIEW}&focus=on_time_pct` })
+    const dialog = await screen.findByRole('dialog', { name: 'Incident postmortems on time' })
+    const header = await within(dialog).findByRole('columnheader', { name: 'Postmortems' })
+    expect(within(header.closest('table')!).getAllByRole('columnheader').map((h) => h.textContent)).toEqual([
+      'Month',
+      'On time',
+      'Postmortems',
+      'Status',
+      'Change vs previous report',
+    ])
   })
 
   it('a quarterly metric’s chart gets the selected month, so the next quarter shows as due', async () => {

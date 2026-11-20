@@ -14,7 +14,7 @@ export function RangeStrip({
   selected: RangeKey
   onSelect: (key: RangeKey) => void
   changeFor: (key: RangeKey) => RangeChange | null
-  /** A range whose first column has no value: it reads `No data then` and cannot be picked (§4). */
+  /** A range whose first column has no value: it reads `No data then` and, unless selected, cannot be picked (§4). */
   noDataFor?: (key: RangeKey) => boolean
   caption: string
   hidden?: boolean
@@ -41,13 +41,15 @@ export function RangeStrip({
           const noData = noDataFor?.(key) ?? false
           const change = noData ? null : changeFor(key)
           const pressed = selected === key
+          // The selected range stays a stop even with no data then, so the group never loses its pressed button.
+          const inert = noData && !pressed
           return (
             <button
               key={key}
               type="button"
               aria-pressed={pressed}
-              aria-disabled={noData || undefined}
-              tabIndex={noData ? -1 : undefined}
+              aria-disabled={inert || undefined}
+              tabIndex={inert ? -1 : undefined}
               aria-label={
                 noData
                   ? `${label}, no data then`
@@ -57,8 +59,8 @@ export function RangeStrip({
                       ? `${label}, change ${change.text}`
                       : `${label}, no change`
               }
-              className={`rounded-md px-1 py-1.5 text-center text-sm ${noData ? 'cursor-default text-ink/70' : pressed ? 'bg-ink/[0.07] font-semibold shadow-[inset_0_-2px_0_var(--color-accent)]' : 'hover:bg-ink/5'}`}
-              onClick={() => !noData && onSelect(key)}
+              className={`rounded-md px-1 py-1.5 text-center text-sm ${pressed ? 'bg-ink/[0.07] font-semibold shadow-[inset_0_-2px_0_var(--color-accent)]' : inert ? 'cursor-default text-ink/70' : 'hover:bg-ink/5'}`}
+              onClick={() => !inert && onSelect(key)}
               onKeyDown={onKeyDown}
             >
               <span className="block">{label}</span>

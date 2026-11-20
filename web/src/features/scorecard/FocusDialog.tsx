@@ -441,7 +441,7 @@ function MetricFocus({
   const reportedChildren = children.filter((ch) => cellReported(ch.cells.find((c) => cellKey(c) === columnKey)))
   const chartChildren = !scopeReported && reportedChildren.length > 0
   const chartRows = drillRow ? [drillRow.row] : chartChildren ? reportedChildren : chartRow ? [chartRow] : []
-  // The board row, coarse status and multi-series header here keep the old noun strings; the value row's caption uses `withNouns`.
+  // The board row and coarse status here keep the old noun strings; the value row's caption and worst-line count use `withNouns`.
   const noun = head?.chartKind === 'uptime' ? 'services' : scope && children.length > 0 ? 'segments' : 'items'
   const scopeStatus = (forms: NounForms) => statusAtScope({ scope: scope ?? { cells: [] }, children, columnKey, scale, noun: forms })
   const atScope = head ? scopeStatus(nounForms(undefined, 'item')) : null
@@ -678,14 +678,19 @@ function MetricFocus({
     moneyParts && cell
       ? `${formatMoneyCompact(cell.components[moneyParts[0]]!, unitOf(moneyParts[0]))} spent of ${formatMoneyCompact(cell.components[moneyParts[1]]!, unitOf(moneyParts[1]))} planned`
       : ''
-  // A sparse ratio metric's parts column (§7), from its latest cell that carries both measures.
-  const partsCell = sparse && chartRow ? [...chartRow.cells].reverse().find((c) => !c.ytd && Object.keys(c.components).length === 2) : undefined
-  const ratio = partsCell && metric ? ratioParts(metric.formula, partsCell.components) : null
+  // A sparse ratio metric's parts column (§7), from its latest cell that is a ratio of the formula's two measures.
+  const ratio =
+    sparse && chartRow && metric
+      ? ([...chartRow.cells]
+          .reverse()
+          .map((c) => (c.ytd ? null : ratioParts(metric.formula, c.components)))
+          .find((r) => r !== null) ?? null)
+      : null
   const parts = ratio
     ? chartParts(metric?.name ?? head?.metricName ?? '', { key: ratio[0], name: nameOfMeasure(ratio[0]) }, { key: ratio[1], name: nameOfMeasure(ratio[1]) })
     : undefined
   const status = atScope?.status ?? ''
-  // No company value: the value row leads with the worst of the lines shown (§7.6).
+  // No company value: the value row leads with the worst of the lines shown (§7.6); its count names them with `withNouns`, as the tile does.
   const worstSeries = multiSeries ? multiSeriesHeader(chartRows, columnKey, statusColors, (k) => statusLabel(k) ?? k, noun) : null
   const markers = useVersionMarkers(trendColumns, metricKey)
 
@@ -811,7 +816,12 @@ function MetricFocus({
                   <StatusChip status={worstSeries.worst.status} scale={statusColors} size="lg" />
                 </span>
               )}
-              {worstSeries.count && <span className="text-sm text-ink/70">{worstSeries.count}</span>}
+              {worstSeries.count &&
+                withNouns(({ children: forms }) => (
+                  <span className="text-sm text-ink/70">
+                    {multiSeriesHeader(chartRows, columnKey, statusColors, (k) => statusLabel(k) ?? k, forms.many).count}
+                  </span>
+                ))}
             </>
           ) : stopped ? (
             // The last value as history, with no current chip (§7.8).

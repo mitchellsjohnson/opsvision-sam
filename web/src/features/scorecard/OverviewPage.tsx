@@ -759,6 +759,7 @@ export function OverviewPage() {
               categoryId={g.id}
               name={g.name}
               rows={boardRows.filter((r) => r.category.id === g.id)}
+              shown={boardRows.filter((r) => r.category.id === g.id && metricShown(r.key)).length}
               scale={statusColors}
             />
           )

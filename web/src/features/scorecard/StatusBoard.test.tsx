@@ -278,23 +278,30 @@ describe('StatusBoard', () => {
     const thead = screen.getByRole('grid').querySelector('thead')!
     expect(thead.className).toContain('sticky')
     expect(thead.className).toContain('bg-white')
-    expect(thead.style.top).toBe('var(--control-bar-h, 0px)')
+    // Under the top bar too, wherever it stays in view (the shell publishes its height; 0px while it scrolls away).
+    expect(thead.style.top).toBe('calc(var(--top-bar-h, 0px) + var(--control-bar-h, 0px))')
   })
 
-  it('an item row’s Current caption names the worst item, keeping its ending, then how many share its status', () => {
-    const columns = MONTHS
-    const items = deploymentRows(columns)
-    const deployments = buildBoardRow({
+  function deploymentsRow() {
+    const items = deploymentRows(MONTHS)
+    return buildBoardRow({
       key: 'deployment_uptime',
       category: { id: 'eng', name: 'Engineering' },
       scope: null,
       head: items[0]!,
       children: items,
       noun: DEPLOYMENT_NOUN,
-      columns,
+      columns: MONTHS,
       scale: DEPLOYMENT_SCALE,
       fyStart: 1,
     })
+  }
+
+  it('an item row’s Current caption names the worst item, keeping its ending, then how many share its status', () => {
+    // A wide board: the Current column is 1400 - 320 - 12 × 40 = 600px, room for the caption on one line.
+    measuredAt(1400)
+    const columns = MONTHS
+    const deployments = deploymentsRow()
     render(
       <Tooltip.Provider>
         <StatusBoard label="12-month status" columns={columns} rows={[deployments]} scale={DEPLOYMENT_SCALE} onOpen={vi.fn()} />
@@ -312,6 +319,46 @@ describe('StatusBoard', () => {
     expect(row.getAttribute('aria-label')).toBe(
       'Deployment uptime, Oct 2026: 99.63%, Red; worst Notification Relay - Multi-Region Active; 1 of 21 Red; 12 not reported',
     )
+  })
+
+  it('in a 136px Current column, the worst item’s name takes its own line under the value and the count the next', () => {
+    // 936 - 320 - 12 × 40 = 136: the Current column at 1024px.
+    measuredAt(936)
+    render(
+      <Tooltip.Provider>
+        <StatusBoard label="12-month status" columns={MONTHS} rows={[deploymentsRow()]} scale={DEPLOYMENT_SCALE} onOpen={vi.fn()} />
+      </Tooltip.Provider>,
+    )
+    expect(screen.getByTestId('current-band').style.right).toBe('136px')
+    const row = screen.getByTestId('ribbon-deployment_uptime')
+    const current = row.querySelector('td:last-child')!
+    const lines = [...current.children] as HTMLElement[]
+    expect(lines.map((l) => l.textContent)).toEqual(['99.63%', 'Notification Relay - Multi-Region Active', '1 of 21 Red'])
+    // The name alone on its line, still through ItemName, so a cut keeps the ending the deployments differ in.
+    const name = lines[1]!.querySelector<HTMLElement>('[data-name]')!
+    expect(name.textContent).toBe('Notification Relay - Multi-Region Active')
+    expect(name.lastElementChild!.textContent).toBe(' - Multi-Region Active')
+    expect(name.lastElementChild!.className).toContain('shrink-0')
+    expect(lines[2]!.className).toContain('text-[11px]')
+    // Every part is still in the row's accessible name.
+    expect(row.getAttribute('aria-label')).toBe(
+      'Deployment uptime, Oct 2026: 99.63%, Red; worst Notification Relay - Multi-Region Active; 1 of 21 Red; 12 not reported',
+    )
+  })
+
+  it('in a 136px Current column, a short worst name keeps the count beside it', () => {
+    measuredAt(936)
+    const uptime = boardRow('uptime', 'Uptime', MONTHS.map((c) => status(c, 'R')), {
+      current: '',
+      worst: { name: 'Webhooks', display: '99.06%', of: { same: 1, total: 24, notReported: 0 } },
+    })
+    render(
+      <Tooltip.Provider>
+        <StatusBoard label="12-month status" columns={MONTHS} rows={[uptime]} scale={DEPLOYMENT_SCALE} onOpen={vi.fn()} />
+      </Tooltip.Provider>,
+    )
+    const current = screen.getByTestId('ribbon-uptime').querySelector('td:last-child')!
+    expect([...current.children].map((l) => l.textContent)).toEqual(['99.06%', 'Webhooks · 1 of 24 Red'])
   })
 
   it('a one-column fiscal year reads in its short form, however wide the column', () => {
@@ -338,6 +385,41 @@ describe('StatusBoard', () => {
     expect(link.className).toContain('hover:underline')
     await userEvent.setup().click(link)
     expect(document.activeElement).toBe(screen.getByRole('heading', { level: 2, name: 'Product' }))
+  })
+
+  it('with its section header hidden, a category label goes to the category’s first tile on the page', async () => {
+    const scrolled: Element[] = []
+    vi.spyOn(Element.prototype, 'scrollIntoView').mockImplementation(function (this: Element) {
+      scrolled.push(this)
+    })
+    const rows = [...rowsFor(MONTHS), boardRow('feedback-2', 'Feature adoption', MONTHS.map((c) => status(c, 'G')), { category: { id: 'product', name: 'Product' } })]
+    render(
+      <Tooltip.Provider>
+        <StatusBoard label="12-month status" columns={MONTHS} rows={rows} scale={SCALE} onOpen={vi.fn()} />
+        {/* Tiles in layout order, not board order: Feature adoption was moved first. */}
+        <div data-layout-item="metric:feedback-2">
+          <article aria-label="Feature adoption">
+            <button type="button">Expand Feature adoption</button>
+          </article>
+        </div>
+        <div data-layout-item="metric:feedback">
+          <article aria-label="Customer feedback SLO">
+            <button type="button">Expand Customer feedback SLO</button>
+          </article>
+        </div>
+      </Tooltip.Provider>,
+    )
+    const link = screen.getByRole('link', { name: 'Product' })
+    await userEvent.setup().click(link)
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Expand Feature adoption' }))
+    expect(scrolled.at(-1)).toBe(screen.getByRole('article', { name: 'Feature adoption' }))
+  })
+
+  it('a category with neither its section nor a tile on the page reads as plain text', () => {
+    renderBoard()
+    const delivery = screen.getByRole('rowheader', { name: /^Delivery/ })
+    expect(within(delivery).queryByRole('link')).toBeNull()
+    expect(within(delivery).getByText('Delivery').className).toContain('uppercase')
   })
 
   it('a category the filter leaves empty keeps its label and reads none match', () => {
@@ -423,9 +505,7 @@ describe('StatusBoard', () => {
   it('is one tab stop; arrow keys move between cells', async () => {
     renderBoard()
     const user = userEvent.setup()
-    // The first category's label links to its section; the grid is the next stop.
-    await user.tab()
-    expect(document.activeElement?.textContent).toBe('Delivery')
+    // No section is on the page, so the category labels are text and the grid is the first stop.
     await user.tab()
     expect(document.activeElement?.getAttribute('aria-label')).toBe(SELECTED_EPICS)
     await user.keyboard('{ArrowLeft}')

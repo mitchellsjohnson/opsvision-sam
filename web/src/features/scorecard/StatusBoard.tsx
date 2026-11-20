@@ -1,5 +1,5 @@
 import clsx from 'clsx'
-import { Fragment, useEffect, useId, useRef, type FocusEvent, type RefObject } from 'react'
+import { Fragment, useEffect, useId, useMemo, useRef, useSyncExternalStore, type FocusEvent, type RefObject } from 'react'
 import { useElementWidth } from '../../ui/useElementWidth'
 import { ItemName, Legend, RollUp, StatusCell, StatusCellTip, StatusChip, useGridNavigation, type StatusLevel } from '../../ui/status'
 import { MOVE_CLASS } from './charts/chartTheme'
@@ -10,8 +10,28 @@ import { columnUnit } from './logic/statusText'
 export { StatusCellTip, type StatusCellTipProps } from '../../ui/status'
 
 const ROW_HOVER = 'hover:bg-ink/[0.035] focus-within:bg-ink/[0.035]'
+/** The Current cell's `pl-3`. */
+const VALUE_PAD = 12
+const CAPTION_PX = 11
 
-function CurrentValue({ row, scale, compact }: { row: BoardRow; scale: StatusLevel[]; compact: boolean }) {
+let measureContext: CanvasRenderingContext2D | null | undefined
+
+/**
+ * A caption's width at 11px in the page's font; without a canvas (tests), half
+ * an em a character, about the page font's average.
+ */
+function captionWidth(parts: { text: string; weight: number }[]): number {
+  if (measureContext === undefined) measureContext = document.createElement('canvas').getContext('2d')
+  const ctx = measureContext
+  if (!ctx) return parts.reduce((sum, p) => sum + p.text.length * CAPTION_PX * 0.5, 0)
+  const family = getComputedStyle(document.body).fontFamily || 'sans-serif'
+  return parts.reduce((sum, p) => {
+    ctx.font = `${p.weight} ${CAPTION_PX}px ${family}`
+    return sum + ctx.measureText(p.text).width
+  }, 0)
+}
+
+function CurrentValue({ row, scale, compact, room }: { row: BoardRow; scale: StatusLevel[]; compact: boolean; room: number }) {
   const last = row.counted ?? row.cells[row.cells.length - 1]
   if (!row.current && row.worst && compact) {
     return (
@@ -23,12 +43,30 @@ function CurrentValue({ row, scale, compact }: { row: BoardRow; scale: StatusLev
   }
   if (!row.current && row.worst?.of && last?.kind === 'status') {
     const label = scale.find((s) => s.key === last.status)?.label ?? last.status
+    const count = `${row.worst.of.same} of ${row.worst.of.total} ${label}`
+    const oneLine =
+      captionWidth([
+        { text: row.worst.name, weight: 500 },
+        { text: ` · ${count}`, weight: 400 },
+      ]) <= room
+    if (!oneLine) {
+      // Too narrow for both: the name gets the line to itself, so ItemName keeps more of it, and the count goes under.
+      return (
+        <>
+          <span className="block text-sm font-semibold tabular-nums">{row.worst.display}</span>
+          <span className="flex min-w-0 justify-end text-[11px] text-ink/70">
+            <ItemName name={row.worst.name} className="font-medium text-ink/80" />
+          </span>
+          <span className="block truncate text-[11px] text-ink/70">{count}</span>
+        </>
+      )
+    }
     return (
       <>
         <span className="block text-sm font-semibold tabular-nums">{row.worst.display}</span>
         <span className="flex min-w-0 justify-end text-[11px] text-ink/70">
           <ItemName name={row.worst.name} className="font-medium text-ink/80" />
-          <span className="shrink-0 whitespace-pre">{` · ${row.worst.of.same} of ${row.worst.of.total} ${label}`}</span>
+          <span className="shrink-0 whitespace-pre">{` · ${count}`}</span>
         </span>
       </>
     )
@@ -104,12 +142,49 @@ export interface StatusBoardProps {
   categories?: { id: string; name: string }[]
 }
 
-/** Scrolls to a category's section and moves focus to its heading (`SectionHeader`). */
-function goToSection(categoryId: string) {
+/**
+ * Where a category's label goes: its section's heading (`SectionHeader`), else,
+ * with the section header hidden, its first tile in page order (`LayoutGrid`'s
+ * `data-layout-item`); null when neither is on the page.
+ */
+function sectionTarget(categoryId: string, metricKeys: string[]): { scrollTo: HTMLElement; focus: HTMLElement } | null {
   const heading = document.getElementById(`section-${categoryId}`)
-  if (!heading) return
-  heading.scrollIntoView?.({ block: 'start' })
-  heading.focus({ preventScroll: true })
+  if (heading) return { scrollTo: heading, focus: heading }
+  const ids = new Set(metricKeys.map((k) => `metric:${k}`))
+  const tile = [...document.querySelectorAll<HTMLElement>('[data-layout-item]')].find((el) => ids.has(el.dataset.layoutItem ?? ''))
+  if (!tile) return null
+  // The tile's frame carries the scroll margin; its first control (Expand) takes focus.
+  const frame = tile.querySelector<HTMLElement>('article, section') ?? tile
+  const control = tile.querySelector<HTMLElement>('button:not([disabled]), a[href]')
+  return control ? { scrollTo: frame, focus: control } : null
+}
+
+function goToSection(categoryId: string, metricKeys: string[]) {
+  const target = sectionTarget(categoryId, metricKeys)
+  if (!target) return
+  target.scrollTo.scrollIntoView?.({ block: 'start' })
+  target.focus.focus({ preventScroll: true })
+}
+
+/** Sections and tiles come and go outside the board (the Health filter, Customize), so the page's DOM is watched for them. */
+function subscribeToPage(onChange: () => void): () => void {
+  const observer = new MutationObserver(onChange)
+  observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['id', 'data-layout-item'] })
+  return () => observer.disconnect()
+}
+
+/** The categories whose label has somewhere to go on the page. */
+function useLinkedCategories(categories: { id: string; rows: BoardRow[] }[]): Set<string> {
+  const linked = useSyncExternalStore(
+    subscribeToPage,
+    () =>
+      categories
+        .filter((c) => c.rows.length > 0 && sectionTarget(c.id, c.rows.map((r) => r.key)) !== null)
+        .map((c) => c.id)
+        .join('\n'),
+    () => '',
+  )
+  return useMemo(() => new Set(linked ? linked.split('\n') : []), [linked])
 }
 
 /** Marks the header while it is stuck under the control bar, in the DOM, so scrolling never re-renders the board. */
@@ -178,6 +253,7 @@ export function StatusBoard({ label, columns, rows, scale, onOpen, categories: a
     else categories.push({ id: row.category.id, name: row.category.name, rows: [row] })
   }
   const grouped = categories.length > 1
+  const linked = useLinkedCategories(categories)
   // Inline: name, cells, value. Stacked: a zero-width row-header column, then the cells.
   const colSpan = shown.length + (inline ? 2 : 1)
 
@@ -274,7 +350,7 @@ export function StatusBoard({ label, columns, rows, scale, onOpen, categories: a
             <thead
               ref={theadRef}
               className="sticky z-10 bg-white data-[stuck]:[&>tr:last-child>*]:border-b [&>tr:last-child>*]:border-b-ink/10"
-              style={{ top: 'var(--control-bar-h, 0px)' }}
+              style={{ top: 'calc(var(--top-bar-h, 0px) + var(--control-bar-h, 0px))' }}
             >
               {groups.length > 0 && (
                 <tr>
@@ -353,16 +429,22 @@ export function StatusBoard({ label, columns, rows, scale, onOpen, categories: a
                     <th scope="rowgroup" colSpan={colSpan} className="border-b border-ink/10 pb-1 pt-3 text-left">
                       {category.rows.length > 0 ? (
                         <>
-                          <a
-                            href={`#section-${category.id}`}
-                            className="inline-flex min-h-6 items-center align-middle text-[11px] font-semibold uppercase tracking-wide text-ink/70 hover:underline"
-                            onClick={(e) => {
-                              e.preventDefault()
-                              goToSection(category.id)
-                            }}
-                          >
-                            {category.name}
-                          </a>
+                          {linked.has(category.id) ? (
+                            <a
+                              href={`#section-${category.id}`}
+                              className="inline-flex min-h-6 items-center align-middle text-[11px] font-semibold uppercase tracking-wide text-ink/70 hover:underline"
+                              onClick={(e) => {
+                                e.preventDefault()
+                                goToSection(category.id, category.rows.map((r) => r.key))
+                              }}
+                            >
+                              {category.name}
+                            </a>
+                          ) : (
+                            <span className="inline-flex min-h-6 items-center align-middle text-[11px] font-semibold uppercase tracking-wide text-ink/70">
+                              {category.name}
+                            </span>
+                          )}
                           <RollUp rows={category.rows} scale={scale} />
                         </>
                       ) : (
@@ -385,7 +467,7 @@ export function StatusBoard({ label, columns, rows, scale, onOpen, categories: a
                         </th>
                         {renderCells(row)}
                         <td className="py-1 pl-3 text-right align-middle">
-                          <CurrentValue row={row} scale={scale} compact={false} />
+                          <CurrentValue row={row} scale={scale} compact={false} room={layout.valueWidth - VALUE_PAD} />
                         </td>
                       </tr>
                     )
@@ -406,7 +488,7 @@ export function StatusBoard({ label, columns, rows, scale, onOpen, categories: a
                               data-testid="stacked-value"
                               className={clsx(!row.current && row.worst ? 'max-w-[60%]' : 'max-w-[45%]', 'shrink-0 truncate')}
                             >
-                              <CurrentValue row={row} scale={scale} compact />
+                              <CurrentValue row={row} scale={scale} compact room={0} />
                             </span>
                           </span>
                         </td>

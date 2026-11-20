@@ -626,6 +626,39 @@ describe('Customize layout on phones', () => {
     expect(puts[0]!.items.at(-1)!.id).toBe('metric:uptime')
   })
 
+  it('Hide from the menu moves focus to the next row’s menu button and announces it', async () => {
+    const puts: Array<{ items: LayoutItem[]; expectedRevision: number }> = []
+    const user = await phoneCustomize((body) => puts.push(body))
+    await user.click(screen.getByRole('button', { name: 'Layout options for Uptime' }))
+    await user.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'Hide' }))
+    await waitFor(() => expect(screen.getByTestId('customize-live').textContent).toBe('Hid Uptime'))
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Layout options for Uptime' })).toBeNull())
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Layout options for Weighted defect score' })))
+    expect(puts.at(-1)!.items.find((i) => i.id === 'metric:uptime')!.hidden).toBe(true)
+  })
+
+  it('hiding the last row moves focus to the row before it', async () => {
+    const user = await phoneCustomize()
+    await user.click(screen.getByRole('button', { name: 'Layout options for Not reported' }))
+    await user.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'Hide' }))
+    await waitFor(() => expect(screen.getByTestId('customize-live').textContent).toBe('Hid Not reported'))
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Layout options for Spend vs plan' })))
+  })
+
+  it('a failed hide puts the row back and drops the announcement', async () => {
+    const user = await phoneCustomize()
+    server.use(
+      http.put(`${API}/v1/me/layouts/:sc`, () =>
+        HttpResponse.json({ error: { code: 'internal', message: 'The server had a problem.', details: [] } }, { status: 500 }),
+      ),
+    )
+    await user.click(screen.getByRole('button', { name: 'Layout options for Uptime' }))
+    await user.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'Hide' }))
+    expect((await screen.findByRole('alert')).textContent).toMatch(/couldn’t save your layout/i)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Layout options for Uptime' })).toBeTruthy())
+    expect(screen.getByTestId('customize-live').textContent).toBe('')
+  })
+
   it('Esc leaves the mode and returns focus to Customize layout', async () => {
     const user = await phoneCustomize()
     screen.getByRole('button', { name: 'Move Uptime down' }).focus()

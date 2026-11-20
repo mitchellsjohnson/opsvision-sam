@@ -22,11 +22,15 @@ export function SectionHeader({
   categoryId,
   name,
   rows,
+  shown = rows.length,
   scale,
 }: {
   categoryId: string
   name: string
+  /** Every metric in the section; the roll-up counts them all. */
   rows: BoardRow[]
+  /** How many of them a Health filter leaves on the page: `1 of 3 metrics` when fewer than all. */
+  shown?: number
   scale: StatusLevel[]
 }) {
   const counts = new Map<string, number>()
@@ -60,6 +64,7 @@ export function SectionHeader({
         {name}
       </h2>
       <span className="text-xs text-ink/70">
+        {shown < rows.length && `${shown} of `}
         {rows.length} {rows.length === 1 ? 'metric' : 'metrics'}
       </span>
       <div className="ml-auto flex flex-wrap items-center gap-x-3 gap-y-1">

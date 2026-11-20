@@ -48,6 +48,26 @@ describe('SectionHeader', () => {
     expect(screen.queryByRole('list')).toBeNull()
   })
 
+  it('while a Health filter hides some of its metrics, says how many are shown of all', () => {
+    render(
+      <SectionHeader
+        categoryId="engineering"
+        name="Engineering"
+        rows={[row('a', { status: 'R' }), row('b', { status: 'G' }), row('c', { status: 'G' })]}
+        shown={1}
+        scale={SCALE}
+      />,
+    )
+    expect(screen.getByText('1 of 3 metrics').className).toContain('text-xs')
+    // The roll-up still counts the whole section.
+    expect(screen.getByRole('list', { name: 'Engineering roll-up' }).textContent).toBe('◆R 11 Red')
+  })
+
+  it('with every metric shown, the count stays plain', () => {
+    render(<SectionHeader categoryId="engineering" name="Engineering" rows={[row('a', { status: 'R' }), row('b', { status: 'G' })]} shown={2} scale={SCALE} />)
+    expect(screen.getByText('2 metrics')).toBeTruthy()
+  })
+
   it('one metric reads in the singular', () => {
     header([row('a', { status: 'G' })])
     expect(screen.getByText('1 metric')).toBeTruthy()

@@ -56,6 +56,39 @@ describe('RangeStrip', () => {
     expect((await axe(container)).violations).toEqual([])
   })
 
+  it('the selected range keeps its styling and tab stop when it has no data then; only unselected ones are inert', async () => {
+    const onSelect = vi.fn()
+    const { container } = render(
+      <RangeStrip
+        selected="12M"
+        onSelect={onSelect}
+        caption="Change from the first month in each range to Oct 2026"
+        changeFor={() => ({ text: '+0.2 pts', move: { arrow: '▲', tone: 'good' } })}
+        noDataFor={(key) => key === '12M' || key === 'YTD'}
+      />,
+    )
+    const twelve = screen.getByRole('button', { name: '12M, no data then' })
+    expect(twelve.getAttribute('aria-pressed')).toBe('true')
+    expect(twelve.hasAttribute('aria-disabled')).toBe(false)
+    expect(twelve.tabIndex).toBe(0)
+    expect(twelve.className).toContain('font-semibold')
+    expect(twelve.className).toContain('shadow-[inset_0_-2px_0_var(--color-accent)]')
+    expect(twelve.className).not.toContain('cursor-default')
+    expect(twelve.textContent).toBe('12MNo data then')
+    const ytd = screen.getByRole('button', { name: 'YTD, no data then' })
+    expect(ytd.getAttribute('aria-disabled')).toBe('true')
+    expect(ytd.tabIndex).toBe(-1)
+
+    const user = userEvent.setup()
+    screen.getByRole('button', { name: '6M, change +0.2 pts' }).focus()
+    await user.keyboard('{ArrowRight}')
+    expect(document.activeElement).toBe(twelve)
+    await user.keyboard('{ArrowRight}')
+    // YTD is inert, so the next stop is 24M.
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: '24M, change +0.2 pts' }))
+    expect((await axe(container)).violations).toEqual([])
+  })
+
   it('a range without the no-data mark that has no change still reads a dash', () => {
     render(<RangeStrip selected="12M" onSelect={() => {}} caption="" changeFor={() => null} />)
     expect(screen.getByRole('button', { name: '24M, change not available' }).textContent).toBe('24M—')

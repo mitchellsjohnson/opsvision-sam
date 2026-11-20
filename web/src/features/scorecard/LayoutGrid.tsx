@@ -147,6 +147,8 @@ function CompactRow({ item, label, indented, up, down, onMove, onHide, allItems 
   const isSection = item.id.startsWith('section:')
   const name = isSection ? `section ${label}` : label
   const index = allItems.findIndex((i) => i.id === item.id)
+  // A hidden row's trigger is going away; the grid moves focus to the next row instead.
+  const hiding = useRef(false)
   return (
     <li
       data-testid="customize-row"
@@ -190,8 +192,23 @@ function CompactRow({ item, label, indented, up, down, onMove, onHide, allItems 
           <EllipsisVertical aria-hidden size={16} />
         </DropdownMenu.Trigger>
         <DropdownMenu.Portal>
-          <DropdownMenu.Content align="end" sideOffset={4} className="z-50 min-w-48 rounded-lg border border-ink/20 bg-white p-1 shadow-lg">
-            <DropdownMenu.Item className={MENU_ITEM} onSelect={onHide}>
+          <DropdownMenu.Content
+            align="end"
+            sideOffset={4}
+            className="z-50 min-w-48 rounded-lg border border-ink/20 bg-white p-1 shadow-lg"
+            onCloseAutoFocus={(e) => {
+              if (!hiding.current) return
+              hiding.current = false
+              e.preventDefault()
+            }}
+          >
+            <DropdownMenu.Item
+              className={MENU_ITEM}
+              onSelect={() => {
+                hiding.current = true
+                onHide()
+              }}
+            >
               {isSection ? 'Hide section header' : 'Hide'}
             </DropdownMenu.Item>
             <DropdownMenu.Item className={MENU_ITEM} onSelect={() => onMove(moveBlock(allItems, index, 'top'), 'menu')}>
@@ -358,7 +375,8 @@ export function LayoutGrid({
   const phone = useMedia(PHONE_MAX_WIDTH)
   const [moved, setMoved] = useState('')
   // A compact row moved from one of its controls: that control gets focus back once the row is in its new place.
-  const refocus = useRef<{ id: string; control: 'up' | 'down' | 'menu'; position: number } | null>(null)
+  // `gone`: a hidden row that must leave first, so its menu has closed.
+  const refocus = useRef<{ id: string; control: 'up' | 'down' | 'menu'; position: number; gone?: string } | null>(null)
 
   const fallback = useMemo(
     () => defaultLayout(categories, metricsByCategory),
@@ -416,6 +434,9 @@ export function LayoutGrid({
       try {
         await putLayout.mutateAsync({ items, expectedRevision: revision })
       } catch (err) {
+        // The layout goes back, so a row waiting to take focus at its new place never gets there.
+        refocus.current = null
+        setMoved('')
         if (err instanceof ApiError && err.status === 409) {
           setSaveError('Someone else changed this layout. We reloaded it.')
           await layout.refetch()
@@ -476,6 +497,7 @@ export function LayoutGrid({
     const rows = [...document.querySelectorAll<HTMLElement>('[data-testid="customize-row"]')]
     const row = rows.find((r) => r.dataset.layoutItem === target.id)
     if (!row || rows.indexOf(row) !== target.position) return
+    if (target.gone && rows.some((r) => r.dataset.layoutItem === target.gone)) return
     refocus.current = null
     const button = row.querySelector<HTMLButtonElement>(`[data-move="${target.control}"]`)
     const other = row.querySelector<HTMLButtonElement>(`[data-move="${target.control === 'up' ? 'down' : 'up'}"]`)
@@ -549,6 +571,17 @@ export function LayoutGrid({
     void persist(next)
   }
 
+  // The hidden row's menu is gone with it: focus goes to the next row's menu, or the one before at the end.
+  const hideRow = (id: string) => {
+    const order = shownOrder(merged, shownIds)
+    const at = order.indexOf(id)
+    const neighbour = order[at + 1] ?? order[at - 1]
+    refocus.current = neighbour ? { id: neighbour, control: 'menu', position: order[at + 1] ? at : at - 1, gone: id } : null
+    const label = labelFor(id, itemLabels)
+    setMoved(`Hid ${id.startsWith('section:') ? `section ${label}` : label}`)
+    void persist(merged.map((i) => (i.id === id ? { ...i, hidden: true } : i)))
+  }
+
   return (
     <>
       {renderHeaderActions ? renderHeaderActions(customize) : <div className="mt-4 flex justify-end">{customize}</div>}
@@ -579,7 +612,7 @@ export function LayoutGrid({
                 up={shiftAmong(merged, item.id, 'up', shownIds)}
                 down={shiftAmong(merged, item.id, 'down', shownIds)}
                 onMove={(next, control) => moveRow(item.id, next, control)}
-                onHide={() => void persist(merged.map((i) => (i.id === item.id ? { ...i, hidden: true } : i)))}
+                onHide={() => hideRow(item.id)}
                 allItems={merged}
               />
             ))}

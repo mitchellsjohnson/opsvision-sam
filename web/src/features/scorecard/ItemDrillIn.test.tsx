@@ -75,7 +75,10 @@ describe('ItemDrillIn stepper', () => {
 
   it('an item not in the order reads a dash; Previous is disabled and Next goes to the first item', async () => {
     const { onStep } = draw({ row: item('dep-edge-cache'), position: { index: null, total: 13, next: { id: 'dep-notify-multi', name: 'Notification Relay - Multi-Region Active' } } })
-    expect(screen.getByText('–')).toBeTruthy()
+    const dash = screen.getByText('–')
+    expect(dash.getAttribute('aria-hidden')).toBe('true')
+    const note = within(dash.parentElement!).getByText('not in the current list')
+    expect(note.className).toContain('sr-only')
     expect((screen.getByRole('button', { name: 'Previous deployment' }) as HTMLButtonElement).disabled).toBe(true)
     await userEvent.setup().click(screen.getByRole('button', { name: 'Next deployment: Notification Relay - Multi-Region Active' }))
     expect(onStep).toHaveBeenCalledWith('dep-notify-multi')
@@ -108,6 +111,67 @@ describe('ItemDrillIn stepper', () => {
       </MemoryRouter>,
     )
     expect(document.activeElement).toBe(screen.getByRole('button', { name: `Previous deployment: ${WEST.name}` }))
+  })
+
+  it('J pressed on Next onto the last item moves focus to Previous, as a click does', async () => {
+    const base: ItemDrillInProps = {
+      head: rows[0]!,
+      row: item(WEST.id),
+      columns,
+      scale: DEPLOYMENT_SCALE,
+      noun: DEPLOYMENT_NOUN,
+      total: 21,
+      onBack: () => {},
+      headingRef: createRef(),
+      fy: 1,
+      position: { index: 11, total: 13, prev: PORTAL, next: { id: 'dep-renderer', name: 'Document Renderer - Shared Worker Pool' } },
+      onStep: vi.fn(),
+    }
+    const { rerender } = render(
+      <MemoryRouter>
+        <ItemDrillIn {...base} />
+      </MemoryRouter>,
+    )
+    const user = userEvent.setup()
+    screen.getByRole('button', { name: /^Next deployment/ }).focus()
+    // The dialog's shortcut handler does the step; the drill-in only sees the key and the new item.
+    await user.keyboard('j')
+    rerender(
+      <MemoryRouter>
+        <ItemDrillIn {...base} row={item('dep-renderer')} position={{ index: 12, total: 13, prev: WEST }} />
+      </MemoryRouter>,
+    )
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: `Previous deployment: ${WEST.name}` }))
+  })
+
+  it('K pressed on Previous onto the first item moves focus to Next', async () => {
+    const base: ItemDrillInProps = {
+      head: rows[0]!,
+      row: item(WEST.id),
+      columns,
+      scale: DEPLOYMENT_SCALE,
+      noun: DEPLOYMENT_NOUN,
+      total: 21,
+      onBack: () => {},
+      headingRef: createRef(),
+      fy: 1,
+      position: { index: 1, total: 13, prev: { id: 'dep-notify-multi', name: 'Notification Relay - Multi-Region Active' }, next: PORTAL },
+      onStep: vi.fn(),
+    }
+    const { rerender } = render(
+      <MemoryRouter>
+        <ItemDrillIn {...base} />
+      </MemoryRouter>,
+    )
+    const user = userEvent.setup()
+    screen.getByRole('button', { name: /^Previous deployment/ }).focus()
+    await user.keyboard('k')
+    rerender(
+      <MemoryRouter>
+        <ItemDrillIn {...base} row={item('dep-notify-multi')} position={{ index: 0, total: 13, next: WEST }} />
+      </MemoryRouter>,
+    )
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: `Next deployment: ${WEST.name}` }))
   })
 
   it('the stepper sits at the end of the breadcrumb row; on phones the details share its line', () => {

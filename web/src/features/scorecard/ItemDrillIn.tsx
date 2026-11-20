@@ -1,5 +1,5 @@
 import { ChevronLeft, ChevronRight } from 'lucide-react'
-import { useId, useLayoutEffect, useRef, type MouseEvent, type RefObject } from 'react'
+import { useId, useLayoutEffect, useRef, type FocusEvent, type KeyboardEvent, type MouseEvent, type RefObject } from 'react'
 import { Link, useSearchParams } from 'react-router'
 import type { components } from '../../api/schema'
 import { StatusChip, type StatusLevel } from '../../ui/status'
@@ -68,20 +68,31 @@ export function ItemDrillIn({
   const reduced = usePrefersReducedMotion()
   const prevRef = useRef<HTMLButtonElement>(null)
   const nextRef = useRef<HTMLButtonElement>(null)
-  // The button pressed, and the item it was pressed on: once the step lands on an end, focus moves to the other button.
-  const pressed = useRef<{ which: 'prev' | 'next'; from: string } | null>(null)
+  // The stepper button that had focus when a step began (a click, or J/K pressed on it), and the item then:
+  // once the step lands on an end and disables that button, focus moves to the other one.
+  const pressed = useRef<{ on: 'prev' | 'next'; from: string } | null>(null)
   useLayoutEffect(() => {
     const p = pressed.current
     if (!p || p.from === row.id) return
     pressed.current = null
-    if (p.which === 'next' && !position.next) prevRef.current?.focus()
-    else if (p.which === 'prev' && !position.prev) nextRef.current?.focus()
+    if (p.on === 'next' && !position.next) prevRef.current?.focus()
+    else if (p.on === 'prev' && !position.prev) nextRef.current?.focus()
   })
   const step = (which: 'prev' | 'next') => {
     const target = position[which]
     if (!target) return
-    pressed.current = { which, from: row.id }
+    pressed.current = { on: which, from: row.id }
     onStep(target.id)
+  }
+  // The dialog's shortcuts make the J/K step; this only notes which button had focus.
+  const noteStepperKey = (e: KeyboardEvent<HTMLButtonElement>, on: 'prev' | 'next') => {
+    if (e.metaKey || e.ctrlKey || e.altKey) return
+    const key = e.key.toLowerCase()
+    if (key === 'j' || key === 'k') pressed.current = { on, from: row.id }
+  }
+  const forget = (e: FocusEvent<HTMLButtonElement>) => {
+    // A button that loses focus by being disabled has no related target; that one is the case to handle.
+    if (e.relatedTarget) pressed.current = null
   }
   const statusLabel = (key: string) => scale.find((s) => s.key === key)?.label
   const worst = [...scale].sort((a, b) => b.rank - a.rank)[0]
@@ -159,11 +170,20 @@ export function ItemDrillIn({
             title={`Previous ${noun.one} (K)`}
             className={STEP}
             onClick={() => step('prev')}
+            onKeyDown={(e) => noteStepperKey(e, 'prev')}
+            onBlur={forget}
           >
             <ChevronLeft aria-hidden="true" className="size-4" />
           </button>
           <span className="min-w-14 text-center text-xs text-ink/70 tabular-nums">
-            {position.index === null ? '–' : `${position.index + 1} of ${position.total}`}
+            {position.index === null ? (
+              <>
+                <span aria-hidden="true">–</span>
+                <span className="sr-only">not in the current list</span>
+              </>
+            ) : (
+              `${position.index + 1} of ${position.total}`
+            )}
           </span>
           <button
             ref={nextRef}
@@ -174,6 +194,8 @@ export function ItemDrillIn({
             title={`Next ${noun.one} (J)`}
             className={STEP}
             onClick={() => step('next')}
+            onKeyDown={(e) => noteStepperKey(e, 'next')}
+            onBlur={forget}
           >
             <ChevronRight aria-hidden="true" className="size-4" />
           </button>
