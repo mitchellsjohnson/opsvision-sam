@@ -60,11 +60,18 @@ describe('PeriodCards', () => {
     expect(cards().map((c) => c.firstElementChild!.textContent)).toEqual(['H2 FY25 · Jul–Dec', 'H1 FY26 · Jan–Jun', 'H2 FY26 · Jul–Dec'])
     expect(within(cards()[1]!).getByText('Green', { selector: '.sr-only' })).toBeTruthy()
     expect(cards()[2]!.textContent).toContain('Due by Jan 2027')
+    expect(screen.getByTestId('period-cards').className).toContain('grid-cols-3')
   })
 
   it('a half still in its grace month is the due card; the one before it is reported', () => {
     show(halfRow({ '2026-H1': [82, 'G'] }), windowColumns('2027-M01', 'half', 2, 1), '2027-M01')
     expect(cards().map((c) => c.textContent)).toEqual(['H1 FY26 · Jan–Jun82%●GGreen', 'H2 FY26 · Jul–DecDue by Jan 2027'])
+  })
+
+  it('two cards share the row in two columns, leaving no empty third', () => {
+    show(halfRow({ '2026-H1': [82, 'G'] }), windowColumns('2027-M01', 'half', 2, 1), '2027-M01')
+    expect(cards()).toHaveLength(2)
+    expect(screen.getByTestId('period-cards').className).toContain('grid-cols-2')
   })
 
   it('past the grace month it is overdue, in Red', () => {

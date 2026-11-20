@@ -401,6 +401,12 @@ describe('MetricChart line', () => {
     expect(tile.container.querySelector('.goal-line .recharts-reference-line-line')).toBeTruthy()
   })
 
+  it('a discrete monthly chart keeps its curve and its current-value pill in focus', () => {
+    const { container } = draw(rowOf('on_time_pct', (r) => (r.chartKind = 'discrete')), { size: 'focus' })
+    expect(container.querySelector('.recharts-line-curve')!.getAttribute('d')).toMatch(/C/)
+    expect(container.querySelector('[data-role="current-pill"]')!.textContent).toBe('84.3%')
+  })
+
   it('the goal pill sits on its line, and moves off the current-value pill when the two are close', () => {
     const center = (g: Element) => Number(g.querySelector('rect')!.getAttribute('y')) + Number(g.querySelector('rect')!.getAttribute('height')) / 2
     const far = draw(rowOf('on_time_pct'), { size: 'focus' })
@@ -1320,31 +1326,32 @@ const yTicks = (root: ParentNode) =>
   [...root.querySelectorAll('.recharts-yAxis-tick-labels .recharts-cartesian-axis-tick-value')].map((t) => t.textContent)
 const thresholdLabels = (root: ParentNode) => [...root.querySelectorAll('[data-role="threshold-label"]')].map((t) => t.textContent)
 
-describe('MetricChart item drill-in chart', () => {
-  // Feb is the lowest, May the largest move (+0.18), Oct the current.
-  const VALUES = [100, 99.98, 99.86, 99.7, 99.83, 99.82, 100, 100, 99.99, 99.99, 99.99, 99.93]
+// Feb is the lowest, May the largest move (+0.18), Oct the current.
+const VALUES = [100, 99.98, 99.86, 99.7, 99.83, 99.82, 100, 100, 99.99, 99.99, 99.99, 99.93]
 
-  function itemRow(values: (number | null)[] = VALUES): ViewRow {
-    return rowOf('on_time_pct', (r) => {
-      r.subjectKind = 'item'
-      r.subjectName = 'Notification Relay - Multi-Region Active'
-      r.format = 'percent2'
-      r.cells.forEach((c, i) => {
-        const v = values[i] ?? null
-        Object.assign(c, {
-          value: v,
-          display: v === null ? '' : `${v.toFixed(2)}%`,
-          status: v === null ? '' : status99(v),
-          naReason: '',
-          target: 99.9,
-          rule: UPTIME_BANDS,
-          change: null,
-          changeKind: '',
-        })
+/** One item's uptime row, as the drill-in draws it. */
+function itemRow(values: (number | null)[] = VALUES): ViewRow {
+  return rowOf('on_time_pct', (r) => {
+    r.subjectKind = 'item'
+    r.subjectName = 'Notification Relay - Multi-Region Active'
+    r.format = 'percent2'
+    r.cells.forEach((c, i) => {
+      const v = values[i] ?? null
+      Object.assign(c, {
+        value: v,
+        display: v === null ? '' : `${v.toFixed(2)}%`,
+        status: v === null ? '' : status99(v),
+        naReason: '',
+        target: 99.9,
+        rule: UPTIME_BANDS,
+        change: null,
+        changeKind: '',
       })
     })
-  }
+  })
+}
 
+describe('MetricChart item drill-in chart', () => {
   it('straight segments, a dot per valued period, labelled threshold lines and no tick under them', () => {
     const { container } = draw(itemRow(), { size: 'focus' })
     expect(linePath(container)).toMatch(/^M[\d.,\sLM-]+$/)
@@ -1573,6 +1580,57 @@ describe('MetricChart change bars', () => {
     draw(defectRow())
     expect(screen.getByText(/Changes: Sep 27% worse \(Red\), Oct 26% worse \(Red\)/, { selector: '.sr-only' })).toBeTruthy()
   })
+
+  /** A change row from how much worse each month was (null: no change), Red past 5% worse. */
+  function worseRow(worse: (number | null)[]): ViewRow {
+    return rowOf('on_time_pct', (r) => {
+      r.metricName = 'Weighted defect score'
+      r.format = 'number2'
+      r.direction = 'lower_better'
+      r.cells.forEach((c, i) => {
+        const w = worse[i] ?? null
+        const status = w === null || w <= 0 ? 'G' : w > 5 ? 'R' : 'Y'
+        Object.assign(c, { value: 20, display: '20.00', status, naReason: '', change: w === null ? null : -w, changeKind: w === null ? '' : 'improvement_pct', target: null, rule: RULE('prior_period') })
+      })
+    })
+  }
+
+  /** The panel's right-hand labels as 12px line boxes, and the zero line. */
+  function gutter() {
+    const bars = screen.getByTestId('change-bars')
+    const plot = bars.querySelector<HTMLElement>('[data-role="change-plot"]')!
+    const height = parseFloat(plot.style.height)
+    const labels = [...bars.querySelectorAll<HTMLElement>('[data-role="side-label"]')].map((l) => {
+      const top = l.style.top ? parseFloat(l.style.top) : height - parseFloat(l.style.bottom) - 12
+      return { text: l.textContent ?? '', top, bottom: top + 12 }
+    })
+    const zero = parseFloat(bars.querySelector<HTMLElement>('[data-role="zero-line"]')!.style.top)
+    return { height, labels, zero, find: (text: string) => labels.find((l) => l.text === text)! }
+  }
+
+  const GUTTER_CASES: [string, (number | null)[]][] = [
+    ['every month up to 5% worse', [null, 1, 2, 3, 4, 5, 1, 2, 3, 4, 5, 2]],
+    ['small moves either way', [null, -3, 2, -1, 4, -2, 1, 5, -4, 3, -2, 1]],
+    ['no month improved, two far worse', [null, 1, 2, 3, 27, 26, 2, 1, 3, 2, 1, 2]],
+  ]
+
+  it.each(GUTTER_CASES.flatMap(([name, worse]) => SIZES.map((size) => [`${name} (${size})`, worse, size] as const)))(
+    '%s: the right-hand labels never overlap, worse sits above the zero line and better below it',
+    (_name, worse, size) => {
+      draw(worseRow(worse), { size })
+      const { labels, zero, height, find } = gutter()
+      expect(labels.map((l) => l.text)).toEqual(expect.arrayContaining(['worse', 'better', '+5%']))
+      for (const [i, a] of labels.entries()) {
+        for (const b of labels.slice(i + 1)) expect(a.bottom <= b.top || b.bottom <= a.top, `${a.text} overlaps ${b.text}`).toBe(true)
+      }
+      expect(find('worse').bottom).toBeLessThanOrEqual(zero)
+      // The zero line is 1px; better starts under it and stays inside the panel.
+      expect(find('better').top).toBeGreaterThanOrEqual(zero + 1)
+      expect(find('better').bottom).toBeLessThanOrEqual(height)
+      expect(find('worse').top).toBeGreaterThanOrEqual(0)
+      if (size === 'focus') expect(find('0%')).toBeTruthy()
+    },
+  )
 })
 
 describe('MetricChart multi-series focus and context', () => {
@@ -1652,30 +1710,31 @@ function rowText(row: HTMLElement): string {
     .join(' · ')
 }
 
-describe('MetricChart sparse table with parts', () => {
-  const REASON = 'No major incident needed a postmortem this month'
-  const VALUED: Record<number, [number, number, number, string]> = {
-    1: [80, 4, 5, 'Y'],
-    4: [100, 1, 1, 'G'],
-    7: [60, 3, 5, 'R'],
-    9: [100, 3, 3, 'G'],
-    11: [80, 4, 5, 'Y'],
-  }
-  const PARTS: ChartParts = { valueLabel: 'On time', denominatorLabel: 'Postmortems', numerator: 'postmortems_on_time', denominator: 'postmortems_due' }
+const REASON = 'No major incident needed a postmortem this month'
+const VALUED: Record<number, [number, number, number, string]> = {
+  1: [80, 4, 5, 'Y'],
+  4: [100, 1, 1, 'G'],
+  7: [60, 3, 5, 'R'],
+  9: [100, 3, 3, 'G'],
+  11: [80, 4, 5, 'Y'],
+}
+const PARTS: ChartParts = { valueLabel: 'On time', denominatorLabel: 'Postmortems', numerator: 'postmortems_on_time', denominator: 'postmortems_due' }
 
-  function postmortems(): ViewRow {
-    return rowOf('on_time_pct', (r) => {
-      r.metricName = 'Incident postmortems on time'
-      r.format = 'percent0'
-      r.cells = r.cells.map((c, i) => {
-        const v = VALUED[i]
-        return v
-          ? { ...c, value: v[0], display: `${v[0]}%`, status: v[3], naReason: '', change: null, changeKind: '', components: { postmortems_on_time: v[1], postmortems_due: v[2] } }
-          : { ...c, value: null, display: '', status: '', naReason: REASON, change: null, changeKind: '', components: {} as Record<string, number> }
-      })
+/** A sparse ratio row: five valued months, seven n/a for one reason. */
+function postmortems(): ViewRow {
+  return rowOf('on_time_pct', (r) => {
+    r.metricName = 'Incident postmortems on time'
+    r.format = 'percent0'
+    r.cells = r.cells.map((c, i) => {
+      const v = VALUED[i]
+      return v
+        ? { ...c, value: v[0], display: `${v[0]}%`, status: v[3], naReason: '', change: null, changeKind: '', components: { postmortems_on_time: v[1], postmortems_due: v[2] } }
+        : { ...c, value: null, display: '', status: '', naReason: REASON, change: null, changeKind: '', components: {} as Record<string, number> }
     })
-  }
+  })
+}
 
+describe('MetricChart sparse table with parts', () => {
   it('the parts column, the change since the previous report and the n/a line', () => {
     draw(postmortems(), { size: 'focus', parts: PARTS })
     const table = screen.getByRole('table')
@@ -1751,6 +1810,8 @@ describe('MetricChart accessibility', () => {
         opts: {},
       }),
     ],
+    ['sparse with parts', () => ({ row: postmortems(), opts: { parts: PARTS } })],
+    ['item drill-in', () => ({ row: itemRow(), opts: {} })],
   ]
 
   it.each(cases.flatMap(([name, make]) => SIZES.map((size) => [`${name} ${size}`, make, size] as const)))('%s has no axe violations', async (_name, make, size) => {

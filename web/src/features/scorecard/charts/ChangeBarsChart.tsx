@@ -2,13 +2,11 @@ import type { components } from '../../../api/schema'
 import { useElementWidth } from '../../../ui/useElementWidth'
 import type { ChartSize } from './chartParts'
 import { barFill, chartTheme } from './chartTheme'
-import { keptLabels, worseText, type ChangeBar } from './changeBars'
+import { changeScale, keptLabels, SIDE_LABEL, worseText, type ChangeBar } from './changeBars'
 
 type StatusLevel = components['schemas']['StatusLevel']
 
 const HEIGHT: Record<ChartSize, number> = { tile: 64, focus: 120 }
-/** Room above the highest bar and below the lowest for their labels. */
-const PAD = { top: 13, bottom: 4 }
 /**
  * The change that set each period's status (§9): up for worse, down for
  * better, from a zero line, filled by the status it earned, with the Red
@@ -38,17 +36,15 @@ export function ChangeBars({
   const [measure, width] = useElementWidth<HTMLDivElement>()
   const height = HEIGHT[size]
   const values = bars.flatMap((b) => (b.worse === null ? [] : [b.worse]))
-  const hi = Math.max(1, red ?? 0, ...values)
-  const lo = Math.min(-1, ...values)
-  const span = height - PAD.top - PAD.bottom
-  const y = (v: number) => PAD.top + ((hi - v) / (hi - lo)) * span
+  const y = changeScale(height, values, red, size === 'focus')
   const zero = y(0)
   const worst = Math.max(...scale.map((s) => s.rank))
   const best = Math.min(...scale.map((s) => s.rank))
   const redColor = chartTheme(scale, scale.find((s) => s.rank === worst)?.key ?? 'R').color
-  // The Red boundary's label first; a tick within 12px of one kept would print over it.
+  // `worse` and `better` hold the top and bottom slots, then the Red boundary's label; a tick within 12px of one kept would print over it.
+  const slots = [SIDE_LABEL / 2, height - SIDE_LABEL / 2]
   const ticks = (size === 'focus' ? [...new Set([...(red !== null ? [red] : []), 0, ...edges])] : red !== null ? [red] : []).reduce<number[]>(
-    (kept, t) => (kept.every((k) => Math.abs(y(k) - y(t)) >= 12) ? [...kept, t] : kept),
+    (kept, t) => ([...slots, ...kept.map(y)].every((c) => Math.abs(c - y(t)) >= SIDE_LABEL) ? [...kept, t] : kept),
     [],
   )
   const side = 'absolute left-full pl-1 text-[10px] leading-3 whitespace-nowrap text-ink/70'
@@ -66,18 +62,18 @@ export function ChangeBars({
       <p className="text-[11px] leading-4 text-ink/70" style={{ marginLeft: inset.left }}>
         {caption}
       </p>
-      <div ref={measure} className="relative" style={{ height, marginLeft: inset.left, marginRight: inset.right }}>
-        <div className="absolute inset-x-0 border-t border-ink/55" style={{ top: zero }} />
+      <div ref={measure} data-role="change-plot" className="relative" style={{ height, marginLeft: inset.left, marginRight: inset.right }}>
+        <div data-role="zero-line" className="absolute inset-x-0 border-t border-ink/55" style={{ top: zero }} />
         {red !== null && red > 0 && <div data-role="red-line" className="absolute inset-x-0 border-t border-dashed" style={{ top: y(red), borderColor: redColor }} />}
         {ticks.map((t) => (
-          <span key={t} className={side} style={{ top: y(t) - 6 }}>
+          <span key={t} data-role="side-label" className={side} style={{ top: y(t) - SIDE_LABEL / 2 }}>
             {worseText(t)}
           </span>
         ))}
-        <span className={side} style={{ top: 0 }}>
+        <span data-role="side-label" className={side} style={{ top: 0 }}>
           worse
         </span>
-        <span className={side} style={{ bottom: 0 }}>
+        <span data-role="side-label" className={side} style={{ top: height - SIDE_LABEL }}>
           better
         </span>
         <div className="absolute inset-0 flex gap-px">

@@ -131,7 +131,7 @@ export function RatioChart({
   // Item lines label the current, the lowest and the largest move; coarse and discrete label every point.
   const labelled = item && linear ? itemLabelIndices(points) : []
   const pointLabels = valuePoints || labelled.length > 0 || changeTile
-  const ghost = coarse ? ghostSlot(row, columns, selectedPeriod, fyStart) : null
+  const ghost = useMemo(() => (coarse ? ghostSlot(row, columns, selectedPeriod, fyStart) : null), [coarse, row, columns, selectedPeriod, fyStart])
   const slots = ghost && ghost.index === columns.length ? columns.length + 1 : columns.length
   // Eight quarters show Q3 twice: name each point by its full period then.
   const fullNames = coarse && new Set(columns.map((c) => c.label)).size < columns.length
@@ -160,8 +160,8 @@ export function RatioChart({
   const edgesOf = (domain: [number, number]): Threshold[] =>
     linear ? bandEdges(bands, domain).map((e) => ({ value: e.value, label: thresholdText(e.value, e.status), color: chartTheme(scale, e.status).color })) : []
   const draft = edgesOf(padded)
-  // The current value has a label at its point when points are labelled, so the axis pill would repeat it.
-  const pill = focus && !pointLabels && currentValue !== null
+  // A labelled linear chart names the current value at its point, so the axis pill would repeat it.
+  const pill = focus && !(linear && pointLabels) && currentValue !== null
   const fitted = focus
     ? valueAxis(row.format, padded, [...(pill ? [currentPoint!.display] : []), ...draft.map((t) => t.label)], percentMax(row.format, values))
     : null

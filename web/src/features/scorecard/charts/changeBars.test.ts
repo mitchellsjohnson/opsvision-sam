@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { components } from '../../../api/schema'
 import { buildTrendColumns, coarseColumns } from '../columns'
 import { defaultStatusScale } from './chartTheme'
-import { changeBarsFor, changeCaption, changeEdges, changeSummary, isChangeRow, keptLabels, worseText } from './changeBars'
+import { changeBarsFor, changeCaption, changeEdges, changeScale, changeSummary, isChangeRow, keptLabels, worseText } from './changeBars'
 
 type ViewRow = components['schemas']['ViewRow']
 type Cell = components['schemas']['Cell']
@@ -139,5 +139,26 @@ describe('keptLabels', () => {
     expect([...keptLabels([red(10), red(11, '+26%')], 19, 12)]).toEqual([11])
     const yellow = (index: number) => ({ index, rank: 2, text: '+2%' })
     expect([...keptLabels([yellow(0), yellow(1), red(11)], 19, 12)].sort((a, b) => a - b)).toEqual([1, 11])
+  })
+})
+
+describe('changeScale', () => {
+  it('a Red boundary above every bar sits under the top slot; the zero line clears the bottom one', () => {
+    const y = changeScale(64, [1, 2, 3, 4, 5], 5, false)
+    expect(y(5)).toBeGreaterThanOrEqual(19)
+    expect(y(0)).toBeLessThanOrEqual(64 - 13)
+    expect(y(5)).toBeLessThan(y(0))
+  })
+
+  it('with no month improved, full screen keeps room for the 0% tick over better', () => {
+    const y = changeScale(120, [1, 27, 26], 5, true)
+    expect(y(0)).toBeLessThanOrEqual(120 - 19)
+    expect(y(27)).toBeGreaterThanOrEqual(13)
+  })
+
+  it('large moves either way keep the full span', () => {
+    const y = changeScale(64, [-33, 27, 26], 5, false)
+    expect(y(27)).toBeCloseTo(13)
+    expect(y(-33)).toBeCloseTo(60)
   })
 })

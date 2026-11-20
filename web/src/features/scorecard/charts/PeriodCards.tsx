@@ -61,8 +61,9 @@ export function PeriodCards({
       ? { label: cardLabel(dueP, fy), text: `${ghost.overdue ? 'Overdue since' : 'Due by'} ${dueByLabel(dueP, fy)}`, overdue: ghost.overdue }
       : null
   const stacked = width > 0 && width < ROW_FROM
+  const count = shown.length + (due ? 1 : 0)
   return (
-    <ul ref={measure} data-testid="period-cards" className={clsx('grid gap-2', stacked ? 'grid-cols-1' : 'grid-cols-3')}>
+    <ul ref={measure} data-testid="period-cards" className={clsx('grid gap-2', stacked || count < 2 ? 'grid-cols-1' : count === 2 ? 'grid-cols-2' : 'grid-cols-3')}>
       {shown.map((col, i) => {
         const cell = cells.get(col.key)
         const latest = i === shown.length - 1

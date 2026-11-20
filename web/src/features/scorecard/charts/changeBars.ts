@@ -77,6 +77,32 @@ export function changeSummary(bars: ChangeBar[], columns: Column[], scale: Statu
   return parts.length > 0 ? `Changes: ${parts.join(', ')}` : ''
 }
 
+/** A right-hand label's line box: 10px text on a 12px leading. */
+export const SIDE_LABEL = 12
+/** Room above the highest bar and below the lowest for their labels. */
+const BAR_PAD = { top: 13, bottom: 4 }
+
+/**
+ * The bar panel's value-to-pixel map: the largest scale that keeps room for
+ * the bars' labels, the Red boundary's label clear of `worse` in the top
+ * slot, and the zero line (with its `0%` tick, when drawn) clear of
+ * `better` in the bottom slot, whatever the bars hold.
+ */
+export function changeScale(height: number, values: number[], red: number | null, zeroTick: boolean): (v: number) => number {
+  const hi = Math.max(1, red ?? 0, ...values)
+  const lo = Math.min(-1, ...values)
+  // y(v) = zero − k·v. Each bound is [c, m]: zero ≥ c + k·m below, zero ≤ c + k·m above.
+  const floors: [number, number][] = [[BAR_PAD.top, hi]]
+  if (red !== null && red > 0) floors.push([SIDE_LABEL + 1 + SIDE_LABEL / 2, red])
+  const ceilings: [number, number][] = [
+    [height - BAR_PAD.bottom, lo],
+    [height - SIDE_LABEL - 1 - (zeroTick ? SIDE_LABEL / 2 : 0), 0],
+  ]
+  const k = Math.min(...floors.flatMap(([fc, fm]) => ceilings.map(([cc, cm]) => (cc - fc) / (fm - cm))))
+  const zero = Math.min(...ceilings.map(([c, m]) => c + k * m))
+  return (v) => zero - k * v
+}
+
 /** A bar label's width: 10px semibold, about 6px a character, and 2px apart. */
 const labelWidth = (text: string) => text.length * 6 + 2
 
