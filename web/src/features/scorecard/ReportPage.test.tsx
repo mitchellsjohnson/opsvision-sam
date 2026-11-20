@@ -2,16 +2,19 @@ import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { useLocation } from 'react-router'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { axe } from 'vitest-axe'
 import { App } from '../../App'
 import { API, server, state } from '../../test/server'
 import {
   newSeen,
+  publishedDocV1,
+  publishedDocV2,
   publishedMonths,
   REPORT_SUMMARY,
   reportDocument,
   reportHandlers,
+  reportViewWithUptime,
   type ReportHandlerOptions,
 } from '../../test/reportFixtures'
 import { renderApp } from '../../test/utils'
@@ -80,7 +83,7 @@ describe('ReportPage', () => {
     server.use(...viewHandlers({ onView: (u) => views.push(u) }), ...reportHandlers())
     const { unmount } = renderApp(<App />, { route: ROUTE })
     const health = await screen.findByRole('list', { name: 'Health this month' })
-    expect(within(health).getAllByRole('listitem').map((li) => li.textContent)).toEqual(['Y1 Yellow', '1 Not reported'])
+    expect(within(health).getAllByRole('listitem').map((li) => li.textContent)).toEqual(['▲Y1 Yellow', '1 Not reported'])
     expect(views).toHaveLength(1)
     expect(views[0]!.searchParams.getAll('periods')).toHaveLength(12)
     unmount()
@@ -335,6 +338,127 @@ describe('ReportPage', () => {
     await userEvent.setup().click(await screen.findByRole('button', { name: 'View live' }))
     await waitFor(() => expect(location()).toBe('/scorecards/sc-main/report?period=2026-M10&revision=live'))
     expect(await screen.findByRole('button', { name: 'View published' })).toBeTruthy()
+  })
+
+  it('shows statuses as chips with shape and letter: Health, cards and the table', async () => {
+    renderReport(ROUTE, {
+      document: () => reportDocument({ live: false, revision: 1, view: reportViewWithUptime() }),
+      months: publishedMonths,
+    })
+    const needs = (await screen.findByRole('heading', { name: 'Needs attention', level: 2 })).closest('section')!
+    const uptime = within(needs).getByRole('heading', { name: 'Service uptime', level: 3 }).closest('article')!
+    expect(uptime.textContent).toContain('◆R')
+    expect(within(uptime).getByText('Red').className).toBe('sr-only')
+    const table = screen.getByRole('table', { name: /Main scorecard/ })
+    expect(within(table).getByRole('rowheader', { name: 'On-time delivery' }).closest('tr')!.textContent).toContain('84.3%▲Y')
+  })
+
+  it('a revision published before coarse periods were saved says which metrics it does not count, and an admin can publish again', async () => {
+    const seen = newSeen()
+    renderReport(ROUTE, { document: () => publishedDocV1(), months: publishedMonths, seen })
+    const line = await screen.findByText(
+      '2 quarterly or twice-yearly metrics are not counted in this revision: it was published before their periods were saved.',
+      { exact: false },
+    )
+    expect(line.closest('section')!.querySelector('h2')!.textContent).toBe('Summary')
+    await userEvent.setup().click(within(line).getByRole('button', { name: 'Publish again to include them.' }))
+    await waitFor(() => expect(seen.publishes).toHaveLength(1))
+  })
+
+  it('a viewer reads the not-counted line without the publish link', async () => {
+    state.role = 'viewer'
+    renderReport(ROUTE, { document: () => publishedDocV1(), months: publishedMonths })
+    const line = await screen.findByText(/metrics are not counted in this revision/)
+    expect(line.textContent).toBe(
+      '2 quarterly or twice-yearly metrics are not counted in this revision: it was published before their periods were saved.',
+    )
+    expect(screen.queryByRole('button', { name: 'Publish again to include them.' })).toBeNull()
+  })
+
+  it('a revision with its standing has no not-counted line', async () => {
+    renderReport(ROUTE, { document: () => publishedDocV2(), months: publishedMonths })
+    await screen.findByRole('list', { name: 'Health this month' })
+    expect(screen.queryByText(/not counted in this revision/)).toBeNull()
+  })
+})
+
+describe('ReportPage on phones', () => {
+  const original = window.matchMedia
+  beforeEach(() => {
+    // Under 640px: no min-width query matches.
+    window.matchMedia = ((query: string) => ({
+      matches: query.includes('max-width'),
+      media: query,
+      onchange: null,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      dispatchEvent: () => false,
+    })) as unknown as typeof window.matchMedia
+  })
+  afterEach(() => {
+    window.matchMedia = original
+  })
+
+  it('replaces the 8-column table with the status list, one row per metric, with no axe violations', async () => {
+    const { container } = renderReport()
+    await screen.findByRole('heading', { name: 'Scorecard table', level: 2 })
+    expect(screen.queryByRole('columnheader', { name: 'YTD' })).toBeNull()
+    expect(screen.queryByRole('columnheader', { name: 'Metric' })).toBeNull()
+    const list = screen.getByRole('table', { name: /Main scorecard, May 2026 – Oct 2026/ })
+    const row = within(list).getByRole('rowheader', { name: 'On-time delivery' }).closest('tr')!
+    expect(row.children).toHaveLength(2)
+    expect(list.querySelectorAll('th[scope="rowgroup"]').length).toBeGreaterThan(0)
+    expect((await axe(container)).violations).toEqual([])
+  })
+
+  it('offers one Download menu with PowerPoint and PDF', async () => {
+    const created: Blob[] = []
+    vi.spyOn(URL, 'createObjectURL').mockImplementation((b) => {
+      created.push(b as Blob)
+      return 'blob:report'
+    })
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {})
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    renderReport()
+    await screen.findByRole('heading', { name: 'Needs attention', level: 2 })
+    expect(screen.queryByRole('button', { name: 'Download PPTX' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Download PDF' })).toBeNull()
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: 'Download' }))
+    const menu = await screen.findByRole('menu')
+    expect(within(menu).getAllByRole('menuitem').map((i) => i.textContent)).toEqual(['PowerPoint (.pptx)', 'PDF'])
+    await user.click(within(menu).getByRole('menuitem', { name: 'PDF' }))
+    await waitFor(() => expect(click).toHaveBeenCalled())
+    expect((click.mock.contexts[0] as HTMLAnchorElement).download).toBe('Main scorecard 2026-M10.pdf')
+    expect(created[0]!.type).toBe('application/pdf')
+  })
+
+  it('Use my layout is a switch', async () => {
+    server.use(
+      http.get(`${API}/v1/me/layouts/:sc`, () =>
+        HttpResponse.json({
+          items: [{ id: 'metric:on_time_pct', size: 'small', hidden: true }],
+          revision: 2,
+          source: 'user',
+          defaultRevision: 0,
+        }),
+      ),
+    )
+    renderReport()
+    await screen.findByRole('heading', { name: 'Delivery', level: 2 })
+    const toggle = screen.getByRole('switch', { name: 'Use my layout' })
+    expect(toggle.getAttribute('aria-checked')).toBe('false')
+    await userEvent.setup().click(toggle)
+    expect(toggle.getAttribute('aria-checked')).toBe('true')
+    await waitFor(() => expect(screen.queryByRole('heading', { name: 'Delivery', level: 2 })).toBeNull())
+  })
+
+  it('lays Health out two by two', async () => {
+    renderReport()
+    const health = await screen.findByRole('list', { name: 'Health this month' })
+    expect(health.className).toContain('grid-cols-2')
   })
 })
 

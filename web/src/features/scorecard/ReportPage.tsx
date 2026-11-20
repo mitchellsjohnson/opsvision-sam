@@ -1,5 +1,7 @@
+import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import clsx from 'clsx'
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { ChevronDown } from 'lucide-react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router'
 import {
   useDraftReportSummary,
@@ -22,12 +24,14 @@ import { ApiError } from '../../api/errors'
 import type { components } from '../../api/schema'
 import { parsePeriod, periodLabel } from '../../lib/period'
 import { usePeriodState } from '../../shell/usePeriodState'
+import { menuItemHighlight } from '../../ui/focus'
 import { Sam } from '../../ui/Sam'
-import { StatusBadge } from '../../ui/StatusBadge'
+import { CHIP_SIZE, HATCH, StatusChip, type StatusLevel } from '../../ui/status'
 import { usageText } from '../assistant/usage'
 import { inputClass, primaryButton, secondaryButton } from '../admin/formUi'
 import { defaultStatusScale } from './charts/chartTheme'
 import { downloadBlob } from './exports'
+import { ReportStatusList, SpokenChip } from './report/ReportStatusList'
 import {
   buildReportModel,
   dateLabel,
@@ -43,11 +47,100 @@ import { coarseGrains } from './logic/coarse'
 import { scorecardViewRequest, subtreeSubjects, versionInForce } from './viewRequest'
 
 type ReportSummary = components['schemas']['ReportSummary']
+type ScorecardView = components['schemas']['ScorecardView']
+type Frequency = components['schemas']['Frequency']
 
 const MIME = {
   pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
   pdf: 'application/pdf',
 } as const
+
+/** Tailwind's `sm`: below it is a phone. Without matchMedia, assume a wider screen. */
+const SM_UP = '(min-width: 640px)'
+
+function subscribePhone(onChange: () => void): () => void {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return () => {}
+  const query = window.matchMedia(SM_UP)
+  query.addEventListener('change', onChange)
+  return () => query.removeEventListener('change', onChange)
+}
+
+function phoneSnapshot(): boolean {
+  return typeof window !== 'undefined' && typeof window.matchMedia === 'function' ? !window.matchMedia(SM_UP).matches : false
+}
+
+const FREQUENCY_WORD: Partial<Record<Frequency, string>> = { quarterly: 'quarterly', biannual: 'twice-yearly', annual: 'yearly' }
+
+/**
+ * `2 quarterly or twice-yearly metrics are not counted in this revision: …`
+ * (§14.5), naming the frequencies of the metrics left out.
+ */
+function notCountedText(names: string[], rows: ScorecardView['rows']): string {
+  const present = new Set(names.map((n) => rows.find((r) => r.metricName === n)?.frequency))
+  const words = (['quarterly', 'biannual', 'annual'] as const).filter((f) => present.has(f)).map((f) => FREQUENCY_WORD[f]!)
+  const kind = words.length > 2 ? `${words.slice(0, -1).join(', ')} or ${words.at(-1)}` : words.join(' or ')
+  const what = [String(names.length), kind, names.length === 1 ? 'metric is' : 'metrics are'].filter(Boolean).join(' ')
+  const period = names.length === 1 ? 'its period was' : 'their periods were'
+  return `${what} not counted in this revision: it was published before ${period} saved.`
+}
+
+const HEALTH_ITEM = 'flex min-w-0 items-center gap-1.5 rounded-lg border border-ink/20 bg-white px-2 py-1.5 text-sm sm:gap-2 sm:px-3'
+
+const MENU_ITEM = clsx(menuItemHighlight, 'flex h-8 cursor-default items-center rounded-md px-2.5 text-sm')
+
+/** Phones: one Download menu in place of the two buttons. */
+function DownloadMenu({ disabled, onDownload }: { disabled: boolean; onDownload: (kind: 'pptx' | 'pdf') => void }) {
+  return (
+    <DropdownMenu.Root>
+      <DropdownMenu.Trigger disabled={disabled} className={clsx(secondaryButton, 'inline-flex items-center gap-1')}>
+        Download
+        <ChevronDown aria-hidden="true" className="size-4" />
+      </DropdownMenu.Trigger>
+      <DropdownMenu.Portal>
+        <DropdownMenu.Content
+          align="start"
+          sideOffset={4}
+          collisionPadding={8}
+          className="z-50 w-48 rounded-lg border border-ink/20 bg-white p-1 shadow-lg"
+        >
+          <DropdownMenu.Item className={MENU_ITEM} onSelect={() => onDownload('pptx')}>
+            PowerPoint (.pptx)
+          </DropdownMenu.Item>
+          <DropdownMenu.Item className={MENU_ITEM} onSelect={() => onDownload('pdf')}>
+            PDF
+          </DropdownMenu.Item>
+        </DropdownMenu.Content>
+      </DropdownMenu.Portal>
+    </DropdownMenu.Root>
+  )
+}
+
+/** Phones: `Use my layout` as a switch with a 32×18 track. */
+function LayoutSwitch({ checked, disabled, onChange }: { checked: boolean; disabled: boolean; onChange: (on: boolean) => void }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      disabled={disabled}
+      onClick={() => onChange(!checked)}
+      className="inline-flex min-h-8 items-center gap-2 rounded-md pr-1 text-sm font-medium disabled:opacity-60"
+    >
+      <span
+        aria-hidden="true"
+        className={clsx('relative h-[18px] w-8 shrink-0 rounded-full transition-colors', checked ? 'bg-accent' : 'bg-ink/55')}
+      >
+        <span
+          className={clsx(
+            'absolute top-0.5 left-0.5 size-3.5 rounded-full bg-white transition-transform',
+            checked && 'translate-x-3.5',
+          )}
+        />
+      </span>
+      Use my layout
+    </button>
+  )
+}
 
 interface SummaryEditorProps {
   scorecardId: string
@@ -221,7 +314,7 @@ function SummaryEditor({ scorecardId, period, summary, reload, onDirtyChange }: 
   )
 }
 
-function MetricBlock({ metric }: { metric: ReportMetric }) {
+function MetricBlock({ metric, scale }: { metric: ReportMetric; scale: StatusLevel[] }) {
   const id = useId()
   return (
     <article aria-labelledby={id} className="h-full rounded-lg border border-ink/20 bg-white p-4">
@@ -229,7 +322,7 @@ function MetricBlock({ metric }: { metric: ReportMetric }) {
         {metric.name}
       </h3>
       <p className="mt-2 flex flex-wrap items-center gap-2">
-        <StatusBadge status={metric.status} label={metric.statusLabel || undefined} />
+        {metric.status && <SpokenChip status={metric.status} scale={scale} size="lg" />}
         <span className="text-2xl font-semibold tabular-nums">{metricValue(metric) || '—'}</span>
       </p>
       <ul className="mt-2 space-y-0.5 text-sm text-ink/80">
@@ -241,7 +334,18 @@ function MetricBlock({ metric }: { metric: ReportMetric }) {
   )
 }
 
-function ReportBody({ model, scorecardName }: { model: ReportModel; scorecardName: string }) {
+interface ReportBodyProps {
+  model: ReportModel
+  scorecardName: string
+  scale: StatusLevel[]
+  /** Under 640px the table is the status list. */
+  phone: boolean
+  /** The view the report counts from, at its scope (see `ReportStatusList`). */
+  counted: ScorecardView
+  fiscalYearStartMonth: number
+}
+
+function ReportBody({ model, scorecardName, scale, phone, counted, fiscalYearStartMonth }: ReportBodyProps) {
   const first = model.columns[0]?.fullLabel ?? ''
   const last = model.columns.filter((c) => !c.ytd).at(-1)?.fullLabel ?? ''
   return (
@@ -256,7 +360,7 @@ function ReportBody({ model, scorecardName }: { model: ReportModel; scorecardNam
           <ul className="mt-3 grid gap-4 lg:grid-cols-3">
             {model.needsAttention.map((m) => (
               <li key={m.key}>
-                <MetricBlock metric={m} />
+                <MetricBlock metric={m} scale={scale} />
               </li>
             ))}
           </ul>
@@ -271,7 +375,7 @@ function ReportBody({ model, scorecardName }: { model: ReportModel; scorecardNam
           <ul className="mt-3 grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(min(100%,22rem),1fr))]">
             {c.metrics.map((m) => (
               <li key={m.key}>
-                <MetricBlock metric={m} />
+                <MetricBlock metric={m} scale={scale} />
               </li>
             ))}
           </ul>
@@ -282,62 +386,66 @@ function ReportBody({ model, scorecardName }: { model: ReportModel; scorecardNam
         <h2 id="report-table" className="text-lg font-semibold text-accent-deep">
           Scorecard table
         </h2>
-        <table className="mt-3 w-full table-fixed border-separate border-spacing-0 rounded-lg bg-white text-sm">
-          <caption className="px-3 py-2 text-left text-sm font-medium">
-            {`${scorecardName}, ${first} – ${last}, with year to date, ${model.scopeLabel}`}
-          </caption>
-          <thead>
-            <tr>
-              <th scope="col" className="w-[clamp(10rem,28%,18rem)] border-b border-ink/30 px-3 py-2 text-left font-semibold">
-                Metric
-              </th>
-              {model.columns.map((c) => (
-                <th
-                  key={c.key}
-                  scope="col"
-                  title={c.fullLabel}
-                  className={
-                    c.ytd
-                      ? 'border-b border-l-2 border-ink/30 px-2 py-2 text-right font-semibold'
-                      : 'border-b border-ink/30 px-2 py-2 text-right font-semibold'
-                  }
-                >
-                  {c.label}
+        {phone ? (
+          <ReportStatusList model={model} scale={scale} counted={counted} fiscalYearStartMonth={fiscalYearStartMonth} />
+        ) : (
+          <table className="mt-3 w-full table-fixed border-separate border-spacing-0 rounded-lg bg-white text-sm">
+            <caption className="px-3 py-2 text-left text-sm font-medium">
+              {`${scorecardName}, ${first} – ${last}, with year to date, ${model.scopeLabel}`}
+            </caption>
+            <thead>
+              <tr>
+                <th scope="col" className="w-[clamp(10rem,28%,18rem)] border-b border-ink/30 px-3 py-2 text-left font-semibold">
+                  Metric
                 </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {model.table.map((r) => (
-              <tr key={r.key}>
-                <th scope="row" className="border-b border-ink/10 px-3 py-1.5 text-left font-medium">
-                  {r.name}
-                </th>
-                {r.cells.map((cell, i) => (
-                  <td
-                    key={model.columns[i]!.key}
+                {model.columns.map((c) => (
+                  <th
+                    key={c.key}
+                    scope="col"
+                    title={c.fullLabel}
                     className={
-                      model.columns[i]!.ytd
-                        ? 'border-b border-l-2 border-ink/10 border-l-ink/30 px-2 py-1.5 text-right tabular-nums'
-                        : 'border-b border-ink/10 px-2 py-1.5 text-right tabular-nums'
+                      c.ytd
+                        ? 'border-b border-l-2 border-ink/30 px-2 py-2 text-right font-semibold'
+                        : 'border-b border-ink/30 px-2 py-2 text-right font-semibold'
                     }
                   >
-                    <span className="inline-flex items-center justify-end gap-1 whitespace-nowrap">
-                      {cell.naReason ? (
-                        <span role="img" aria-label={`n/a: ${cell.naReason}`} className="rounded bg-status-na-bg px-1.5 text-xs text-ink">
-                          n/a
-                        </span>
-                      ) : (
-                        <span>{cell.display || '—'}</span>
-                      )}
-                      {cell.status && <StatusBadge status={cell.status} className="min-w-6 px-1 text-xs" />}
-                    </span>
-                  </td>
+                    {c.label}
+                  </th>
                 ))}
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {model.table.map((r) => (
+                <tr key={r.key}>
+                  <th scope="row" className="border-b border-ink/10 px-3 py-1.5 text-left font-medium">
+                    {r.name}
+                  </th>
+                  {r.cells.map((cell, i) => (
+                    <td
+                      key={model.columns[i]!.key}
+                      className={
+                        model.columns[i]!.ytd
+                          ? 'border-b border-l-2 border-ink/10 border-l-ink/30 px-2 py-1.5 text-right tabular-nums'
+                          : 'border-b border-ink/10 px-2 py-1.5 text-right tabular-nums'
+                      }
+                    >
+                      <span className="inline-flex items-center justify-end gap-1 whitespace-nowrap">
+                        {cell.naReason ? (
+                          <span role="img" aria-label={`n/a: ${cell.naReason}`} className="rounded bg-status-na-bg px-1.5 text-xs text-ink">
+                            n/a
+                          </span>
+                        ) : (
+                          <span>{cell.display || '—'}</span>
+                        )}
+                        {cell.status && <SpokenChip status={cell.status} scale={scale} />}
+                      </span>
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </section>
 
       <section aria-labelledby="report-notes" className="pt-8">
@@ -385,6 +493,7 @@ export function ReportPage() {
   const [exporting, setExporting] = useState<'' | 'pptx' | 'pdf'>('')
   const [exportError, setExportError] = useState('')
   const [summaryDirty, setSummaryDirty] = useState(false)
+  const phone = useSyncExternalStore(subscribePhone, phoneSnapshot, () => false)
   const warningId = useId()
   const unsavedId = useId()
   const refetchSummary = summary.refetch
@@ -478,6 +587,14 @@ export function ReportPage() {
       versions.data?.versions,
     ],
   )
+  // What the model counted from, at the scope: the status list draws a coarse metric's periods from it.
+  const counted = useMemo(() => {
+    if (!doc.data) return null
+    const source = doc.data.standing ?? (live ? overview.data : undefined) ?? doc.data.view
+    if (companyScope) return source
+    const inScope = new Set(scopeSubjects)
+    return { ...source, rows: source.rows.filter((r) => inScope.has(r.subjectId)) }
+  }, [doc.data, live, overview.data, companyScope, scopeSubjects])
 
   const search = (patch: (next: URLSearchParams) => void) => {
     const next = new URLSearchParams(params)
@@ -513,6 +630,19 @@ export function ReportPage() {
   }
 
   const controlsDisabled = !isMonth || !model
+  const publishDisabled = !isMonth || !model || publish.isPending || summaryDirty
+  const runPublish = () => publish.mutate(undefined, { onSuccess: () => setRevision(false) })
+  const publishButton = (
+    <button
+      type="button"
+      className={primaryButton}
+      disabled={publishDisabled}
+      aria-describedby={isMonth ? [warningId, summaryDirty ? unsavedId : ''].join(' ').trim() : undefined}
+      onClick={runPublish}
+    >
+      Publish
+    </button>
+  )
   const subtitle = [scorecardName, parsed ? periodLabel(parsed, fy) : period.period, companyScope ? `All of ${companyName}` : scopeName]
 
   return (
@@ -522,6 +652,8 @@ export function ReportPage() {
       {isMonth && statusLine && <p className="mt-1 text-sm font-medium">{statusLine}</p>}
 
       <div role="toolbar" aria-label="Report controls" className="mt-3 flex flex-wrap items-center gap-2">
+        {phone && isAdmin && publishButton}
+        {phone && <DownloadMenu disabled={controlsDisabled || exporting !== ''} onDownload={(kind) => void download(kind)} />}
         {doc.data && !doc.data.live && (
           <button type="button" className={secondaryButton} onClick={() => setRevision(true)}>
             View live
@@ -532,33 +664,33 @@ export function ReportPage() {
             View published
           </button>
         )}
-        <label className="flex items-center gap-2 px-1 text-sm font-medium">
-          <input
-            type="checkbox"
-            className="size-4 accent-accent"
-            disabled={!isMonth}
-            checked={useMyLayout}
-            onChange={(e) => setUseMyLayout(e.target.checked)}
-          />
-          Use my layout
-        </label>
-        <button type="button" className={secondaryButton} disabled={controlsDisabled || exporting !== ''} onClick={() => void download('pptx')}>
-          Download PPTX
-        </button>
-        <button type="button" className={secondaryButton} disabled={controlsDisabled || exporting !== ''} onClick={() => void download('pdf')}>
-          Download PDF
-        </button>
+        {phone ? (
+          <div className="basis-full">
+            <LayoutSwitch checked={useMyLayout} disabled={!isMonth} onChange={setUseMyLayout} />
+          </div>
+        ) : (
+          <>
+            <label className="flex items-center gap-2 px-1 text-sm font-medium">
+              <input
+                type="checkbox"
+                className="size-4 accent-accent"
+                disabled={!isMonth}
+                checked={useMyLayout}
+                onChange={(e) => setUseMyLayout(e.target.checked)}
+              />
+              Use my layout
+            </label>
+            <button type="button" className={secondaryButton} disabled={controlsDisabled || exporting !== ''} onClick={() => void download('pptx')}>
+              Download PPTX
+            </button>
+            <button type="button" className={secondaryButton} disabled={controlsDisabled || exporting !== ''} onClick={() => void download('pdf')}>
+              Download PDF
+            </button>
+          </>
+        )}
         {isAdmin && (
           <>
-            <button
-              type="button"
-              className={primaryButton}
-              disabled={!isMonth || !model || publish.isPending || summaryDirty}
-              aria-describedby={isMonth ? [warningId, summaryDirty ? unsavedId : ''].join(' ').trim() : undefined}
-              onClick={() => publish.mutate(undefined, { onSuccess: () => setRevision(false) })}
-            >
-              Publish
-            </button>
+            {!phone && publishButton}
             {isMonth && (
               <span id={warningId} className="rounded-md border border-amber bg-cream px-2 py-1 text-sm">
                 This month is not locked.
@@ -606,7 +738,7 @@ export function ReportPage() {
           <Link to={{ pathname: reportPath, search: liveSearch }} className="font-medium text-accent-deep underline">
             View the live report
           </Link>
-          <ul className="mt-2 list-disc pl-5">
+          <ul className="mt-2 list-disc pl-5 break-words">
             {doc.data.changes.map((c) => {
               const row = doc.data.view.rows.find((r) => r.metricKey === c.metricKey && r.subjectId === c.subjectId)
               const p = parsePeriod(c.period)
@@ -637,17 +769,42 @@ export function ReportPage() {
             <h2 id="report-summary" className="text-lg font-semibold text-accent-deep">
               Summary
             </h2>
-            <ul aria-label="Health this month" className="mt-2 flex flex-wrap gap-2">
+            <ul aria-label="Health this month" className="mt-2 grid grid-cols-2 gap-2 sm:flex sm:flex-wrap">
               {model.health.map((h) => (
-                <li key={h.key} className="flex items-center gap-2 rounded-md border border-ink/20 bg-white px-3 py-1.5 text-sm">
-                  <StatusBadge status={h.key} label={h.label} />
-                  {h.count} {h.label}
+                <li key={h.key} className={HEALTH_ITEM}>
+                  <span aria-hidden="true" className="inline-flex">
+                    <StatusChip status={h.key} scale={scale} size="lg" />
+                  </span>
+                  <span className="text-base font-semibold tabular-nums">{h.count}</span>{' '}
+                  <span className="min-w-0">{h.label}</span>
                 </li>
               ))}
               {model.notReported > 0 && (
-                <li className="rounded-md border border-ink/20 bg-white px-3 py-1.5 text-sm">{model.notReported} Not reported</li>
+                <li className={HEALTH_ITEM}>
+                  <span aria-hidden="true" className={clsx(CHIP_SIZE.lg, 'border-ink/15 bg-white')} style={HATCH} />
+                  <span className="text-base font-semibold tabular-nums">{model.notReported}</span>{' '}
+                  <span className="min-w-0">Not reported</span>
+                </li>
               )}
             </ul>
+            {model.notCounted.names.length > 0 && (
+              <p className="mt-2 text-xs text-ink/70">
+                {notCountedText(model.notCounted.names, doc.data?.view.rows ?? [])}
+                {isAdmin && (
+                  <>
+                    {' '}
+                    <button
+                      type="button"
+                      className="font-medium text-accent-deep underline disabled:opacity-60"
+                      disabled={publishDisabled}
+                      onClick={runPublish}
+                    >
+                      Publish again to include them.
+                    </button>
+                  </>
+                )}
+              </p>
+            )}
             {model.summaryFor !== null ? (
               <p className="mt-3 text-sm">
                 <Link to={{ pathname: reportPath, search: search((n) => n.delete('scope')) }} className="font-medium text-accent-deep underline">
@@ -688,7 +845,14 @@ export function ReportPage() {
             )}
           </section>
 
-          <ReportBody model={model} scorecardName={scorecardName} />
+          <ReportBody
+            model={model}
+            scorecardName={scorecardName}
+            scale={scale}
+            phone={phone}
+            counted={counted ?? doc.data!.view}
+            fiscalYearStartMonth={fy}
+          />
         </>
       )}
 
