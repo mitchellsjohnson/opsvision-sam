@@ -302,7 +302,11 @@ describe('queries', () => {
       server.use(
         http.post(`${API}/v1/scorecards/sc/reports/2026-M10/publish`, () =>
           HttpResponse.json(
-            { code: 'summaries_missing', message: '3 exec summaries are missing for Oct 2026.', missing: [deploymentMissing, epicsMissing, securityMissing], stale: 1 },
+            {
+              error: { code: 'summaries_missing', message: '3 exec summaries are missing for Oct 2026.' },
+              missing: [deploymentMissing, epicsMissing, securityMissing],
+              stale: 1,
+            },
             { status: 409 },
           ),
         ),
@@ -318,6 +322,20 @@ describe('queries', () => {
       expect(blocked.message).toBe('3 exec summaries are missing for Oct 2026.')
       expect(blocked.missing.map((m) => m.metricKey)).toEqual(['deployment_uptime', 'epics_on_time', 'security_training'])
       expect(blocked.stale).toBe(1)
+    })
+
+    it('usePublishReport leaves a 409 whose envelope code is not summaries_missing as it is', async () => {
+      const { wrapper } = setup()
+      server.use(
+        http.post(`${API}/v1/scorecards/sc/reports/2026-M10/publish`, () =>
+          HttpResponse.json({ error: { code: 'conflict', message: 'Someone else published this month.' }, missing: [] }, { status: 409 }),
+        ),
+      )
+      const { result } = renderHook(() => usePublishReport('sc', '2026-M10'), { wrapper })
+      result.current.mutate()
+      await waitFor(() => expect(result.current.isError).toBe(true))
+      expect(result.current.error).not.toBeInstanceOf(PublishBlockedError)
+      expect(result.current.error?.message).toBe('Someone else published this month.')
     })
 
     it('usePublishReport leaves other 409s as they are', async () => {

@@ -195,3 +195,25 @@ func TestNouns(t *testing.T) {
 		}
 	}
 }
+
+// TestInferredMoneyPlan: a money plan whose chart kind is left to the engine
+// (two-sided bands around 100%) is judged as a money plan by the rules and
+// the gap, whatever its direction.
+func TestInferredMoneyPlan(t *testing.T) {
+	plan := domain.Metric{Key: "spend", Formula: "actual_k / planned_k * 100", Format: domain.FormatPercent0, Frequency: domain.FrequencyMonthly,
+		Rule: bands(domain.Band{Status: "R", Op: ">", Value: 110}, domain.Band{Status: "Y", Op: ">", Value: 105}, domain.Band{Status: "Y", Op: "<", Value: 90}, domain.Band{Status: "G"})}
+	under := rca.SummaryInput{Metric: plan, Company: company("97%", "G"), CompanyRule: plan.Rule, Scale: scale}
+	if got := rca.SummaryRequired(under); got.Required {
+		t.Errorf("97%% of plan = %+v, want optional", got)
+	}
+	over := rca.SummaryInput{Metric: plan, Company: company("104%", "G"), CompanyRule: plan.Rule, Scale: scale}
+	if got := rca.SummaryRequired(over); got != (rca.Requirement{Required: true, Reason: "Above 100% (104%)"}) {
+		t.Errorf("104%% of plan = %+v", got)
+	}
+	if got := rca.CompanyHeadline(over); got != "4% over plan" {
+		t.Errorf("headline = %q", got)
+	}
+	if ideal, ok := rca.Ideal(plan); !ok || ideal != 100 {
+		t.Errorf("Ideal = %v %v", ideal, ok)
+	}
+}

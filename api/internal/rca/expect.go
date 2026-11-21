@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"opsvision/internal/domain"
+	"opsvision/internal/engine"
 )
 
 // Expectation says whether the RCAs view chases a cell.
@@ -126,7 +127,7 @@ func IsReportingSubject(m domain.Metric, levels []domain.Level, subjectDepth int
 // of plan); none for the rest, whose gap is measured from the best band's
 // edge, the best scale step, or the change that set the status.
 func Ideal(m domain.Metric) (float64, bool) {
-	if m.ChartKind == "money_plan" || DowntimeMetric(m) {
+	if engine.ChartKind(m) == "money_plan" || DowntimeMetric(m) {
 		return 100, true
 	}
 	return 0, false

@@ -544,14 +544,14 @@ MetricSummaryState:       # Cell.summary, on company-root cells of live views on
     state: { type: string, enum: [missing, written, stale, optional] }
     excerpt: { type: string, maxLength: 64 }
     author: { type: string }
-PublishBlocked:           # the 409 body of publishReport
-  type: object
-  required: [code, message, missing]
-  properties:
-    code: { type: string, enum: [summaries_missing] }
-    message: { type: string, example: '3 exec summaries are missing for Oct 2026.' }
-    missing: { type: array, items: { $ref: '#/components/schemas/MetricSummary' } }
-    stale: { type: integer, minimum: 0 }
+PublishBlocked:           # the 409 body of publishReport: the error envelope (code summaries_missing) plus the list
+  allOf:
+    - $ref: '#/components/schemas/Error'   # error: { code: summaries_missing, message: '3 exec summaries are missing for Oct 2026.' }
+    - type: object
+      required: [missing]
+      properties:
+        missing: { type: array, items: { $ref: '#/components/schemas/MetricSummary' } }
+        stale: { type: integer, minimum: 0 }
 MetricSummaryDraft:       # ReportSummaryDraft plus warnings
   allOf:
     - $ref: '#/components/schemas/ReportSummaryDraft'
@@ -619,7 +619,8 @@ The explainer loads once per request: the engine input and the computed view for
 
 ### 9.7 The publish gate
 
-- `PublishReport` for month M first runs `explainer.required(M)` (plus coarse periods closed by M, §4.1). If any required metric-month has no summary, it returns **409** with `PublishBlocked`: `code: summaries_missing`, `message: "3 exec summaries are missing for Oct 2026."`, `missing` (each with metric, standing headline and requirement reason), and `stale` (the count of stale ones, which do not block). Nothing is stored.
+- `PublishReport` for month M first runs `explainer.required(M)` (plus coarse periods closed by M, §4.1). If any required metric-month has no summary, it returns **409** with `PublishBlocked`: the standard error envelope `error: { code: summaries_missing, message: "3 exec summaries are missing for Oct 2026." }`, plus `missing` (each with metric, standing headline and requirement reason) and `stale` (the count of stale ones, which do not block), counted with full staleness (§8.4). Nothing is stored. A publish that races another stays a plain 409 `conflict` with no list.
+- An organization with no single top-level unit in M has no company standing, so the gate lists nothing and does not block (decided 2026-11-21: blocking would make such a month unpublishable, since no summary can be written without a company).
 - The check runs inside the publish request; a summary deleted between the Report loading and Publish is caught.
 - Republishing (revision 2+) is gated the same way.
 - MCP's `publish_report` gets the same 409 (its tool result carries the list).

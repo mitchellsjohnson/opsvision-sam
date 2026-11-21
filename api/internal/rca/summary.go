@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"opsvision/internal/domain"
+	"opsvision/internal/engine"
 )
 
 // Requirement says whether a metric-month needs an exec summary and, when it
@@ -142,9 +143,9 @@ func imperfect(m domain.Metric, c CellFacts, rule domain.StatusRule, scale []dom
 	units, ok := GapUnits(100, c.Display, Decimals(m.Format))
 	switch {
 	case !ok:
-	case m.ChartKind == "money_plan" && units < 0:
+	case engine.ChartKind(m) == "money_plan" && units < 0:
 		return "Above 100% (" + c.Display + ")", true
-	case m.ChartKind != "money_plan" && DowntimeMetric(m) && units > 0:
+	case engine.ChartKind(m) != "money_plan" && DowntimeMetric(m) && units > 0:
 		return "Below 100% (" + c.Display + ")", true
 	}
 	return "", false
@@ -168,7 +169,7 @@ func subjectGaps(in SummaryInput) (k, n int, worst *SubjectFacts) {
 		switch {
 		case !ok:
 			return 0
-		case in.Metric.Direction == domain.DirectionLowerBetter || in.Metric.ChartKind == "money_plan":
+		case in.Metric.Direction == domain.DirectionLowerBetter || engine.ChartKind(in.Metric) == "money_plan":
 			return u
 		}
 		return -u
@@ -196,7 +197,7 @@ func subjectGaps(in SummaryInput) (k, n int, worst *SubjectFacts) {
 // or not at the best status.
 func shortOf(in SummaryInput) string {
 	switch {
-	case in.Metric.ChartKind == "money_plan":
+	case engine.ChartKind(in.Metric) == "money_plan":
 		return "over plan"
 	case DowntimeMetric(in.Metric):
 		return "below 100%"

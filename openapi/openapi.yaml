@@ -951,7 +951,7 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
-          description: Required exec summaries are missing (`summaries_missing`)
+          description: Required exec summaries are missing (`summaries_missing`, with the list), or another publish of the month raced this one (`conflict`)
           content:
             application/json:
               schema: { $ref: '#/components/schemas/PublishBlocked' }
@@ -2211,7 +2211,7 @@ components:
           properties:
             code:
               type: string
-              enum: [not_found, forbidden, conflict, invalid, unauthorized, not_implemented, too_large, already_applied, preview_out_of_date, assistant_unavailable]
+              enum: [not_found, forbidden, conflict, invalid, unauthorized, not_implemented, too_large, already_applied, preview_out_of_date, assistant_unavailable, summaries_missing]
             message: { type: string }
             details:
               type: array
@@ -4210,17 +4210,19 @@ components:
         override: { type: object, nullable: true, properties: { reason: { type: string }, by: { type: string } } }
         summary: { allOf: [{ $ref: '#/components/schemas/MetricSummary' }], nullable: true, description: "The metric's exec summary for the period (excerpt and first 3 links), shown as context on every cell's card; null for readers who cannot read the company cell." }
     PublishBlocked:
-      type: object
-      description: The 409 body of publishReport when required exec summaries are missing.
-      required: [code, message, missing]
-      properties:
-        code:
-          type: string
-          enum: [summaries_missing]
-          x-enum-varnames: [PublishBlockedCodeSummariesMissing]
-        message: { type: string, example: '3 exec summaries are missing for Oct 2026.' }
-        missing: { type: array, items: { $ref: '#/components/schemas/MetricSummary' } }
-        stale: { type: integer, minimum: 0, description: 'Stale summaries, which do not block.' }
+      description: |
+        The 409 body of publishReport: the error envelope with code
+        `summaries_missing` and a message such as `3 exec summaries are
+        missing for Oct 2026.`, plus the missing summaries and the count of
+        stale ones, which do not block. A publish that races another is
+        also 409, with code `conflict` and no list.
+      allOf:
+        - $ref: '#/components/schemas/Error'
+        - type: object
+          required: [missing]
+          properties:
+            missing: { type: array, items: { $ref: '#/components/schemas/MetricSummary' } }
+            stale: { type: integer, minimum: 0, description: 'Stale summaries, which do not block.' }
     MetricSummaryDraft:
       description: A summary draft's shape, plus the keys the draft names that were not in the data it was given.
       allOf:

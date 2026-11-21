@@ -1387,7 +1387,7 @@ export interface components {
         Error: {
             error: {
                 /** @enum {string} */
-                code: "not_found" | "forbidden" | "conflict" | "invalid" | "unauthorized" | "not_implemented" | "too_large" | "already_applied" | "preview_out_of_date" | "assistant_unavailable";
+                code: "not_found" | "forbidden" | "conflict" | "invalid" | "unauthorized" | "not_implemented" | "too_large" | "already_applied" | "preview_out_of_date" | "assistant_unavailable" | "summaries_missing";
                 message: string;
                 details?: components["schemas"]["ErrorDetail"][];
             };
@@ -2876,12 +2876,14 @@ export interface components {
             /** @description The metric's exec summary for the period (excerpt and first 3 links), shown as context on every cell's card; null for readers who cannot read the company cell. */
             summary?: components["schemas"]["MetricSummary"] | null;
         };
-        /** @description The 409 body of publishReport when required exec summaries are missing. */
-        PublishBlocked: {
-            /** @enum {string} */
-            code: "summaries_missing";
-            /** @example 3 exec summaries are missing for Oct 2026. */
-            message: string;
+        /**
+         * @description The 409 body of publishReport: the error envelope with code
+         *     `summaries_missing` and a message such as `3 exec summaries are
+         *     missing for Oct 2026.`, plus the missing summaries and the count of
+         *     stale ones, which do not block. A publish that races another is
+         *     also 409, with code `conflict` and no list.
+         */
+        PublishBlocked: components["schemas"]["Error"] & {
             missing: components["schemas"]["MetricSummary"][];
             /** @description Stale summaries, which do not block. */
             stale?: number;
@@ -4197,7 +4199,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
-            /** @description Required exec summaries are missing (`summaries_missing`) */
+            /** @description Required exec summaries are missing (`summaries_missing`, with the list), or another publish of the month raced this one (`conflict`) */
             409: {
                 headers: {
                     [name: string]: unknown;

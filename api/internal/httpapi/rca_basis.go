@@ -237,6 +237,9 @@ func (f summaryFacts) basis(incidents []string) domain.RCABasis {
 // col holds the metric's period per). coarse and closes are as in
 // rca.SummaryInput.
 func (c *summaryContext) facts(v domain.MethodologyVersion, m domain.Metric, per period.Period, rows []engine.Row, col int, coarse, closes bool) summaryFacts {
+	// The rca rules read ChartKind, which a metric may leave to the engine
+	// to infer (money plans from two-sided bands).
+	m.ChartKind = engine.ChartKind(m)
 	in := rca.SummaryInput{Metric: m, CompanyRule: m.Rule, Scale: c.scale, Coarse: coarse, ClosesInMonth: closes, Noun: c.noun(m),
 		ComparedLabel: comparedLabel(c.in.Cal, m.Rule, per)}
 	var company *engine.Cell

@@ -905,29 +905,24 @@ export function usePutReportSummary(sc: string, period: string) {
 
 /**
  * A publish the server refused because required exec summaries are missing
- * (409 `summaries_missing`; the `PublishBlocked` body is top level, not in
- * the error envelope). `missing` lists them; `stale` counts the stale ones,
- * which do not block.
+ * (409 with the error envelope's code `summaries_missing`; a publish that
+ * raced another is a plain 409 `conflict`). `missing` lists them; `stale`
+ * counts the stale ones, which do not block.
  */
 export class PublishBlockedError extends ApiError {
   readonly missing: MetricSummary[]
   readonly stale: number
 
   constructor(body: PublishBlocked) {
-    super({ status: 409, code: body.code, message: body.message, body })
+    super({ status: 409, code: body.error.code, message: body.error.message, body })
     this.name = 'PublishBlockedError'
     this.missing = body.missing
     this.stale = body.stale ?? 0
   }
 }
 
-function isPublishBlocked(body: unknown): body is PublishBlocked {
-  return (
-    typeof body === 'object' &&
-    body !== null &&
-    (body as { code?: unknown }).code === 'summaries_missing' &&
-    Array.isArray((body as { missing?: unknown }).missing)
-  )
+function isPublishBlocked(e: ApiError): e is ApiError & { body: PublishBlocked } {
+  return e.status === 409 && e.code === 'summaries_missing' && Array.isArray((e.body as { missing?: unknown } | undefined)?.missing)
 }
 
 /**
@@ -943,7 +938,7 @@ export function usePublishReport(sc: string, period: string) {
       try {
         return await unwrap(api.POST('/scorecards/{sc}/reports/{period}/publish', { params: { path: { sc, period } } }))
       } catch (e) {
-        if (e instanceof ApiError && e.status === 409 && isPublishBlocked(e.body)) throw new PublishBlockedError(e.body)
+        if (e instanceof ApiError && isPublishBlocked(e)) throw new PublishBlockedError(e.body)
         throw e
       }
     },

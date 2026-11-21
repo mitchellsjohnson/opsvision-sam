@@ -21,13 +21,18 @@ const (
 // GateItem is one metric of a month in the publish gate: the period its
 // summary belongs to (the month, or the quarter, half or year of a coarse
 // metric), whether that summary is required to publish the month, its state
-// (missing, written, stale or optional) and the company standing.
+// and the company standing.
 type GateItem struct {
 	MetricKey, MetricName string
 	Period                period.Period
 	Requirement           rca.Requirement
-	State                 string
-	Standing              MetricSummaryStanding
+	// State is missing, written, stale or optional. Missing is exact and is
+	// what blocks publishing. Stale is partial: it compares the standing,
+	// the reported downtime and the subjects short of perfect, never
+	// incidents, so the publish check must recompute full staleness (§8.4)
+	// for written items before counting PublishBlocked.stale.
+	State    string
+	Standing MetricSummaryStanding
 }
 
 // summaryGate judges every metric of the methodology in force for month at
@@ -39,7 +44,8 @@ type GateItem struct {
 // incidents. A coarse metric's summary is required only in the month that
 // closes its period. The requirement is a tenant fact, so no reader's scope
 // applies. A month with no methodology in force, or an organization with no
-// single top-level unit, has no items.
+// single top-level unit (no summary can be written there), has no items and
+// so never blocks (spec §9.7).
 func (s *Server) summaryGate(ctx context.Context, tenant domain.Tenant, sc string, month period.Period) ([]GateItem, error) {
 	if month.Grain != period.Month {
 		return nil, badRequest("request validation failed", detail{Path: "period", Message: "must be a month"})

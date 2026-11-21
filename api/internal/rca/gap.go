@@ -87,6 +87,7 @@ type GapInput struct {
 // with an empty headline.
 func GapOf(in GapInput) Gap {
 	m := in.Metric
+	m.ChartKind = engine.ChartKind(m)
 	d := Decimals(m.Format)
 	label := func(s string) string {
 		if in.StatusLabel != nil {

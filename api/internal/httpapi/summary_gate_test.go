@@ -9,6 +9,7 @@ import (
 	"opsvision/internal/demo"
 	"opsvision/internal/domain"
 	"opsvision/internal/engine"
+	"opsvision/internal/orgtree"
 	"opsvision/internal/period"
 	"opsvision/internal/rca"
 	"opsvision/internal/store"
@@ -185,5 +186,41 @@ func TestSummaryGateIsCheap(t *testing.T) {
 	}
 	if took > 2*time.Second {
 		t.Errorf("the gate took %v, want under 2s", took)
+	}
+}
+
+// TestFactsInferMoneyPlan: a money plan whose chart kind is left to the
+// engine is judged as a money plan, not as a percent short of 100%: Green
+// under plan is perfect, Green over plan needs a summary.
+func TestFactsInferMoneyPlan(t *testing.T) {
+	tree, err := orgtree.New([]domain.OrgUnit{{ID: "co", Name: "Company", LevelID: "company"}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &summaryContext{
+		in:     &engine.Input{Cal: period.Calendar{FiscalYearStartMonth: time.January}, Tree: tree},
+		root:   "co",
+		levels: []domain.Level{{ID: "company", Name: "Company"}}, depth: map[string]int{"company": 0},
+		levelName: map[string]string{"company": "Company"}, kindName: map[string]string{},
+		scale: domain.DefaultStatusScale(), links: incidentLinks{},
+	}
+	m := domain.Metric{Key: "spend", Name: "Spend vs plan", Formula: "actual_k / planned_k * 100", Format: domain.FormatPercent0,
+		Frequency: domain.FrequencyMonthly, ReportedAt: []domain.Subject{{Kind: domain.SubjectLevel, ID: "company"}},
+		Rule: domain.StatusRule{Type: domain.RuleBands, Bands: []domain.Band{
+			{Status: "R", Op: ">", Value: 110}, {Status: "Y", Op: ">", Value: 105}, {Status: "Y", Op: "<", Value: 90}, {Status: "G"},
+		}}}
+	if m.ChartKind != "" || engine.ChartKind(m) != "money_plan" {
+		t.Fatalf("the metric should be an inferred money plan, got %q", engine.ChartKind(m))
+	}
+	judge := func(display string, value float64) summaryFacts {
+		rows := []engine.Row{{MetricKey: "spend", SubjectID: "co", SubjectName: "Company", SubjectKind: engine.SubjectUnit,
+			Cells: []engine.Cell{{Display: display, Status: "G", Value: &value}}}}
+		return c.facts(domain.MethodologyVersion{}, m, oct2026, rows, 0, false, true)
+	}
+	if f := judge("97%", 97); f.req.Required || f.standing.Headline != "" {
+		t.Errorf("97%% of plan = %+v, %q; want optional", f.req, f.standing.Headline)
+	}
+	if f := judge("104%", 104); f.req != (rca.Requirement{Required: true, Reason: "Above 100% (104%)"}) || f.standing.Headline != "4% over plan" {
+		t.Errorf("104%% of plan = %+v, %q; want required, over plan", f.req, f.standing.Headline)
 	}
 }
