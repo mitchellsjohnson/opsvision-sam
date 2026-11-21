@@ -72,73 +72,89 @@ func (s *Server) DraftReportSummary(ctx context.Context, req DraftReportSummaryR
 	if !ok {
 		return nil, badRequest("request validation failed", detail{Path: "period", Message: "invalid"})
 	}
-	if s.queue == nil || s.sealer == nil || s.provider == nil {
-		return nil, assistantUnavailable(msgNotSetUp)
-	}
-	settings, err := s.store.GetAssistantSettings(ctx, p.Tenant.ID)
+	d := domain.AssistantDraft{UserID: p.UserID, Kind: domain.DraftKindSummary, ScorecardID: sc.ID, Period: mo.String()}
+	d, err = s.startDraft(ctx, p, d, msgStillDrafting)
 	if err != nil {
 		return nil, err
 	}
+	return DraftReportSummary202JSONResponse(apiReportSummaryDraft(d, d.CreatedAt)), nil
+}
+
+// startDraft stores d as p's new pending draft and enqueues the job that
+// writes it. The assistant must be set up and on, and p's key saved. Every
+// check is by d's kind: a pending draft of the same kind, scorecard, metric
+// and period is a conflict (still), and when p keeps MaxDraftsPerUser drafts
+// of the kind the oldest one no longer being written is deleted. Expired
+// drafts of any kind are deleted.
+func (s *Server) startDraft(ctx context.Context, p auth.Principal, d domain.AssistantDraft, still string) (domain.AssistantDraft, error) {
+	if s.queue == nil || s.sealer == nil || s.provider == nil {
+		return d, assistantUnavailable(msgNotSetUp)
+	}
+	settings, err := s.store.GetAssistantSettings(ctx, p.Tenant.ID)
+	if err != nil {
+		return d, err
+	}
 	if !settings.Enabled {
-		return nil, conflict(assistant.MsgDisabled)
+		return d, conflict(assistant.MsgDisabled)
 	}
 	if _, err := s.store.GetCredential(ctx, p.Tenant.ID, p.UserID); errors.Is(err, store.ErrNotFound) {
-		return nil, conflict(assistant.MsgDraftNoKey)
+		return d, conflict(assistant.MsgDraftNoKey)
 	} else if err != nil {
-		return nil, err
+		return d, err
 	}
 
 	now := s.now()
 	drafts, err := s.store.ListDrafts(ctx, p.Tenant.ID, p.UserID)
 	if err != nil {
-		return nil, err
+		return d, err
 	}
 	var kept, gone []domain.AssistantDraft
-	for _, d := range drafts {
-		if draftExpired(d, now) {
-			gone = append(gone, d)
+	for _, x := range drafts {
+		if draftExpired(x, now) {
+			gone = append(gone, x)
 			continue
 		}
-		if d.Status == domain.AssistantStatusPending && !draftStale(d, now) && d.ScorecardID == sc.ID && d.Period == mo.String() {
-			return nil, conflict(msgStillDrafting)
+		if x.DraftKind() != d.DraftKind() {
+			continue
 		}
-		kept = append(kept, d)
+		if x.Status == domain.AssistantStatusPending && !draftStale(x, now) &&
+			x.ScorecardID == d.ScorecardID && x.MetricKey == d.MetricKey && x.Period == d.Period {
+			return d, conflict(still)
+		}
+		kept = append(kept, x)
 	}
 	// Make room by deleting the oldest drafts that are no longer being
 	// written (kept is newest first); a draft still being written stays.
 	excess := len(kept) - (assistant.MaxDraftsPerUser - 1)
 	for i := len(kept) - 1; i >= 0 && excess > 0; i-- {
-		if d := kept[i]; d.Status != domain.AssistantStatusPending || draftStale(d, now) {
-			gone = append(gone, d)
+		if x := kept[i]; x.Status != domain.AssistantStatusPending || draftStale(x, now) {
+			gone = append(gone, x)
 			excess--
 		}
 	}
 	if excess > 0 {
-		return nil, conflict(fmt.Sprintf("SAM is still writing %d drafts. Wait for one to finish before asking again.", assistant.MaxDraftsPerUser))
+		return d, conflict(fmt.Sprintf("SAM is still writing %d drafts. Wait for one to finish before asking again.", assistant.MaxDraftsPerUser))
 	}
-	for _, d := range gone {
-		if err := s.store.DeleteDraft(ctx, p.Tenant.ID, p.UserID, d.ID); err != nil && !errors.Is(err, store.ErrNotFound) {
-			return nil, err
+	for _, x := range gone {
+		if err := s.store.DeleteDraft(ctx, p.Tenant.ID, p.UserID, x.ID); err != nil && !errors.Is(err, store.ErrNotFound) {
+			return d, err
 		}
 	}
 
-	d := domain.AssistantDraft{
-		ID: s.newID(), UserID: p.UserID, ScorecardID: sc.ID, Period: mo.String(),
-		Status: domain.AssistantStatusPending, CreatedAt: now, UpdatedAt: now,
-	}
+	d.ID, d.Status, d.CreatedAt, d.UpdatedAt = s.newID(), domain.AssistantStatusPending, now, now
 	if err := s.store.PutDraft(ctx, p.Tenant.ID, d, 0); err != nil {
-		return nil, err
+		return d, err
 	}
 	ref := assistant.TurnRef{Kind: assistant.KindDraft, TenantID: p.Tenant.ID, UserID: p.UserID, DraftID: d.ID}
 	if err := s.queue.Enqueue(ctx, ref); err != nil {
-		slog.Error("httpapi: could not enqueue a summary draft", "tenant", p.Tenant.ID, "draft", d.ID, "err", err)
+		slog.Error("httpapi: could not enqueue a draft", "tenant", p.Tenant.ID, "draft", d.ID, "kind", d.DraftKind(), "err", err)
 		d.Status, d.Error = domain.AssistantStatusError, msgCouldNotStart
 		if err := s.store.PutDraft(ctx, p.Tenant.ID, d, 1); err != nil {
-			slog.Error("httpapi: could not mark an unstarted summary draft failed", "draft", d.ID, "err", err)
+			slog.Error("httpapi: could not mark an unstarted draft failed", "draft", d.ID, "err", err)
 		}
-		return nil, assistantUnavailable(msgCouldNotStart)
+		return d, assistantUnavailable(msgCouldNotStart)
 	}
-	return DraftReportSummary202JSONResponse(apiReportSummaryDraft(d, now)), nil
+	return d, nil
 }
 
 // GetReportSummaryDraft returns one of the calling admin's drafts of the
@@ -162,7 +178,8 @@ func (s *Server) GetReportSummaryDraft(ctx context.Context, req GetReportSummary
 	}
 	now := s.now()
 	d, err := s.store.GetDraft(ctx, p.Tenant.ID, p.UserID, req.Id)
-	if errors.Is(err, store.ErrNotFound) || err == nil && (d.ScorecardID != sc.ID || d.Period != mo.String() || draftExpired(d, now)) {
+	if errors.Is(err, store.ErrNotFound) || err == nil && (d.DraftKind() != domain.DraftKindSummary ||
+		d.ScorecardID != sc.ID || d.Period != mo.String() || draftExpired(d, now)) {
 		return nil, notFound("no such draft")
 	}
 	if err != nil {

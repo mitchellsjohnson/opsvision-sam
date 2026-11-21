@@ -565,3 +565,16 @@ func TestAssistantTurnEndToEnd(t *testing.T) {
 		t.Fatalf("the viewer's tool result shows seg-a's value: %s", results[0].Content)
 	}
 }
+
+// The runner drafts both kinds: report summaries from the report, exec
+// summaries from the attribution.
+func TestAssistantRunnerHasDraftSources(t *testing.T) {
+	env := newTestEnv(t)
+	r, err := env.api.AssistantRunner()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Reports == nil || r.Summaries == nil {
+		t.Fatalf("runner sources: reports %v, summaries %v", r.Reports, r.Summaries)
+	}
+}

@@ -9,7 +9,7 @@ import (
 
 var wantTopics = []string{
 	"asking-sam", "commitments-and-slips", "derived-measures", "imports-and-dedupe",
-	"live-and-locked-periods", "metric-kinds", "report-publishing", "restatement",
+	"live-and-locked-periods", "metric-kinds", "rca", "report-publishing", "restatement",
 	"scope-and-filters", "statuses-and-bands", "worst-of-n",
 }
 
@@ -74,6 +74,9 @@ func TestSearch(t *testing.T) {
 		{"worst of 2 segments", "worst-of-n"},
 		{"duplicate rows in my upload", "imports-and-dedupe"},
 		{"publish the report", "report-publishing"},
+		{"exec summary publish", "rca"},
+		{"which exec summaries are missing", "rca"},
+		{"incidents overlap", "rca"},
 	} {
 		got := Search(c.query)
 		if len(got) == 0 || got[0].ID != c.want {
@@ -85,6 +88,12 @@ func TestSearch(t *testing.T) {
 		}
 		if len(got) > MaxResults {
 			t.Errorf("Search(%q) returned %d results, want at most %d", c.query, len(got), MaxResults)
+		}
+	}
+	rca, _ := Get("rca")
+	for _, want := range []string{"cannot be published while any required exec summary is missing", "Overlaps are counted once", "conservative overlap rule", "republishing"} {
+		if !strings.Contains(rca.Body, want) {
+			t.Errorf("the rca topic lacks %q", want)
 		}
 	}
 	if got := Search("zzzz qqqq"); len(got) != 0 {

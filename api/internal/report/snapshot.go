@@ -3,6 +3,7 @@ package report
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"sort"
@@ -13,6 +14,23 @@ import (
 )
 
 const jsonContentType = "application/json"
+
+// SchemaVersion is the version of new snapshots: 2 adds Document.Standing,
+// 3 Document.Summaries. A stored Document without one (0) is version 1.
+const SchemaVersion = 3
+
+// SchemaWithStanding is the first version that has Document.Standing.
+const SchemaWithStanding = 2
+
+// Requirement values of SummarySnapshot.Requirement.
+const (
+	RequirementRequired = "required"
+	RequirementOptional = "optional"
+)
+
+// ErrSummaryMissing is a document that lacks a required exec summary, or
+// holds an empty one: it must not be stored.
+var ErrSummaryMissing = errors.New("a required exec summary is missing")
 
 // Document is the JSON snapshot stored for a published revision.
 type Document struct {
@@ -29,6 +47,76 @@ type Document struct {
 	// company scope: the periods of StandingPeriods and year to date through
 	// the month. Coarse cells are kept only on rows that report at that grain.
 	Standing json.RawMessage `json:"standing,omitempty"`
+	// Summaries are the exec summaries written for the month's metrics
+	// (required or not) when it was published, in the order the summary list
+	// serves them. Version 3; none before.
+	Summaries []SummarySnapshot `json:"summaries,omitempty"`
+}
+
+// SummarySnapshot is one metric's exec summary frozen at publication: the
+// text and every link as written, who wrote it, and the standing and
+// requirement it was published against.
+type SummarySnapshot struct {
+	MetricKey  string `json:"metricKey"`
+	MetricName string `json:"metricName"`
+	CategoryID string `json:"categoryId,omitempty"`
+	// Period is the month, or a coarse metric's quarter, half or year.
+	Period            string            `json:"period"`
+	Requirement       string            `json:"requirement"`
+	RequirementReason string            `json:"requirementReason,omitempty"`
+	Standing          SummaryStanding   `json:"standing"`
+	Text              string            `json:"text"`
+	Links             []domain.RCALink  `json:"links"`
+	AuthorName        string            `json:"authorName"`
+	Channel           string            `json:"channel"`
+	UpdatedAt         time.Time         `json:"updatedAt"`
+	Revision          int               `json:"revision"`
+	Evidence          []SummaryEvidence `json:"evidence,omitempty"`
+}
+
+// SummaryStanding is a metric's company standing: its displayed value and
+// status, and the gap headline.
+type SummaryStanding struct {
+	Display  string `json:"display"`
+	Status   string `json:"status"`
+	Headline string `json:"headline"`
+}
+
+// SummaryEvidence is one of a summary's top company-level evidence keys.
+type SummaryEvidence struct {
+	Key           string `json:"key"`
+	Title         string `json:"title"`
+	URL           string `json:"url"`
+	PointsDisplay string `json:"pointsDisplay"`
+}
+
+// SummaryRef names one metric's exec summary slot: the metric and its period.
+type SummaryRef struct {
+	MetricKey string
+	Period    string
+}
+
+// Validate checks a document about to be stored: it is the current version,
+// every summary it holds has text, and every one of required has a summary.
+// A failure wraps ErrSummaryMissing, except the version check.
+func (d Document) Validate(required []SummaryRef) error {
+	if d.SchemaVersion != SchemaVersion {
+		return fmt.Errorf("report: a new snapshot is version %d, not %d", SchemaVersion, d.SchemaVersion)
+	}
+	written := map[SummaryRef]bool{}
+	for _, s := range d.Summaries {
+		ref := SummaryRef{s.MetricKey, s.Period}
+		if strings.TrimSpace(s.Text) == "" {
+			return fmt.Errorf("%w: %s %s has no text", ErrSummaryMissing, ref.MetricKey, ref.Period)
+		}
+		written[ref] = true
+	}
+	for _, r := range required {
+		if !written[r] {
+			return fmt.Errorf("%w: %s %s", ErrSummaryMissing, r.MetricKey, r.Period)
+		}
+	}
+	return nil
 }
 
 // FactsView is the slice of a scorecard view used to compute fact sentences.

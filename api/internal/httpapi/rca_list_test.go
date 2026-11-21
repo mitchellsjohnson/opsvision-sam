@@ -105,7 +105,7 @@ func TestGetMetricSummary(t *testing.T) {
 	}
 	e.expectError(t, 403, "forbidden", scopedViewer(t, e, "mobile"), "GET", summaryPath("uptime", "2026-M10"), nil)
 	e.expectError(t, 404, "not_found", admin, "GET", summaryPath("no_such_metric", "2026-M10"), nil)
-	e.expectError(t, 501, "not_implemented", admin, "GET", summaryPath("uptime", "2026-M10")+"?revision=1", nil)
+	e.expectError(t, 404, "not_found", admin, "GET", summaryPath("uptime", "2026-M10")+"?revision=1", nil)
 }
 
 func TestListMetricSummaries(t *testing.T) {
@@ -189,7 +189,7 @@ func TestListMetricSummaries(t *testing.T) {
 	}
 
 	e.expectError(t, 400, "invalid", admin, "GET", demoSummaries+"?period=2026-Q4", nil)
-	e.expectError(t, 501, "not_implemented", admin, "GET", demoSummaries+"?period=2026-M09&revision=1", nil)
+	e.expectError(t, 404, "not_found", admin, "GET", demoSummaries+"?period=2026-M09&revision=1", nil)
 }
 
 // TestSummaryStaleSubjects: a summary written when other services were short

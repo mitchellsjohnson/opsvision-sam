@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -86,6 +87,11 @@ type Runner struct {
 	Dispatcher mcp.Dispatcher
 	// Reports builds the report a summary draft is written from.
 	Reports ReportSource
+	// Summaries builds the data an exec summary draft is written from.
+	Summaries MetricSummarySource
+	// AppHosts are the app's own hosts, which answers may always link to,
+	// besides the hosts of the turn's tool results.
+	AppHosts []string
 	// Now is the clock; time.Now when nil.
 	Now func() time.Time
 	// Budget overrides TurnBudget when positive.
@@ -116,7 +122,7 @@ func (r *Runner) Run(ctx context.Context, ref TurnRef) error {
 	switch ref.Kind {
 	case "":
 	case KindDraft:
-		return r.runDraft(ctx, ref)
+		return r.runAnyDraft(ctx, ref)
 	default:
 		slog.Error("assistant: dropping a job of an unknown kind", "kind", ref.Kind, "tenant", ref.TenantID)
 		return nil
@@ -213,6 +219,7 @@ func (r *Runner) answer(ctx context.Context, ref TurnRef, th domain.AssistantThr
 	}
 	usage := &domain.AssistantUsage{Model: settings.Model}
 	pctx := auth.WithPrincipal(ctx, p)
+	hosts := slices.Clone(r.AppHosts)
 	for round := 1; ; round++ {
 		resp, err := r.Provider.Messages(ctx, key, req)
 		if err != nil {
@@ -232,7 +239,7 @@ func (r *Runner) answer(ctx context.Context, ref TurnRef, th domain.AssistantThr
 				uses = append(uses, b)
 			}
 		}
-		answer := strings.Join(text, "\n\n")
+		answer := RewriteAnswerLinks(strings.Join(text, "\n\n"), hosts)
 		if len(uses) == 0 {
 			if answer == "" {
 				return "", usage, fail(MsgNoAnswer)
@@ -249,7 +256,9 @@ func (r *Runner) answer(ctx context.Context, ref TurnRef, th domain.AssistantThr
 		results := make([]Block, 0, len(uses))
 		for _, u := range uses {
 			usage.ToolCalls++
-			results = append(results, r.callTool(pctx, allowed, u))
+			res, named := r.callTool(pctx, allowed, u)
+			results = append(results, res)
+			hosts = append(hosts, named...)
 		}
 		req.Messages = append(req.Messages,
 			Message{Role: "assistant", Content: assistantTurn},
@@ -383,15 +392,20 @@ func history(ms []domain.AssistantMessage) []Message {
 	return out
 }
 
-// callTool runs one tool_use block and returns its tool_result. Only tools
-// in allowed and the help tools run; anything else is refused here, before
-// any request is made.
-func (r *Runner) callTool(ctx context.Context, allowed map[string]mcp.Tool, u Block) Block {
-	result := func(content string, isErr bool) Block {
+// callTool runs one tool_use block and returns its tool_result and the hosts
+// of the URL fields of a successful result (URLHosts), which the answer may
+// link to. Only tools in allowed and the help tools run; anything else is
+// refused here, before any request is made.
+func (r *Runner) callTool(ctx context.Context, allowed map[string]mcp.Tool, u Block) (Block, []string) {
+	result := func(content string, isErr bool) (Block, []string) {
+		var hosts []string
+		if !isErr {
+			hosts = URLHosts(content)
+		}
 		if head, cut := mcp.TruncateAt(content, ToolResultLimit); cut {
 			content = head + "\n\n" + mcp.TruncationNote(ToolResultLimit)
 		}
-		return Block{Type: "tool_result", ToolUseID: u.ID, Content: content, IsError: isErr}
+		return Block{Type: "tool_result", ToolUseID: u.ID, Content: content, IsError: isErr}, hosts
 	}
 	args := map[string]any{}
 	if len(u.Input) > 0 {

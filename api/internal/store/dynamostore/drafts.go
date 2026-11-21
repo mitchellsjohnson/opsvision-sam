@@ -12,7 +12,9 @@ import (
 	"opsvision/internal/store"
 )
 
-// assistantDraftItem is one report summary draft in the tenant partition.
+// assistantDraftItem is one draft in the tenant partition, of any kind: the
+// kind, metric and warnings travel in Body, so ListDrafts returns every
+// kind and callers filter by domain.AssistantDraft.DraftKind.
 type assistantDraftItem struct {
 	keys
 	DraftID  string `dynamodbav:"DraftID"`

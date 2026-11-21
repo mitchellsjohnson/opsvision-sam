@@ -533,3 +533,37 @@ func TestReportSummaryDraftIsNotASAMTool(t *testing.T) {
 		t.Fatal("SAM can call the draft operations")
 	}
 }
+
+// The report summary's checks see only report summary drafts: an exec
+// summary draft of the same month neither blocks it, nor is read through
+// it, nor is evicted to make room for it.
+func TestReportSummaryDraftsIgnoreOtherKinds(t *testing.T) {
+	sealer := testSealer(t)
+	q := &recordingQueue{}
+	env := newTestEnvDeps(t, nil, func(d *Deps) { d.Sealer = sealer; d.Provider = &fakeProvider{}; d.Queue = q })
+	seedDelivery(t, env)
+	saveKey(t, env, sealer, "t1", "u-t1-admin")
+	admin := env.tokens["t1-admin"]
+	putDraft(t, env, domain.AssistantDraft{ID: "m-pending", Kind: domain.DraftKindMetricSummary, MetricKey: "on_time_pct",
+		Status: domain.AssistantStatusPending, CreatedAt: testNow.Add(-time.Second)})
+	for i := range assistant.MaxDraftsPerUser {
+		putDraft(t, env, domain.AssistantDraft{ID: fmt.Sprintf("m-%d", i), Kind: domain.DraftKindMetricSummary, MetricKey: "on_time_pct",
+			Period: fmt.Sprintf("2026-M0%d", i+1), ScorecardID: "delivery", Status: domain.AssistantStatusDone, Text: "x",
+			CreatedAt: testNow.Add(-time.Duration(10-i) * time.Hour)})
+	}
+
+	var d reportDraftBody
+	env.expect(t, http.StatusAccepted, admin, "POST", draftPath, nil, &d)
+	env.expectError(t, http.StatusNotFound, "not_found", admin, "GET", draftPath+"/m-pending", nil)
+	ds, err := env.store.ListDrafts(context.Background(), "t1", "u-t1-admin")
+	if err != nil || len(ds) != assistant.MaxDraftsPerUser+2 {
+		t.Fatalf("drafts = %d %v, want every exec summary draft kept", len(ds), err)
+	}
+	stored, err := env.store.GetDraft(context.Background(), "t1", "u-t1-admin", d.ID)
+	if err != nil || stored.DraftKind() != domain.DraftKindSummary || stored.MetricKey != "" {
+		t.Fatalf("report draft = %+v %v", stored, err)
+	}
+	// A report draft stored before kinds existed is still a report draft.
+	putDraft(t, env, domain.AssistantDraft{ID: "legacy", Status: domain.AssistantStatusDone, Text: "Old.", CreatedAt: testNow.Add(-time.Hour)})
+	env.expect(t, http.StatusOK, admin, "GET", draftPath+"/legacy", nil, nil)
+}

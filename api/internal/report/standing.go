@@ -5,10 +5,6 @@ import (
 	"opsvision/internal/period"
 )
 
-// SchemaVersion is the version of new snapshots: 2 adds Document.Standing.
-// A stored Document without one (0) is version 1.
-const SchemaVersion = 2
-
 // standingMonths is the Overview's trend window in months.
 const standingMonths = 12
 

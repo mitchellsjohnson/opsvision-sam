@@ -44,7 +44,7 @@ var assistantPages = map[string]bool{"overview": true, "table": true, "report": 
 // AssistantRunner returns the runner of assistant turns and summary drafts
 // for this server: its store, sealer and provider, the API catalog
 // dispatched through the router as the turn's user on the assistant
-// channel, and the server's reports for drafts.
+// channel, and the server's reports and attribution for drafts.
 func (s *Server) AssistantRunner() (*assistant.Runner, error) {
 	catalog, err := Tools()
 	if err != nil {
@@ -57,6 +57,7 @@ func (s *Server) AssistantRunner() (*assistant.Runner, error) {
 		Catalog:    catalog,
 		Dispatcher: mcp.NewHTTPDispatcher(DispatchHandler(s), auth.ChannelAssistant),
 		Reports:    s,
+		Summaries:  s,
 		Now:        s.now,
 	}, nil
 }

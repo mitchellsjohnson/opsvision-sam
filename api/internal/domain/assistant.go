@@ -84,20 +84,41 @@ type AssistantUsage struct {
 	ToolCalls    int    `json:"toolCalls"`
 }
 
-// AssistantDraft is SAM's draft of a report month's company-scope summary,
-// private to the user who asked for it. Status is an AssistantStatus*; Text
-// is set when done and Error when failed. Revision counts the draft's saves
-// (1 after creation); the store assigns it.
+// Draft kinds of AssistantDraft.Kind. A draft stored without a kind is a
+// report summary draft.
+const (
+	DraftKindSummary       = "summary"
+	DraftKindMetricSummary = "metric_summary"
+)
+
+// AssistantDraft is SAM's draft of a report month's company-scope summary
+// (Kind summary) or of one metric's exec summary for a period (Kind
+// metric_summary, with MetricKey), private to the user who asked for it.
+// Status is an AssistantStatus*; Text is set when done and Error when
+// failed. Warnings are the keys a done metric summary draft names that were
+// not in its data. Revision counts the draft's saves (1 after creation); the
+// store assigns it.
 type AssistantDraft struct {
 	ID          string          `json:"id"`
 	UserID      string          `json:"userId"`
+	Kind        string          `json:"kind,omitempty"`
 	ScorecardID string          `json:"scorecardId"`
+	MetricKey   string          `json:"metricKey,omitempty"`
 	Period      string          `json:"period"`
 	Status      string          `json:"status"`
 	Text        string          `json:"text,omitempty"`
+	Warnings    []string        `json:"warnings,omitempty"`
 	Error       string          `json:"error,omitempty"`
 	CreatedAt   time.Time       `json:"createdAt"`
 	UpdatedAt   time.Time       `json:"updatedAt"`
 	Usage       *AssistantUsage `json:"usage,omitempty"`
 	Revision    int             `json:"-"`
+}
+
+// DraftKind is the draft's kind, DraftKindSummary when none is stored.
+func (d AssistantDraft) DraftKind() string {
+	if d.Kind == "" {
+		return DraftKindSummary
+	}
+	return d.Kind
 }

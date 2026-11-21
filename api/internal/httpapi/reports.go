@@ -217,10 +217,6 @@ func (s *Server) PublishReport(ctx context.Context, req PublishReportRequestObje
 	if !ok {
 		return nil, badRequest("request validation failed", detail{Path: "period", Message: "invalid"})
 	}
-	objs, err := s.objectStore()
-	if err != nil {
-		return nil, err
-	}
 	summaryText := ""
 	if req.Body != nil && req.Body.Summary != nil {
 		summaryText = *req.Body.Summary
@@ -233,50 +229,183 @@ func (s *Server) PublishReport(ctx context.Context, req PublishReportRequestObje
 	} else if !errors.Is(err, store.ErrNotFound) {
 		return nil, err
 	}
-	apiView, standing, root, err := s.companyReportViews(ctx, *p.Tenant, sc.ID, mo)
+	res, err := s.publishMonth(ctx, p, sc.ID, mo, summaryText, true)
 	if err != nil {
 		return nil, err
+	}
+	if res.blocked != nil {
+		return PublishReport409JSONResponse(*res.blocked), nil
+	}
+	return PublishReport200JSONResponse(PublishReportResponse{Revision: res.revision, Unlocked: true}), nil
+}
+
+// published is publishMonth's outcome: the revision stored, or why the
+// month is blocked.
+type published struct {
+	revision int
+	blocked  *PublishBlocked
+}
+
+// publishMonth freezes month mo of scorecard sc at company scope, with the
+// report summary text and the month's exec summaries. With gate set it
+// first runs the publish gate (spec §9.7): when a required exec summary is
+// missing it stores nothing and returns the 409 body. Whether or not the
+// gate ran, the snapshot is validated before it is stored, so a stored
+// revision always has every required summary.
+func (s *Server) publishMonth(ctx context.Context, p auth.Principal, sc string, mo period.Period, summaryText string, gate bool) (published, error) {
+	objs, err := s.objectStore()
+	if err != nil {
+		return published{}, err
+	}
+	e, err := s.newExplainer(ctx, p, sc, []period.Period{mo}, explainOpts{})
+	if err != nil {
+		return published{}, err
+	}
+	its, err := e.items(mo)
+	if err != nil {
+		return published{}, err
+	}
+	if gate {
+		if b := e.publishBlocked(its, mo); b != nil {
+			return published{blocked: b}, nil
+		}
+	}
+	summaries, required, err := e.snapshots(its, mo)
+	if err != nil {
+		return published{}, err
+	}
+	apiView, standing, root, err := s.companyReportViews(ctx, *p.Tenant, sc, mo)
+	if err != nil {
+		return published{}, err
 	}
 	facts := reportStrings(report.Facts(factsViewFromAPI(apiView, mo.String(), root), statusScale(*p.Tenant)))
 	verIDs := reportStrings(versionIDsFromView(apiView))
 	viewRaw, err := json.Marshal(apiView)
 	if err != nil {
-		return nil, err
+		return published{}, err
 	}
 	standingRaw, err := json.Marshal(standing)
 	if err != nil {
-		return nil, err
+		return published{}, err
 	}
 	doc := report.Document{
 		SchemaVersion: report.SchemaVersion,
 		Period:        mo.String(), GeneratedAt: s.now(), Summary: summaryText,
 		Facts: facts, VersionIds: verIDs, View: viewRaw, Standing: standingRaw,
+		Summaries: summaries,
+	}
+	if err := doc.Validate(required); err != nil {
+		return published{}, err
 	}
 	raw, err := json.Marshal(doc)
 	if err != nil {
-		return nil, err
+		return published{}, err
 	}
-	revNum, err := s.nextReportRevision(ctx, p.Tenant.ID, req.Sc, mo.String())
+	revNum, err := s.nextReportRevision(ctx, p.Tenant.ID, sc, mo.String())
 	if err != nil {
-		return nil, err
+		return published{}, err
 	}
-	key := report.ObjectKey(p.Tenant.ID, req.Sc, mo.String(), revNum)
+	key := report.ObjectKey(p.Tenant.ID, sc, mo.String(), revNum)
 	if err := objs.Put(ctx, key, reportJSON, raw); err != nil {
-		return nil, err
+		return published{}, err
 	}
 	rev := domain.ReportRevision{
 		Period: mo.String(), Revision: revNum, PublishedBy: p.UserID,
 		PublishedAt: s.now(), ObjectKey: key,
 	}
-	if err := s.store.PutReportRevision(ctx, p.Tenant.ID, req.Sc, rev); err != nil {
-		return nil, err
+	if err := s.store.PutReportRevision(ctx, p.Tenant.ID, sc, rev); err != nil {
+		return published{}, err
 	}
 	if err := s.audit(ctx, p, p.Tenant.ID, "report.publish", "report", mo.String(), nil, map[string]any{
 		"period": mo.String(), "revision": revNum,
 	}); err != nil {
-		return nil, err
+		return published{}, err
 	}
-	return PublishReport200JSONResponse(PublishReportResponse{Revision: revNum, Unlocked: true}), nil
+	return published{revision: revNum}, nil
+}
+
+// publishBlocked is the publish gate's 409 body for month, or nil when no
+// required exec summary is missing: the missing ones in methodology order
+// (standing, requirement and reason), and how many stale ones there are,
+// judged in full. Stale summaries do not block.
+func (e *explainer) publishBlocked(its []metricItem, month period.Period) *PublishBlocked {
+	out := PublishBlocked{Missing: []MetricSummary{}}
+	stale := 0
+	for _, it := range its {
+		switch it.state {
+		case SummaryStateMissing:
+			out.Missing = append(out.Missing, e.summaryOf(it, false))
+		case SummaryStateStale:
+			stale++
+		}
+	}
+	if len(out.Missing) == 0 {
+		return nil
+	}
+	n := len(out.Missing)
+	noun := "exec summaries are"
+	if n == 1 {
+		noun = "exec summary is"
+	}
+	out.Error.Code = PublishBlockedErrorCodeSummariesMissing
+	out.Error.Message = fmt.Sprintf("%d %s missing for %s.", n, noun, e.in.Cal.Start(month).Format("Jan 2006"))
+	// The details repeat the list for clients that read only the envelope,
+	// such as an MCP tool result.
+	details := make([]ErrorDetail, 0, n)
+	for i, m := range out.Missing {
+		msg := fmt.Sprintf("%s (%s, %s): %s", m.MetricName, m.MetricKey, m.Period, joinNonEmpty(m.Standing.Display, m.Standing.Headline))
+		if m.RequirementReason != nil {
+			msg += ". Required: " + *m.RequirementReason
+		}
+		details = append(details, ErrorDetail{Path: fmt.Sprintf("missing[%d]", i), Message: msg + "."})
+	}
+	out.Error.Details = &details
+	out.Stale = &stale
+	return &out
+}
+
+// snapshots are the exec summaries to freeze for month: every written one
+// (required or not, stale or not), whole, with its top evidence, in the
+// list's order; and the slots that must have one.
+func (e *explainer) snapshots(its []metricItem, month period.Period) ([]report.SummarySnapshot, []report.SummaryRef, error) {
+	var required []report.SummaryRef
+	var written []metricItem
+	for _, it := range its {
+		if it.facts.req.Required {
+			required = append(required, report.SummaryRef{MetricKey: it.m.Key, Period: it.per.String()})
+		}
+		if it.stored != nil {
+			written = append(written, it)
+		}
+	}
+	e.sortItems(written, month)
+	out := make([]report.SummarySnapshot, 0, len(written))
+	for _, it := range written {
+		ms := e.summaryOf(it, true)
+		if err := e.addEvidence(&ms, it); err != nil {
+			return nil, nil, err
+		}
+		r := it.stored
+		snap := report.SummarySnapshot{
+			MetricKey: it.m.Key, MetricName: it.m.Name, CategoryID: it.m.CategoryID, Period: it.per.String(),
+			Requirement: string(ms.Requirement), Standing: report.SummaryStanding{Display: ms.Standing.Display, Status: ms.Standing.Status, Headline: ms.Standing.Headline},
+			Text: r.Text, Links: slices.Clone(r.Links), AuthorName: r.AuthorName, Channel: r.Channel,
+			UpdatedAt: r.UpdatedAt, Revision: r.Revision,
+		}
+		if snap.Links == nil {
+			snap.Links = []domain.RCALink{}
+		}
+		if ms.RequirementReason != nil {
+			snap.RequirementReason = *ms.RequirementReason
+		}
+		if ms.Evidence != nil {
+			for _, ev := range *ms.Evidence {
+				snap.Evidence = append(snap.Evidence, report.SummaryEvidence{Key: ev.Key, Title: ev.Title, URL: ev.Url, PointsDisplay: ev.PointsDisplay})
+			}
+		}
+		out = append(out, snap)
+	}
+	return out, required, nil
 }
 
 func (s *Server) nextReportRevision(ctx context.Context, tenantID, scorecardID, period string) (int, error) {
@@ -480,7 +609,7 @@ func loadReportSnapshot(ctx context.Context, objs objects.Store, key string) (re
 	if err := json.Unmarshal(doc.View, &view); err != nil {
 		return report.Document{}, ScorecardView{}, nil, err
 	}
-	if doc.SchemaVersion < report.SchemaVersion || len(doc.Standing) == 0 {
+	if doc.SchemaVersion < report.SchemaWithStanding || len(doc.Standing) == 0 {
 		return doc, view, nil, nil
 	}
 	var standing ScorecardView

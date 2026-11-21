@@ -2,6 +2,7 @@ package memstore
 
 import (
 	"context"
+	"slices"
 
 	"opsvision/internal/domain"
 	"opsvision/internal/store"
@@ -14,6 +15,7 @@ func cloneDraft(d domain.AssistantDraft) domain.AssistantDraft {
 		u := *d.Usage
 		d.Usage = &u
 	}
+	d.Warnings = slices.Clone(d.Warnings)
 	return d
 }
 
