@@ -479,10 +479,6 @@ func TestLoadIncidents(t *testing.T) {
 func TestStubs(t *testing.T) {
 	e := newDemoEnv(t)
 	admin := e.tokens["admin"]
-	sc := "/scorecards/" + demo.ScorecardID
-	e.expectError(t, 501, "not_implemented", admin, "GET", sc+"/attribution?metric=uptime&subject=webhooks&period=2026-M10", nil)
-	e.expectError(t, 501, "not_implemented", admin, "GET", summaryPath("uptime", "2026-M10"), nil)
-	e.expectError(t, 501, "not_implemented", admin, "GET", demoSummaries+"?period=2026-M10", nil)
 	e.expectError(t, 501, "not_implemented", admin, "POST", summaryPath("uptime", "2026-M10")+"/draft", nil)
 	e.expectError(t, 501, "not_implemented", admin, "GET", summaryPath("uptime", "2026-M10")+"/draft/id-1", nil)
 }

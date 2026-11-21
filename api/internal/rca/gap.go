@@ -62,8 +62,9 @@ type RecordSummary struct {
 // derived from the displayed value rather than read from a measure. It is
 // ignored unless the metric is a DowntimeMetric. ComparedLabel names a change
 // rule's comparison period (Sep). BestStatus is the cell's best status
-// (BestStatus of its rule and the tenant's scale); empty means the band at
-// the good extreme.
+// (BestStatus of its rule and the tenant's scale); GapOf no longer reads it,
+// since a cell short of 100% at its best status needs its gap stated like
+// any other (spec §4.1).
 type GapInput struct {
 	Metric        domain.Metric
 	Cell          CellFacts
@@ -82,9 +83,9 @@ type GapInput struct {
 // minimum for scale rules; the change that set the status for change rules;
 // and the distance past the best band's edge for the rest. A cell whose
 // exact value is past the best edge while its displayed value sits on it
-// is 1 unit "just" past it. A cell at its best status but short of 100% says
-// no RCA is needed. A cell with no gap, or no readable value, is KindNone
-// with an empty headline.
+// is 1 unit "just" past it. A cell at its best status but short of 100% has
+// its gap stated in full. A cell with no gap, or no readable value, is
+// KindNone with an empty headline.
 func GapOf(in GapInput) Gap {
 	m := in.Metric
 	m.ChartKind = engine.ChartKind(m)
@@ -147,14 +148,6 @@ func idealGap(g Gap, in GapInput, kind string, label func(string) string) Gap {
 	g.Kind, g.Ideal, g.Units = kind, &ideal, &units
 	head := unitsText(units, g.Decimals) + " pts short of 100%"
 	m := in.Metric
-	best := in.BestStatus
-	if best == "" && m.Rule.Type == domain.RuleBands {
-		best, _, _, _ = bestBand(m.Rule.Bands, true)
-	}
-	if best != "" && in.Cell.Status == best {
-		g.Headline = head + " · no RCA needed"
-		return g
-	}
 	switch kind {
 	case KindDowntime:
 		if in.Downtime != nil {

@@ -186,7 +186,7 @@ func TestGapOf(t *testing.T) {
 			name: "downtime at its best status",
 			in: rca.GapInput{Metric: uptimeMetric, Cell: rca.CellFacts{Display: "99.97%", Status: "G"},
 				Threshold: "Green at 99.90% or better", Downtime: &rca.Downtime{PeriodMinutes: 44640, ReportedMinutes: 13.4}},
-			kind: "downtime", headline: "0.03 pts short of 100% · no RCA needed", detail: "Green · Green at 99.90% or better", units: 3,
+			kind: "downtime", headline: "0.03 pts short of 100% · 13m down", detail: "Green · Green at 99.90% or better", units: 3,
 		},
 		{
 			name: "ratio",
@@ -305,7 +305,8 @@ func TestGapOf(t *testing.T) {
 		d.Headline != "138 above the G line (450 or less)" {
 		t.Fatalf("no labels = %+v", d)
 	}
-	// An explicit best status (from BestStatus) decides "no RCA needed".
+	// Green below 100% states its gap whatever the best status: an exec
+	// summary is required there.
 	if d := rca.GapOf(rca.GapInput{Metric: uptimeMetric, Cell: rca.CellFacts{Display: "99.97%", Status: "G"}, StatusLabel: label,
 		BestStatus: "B", Downtime: &rca.Downtime{PeriodMinutes: 44640, ReportedMinutes: 13.4}}); d.Headline != "0.03 pts short of 100% · 13m down" {
 		t.Fatalf("G under a best of B = %q", d.Headline)

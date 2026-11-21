@@ -184,15 +184,26 @@ func apiView(v engine.View, keep func(engine.Row) bool, cutoffs map[cutoffKey]ti
 }
 
 // GetScorecardView computes the scorecard table. Viewers see only the rows
-// whose subject and metric are in their scope.
+// whose subject and metric are in their scope. Company-root cells carry the
+// state of their metric's exec summary.
 func (s *Server) GetScorecardView(ctx context.Context, req GetScorecardViewRequestObject) (GetScorecardViewResponseObject, error) {
-	p, err := member(ctx)
+	v, err := s.scorecardView(ctx, req, true)
 	if err != nil {
 		return nil, err
 	}
+	return GetScorecardView200JSONResponse(v), nil
+}
+
+// scorecardView is GetScorecardView, with exec summary state on
+// company-root cells when summaries is set.
+func (s *Server) scorecardView(ctx context.Context, req GetScorecardViewRequestObject, summaries bool) (ScorecardView, error) {
+	p, err := member(ctx)
+	if err != nil {
+		return ScorecardView{}, err
+	}
 	sc, err := s.scorecardOf(ctx, p.Tenant.ID, req.Sc)
 	if err != nil {
-		return nil, err
+		return ScorecardView{}, err
 	}
 
 	var pr problems
@@ -263,13 +274,13 @@ func (s *Server) GetScorecardView(ctx context.Context, req GetScorecardViewReque
 		vr.Restate = *params.Restate
 	}
 	if err := pr.err(); err != nil {
-		return nil, err
+		return ScorecardView{}, err
 	}
 
 	cols := append(append([]period.Period{}, vr.Periods...), vr.YTD...)
 	in, err := s.loadInput(ctx, *p.Tenant, sc.ID, fiscalYears(true, cols...))
 	if err != nil {
-		return nil, err
+		return ScorecardView{}, err
 	}
 	if vr.Restate != "" {
 		found := false
@@ -280,15 +291,15 @@ func (s *Server) GetScorecardView(ctx context.Context, req GetScorecardViewReque
 			}
 		}
 		if !found {
-			return nil, badRequest("request validation failed", detail{Path: "restate", Message: "not a methodology version of this scorecard"})
+			return ScorecardView{}, badRequest("request validation failed", detail{Path: "restate", Message: "not a methodology version of this scorecard"})
 		}
 		if err := s.restateDerived(ctx, *p.Tenant, sc.ID, in, vr.Restate, fiscalYears(true, cols...)); err != nil {
-			return nil, err
+			return ScorecardView{}, err
 		}
 	}
 	view, err := engine.Compute(in, vr)
 	if err != nil {
-		return nil, err
+		return ScorecardView{}, err
 	}
 
 	// Scope is evaluated as of the latest month the view shows.
@@ -300,10 +311,32 @@ func (s *Server) GetScorecardView(ctx context.Context, req GetScorecardViewReque
 	}
 	cutoffs, err := s.viewCutoffs(ctx, p.Tenant.ID, in, vr.Periods)
 	if err != nil {
-		return nil, err
+		return ScorecardView{}, err
 	}
 	acc := newAccess(p, in)
-	return GetScorecardView200JSONResponse(apiView(view, func(r engine.Row) bool {
+	out := apiView(view, func(r engine.Row) bool {
 		return acc.canRead(r.SubjectID, []string{r.MetricKey}, asOf)
-	}, cutoffs)), nil
+	}, cutoffs)
+	setRcaIdeal(&out, in, vr)
+	if !summaries || !hasCompanyRows(out, in, vr.Periods) {
+		return out, nil
+	}
+	// The requirement is judged from every subject on live numbers: the
+	// view itself serves when it is that, else the explainer computes its
+	// own (from a fresh input when the view was restated).
+	opts := explainOpts{in: in}
+	switch {
+	case vr.Restate != "":
+		opts = explainOpts{noStale: true}
+	case len(vr.SubjectIDs) == 0 && len(vr.MetricKeys) == 0 && vr.Structure == engine.StructureAsOf:
+		opts.view = &view
+	}
+	e, err := s.newExplainer(ctx, p, sc.ID, vr.Periods, opts)
+	if err != nil {
+		return ScorecardView{}, err
+	}
+	if err := annotateSummaries(&out, e); err != nil {
+		return ScorecardView{}, err
+	}
+	return out, nil
 }

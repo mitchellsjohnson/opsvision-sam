@@ -4,8 +4,8 @@ import (
 	"context"
 	"slices"
 
+	"opsvision/internal/auth"
 	"opsvision/internal/domain"
-	"opsvision/internal/engine"
 	"opsvision/internal/period"
 	"opsvision/internal/rca"
 )
@@ -30,87 +30,40 @@ type GateItem struct {
 	// what blocks publishing. Stale is partial: it compares the standing,
 	// the reported downtime and the subjects short of perfect, never
 	// incidents, so the publish check must recompute full staleness (§8.4)
-	// for written items before counting PublishBlocked.stale.
+	// for written items before counting PublishBlocked.stale; the
+	// explainer's required does.
 	State    string
 	Standing MetricSummaryStanding
 }
 
 // summaryGate judges every metric of the methodology in force for month at
-// company scope, in the methodology's order. It is cheap: one engine
-// compute over data points for the month and the coarse periods its metrics
-// report at, and one ListRCAs per period; it derives nothing and reads no
-// records, so a stale state here compares the standing, the reported
-// downtime and which reporting subjects are short of perfect, not
-// incidents. A coarse metric's summary is required only in the month that
-// closes its period. The requirement is a tenant fact, so no reader's scope
-// applies. A month with no methodology in force, or an organization with no
-// single top-level unit (no summary can be written there), has no items and
-// so never blocks (spec §9.7).
+// company scope, in the methodology's order, through the explainer at its
+// cheapest: one engine compute over data points for the month and the
+// coarse periods its metrics report at, and one ListRCAsRange; it derives
+// nothing and reads no records, so a stale state here compares the
+// standing, the reported downtime and which reporting subjects are short of
+// perfect, not incidents. A coarse metric's summary is required only in the
+// month that closes its period. The requirement is a tenant fact, so no
+// reader's scope applies. A month with no methodology in force, or an
+// organization with no single top-level unit (no summary can be written
+// there), has no items and so never blocks (spec §9.7). listMetricSummaries'
+// counts come from the same judgement, with full staleness.
 func (s *Server) summaryGate(ctx context.Context, tenant domain.Tenant, sc string, month period.Period) ([]GateItem, error) {
 	if month.Grain != period.Month {
 		return nil, badRequest("request validation failed", detail{Path: "period", Message: "must be a month"})
 	}
-	in, err := s.loadInput(ctx, tenant, sc, fiscalYears(true, month))
+	e, err := s.newExplainer(ctx, auth.Principal{Tenant: &tenant}, sc, []period.Period{month}, explainOpts{gate: true})
 	if err != nil {
 		return nil, err
 	}
-	v, ok := engine.VersionFor(in.Versions, month, in.Cal)
-	root := reportRoot(in, month)
-	if !ok || root == "" {
-		return []GateItem{}, nil
-	}
-	periodOf := func(m domain.Metric) period.Period {
-		if g, ok := frequencyGrain(m.Frequency); ok && g != period.Month {
-			return in.Cal.Parent(month, g)
-		}
-		return month
-	}
-	periods := []period.Period{month}
-	for _, m := range v.Content.Metrics {
-		if p := periodOf(m); !slices.Contains(periods, p) {
-			periods = append(periods, p)
-		}
-	}
-	view, err := engine.Compute(in, engine.ViewRequest{Periods: periods, Structure: engine.StructureAsOf})
+	its, err := e.items(month)
 	if err != nil {
 		return nil, err
 	}
-	c, err := s.newSummaryContext(ctx, tenant, sc, in, root)
-	if err != nil {
-		return nil, err
-	}
-	type key struct {
-		metric string
-		p      period.Period
-	}
-	stored := map[key]domain.CellRCA{}
-	for _, p := range periods {
-		rs, err := s.store.ListRCAs(ctx, tenant.ID, sc, p)
-		if err != nil {
-			return nil, err
-		}
-		for _, r := range rs {
-			if r.SubjectID == root {
-				stored[key{r.MetricKey, r.Period}] = r
-			}
-		}
-	}
-
-	out := make([]GateItem, 0, len(v.Content.Metrics))
-	for _, m := range v.Content.Metrics {
-		per := periodOf(m)
-		last, _ := lastMonth(in.Cal, per)
-		f := c.facts(v, m, per, view.Rows, slices.Index(periods, per), per != month, last == month)
-		it := GateItem{MetricKey: m.Key, MetricName: m.Name, Period: per, Requirement: f.req, Standing: f.standing, State: summaryOptional}
-		switch r, ok := stored[key{m.Key, per}]; {
-		case ok && gateStale(r.Basis, f.basis(nil)):
-			it.State = summaryStale
-		case ok:
-			it.State = summaryWritten
-		case f.req.Required:
-			it.State = summaryMissing
-		}
-		out = append(out, it)
+	out := make([]GateItem, 0, len(its))
+	for _, it := range its {
+		out = append(out, GateItem{MetricKey: it.m.Key, MetricName: it.m.Name, Period: it.per, Requirement: it.facts.req,
+			Standing: it.facts.standing, State: string(it.state)})
 	}
 	return out, nil
 }

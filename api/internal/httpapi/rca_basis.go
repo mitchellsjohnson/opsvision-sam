@@ -409,23 +409,6 @@ func staleReasons(stored, current domain.RCABasis, label func(string) string) []
 // unit (s, min or h), when the link names one the cell has; else the
 // displayed gap to 100% as a share of the period.
 func reportedMinutes(v domain.MethodologyVersion, m domain.Metric, c engine.Cell, downMeasure string, periodMinutes float64) (int, bool) {
-	if raw, ok := c.Components[downMeasure]; ok && downMeasure != "" {
-		i := slices.IndexFunc(v.Content.Measures, func(ms domain.Measure) bool { return ms.Key == downMeasure })
-		if i >= 0 {
-			switch v.Content.Measures[i].Unit {
-			case "s":
-				return int(math.Round(raw / 60)), true
-			case "min":
-				return int(math.Round(raw)), true
-			case "h":
-				return int(math.Round(raw * 60)), true
-			}
-		}
-	}
-	d := rca.Decimals(m.Format)
-	units, ok := rca.GapUnits(100, c.Display, d)
-	if !ok || units < 0 {
-		return 0, false
-	}
-	return int(math.Round(float64(units) / math.Pow10(d) / 100 * periodMinutes)), true
+	mins, _, ok := reportedOf(v, m, c, downMeasure, periodMinutes)
+	return int(math.Round(mins)), ok
 }
