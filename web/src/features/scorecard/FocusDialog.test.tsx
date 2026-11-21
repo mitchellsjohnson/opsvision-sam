@@ -21,7 +21,9 @@ import {
   UPTIME_ITEMS,
   versions,
   viewHandlers,
+  withRca,
 } from '../../test/viewFixtures'
+import { uptimeCardSummary, webhooksAttribution } from '../../test/rcaFixtures'
 import { FOCUS_CHART_HEIGHT } from './charts/MetricChart'
 import type { Column } from './columns'
 
@@ -1512,5 +1514,153 @@ describe('FocusDialog: chart props', () => {
     const dialog = await screen.findByRole('dialog', { name: /On-time delivery/ })
     const row = await within(dialog).findByTestId('focus-value-row')
     await waitFor(() => expect(row.textContent).toContain('$12.7M spent of $12.2M planned'))
+  })
+})
+
+describe('FocusDialog: Why', () => {
+  type MetricSummary = components['schemas']['MetricSummary']
+  const CHART = `${OVERVIEW}&focus=on_time_pct`
+
+  function renderChart(route = CHART) {
+    server.use(...viewHandlers({ respond: (u) => HttpResponse.json(withRca(buildView(u.searchParams), { on_time_pct: { '2026-M10': { state: 'missing' } } })) }))
+    renderApp(<App />, { route })
+  }
+
+  it('the value row at company scope carries the exec summary state; Escape closes only the card, then the dialog', async () => {
+    renderChart()
+    const dialog = await screen.findByRole('dialog', { name: /On-time delivery/ })
+    const row = await within(dialog).findByTestId('focus-value-row')
+    const why = within(row).getByRole('button', { name: 'Why is On-time delivery 84.3% in Oct 2026? Exec summary needed' })
+    expect(why.textContent).toBe('Why?Exec summary needed')
+    const user = userEvent.setup()
+    await user.click(why)
+    expect(await screen.findByRole('dialog', { name: 'All units · On-time delivery' })).toBeTruthy()
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'All units · On-time delivery' })).toBeNull())
+    expect(screen.getByRole('dialog', { name: /On-time delivery/ })).toBeTruthy()
+    await waitFor(() => expect(document.activeElement).toBe(why))
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: /On-time delivery/ })).toBeNull())
+  })
+
+  it('W opens the value row’s card; the hint row says so', async () => {
+    renderChart()
+    const dialog = await screen.findByRole('dialog', { name: /On-time delivery/ })
+    await within(dialog).findByTestId('focus-value-row')
+    expect(within(dialog).getByText('why').closest('[data-hint]')).toBeTruthy()
+    await userEvent.setup().keyboard('w')
+    expect(await screen.findByRole('dialog', { name: 'All units · On-time delivery' })).toBeTruthy()
+  })
+
+  it('Monthly values render in the chart body: Needed at company scope, a compact Why for months with attribution', async () => {
+    renderChart()
+    const dialog = await screen.findByRole('dialog', { name: /On-time delivery/ })
+    const user = userEvent.setup()
+    await user.click(await within(dialog).findByRole('button', { name: 'Monthly values' }))
+    const table = within(dialog).getByRole('table', { name: 'Monthly values' })
+    expect(within(table).getAllByRole('columnheader')).toHaveLength(4)
+    const rows = within(table).getAllByRole('row').slice(1)
+    expect(within(rows[0]!).getByRole('button', { name: 'Why is 84.3% in Oct 2026? Exec summary needed' }).textContent).toBe('Needed')
+    // Sep: Green at 95.0%, short of 100%.
+    expect(within(rows[1]!).getByRole('button', { name: 'Why is 95.0% in Sep 2026?' }).textContent).toBe('Why')
+  })
+
+  describe('item metrics', () => {
+    const ROUTE = `${OVERVIEW}&focus=svc_uptime`
+    /** The org tree with one top-level unit, so the company's card has a subject. */
+    const units = [
+      { id: 'root', name: 'All units', levelId: 'l0', parentId: '', sourceKeys: [] },
+      ...orgUnits.map((u) => ({ ...u, parentId: 'root' })),
+      { id: 'team-a1', name: 'Platform', levelId: 'l2', parentId: 'unit-a', sourceKeys: [] },
+    ]
+
+    function renderItems(route = ROUTE, listedState: MetricSummary['state'] = 'missing') {
+      const asked: URL[] = []
+      server.use(
+        // Before itemHandlers: the first matching handler answers.
+        http.get(`${API}/v1/org/units`, () => HttpResponse.json({ units })),
+        http.get(`${API}/v1/scorecards/:sc/attribution`, ({ request }) => {
+          const u = new URL(request.url)
+          asked.push(u)
+          return HttpResponse.json({
+            ...webhooksAttribution,
+            metricKey: 'svc_uptime',
+            subjectId: u.searchParams.get('subject') ?? '',
+            subjectName: u.searchParams.get('subject') === 'svc-web' ? 'Web service' : 'All units',
+            display: '99.20%',
+            summary: { ...uptimeCardSummary, metricKey: 'svc_uptime', metricName: 'Service uptime' },
+          })
+        }),
+        http.get(`${API}/v1/scorecards/:sc/metric-summaries`, () =>
+          HttpResponse.json({
+            period: '2026-M10',
+            counts: { required: 1, missing: 1, stale: 0, written: 0, optional: 0 },
+            items: [
+              {
+                metricKey: 'svc_uptime',
+                metricName: 'Service uptime',
+                period: '2026-M10',
+                requirement: 'required',
+                state: listedState,
+                standing: { display: '99.20%', status: 'R', headline: '' },
+                links: [],
+                linksTotal: 0,
+                stale: false,
+                staleReasons: [],
+                canEdit: true,
+              } satisfies MetricSummary,
+            ],
+          }),
+        ),
+        ...itemHandlers(),
+      )
+      renderApp(<App />, { route })
+      return asked
+    }
+
+    it('the Value cell is the trailing gridcell; Enter opens the service’s card with the company summary as context', async () => {
+      const asked = renderItems()
+      const dialog = await screen.findByRole('dialog', { name: 'Service uptime' })
+      const grid = await within(dialog).findByRole('grid')
+      const value = within(grid).getByRole('button', { name: 'Web service, Oct 2026: 99.20%, Red.' })
+      expect(value.getAttribute('aria-description')).toBe('Press Enter for why')
+      value.focus()
+      const user = userEvent.setup()
+      await user.keyboard('{Enter}')
+      const card = await screen.findByRole('dialog', { name: 'Web service' })
+      await within(card).findByRole('region', { name: 'Attribution' })
+      expect(Object.fromEntries(asked.at(-1)!.searchParams)).toEqual({ metric: 'svc_uptime', subject: 'svc-web', period: '2026-M10' })
+      expect(within(grid).queryByText(/Exec summary|No exec summary/)).toBeNull()
+      await user.keyboard('{Escape}')
+      await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Web service' })).toBeNull())
+      expect(screen.getByRole('dialog', { name: 'Service uptime' })).toBeTruthy()
+    })
+
+    it('the summary carries the company’s missing exec summary, read from the list; it opens the company card', async () => {
+      const asked = renderItems()
+      const dialog = await screen.findByRole('dialog', { name: 'Service uptime' })
+      const summary = await within(dialog).findByRole('region', { name: 'Summary' })
+      const why = await within(summary).findByRole('button', { name: 'Why is Service uptime 99.20% in Oct 2026? Exec summary needed' })
+      await userEvent.setup().click(why)
+      expect(await screen.findByRole('dialog', { name: 'All units · Service uptime' })).toBeTruthy()
+      expect(asked.at(-1)!.searchParams.get('subject')).toBe('root')
+    })
+
+    it('the drill-in value row has Why? for the item’s cell', async () => {
+      const asked = renderItems(`${ROUTE}&item=svc-web`)
+      const dialog = await screen.findByRole('dialog', { name: 'Service uptime' })
+      const row = await within(dialog).findByTestId('drill-value-row')
+      await userEvent.setup().click(within(row).getByRole('button', { name: 'Why is 99.20% in Oct 2026?' }))
+      expect(await screen.findByRole('dialog', { name: 'Web service' })).toBeTruthy()
+      expect(asked.at(-1)!.searchParams.get('subject')).toBe('svc-web')
+    })
+  })
+
+  it('has no axe violations with the Why affordances', async () => {
+    renderChart()
+    const dialog = await screen.findByRole('dialog', { name: /On-time delivery/ })
+    await within(dialog).findByTestId('focus-value-row')
+    await within(dialog).findByRole('navigation', { name: 'Metrics' })
+    expect((await axe(dialog)).violations).toEqual([])
   })
 })

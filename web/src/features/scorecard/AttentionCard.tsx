@@ -5,6 +5,8 @@ import type { components } from '../../api/schema'
 import { ItemName, StatusCell, StatusChip, type StatusLevel } from '../../ui/status'
 import { textWidth, uiFont, useFontsReady } from '../../ui/textWidth'
 import { useElementWidth } from '../../ui/useElementWidth'
+import type { SummaryDisplay } from '../rca/rcaState'
+import { WhyButton } from '../rca/WhyButton'
 import { statusIntervals } from './charts/bands'
 import { chartTheme, MOVE_CLASS, type Move } from './charts/chartTheme'
 import { focusReturnRef } from './focusTrigger'
@@ -58,6 +60,8 @@ export interface AttentionMeta {
   why: AttentionWhy | null
   /** Item metrics (Uptime): the worst item, the distribution and a mini board instead of the trend. */
   items?: AttentionItems
+  /** The metric's exec summary state at company scope, under the driver line; opens the company card. */
+  summary?: { display: SummaryDisplay; periodLabel: string; onOpen: (el: HTMLElement) => void } | null
 }
 
 export interface AttentionCardProps {
@@ -382,6 +386,23 @@ export function AttentionCard({ item, meta, href, compact }: AttentionCardProps)
             </>
           )}
         </p>
+      )}
+      {!compact && meta.summary && (
+        <div
+          data-testid="attention-summary"
+          className={clsx('relative z-10 flex min-w-0', !(items?.why || meta.why) && 'mt-auto border-t border-ink/10 pt-2')}
+        >
+          <WhyButton
+            summary={meta.summary.display}
+            attribution
+            subjectName={item.name}
+            valueDisplay={items ? (items.worst?.display ?? '') : meta.display}
+            periodLabel={meta.summary.periodLabel}
+            nameSubject
+            prefix="summary"
+            onOpen={meta.summary.onOpen}
+          />
+        </div>
       )}
     </article>
   )

@@ -4,11 +4,14 @@ import { skipToken, useQuery } from '@tanstack/react-query'
 import clsx from 'clsx'
 import { LayoutDashboard } from 'lucide-react'
 import type { ReactNode } from 'react'
-import { keys, useItemKinds, useMe, useOrgLevels, useOrgUnits, useVersions, useView } from '../../api/queries'
+import { keys, useItemKinds, useMe, useMetricSummaries, useOrgLevels, useOrgUnits, useVersions, useView } from '../../api/queries'
 import type { components } from '../../api/schema'
 import { lastMonth, monthLabel, monthsOf, parent, parsePeriod, periodLabel, type Grain, type Period } from '../../lib/period'
 import { StatusChip } from '../../ui/status'
 import { usePeriodState } from '../../shell/usePeriodState'
+import { attributionAvailable, summaryDisplay } from '../rca/rcaState'
+import { WhyButton } from '../rca/WhyButton'
+import { useWhyCard } from '../rca/WhyCardProvider'
 import { NeedsAttention, type AttentionMeta } from './AttentionCard'
 import { buildTrendColumns, shortLabel, type Column } from './columns'
 import { formatMetricValue } from './format'
@@ -43,7 +46,7 @@ import { cellReported, type StatusScaleEntry } from './logic/statusAtScope'
 import { cellKey, groupRows, ratioParts } from './viewHelpers'
 import { useScorecardViewRequest } from './viewRequest'
 import { StatusBoard } from './StatusBoard'
-import { buildBoardRow } from './logic/statusBoard'
+import { buildBoardRow, listedState, stateDisplay } from './logic/statusBoard'
 
 type Schemas = components['schemas']
 type ViewRow = Schemas['ViewRow']
@@ -227,6 +230,17 @@ export function OverviewPage() {
   const view = useView(ready ? scorecardId : undefined, request)
 
   const parsed = parsePeriod(period.period)
+  const why = useWhyCard()
+  const role = me.data?.role ?? 'viewer'
+  // Exec summaries belong to the single top-level unit; the company scope is no scope, or that unit.
+  const roots = orgUnits.data?.units.filter((u) => u.parentId === '') ?? []
+  const company = roots.length === 1 ? roots[0] : undefined
+  const companyScope = period.scope === '' || period.scope === company?.id
+  // Item metrics have no company row, so their summary state comes from the month's list (live months only).
+  const listPeriod =
+    companyScope && !period.restate && parsed?.grain === 'month' && view.data?.rows.some((r) => r.subjectKind === 'item') ? period.period : ''
+  const listed = useMetricSummaries(scorecardId, { period: listPeriod, state: 'all' })
+  const listedByMetric = new Map((listed.data?.pages.flatMap((p) => p.items) ?? []).map((s) => [s.metricKey, s]))
   const headerParts = [
     parsed ? periodLabel(parsed, fy) : period.period,
     period.ytd && parsed?.grain === 'month' ? `year to date through ${monthLabel(parsed, fy).split(' ')[0]}` : null,
@@ -291,8 +305,26 @@ export function OverviewPage() {
     needsAttention(attentionInputs(metrics, { categories: view.data.categories, scale, fy, statusLabel, kindName }), scale)
   const itemCandidates = metrics.some((m) => m.isItems && m.kindId && m.status?.status && m.status.status !== bestKey)
 
-  const boardRows = metrics.map(({ category, key, scope, head, children, noun, coarse }) =>
-    buildBoardRow({
+  /** The metric's exec summary state at company scope: its company cell's, or for an item metric with no company row, the list's. */
+  const summaryOf = (m: MetricStanding) => {
+    if (!companyScope) return undefined
+    return m.scope ? m.cell?.summary : m.isItems ? listedState(listedByMetric.get(m.key)) : undefined
+  }
+  const displayOf = (m: MetricStanding) => {
+    if (!companyScope) return null
+    return m.scope && m.cell ? summaryDisplay(m.cell, role) : stateDisplay(summaryOf(m), role)
+  }
+  /** Opens the metric's Why card for a period (the counted one by default): the company's at company scope, else the scope's. */
+  const openWhy = (m: MetricStanding, el: HTMLElement, periodKey = m.status?.counted.period ?? period.period) => {
+    const subject = m.scope?.subjectId ?? (companyScope ? company?.id : period.scope)
+    if (!subject) return
+    const title = companyScope ? `${company?.name ?? m.scope?.subjectName ?? companyName} · ${m.head.metricName}` : undefined
+    why.open({ metric: m.head.metricKey, subject, period: periodKey }, el, title ? { title } : undefined)
+  }
+
+  const boardRows = metrics.map((m) => {
+    const { category, key, scope, head, children, noun, coarse } = m
+    const row = buildBoardRow({
       key,
       category,
       scope,
@@ -304,8 +336,10 @@ export function OverviewPage() {
       fyStart: fy,
       frequency: head.frequency,
       coarse,
-    }),
-  )
+    })
+    const listedSummary = scope ? undefined : summaryOf(m)
+    return listedSummary ? { ...row, summary: listedSummary } : row
+  })
 
   const ribbonLabel =
     parsed?.grain === 'quarter'
@@ -387,6 +421,14 @@ export function OverviewPage() {
   const metricShown = (key: string) => shownByHealth(statusOf.get(key) ?? '')
   const filterLabel = healthFilter === NOT_REPORTED ? 'not reported' : (statusLabel(healthFilter) ?? healthFilter)
   const filterCount = healthCounts.get(healthFilter) ?? 0
+
+  /** An item tile's footer state: the company's summary, with the Exec summaries view for an admin to write a missing one. */
+  const itemStanding = (m: MetricStanding) => {
+    const display = displayOf(m)
+    if (!display) return null
+    const href = `/scorecards/${scorecardId}/exec-summaries?${new URLSearchParams({ period: period.period, why: m.key })}`
+    return { display, href, onOpen: (el: HTMLElement) => openWhy(m, el) }
+  }
 
   const renderMetricCard = (metricKey: string) => {
     const meta = metrics.find((m) => m.key === metricKey)
@@ -471,6 +513,7 @@ export function OverviewPage() {
           rule={meta.rule}
           onExpand={(trigger) => openFocus(key, trigger)}
           onOpenItem={(itemId, trigger) => openItem(key, itemId, trigger)}
+          summary={itemStanding(meta)}
         />
       )
     }
@@ -536,6 +579,21 @@ export function OverviewPage() {
       )
     }
 
+    const summaryShown = displayOf(meta)
+    const attribution = scope && cell ? attributionAvailable(scope, cell, statusColors) : false
+    const whyTrigger =
+      summaryShown || attribution ? (
+        <WhyButton
+          summary={summaryShown ?? undefined}
+          attribution={attribution}
+          subjectName={companyScope ? head.metricName : (scope?.subjectName ?? head.metricName)}
+          valueDisplay={cell?.display || worstSeries?.worst?.display || ''}
+          periodLabel={status?.counted.fullLabel ?? selectedLabel}
+          nameSubject
+          onOpen={(el) => openWhy(meta, el)}
+        />
+      ) : undefined
+
     return (
       <TileFrame
         head={head}
@@ -543,6 +601,7 @@ export function OverviewPage() {
         value={value}
         extras={state === 'normal' ? extras : undefined}
         context={context}
+        why={whyTrigger}
         onExpand={(trigger) => openFocus(key, trigger)}
         state={state}
       >
@@ -578,6 +637,12 @@ export function OverviewPage() {
     return `?${next.toString()}`
   }
 
+  /** A needs-attention card's exec summary line, at company scope. */
+  const attentionSummary = (m: MetricStanding): AttentionMeta['summary'] => {
+    const display = displayOf(m)
+    return display ? { display, periodLabel: m.status?.counted.fullLabel ?? selectedLabel, onOpen: (el) => openWhy(m, el) } : null
+  }
+
   /** What a needs-attention card shows besides its reason (§4.3). */
   const attentionMeta = (m: MetricStanding): AttentionMeta => {
     const { category, scope, head, children, columns, status, cell, own } = m
@@ -590,6 +655,7 @@ export function OverviewPage() {
       change: headerChange(scope ?? emptyScope(head), cell, fy),
       threshold: thresholdOf(m, levelNoun(children)),
       ribbon: { cells: own.cells, labels: columns.map(initialOf) },
+      summary: attentionSummary(m),
     }
     if (m.isItems) {
       const rows = itemRowsOf(m, scale, fy)
@@ -734,6 +800,11 @@ export function OverviewPage() {
               rows={rows}
               scale={statusColors}
               onOpen={openFocus}
+              onWhy={(metricKey, periodKey, trigger) => {
+                const m = metrics.find((x) => x.key === metricKey)
+                if (m) openWhy(m, trigger, periodKey)
+              }}
+              isAdmin={role === 'admin'}
               categories={groups.map((g) => ({ id: g.id, name: g.name }))}
             />
           )

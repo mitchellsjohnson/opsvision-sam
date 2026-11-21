@@ -3,6 +3,8 @@ import { useId, useLayoutEffect, useRef, type FocusEvent, type KeyboardEvent, ty
 import { Link, useSearchParams } from 'react-router'
 import type { components } from '../../api/schema'
 import { StatusChip, type StatusLevel } from '../../ui/status'
+import { attributionAvailable } from '../rca/rcaState'
+import { WhyButton } from '../rca/WhyButton'
 import { usePrefersReducedMotion } from '../../ui/Sparkline'
 import { MOVE_CLASS } from './charts/chartTheme'
 import { buildPoints } from './charts/points'
@@ -38,6 +40,8 @@ export interface ItemDrillInProps {
    */
   position: { index: number | null; total: number; prev?: { id: string; name: string }; next?: { id: string; name: string } }
   onStep: (itemId: string) => void
+  /** Opens the item's Why card for the selected period; the value row gains `Why?` when the cell has attribution. */
+  onWhy?: (el: HTMLElement) => void
 }
 
 const STEP =
@@ -62,6 +66,7 @@ export function ItemDrillIn({
   markers = [],
   position,
   onStep,
+  onWhy,
 }: ItemDrillInProps) {
   const headingId = useId()
   const [params] = useSearchParams()
@@ -201,7 +206,7 @@ export function ItemDrillIn({
           </button>
         </div>
       </div>
-      <div data-testid="drill-value-row" className="mt-2 flex flex-wrap items-baseline gap-x-3 gap-y-1">
+      <div data-testid="drill-value-row" data-why-row="" className="mt-2 flex flex-wrap items-baseline gap-x-3 gap-y-1">
         {row.reported ? (
           <>
             <span className="text-[28px] font-semibold leading-9 tabular-nums">{row.display || '—'}</span>
@@ -231,6 +236,17 @@ export function ItemDrillIn({
         )}
         {[since, worstMonths].filter(Boolean).length > 0 && (
           <span className="text-sm text-ink/70">{[since, worstMonths].filter(Boolean).join(' · ')}</span>
+        )}
+        {onWhy && row.cell && row.reported && (
+          <WhyButton
+            attribution={attributionAvailable(row.row, row.cell, scale)}
+            subjectName={row.name}
+            valueDisplay={row.display}
+            periodLabel={columns[columns.length - 1]?.fullLabel ?? ''}
+            nameSubject={false}
+            className="self-center"
+            onOpen={onWhy}
+          />
         )}
       </div>
       <p className="sr-only">{summary}</p>

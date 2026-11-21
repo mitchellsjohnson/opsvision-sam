@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { components } from '../../../api/schema'
 import { DEPLOYMENT_NOUN, deploymentRows } from '../../../test/deploymentFixtures'
 import { buildTrendColumns, coarseColumns } from '../columns'
-import { boardLayout, buildBoardRow, cellName, fiscalGroups, fiscalLabel, rowName, streakAt, type BoardCell } from './statusBoard'
+import { boardLayout, buildBoardRow, cellName, currentName, fiscalGroups, fiscalLabel, rowName, streakAt, valueName, type BoardCell } from './statusBoard'
 
 type ViewRow = components['schemas']['ViewRow']
 type Cell = components['schemas']['Cell']
@@ -93,6 +93,14 @@ describe('boardLayout', () => {
     expect(boardLayout(262, 8)).toMatchObject({ count: 8, cellWidth: 32, valueColumn: false })
   })
 
+  it('stacked, leaves room for a trailing cell at the end of each ribbon row', () => {
+    const layout = boardLayout(262, 12, 32)
+    expect(layout).toMatchObject({ count: 6, valueColumn: false })
+    expect(layout.count * layout.cellWidth! + 32).toBeLessThanOrEqual(262)
+    // Inline rows have the Current column already.
+    expect(boardLayout(1200, 12, 32)).toEqual(boardLayout(1200, 12))
+  })
+
   it.each([12, 8, 4, 3])('never shows fewer columns on a wider board (%i columns)', (total) => {
     let prior = 0
     for (let width = 200; width <= 1200; width++) {
@@ -164,6 +172,38 @@ describe('buildBoardRow', () => {
     expect(board.cells[2]).toMatchObject({ status: 'R', display: '72%', change: '-10 pts vs Sep' })
     expect(board.current).toBe('72%')
     expect(board.change?.move.tone).toBe('bad')
+  })
+
+  it('carries the scope cells’ exec summary state, and the selected one’s on the row', () => {
+    const written = { state: 'written' as const, excerpt: 'Seven of 33 epics slipped…', author: 'Avery Admin' }
+    const scope = row([
+      cell('2026-M09', { status: 'Y', summary: { state: 'missing' } }),
+      cell('2026-M10', { value: 72, display: '72%', status: 'R', summary: written }),
+    ])
+    const child = row([cell('2026-M10', { status: 'R', summary: { state: 'missing' } })], { subjectId: 'unit-a', depth: 1 })
+    const board = buildBoardRow({
+      key: 'm',
+      category: { id: 'delivery', name: 'Delivery' },
+      scope,
+      head: scope,
+      children: [child],
+      noun: 'segments',
+      columns,
+      scale: SCALE,
+      fyStart: 1,
+    })
+    expect(board.cells.map((c) => c.summary)).toEqual([undefined, { state: 'missing' }, written])
+    expect(board.summary).toEqual(written)
+    expect(currentName(board, columns.at(-1)!, (k) => ({ R: 'Red' })[k])).toBe('On-time delivery, Oct 2026: 72%, Red; exec summary written.')
+    const none = buildBoardRow({ key: 'm', category: { id: 'delivery', name: 'Delivery' }, scope: null, head: scope, children: [child], noun: 'segments', columns, scale: SCALE, fyStart: 1 })
+    expect(none.cells.every((c) => c.summary === undefined)).toBe(true)
+    expect(none.summary).toBeUndefined()
+  })
+
+  it('names a value cell the way the trailing cells read: name, period, value, status', () => {
+    const oct = columns.at(-1)!
+    expect(valueName('Webhooks', oct, '99.06%', 'Red')).toBe('Webhooks, Oct 2026: 99.06%, Red.')
+    expect(valueName('Webhooks', oct, '', 'Red', ['exec summary needed'])).toBe('Webhooks, Oct 2026: Red; exec summary needed.')
   })
 
   it('takes the worst child when the scope is not reported, with the caption', () => {
@@ -431,6 +471,18 @@ describe('cellName', () => {
     expect(cellName('Concepts delivered expected value', aug, notDue, label)).toBe('Concepts delivered expected value, Aug 2026: Not due')
   })
 
+  it('a company-root cell says whether its exec summary is written or needed', () => {
+    const cell = { ...status('R'), display: '79%' }
+    expect(cellName('Epics', column, { ...cell, summary: { state: 'written', excerpt: 'Seven slipped…', author: 'Avery Admin' } }, label)).toBe(
+      'Epics, Sep 2026: Red, 79%; exec summary written',
+    )
+    expect(cellName('Epics', column, { ...cell, summary: { state: 'stale', excerpt: 'Seven slipped…' } }, label)).toBe(
+      'Epics, Sep 2026: Red, 79%; exec summary written',
+    )
+    expect(cellName('Epics', column, { ...cell, summary: { state: 'missing' } }, label)).toBe('Epics, Sep 2026: Red, 79%; exec summary needed')
+    expect(cellName('Epics', column, { ...cell, summary: { state: 'optional' } }, label)).toBe('Epics, Sep 2026: Red, 79%')
+  })
+
   it('says why there is no status', () => {
     expect(cellName('Uptime', column, missing, label)).toBe('Uptime, Sep 2026: No data')
     expect(cellName('Uptime', column, { ...missing, kind: 'na', naReason: 'No ideas' }, label)).toBe(
@@ -468,6 +520,25 @@ describe('rowName', () => {
     })
     expect(rowName(board, columns.at(-1)!, label)).toBe(
       'Deployment uptime, Oct 2026: 99.63%, Red; worst Notification Relay - Multi-Region Active; 1 of 21 Red; 12 not reported',
+    )
+  })
+
+  it('gains the exec summary state of the counted cell', () => {
+    const columns = buildTrendColumns('2026-M10', 1)
+    const items = deploymentRows(columns)
+    const board = buildBoardRow({
+      key: 'deployment_uptime',
+      category: { id: 'eng', name: 'Engineering' },
+      scope: null,
+      head: items[0]!,
+      children: items,
+      noun: DEPLOYMENT_NOUN,
+      columns,
+      scale: SCALE,
+      fyStart: 1,
+    })
+    expect(rowName({ ...board, summary: { state: 'missing' } }, columns.at(-1)!, label)).toBe(
+      'Deployment uptime, Oct 2026: 99.63%, Red; worst Notification Relay - Multi-Region Active; 1 of 21 Red; 12 not reported; exec summary needed',
     )
   })
 

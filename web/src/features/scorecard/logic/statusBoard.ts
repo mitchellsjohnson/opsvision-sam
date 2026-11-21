@@ -1,5 +1,6 @@
 import type { components } from '../../../api/schema'
 import { lastMonth, parent, parsePeriod } from '../../../lib/period'
+import { summaryDisplay, type SummaryDisplay } from '../../rca/rcaState'
 import type { Move } from '../charts/chartTheme'
 import { buildPoints, headerChange, type ChartPoint } from '../charts/points'
 import { coarserGrain, endOrdinal, FREQUENCY_GRAIN, type Column } from '../columns'
@@ -11,6 +12,10 @@ import { cellKey } from '../viewHelpers'
 
 type ViewRow = components['schemas']['ViewRow']
 type Frequency = components['schemas']['Frequency']
+type MetricSummaryState = components['schemas']['MetricSummaryState']
+type MetricSummary = components['schemas']['MetricSummary']
+type Cell = components['schemas']['Cell']
+type Role = components['schemas']['Role']
 
 export interface BoardCell {
   /** The column key. */
@@ -29,6 +34,10 @@ export interface BoardCell {
   change: string | null
   /** `worst of 3 services` when the status comes from children; `Q3 FY2026 reports after Sep` when not due. */
   caption: string
+  /** The exec summary state, on the scope's own cells when the view has it (company-root cells of live views). */
+  summary?: MetricSummaryState
+  /** The period the status is for when it is not the column's: a coarse metric's quarter, in the month that closes it. */
+  period?: string
 }
 
 export interface BoardRow {
@@ -48,6 +57,11 @@ export interface BoardRow {
    * out of all of them, and how many did not report.
    */
   worst?: { name: string; display: string; of?: { same: number; total: number; notReported: number } }
+  /**
+   * The exec summary state of the selected (counted) period: the scope cell's,
+   * or for an item metric with no company row, from the metric-summaries list.
+   */
+  summary?: MetricSummaryState
 }
 
 /** Inline rows keep at least this much for the metric name; cells grow only once it is comfortable. */
@@ -88,9 +102,10 @@ function cellWidthFor(room: number, count: number, max: number): number {
  * Fits the board to its width, preferring every column over the value
  * column: inline rows when all columns fit beside the name and value; else
  * stacked rows with all columns across the full width; else the latest half,
- * quarter, and so on. A wider board never shows fewer columns.
+ * quarter, and so on. A wider board never shows fewer columns. Stacked rows
+ * keep `trailing` px at the end of the ribbon for a trailing cell.
  */
-export function boardLayout(boardWidth: number, total: number): BoardLayout {
+export function boardLayout(boardWidth: number, total: number, trailing = 0): BoardLayout {
   const all = Math.max(total, 1)
   const width = Math.floor(boardWidth)
   if (width <= 0) return { count: all, cellWidth: null, valueColumn: true, nameWidth: null, valueWidth: VALUE_WIDTH }
@@ -99,9 +114,10 @@ export function boardLayout(boardWidth: number, total: number): BoardLayout {
     const nameWidth = Math.min(NAME_MAX, width - VALUE_WIDTH - all * cellWidth)
     return { count: all, cellWidth, valueColumn: true, nameWidth, valueWidth: width - nameWidth - all * cellWidth }
   }
+  const room = width - trailing
   let count = all
-  while (count > 1 && count * CELL_MIN > width) count = Math.ceil(count / 2)
-  return { count, cellWidth: cellWidthFor(width, count, CELL_MAX_STACKED), valueColumn: false, nameWidth: null, valueWidth: 0 }
+  while (count > 1 && count * CELL_MIN > room) count = Math.ceil(count / 2)
+  return { count, cellWidth: cellWidthFor(room, count, CELL_MAX_STACKED), valueColumn: false, nameWidth: null, valueWidth: 0 }
 }
 
 export interface FiscalGroup {
@@ -205,6 +221,7 @@ export function buildBoardRow({
   const cellAt = (col: Column, point: ChartPoint, key = col.key): BoardCell => {
     const at = statusAtScope({ scope: scope ?? { cells: [] }, children, columnKey: col.key, scale, noun })
     const kind = at.status ? 'status' : point.kind === 'na' ? 'na' : point.kind === 'value' && point.display ? 'unrated' : 'missing'
+    const summary = scope?.cells.find((c) => cellKey(c) === col.key)?.summary
     return {
       key,
       kind,
@@ -213,6 +230,8 @@ export function buildBoardRow({
       naReason: point.naReason,
       change: point.kind === 'value' ? point.change : null,
       caption: at.caption,
+      ...(summary && { summary }),
+      ...(key !== col.key && { period: col.period }),
     }
   }
 
@@ -259,6 +278,7 @@ export function buildBoardRow({
       change: scope && ps.status && counted?.display ? headerChange(scope, countedCell, fyStart) : null,
       counted: counted && { ...counted, caption: ps.caption },
       ...(worst && { worst }),
+      ...(counted?.summary && { summary: counted.summary }),
     }
   }
 
@@ -276,7 +296,40 @@ export function buildBoardRow({
     caption: current?.caption ?? '',
     change: scope && current?.display ? headerChange(scope, currentCell, fyStart) : null,
     ...(worst && { worst }),
+    ...(current?.summary && { summary: current.summary }),
   }
+}
+
+/** A metric-summaries list item as a cell's summary state: what an item metric (no company row) has instead of `Cell.summary`. */
+export function listedState(s: MetricSummary | undefined): MetricSummaryState | undefined {
+  return s && { state: s.state, excerpt: s.text, author: s.authorName }
+}
+
+/** `summaryDisplay` for a summary state with no cell of its own (an item metric's, from the list). */
+export function stateDisplay(summary: MetricSummaryState | undefined, role: Role): SummaryDisplay | null {
+  // summaryDisplay reads only `ytd` and `summary`.
+  return summary ? summaryDisplay({ ytd: false, summary } as Cell, role) : null
+}
+
+/** How a cell's name ends with its exec summary state: written (or stale), needed, or '' (none, optional). */
+export function summaryPhrase(summary: MetricSummaryState | undefined): string {
+  if (summary?.state === 'written' || summary?.state === 'stale') return 'exec summary written'
+  return summary?.state === 'missing' ? 'exec summary needed' : ''
+}
+
+/** A trailing value cell's name: `Webhooks, Oct 2026: 99.06%, Red.`, with any `extras` after semicolons. */
+export function valueName(name: string, column: Column, display: string, statusLabel: string | undefined, extras: string[] = []): string {
+  const value = [display, statusLabel].filter(Boolean).join(', ')
+  return `${[`${name}, ${column.fullLabel}: ${value}`, ...extras.filter(Boolean)].join('; ')}.`
+}
+
+/** The board's Current cell's name: the row's name (with its worst child) and its exec summary state. */
+export function currentName(row: BoardRow, column: Column, statusLabel: (key: string) => string | undefined): string {
+  const named = rowName(row, column, statusLabel)
+  if (named) return `${named}.`
+  const at = row.counted ?? row.cells[row.cells.length - 1]
+  const label = at?.kind === 'status' ? (statusLabel(at.status) ?? at.status) : undefined
+  return valueName(row.name, column, row.current || at?.display || '', label, [summaryPhrase(row.summary)])
 }
 
 /**
@@ -294,7 +347,10 @@ export function rowName(row: BoardRow, column: Column, statusLabel: (key: string
     `worst ${row.worst.name}`,
     `${same} of ${total} ${label}`,
     ...(notReported > 0 ? [`${notReported} not reported`] : []),
-  ].join('; ')
+    summaryPhrase(row.summary),
+  ]
+    .filter(Boolean)
+    .join('; ')
 }
 
 /** A change phrase for speech: `-12 pts vs Sep` reads `down 12 pts vs Sep`. */
@@ -316,7 +372,9 @@ export function cellName(
   if (cell.kind === 'notDue') return `${where}: Not due`
   if (cell.kind === 'missing') return `${where}: No data`
   const change = withChange && cell.change ? `, ${spokenChange(cell.change)}` : ''
-  if (cell.kind === 'unrated') return `${where}: ${cell.display}, not rated${change}`
+  const phrase = summaryPhrase(cell.summary)
+  const summary = phrase ? `; ${phrase}` : ''
+  if (cell.kind === 'unrated') return `${where}: ${cell.display}, not rated${change}${summary}`
   const detail = cell.display || cell.caption
-  return `${where}: ${statusLabel(cell.status) ?? cell.status}${detail ? `, ${detail}` : ''}${change}`
+  return `${where}: ${statusLabel(cell.status) ?? cell.status}${detail ? `, ${detail}` : ''}${change}${summary}`
 }

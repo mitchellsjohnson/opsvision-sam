@@ -13,6 +13,7 @@ import {
   useState,
   type FocusEvent,
   type KeyboardEvent,
+  type MouseEvent,
   type ReactNode,
   type RefObject,
 } from 'react'
@@ -27,7 +28,7 @@ import type { Column } from './columns'
 import { filterItems, groupItems, itemSummary, labelsNeedYear, type ItemRow, type ItemSort } from './logic/itemGrid'
 import { CHIP_MD_WIDTH, itemGridLayout, type ItemGridNeeds } from './logic/itemGridLayout'
 import { countNoun, nounForms, type NounForms } from './logic/nouns'
-import { cellName, fiscalGroups, streakAt } from './logic/statusBoard'
+import { cellName, fiscalGroups, streakAt, valueName } from './logic/statusBoard'
 import { columnUnit, sinceText } from './logic/statusText'
 import { cellKey } from './viewHelpers'
 
@@ -40,6 +41,11 @@ const NARROW = 640
 const EXTRA_WIDTH = 112
 /** The filter appears once there are more items than fit in a glance. */
 const FILTER_MIN = 12
+/** The stacked row's trailing Why cell. */
+const TRAILING = 32
+const WHY_HINT = 'Press Enter for why'
+const CELL_FOCUS =
+  'focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ink focus-visible:inset-ring-1 focus-visible:inset-ring-white'
 
 /** Each item's org unit name (`useItems` + `useOrgUnits`); `Unassigned` when it has none, '' until known. */
 export function useItemGroups(): (itemId: string) => string {
@@ -208,6 +214,12 @@ function ItemValue({ r, scale, long, stacked }: { r: ItemRow; scale: StatusLevel
   )
 }
 
+/** The stacked layout with room for the trailing Why cell at the end of each row. */
+function stackedWithTrailing(width: number, count: number, needs: ItemGridNeeds) {
+  const narrower = itemGridLayout(Math.max(width - TRAILING, 0), count, needs)
+  return narrower.stacked ? narrower : itemGridLayout(width, count, needs)
+}
+
 /** The worst status's color, for the Red months bars. */
 function worstColorOf(scale: StatusLevel[]): string {
   const worst = [...scale].sort((a, b) => b.rank - a.rank)[0]
@@ -232,9 +244,12 @@ interface RowContext {
   statusLabel: (key: string) => string | undefined
   cellPropsFor: GridNavigation['cellPropsFor']
   open: (itemId: string) => void
+  /** Opens the selected period's Why card from the trailing cell; absent when the grid has none. */
+  why?: (itemId: string, el: HTMLElement) => void
   /** Set when focus is restored by script, so that one focus does not pop the cell's tooltip. */
   quiet: RefObject<boolean>
 }
+
 
 /**
  * One item's row (two when stacked). Memoized: it redraws only when its
@@ -254,7 +269,7 @@ const ItemGridRow = memo(function ItemGridRow({
   activeCol: number
   ctx: RowContext
 }) {
-  const { shown, offset, fyStarts, columns, scale, stacked, extra, grouped, long, colSpan, worstColor, statusLabel, cellPropsFor, open, quiet } =
+  const { shown, offset, fyStarts, columns, scale, stacked, extra, grouped, long, colSpan, worstColor, statusLabel, cellPropsFor, open, why, quiet } =
     ctx
   const cells = r.cells.slice(offset).map((cell, i) => {
     const column = shown[i]!
@@ -293,6 +308,21 @@ const ItemGridRow = memo(function ItemGridRow({
     )
   })
   const value = <ItemValue r={r} scale={scale} long={long} stacked={stacked} />
+  const selected = shown[shown.length - 1]
+  // The trailing cell after the selected period: the Value cell inline, a 32px Why cell stacked. Only reported rows have one.
+  const trailingProps =
+    why && r.reported && selected
+      ? {
+          ...cellPropsFor(r.id, shown.length, index, activeCol === shown.length),
+          type: 'button' as const,
+          'aria-label': valueName(r.name, selected, r.display, r.status ? (statusLabel(r.status) ?? r.status) : 'not rated'),
+          'aria-description': WHY_HINT,
+          'aria-haspopup': 'dialog' as const,
+          onClick: (e: MouseEvent<HTMLButtonElement>) => why(r.id, e.currentTarget),
+          // The grid opens on Space keydown; stop the button's own keyup click from opening it twice.
+          onKeyUp: (e: KeyboardEvent<HTMLButtonElement>) => e.key === ' ' && e.preventDefault(),
+        }
+      : null
   if (stacked) {
     return (
       <>
@@ -313,6 +343,21 @@ const ItemGridRow = memo(function ItemGridRow({
             <span className="sr-only">{r.name}</span>
           </th>
           {cells}
+          {why && (
+            <td className="w-8 py-1 pl-0.5 align-middle">
+              {trailingProps && (
+                <button
+                  {...trailingProps}
+                  className={clsx(
+                    'flex h-6 w-full items-center justify-center rounded-[3px] text-[11px] font-semibold leading-none text-accent-deep hover:bg-accent/[0.06]',
+                    CELL_FOCUS,
+                  )}
+                >
+                  Why
+                </button>
+              )}
+            </td>
+          )}
         </tr>
       </>
     )
@@ -325,7 +370,15 @@ const ItemGridRow = memo(function ItemGridRow({
       </th>
       {grouped && <td className="truncate pr-4 align-middle text-xs text-ink/70">{r.group}</td>}
       {cells}
-      <td className="pl-3 text-right align-middle">{value}</td>
+      {trailingProps ? (
+        <td className="pl-1 text-right align-middle">
+          <button {...trailingProps} className={clsx('w-full rounded-md py-0.5 pr-0.5 pl-2 text-right hover:bg-accent/[0.06]', CELL_FOCUS)}>
+            {value}
+          </button>
+        </td>
+      ) : (
+        <td className="pl-3 text-right align-middle">{value}</td>
+      )}
       {extra && (
         <td className="pl-3 text-right align-middle text-xs tabular-nums text-ink/70">
           {r.worstCount > 0 ? (
@@ -378,6 +431,14 @@ export interface ItemGridProps {
   /** Whether the group of items with no reports in the window is open; the grid keeps its own when absent. */
   silentOpen?: boolean
   onSilentOpen?: (open: boolean) => void
+  /**
+   * Opens an item's Why card for a period: the trailing cell (the Value cell
+   * inline, a 32px Why cell stacked) for the selected period, `W` on any
+   * month for that month. Without it the grid has no trailing cell.
+   */
+  onWhy?: (itemId: string, period: string, el: HTMLElement) => void
+  /** The summary's Why trigger: the company's standing and exec summary, at company scope. */
+  why?: ReactNode
 }
 
 /**
@@ -403,6 +464,8 @@ export function ItemGrid({
   announce,
   silentOpen,
   onSilentOpen,
+  onWhy,
+  why,
 }: ItemGridProps) {
   const hintId = useId()
   const noteId = useId()
@@ -425,7 +488,10 @@ export function ItemGrid({
   const textsKey = JSON.stringify(rows.map((r) => [r.name, r.group, r.display, r.status, notReportedText(r, long, false)]))
   // eslint-disable-next-line react-hooks/exhaustive-deps -- `textsKey` stands for the texts measured from `rows`.
   const needs = useMemo(() => measureNeeds(rows, scale, long, groupNoun), [textsKey, scale, long, groupNoun, fontsReady])
-  const layout = itemGridLayout(width, columns.length, needs)
+  const trailing = onWhy !== undefined
+  const fitted = itemGridLayout(width, columns.length, needs)
+  // Stacked rows end in a trailing Why cell, so the cells give up its width.
+  const layout = trailing && fitted.stacked ? stackedWithTrailing(width, columns.length, needs) : fitted
   // The range control changes what the grid shows only where the longest range fits more columns than the shortest.
   const rangeShown = range !== undefined && itemGridLayout(width, range.maxCount, needs).count > range.minCount
   const offset = columns.length - layout.count
@@ -467,11 +533,27 @@ export function ItemGrid({
     opener.current = onOpenItem
   })
   const openItem = useCallback((itemId: string) => opener.current(itemId), [])
+  const whyOpener = useRef(onWhy)
+  useLayoutEffect(() => {
+    whyOpener.current = onWhy
+  })
+  const shownPeriods = useRef<string[]>([])
+  useLayoutEffect(() => {
+    shownPeriods.current = shown.map((c) => c.period)
+  })
+  const whyAt = useCallback((itemId: string, col: number, el: HTMLElement) => {
+    const periods = shownPeriods.current
+    const period = periods[Math.min(col, periods.length - 1)]
+    if (period) whyOpener.current?.(itemId, period, el)
+  }, [])
+  const whySelected = useCallback((itemId: string, el: HTMLElement) => whyAt(itemId, Infinity, el), [whyAt])
   const nav = useGridNavigation({
     rowIds: ordered.map((r) => r.id),
     colCount: shown.length,
     anchor: 'end',
-    onOpen: openItem,
+    trailing,
+    onOpen: (rowId, col, el) => (col === shown.length ? whySelected(rowId, el) : openItem(rowId)),
+    onWhy: trailing ? whyAt : undefined,
   })
 
   const [ownMessage, setOwnMessage] = useState('')
@@ -520,7 +602,7 @@ export function ItemGrid({
   const stacked = layout.stacked
   const extra = layout.extraShown
   const grouped = !stacked && layout.groupWidth > 0
-  const colSpan = stacked ? shown.length + 1 : shown.length + 2 + (grouped ? 1 : 0) + (extra ? 1 : 0)
+  const colSpan = stacked ? shown.length + 1 + (trailing ? 1 : 0) : shown.length + 2 + (grouped ? 1 : 0) + (extra ? 1 : 0)
   const showFilter = rows.length > FILTER_MIN || filter !== ''
   const present = useMemo(() => {
     const keys = new Set<string>()
@@ -546,9 +628,10 @@ export function ItemGrid({
       statusLabel,
       cellPropsFor,
       open: openItem,
+      why: trailing ? whySelected : undefined,
       quiet,
     }),
-    [shown, offset, fyStarts, columns, scale, stacked, extra, grouped, long, colSpan, statusLabel, cellPropsFor, openItem],
+    [shown, offset, fyStarts, columns, scale, stacked, extra, grouped, long, colSpan, statusLabel, cellPropsFor, openItem, trailing, whySelected],
   )
   const activeRow = nav.active.rowId
   const activeCol = nav.active.col
@@ -643,6 +726,11 @@ export function ItemGrid({
               </Fragment>
             ))}
           </p>
+          {why && (
+            <div data-why-row="" className="mt-1 flex min-w-0">
+              {why}
+            </div>
+          )}
         </div>
         {w &&
           (narrow ? (
@@ -749,7 +837,7 @@ export function ItemGrid({
               aria-describedby={`${noteId} ${hintId}`}
               data-stacked={String(layout.stacked)}
               className="table-fixed border-separate border-spacing-0 text-sm"
-              style={{ width: layout.tableWidth }}
+              style={{ width: layout.tableWidth + (stacked && trailing ? TRAILING : 0) }}
             >
               <colgroup>
                 <col style={{ width: layout.stacked ? 0 : layout.nameWidth }} />
@@ -759,6 +847,7 @@ export function ItemGrid({
                 ))}
                 {!layout.stacked && <col style={{ width: layout.valueWidth }} />}
                 {extra && <col style={{ width: EXTRA_WIDTH }} />}
+                {layout.stacked && trailing && <col style={{ width: TRAILING }} />}
               </colgroup>
               <thead>
                 {/* On phones one fiscal year is the summary's period already; the row would only push the grid down. */}
@@ -781,6 +870,7 @@ export function ItemGrid({
                     ))}
                     {!layout.stacked && <td />}
                     {extra && <td />}
+                    {layout.stacked && trailing && <td />}
                   </tr>
                 )}
                 <tr>
@@ -823,6 +913,11 @@ export function ItemGrid({
                   {extra && (
                     <th scope="col" className="pb-1.5 pl-3 text-right text-xs font-medium text-ink/70">
                       {worstLabel} {unit(2)}
+                    </th>
+                  )}
+                  {layout.stacked && trailing && (
+                    <th scope="col" className="p-0">
+                      <span className="sr-only">Why</span>
                     </th>
                   )}
                 </tr>
@@ -884,6 +979,7 @@ export function ItemGrid({
         {ordered.length > 0 && (
           <p id={hintId} className="mt-2 text-[11px] leading-4 text-ink/70">
             Arrow keys move between cells · Enter opens the {noun.one}’s trend · Home/End jump to the first or current {unit(1)}
+            {trailing && ' · W why'}
           </p>
         )}
       </div>

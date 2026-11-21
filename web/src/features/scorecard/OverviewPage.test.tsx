@@ -7,7 +7,7 @@ import type { components } from '../../api/schema'
 import { App } from '../../App'
 import { monthLabel, parsePeriod } from '../../lib/period'
 import { meFor, orgUnits, tenant } from '../../test/fixtures'
-import { API, server } from '../../test/server'
+import { API, server, state } from '../../test/server'
 import { renderApp } from '../../test/utils'
 import {
   addQuarterly,
@@ -18,6 +18,7 @@ import {
   UPTIME_ITEMS,
   versions,
   viewHandlers,
+  withRca,
 } from '../../test/viewFixtures'
 
 type ScorecardView = components['schemas']['ScorecardView']
@@ -148,7 +149,9 @@ describe('OverviewPage', () => {
     await screen.findByRole('heading', { name: 'Overview', level: 1 })
     // The board names the worst segment and how many share its status; the cell keeps the scope.
     const boardRow = screen.getByTestId('ribbon-on_time_pct')
-    await waitFor(() => expect(within(boardRow).getAllByRole('button').at(-1)!.getAttribute('aria-label')).toBe('On-time delivery, Oct 2026: Red, worst of 2 segments'))
+    // The status cells (the Current cell after them opens the Why card).
+    const statusCells = () => [...boardRow.querySelectorAll<HTMLElement>('button[data-kind]')]
+    await waitFor(() => expect(statusCells().at(-1)!.getAttribute('aria-label')).toBe('On-time delivery, Oct 2026: Red, worst of 2 segments'))
     expect(boardRow.getAttribute('aria-label')).toBe('On-time delivery, Oct 2026: 70.0%, Red; worst Unit A; 1 of 2 Red')
     expect(within(boardRow).getByText('· 1 of 2 Red', { exact: false })).toBeTruthy()
     expect(
@@ -556,7 +559,7 @@ describe('OverviewPage', () => {
     })
     await screen.findByRole('heading', { name: 'Overview', level: 1 })
     const ribbon = screen.getByTestId('ribbon-on_time_pct')
-    const cells = within(ribbon).getAllByRole('button')
+    const cells = [...ribbon.querySelectorAll<HTMLElement>('button[data-kind]')]
     expect(cells).toHaveLength(12)
     expect(cells.at(-1)!.textContent).toBe('R')
     // With no org levels to name them, the children are units.
@@ -937,5 +940,175 @@ describe('OverviewPage', () => {
     const parsed = parsePeriod('2026-M10')!
     await screen.findByRole('heading', { name: 'Overview', level: 1 })
     expect(screen.getByText(new RegExp(`${monthLabel(parsed, fy)}.*All of Example Co`))).toBeTruthy()
+  })
+})
+
+describe('Why? and exec summary states', () => {
+  type SummaryState = components['schemas']['MetricSummaryState']
+  type MetricSummary = components['schemas']['MetricSummary']
+  const WRITTEN: SummaryState = { state: 'written', excerpt: 'Unit A missed three epics after the code freeze; Unit B is…', author: 'Avery Admin' }
+  const MISSING: SummaryState = { state: 'missing' }
+
+  function renderRca(summary: SummaryState | null, edit?: (view: ScorecardView) => void, route = ROUTE) {
+    renderOverview(route, (view) => {
+      edit?.(view)
+      withRca(view, summary ? { on_time_pct: { '2026-M10': summary } } : {})
+    })
+  }
+
+  const tileWhy = (name: string) => metricTile(name).querySelector<HTMLElement>('[data-tile-why]')
+
+  it('a company-scope tile with a written summary shows Why: and the excerpt; it opens the company card', async () => {
+    const asked: URL[] = []
+    server.use(
+      http.get(`${API}/v1/scorecards/:sc/attribution`, ({ request }) => {
+        asked.push(new URL(request.url))
+        return HttpResponse.json({ error: { code: 'not_found', message: 'No such cell.' } }, { status: 404 })
+      }),
+    )
+    renderRca(WRITTEN)
+    await screen.findByRole('heading', { name: 'Overview', level: 1 })
+    const slot = tileWhy('On-time delivery')!
+    const why = within(slot).getByRole('button', { name: 'Why On-time delivery is 84.3% in Oct 2026: exec summary by Avery Admin' })
+    expect(why.textContent).toBe(`Why:${WRITTEN.excerpt}`)
+    await userEvent.setup().click(why)
+    const card = await screen.findByRole('dialog', { name: 'All units · On-time delivery' })
+    expect(card).toBeTruthy()
+    await waitFor(() => expect(asked).toHaveLength(1))
+    expect(Object.fromEntries(asked[0]!.searchParams)).toEqual({ metric: 'on_time_pct', subject: 'root', period: '2026-M10' })
+  })
+
+  it('a missing summary shows Why? Exec summary needed to the admin and Why? No exec summary yet to a viewer', async () => {
+    renderRca(MISSING)
+    await screen.findByRole('heading', { name: 'Overview', level: 1 })
+    expect(within(tileWhy('On-time delivery')!).getByRole('button').textContent).toBe('Why?Exec summary needed')
+  })
+
+  it('a viewer sees the missing tag too, with no call to act', async () => {
+    state.role = 'viewer'
+    renderRca(MISSING)
+    await screen.findByRole('heading', { name: 'Overview', level: 1 })
+    const why = within(tileWhy('On-time delivery')!).getByRole('button')
+    expect(why.textContent).toBe('Why?No exec summary yet')
+    expect(why.getAttribute('aria-label')).toBe('Why is On-time delivery 84.3% in Oct 2026? No exec summary yet')
+  })
+
+  it('Green below 100% still shows the missing tag', async () => {
+    renderRca(MISSING, (view) => Object.assign(cellOf(view, 'on_time_pct', 'root', '2026-M10'), { value: 94, display: '94.0%', status: 'G' }))
+    await screen.findByRole('heading', { name: 'Overview', level: 1 })
+    expect(within(tileWhy('On-time delivery')!).getByRole('button').textContent).toBe('Why?Exec summary needed')
+  })
+
+  it('a tile scoped to a unit shows Why? only: the unit has attribution, not a summary', async () => {
+    renderRca(WRITTEN, undefined, `${ROUTE}&scope=unit-a`)
+    await screen.findByRole('heading', { name: 'Overview', level: 1 })
+    const why = within(tileWhy('On-time delivery')!).getByRole('button')
+    expect(why.textContent).toBe('Why?')
+    expect(why.getAttribute('aria-label')).toBe('Why is Unit A 70.0% in Oct 2026?')
+  })
+
+  it('a perfect tile shows nothing', async () => {
+    renderRca(null, (view) => Object.assign(cellOf(view, 'on_time_pct', 'root', '2026-M10'), { value: 100, display: '100.0%', status: 'G' }))
+    await screen.findByRole('heading', { name: 'Overview', level: 1 })
+    expect(tileWhy('On-time delivery')).toBeNull()
+  })
+
+  it('the board’s Current cell carries the summary state and opens the company card', async () => {
+    renderRca(WRITTEN)
+    await screen.findByRole('heading', { name: 'Overview', level: 1 })
+    const board = screen.getByRole('grid', { name: '12-month status' })
+    const current = within(board).getByRole('button', { name: 'On-time delivery, Oct 2026: 84.3%, Yellow; exec summary written.' })
+    expect(current.querySelector('[data-summary-mark]')).toBeTruthy()
+    current.focus()
+    await userEvent.setup().keyboard('{Enter}')
+    expect(await screen.findByRole('dialog', { name: 'All units · On-time delivery' })).toBeTruthy()
+  })
+
+  it('a Needs attention card carries the summary line', async () => {
+    renderRca(MISSING)
+    await screen.findByRole('heading', { name: 'Overview', level: 1 })
+    const needs = screen.getByRole('region', { name: 'Needs attention' })
+    const card = within(needs).getByRole('article', { name: 'On-time delivery' })
+    expect(within(within(card).getByTestId('attention-summary')).getByRole('button').textContent).toBe('Exec summary needed')
+  })
+
+  describe('an item metric (no company row): its state comes from the metric-summaries list', () => {
+    function listing(item: Partial<MetricSummary>) {
+      const asked: URL[] = []
+      server.use(
+        http.get(`${API}/v1/scorecards/:sc/metric-summaries`, ({ request }) => {
+          asked.push(new URL(request.url))
+          const s: MetricSummary = {
+            metricKey: 'svc_uptime',
+            metricName: 'Service uptime',
+            period: '2026-M10',
+            requirement: 'required',
+            state: 'missing',
+            standing: { display: '99.20%', status: 'R', headline: '' },
+            links: [],
+            linksTotal: 0,
+            stale: false,
+            staleReasons: [],
+            canEdit: state.role === 'admin',
+            ...item,
+          }
+          return HttpResponse.json({ period: '2026-M10', counts: { required: 1, missing: 0, stale: 0, written: 0, optional: 0 }, items: [s] })
+        }),
+      )
+      return asked
+    }
+
+    function renderItems(route = ROUTE) {
+      server.use(...uptimeHandlers(), ...viewHandlers({ respond: (u) => HttpResponse.json(withRca(addServiceUptime(buildView(u.searchParams)))) }))
+      renderApp(<App />, { route })
+    }
+
+    it('written: the tile footer reads Summary: and the board’s Current cell has the mark', async () => {
+      const asked = listing({ state: 'written', text: 'Web service lost 6h to a certificate expiry on 9 Oct; API s…', authorName: 'Avery Admin' })
+      renderItems()
+      await screen.findByRole('heading', { name: 'Overview', level: 1 })
+      const footer = metricTile('Service uptime').querySelector<HTMLElement>('[data-tile-footer]')!
+      const why = await within(footer).findByRole('button', { name: /^Why Service uptime is 99\.20% in Oct 2026: exec summary by Avery Admin$/ })
+      expect(why.textContent).toBe('Summary:Web service lost 6h to a certificate expiry on 9 Oct; API s…')
+      expect(asked[0]!.searchParams.get('period')).toBe('2026-M10')
+      expect(asked[0]!.searchParams.get('state')).toBe('all')
+      const board = screen.getByRole('grid', { name: '12-month status' })
+      const current = within(board).getByRole('button', { name: /^Service uptime, Oct 2026: 99\.20%, Red; worst Web service; .*exec summary written\.$/ })
+      expect(current.querySelector('[data-summary-mark]')).toBeTruthy()
+    })
+
+    it('missing: admins get Exec summary needed › to the Exec summaries view', async () => {
+      listing({ state: 'missing' })
+      renderItems()
+      await screen.findByRole('heading', { name: 'Overview', level: 1 })
+      const link = await within(metricTile('Service uptime')).findByRole('link', { name: 'Exec summary needed' })
+      expect(link.getAttribute('href')).toBe('/scorecards/sc-main/exec-summaries?period=2026-M10&why=svc_uptime')
+    })
+
+    it('scoped to a unit, nothing is asked for and nothing is shown', async () => {
+      const asked = listing({ state: 'missing' })
+      server.use(
+        http.get(`${API}/v1/org/units`, () =>
+          HttpResponse.json({ units: [...orgUnits, { id: 'team-a1', name: 'Team A1', levelId: 'l2', parentId: 'unit-a', sourceKeys: [] }] }),
+        ),
+      )
+      server.use(
+        ...uptimeHandlers(),
+        ...viewHandlers({ respond: (u) => HttpResponse.json(withRca(addServiceUptime(buildView(u.searchParams), u.searchParams.getAll('subjects')))) }),
+      )
+      renderApp(<App />, { route: `${ROUTE}&scope=unit-a` })
+      await screen.findByRole('heading', { name: 'Overview', level: 1 })
+      const tile = metricTile('Service uptime')
+      expect(within(tile).queryByRole('link', { name: /Exec summary/ })).toBeNull()
+      expect(within(tile).queryByText(/Summary:|No exec summary/)).toBeNull()
+      expect(asked).toHaveLength(0)
+    })
+  })
+
+  it('has no axe violations with the Why? affordances', async () => {
+    const { container } = renderOverview(ROUTE, (view) => withRca(view, { on_time_pct: { '2026-M10': MISSING } }))
+    await screen.findByRole('heading', { name: 'Overview', level: 1 })
+    expect(tileWhy('On-time delivery')).toBeTruthy()
+    expect((await axe(container)).violations).toEqual([])
   })
 })

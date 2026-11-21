@@ -16,6 +16,8 @@ export interface TileFrameProps {
   extras?: ReactNode
   /** An optional 12px sentence under the value row (coarse, stopped, sparse, company total). */
   context?: string
+  /** The Why? trigger (`WhyButton`), after the value row and context sentence, before the chart. */
+  why?: ReactNode
   /** An optional link row after a rule. */
   footer?: ReactNode
   /** Opens the metric full screen; `trigger` gets focus back on close. */
@@ -32,7 +34,7 @@ export interface TileFrameProps {
  * the chart and an optional footer. A click on the card outside its controls
  * expands it too (pointer only; Expand is the keyboard path and gets focus back).
  */
-export function TileFrame({ head, threshold, value, extras, context, footer, onExpand, state, children }: TileFrameProps) {
+export function TileFrame({ head, threshold, value, extras, context, why, footer, onExpand, state, children }: TileFrameProps) {
   const expandRef = useRef<HTMLButtonElement>(null)
   const empty = state === 'window'
 
@@ -86,6 +88,11 @@ export function TileFrame({ head, threshold, value, extras, context, footer, onE
             {extras && <span className="text-xs text-ink/70">{extras}</span>}
           </div>
           {context && <p className="text-xs text-ink/70">{context}</p>}
+          {why != null && (
+            <div data-tile-why="" className="flex min-w-0">
+              {why}
+            </div>
+          )}
           <div className="min-w-0">{children}</div>
         </>
       )}

@@ -1,5 +1,6 @@
 import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { MemoryRouter } from 'react-router'
 import { describe, expect, it, vi } from 'vitest'
 import { axe } from 'vitest-axe'
 import type { components } from '../../api/schema'
@@ -380,5 +381,69 @@ describe('ItemSummaryTile', () => {
       renderDeployments()
       expect((await axe(document.body)).violations).toEqual([])
     })
+  })
+})
+
+describe('ItemSummaryTile exec summary', () => {
+  const HREF = '/scorecards/sc-main/exec-summaries?period=2026-M10&why=uptime'
+
+  function renderWith(summary: Parameters<typeof ItemSummaryTile>[0]['summary']) {
+    width.value = 560
+    return render(
+      <MemoryRouter>
+        <main>
+          <ItemSummaryTile
+            head={SERVICES[0]!}
+            rows={buildItemRows(SERVICES, columns, SCALE, () => 'Platform', 1)}
+            columns={columns}
+            scale={SCALE}
+            direction="higher_better"
+            noun={NOUN}
+            rule={RULE}
+            onExpand={vi.fn()}
+            onOpenItem={vi.fn()}
+            summary={summary}
+          />
+        </main>
+      </MemoryRouter>,
+    )
+  }
+
+  it('written: the footer leads with Summary: and the excerpt, which opens the company card', async () => {
+    const onOpen = vi.fn()
+    renderWith({ display: { state: 'written', excerpt: 'Webhooks lost 7h to a queue saturation after the 3 Oct deplo…', author: 'Avery Admin', canEdit: true }, href: HREF, onOpen })
+    const footer = screen.getByRole('article', { name: 'Uptime' }).querySelector<HTMLElement>('[data-tile-footer]')!
+    const why = within(footer).getByRole('button', { name: 'Why Uptime is 99.20% in Oct 2026: exec summary by Avery Admin' })
+    expect(why.textContent).toBe('Summary:Webhooks lost 7h to a queue saturation after the 3 Oct deplo…')
+    expect(footer.textContent!.indexOf('Summary:')).toBeLessThan(footer.textContent!.indexOf('See all 24 services'))
+    await userEvent.setup().click(why)
+    expect(onOpen).toHaveBeenCalledWith(why)
+  })
+
+  it('missing, admin: Exec summary needed › links to the Exec summaries view at this metric', () => {
+    renderWith({ display: { state: 'missing', canEdit: true }, href: HREF, onOpen: vi.fn() })
+    const link = screen.getByRole('link', { name: 'Exec summary needed' })
+    expect(link.textContent).toBe('Exec summary needed ›')
+    expect(link.getAttribute('href')).toBe(HREF)
+    expect(link.className).toContain('text-status-r')
+  })
+
+  it('missing, others: the No exec summary yet tag, which opens the card', () => {
+    renderWith({ display: { state: 'missing', canEdit: false }, href: HREF, onOpen: vi.fn() })
+    expect(screen.queryByRole('link', { name: /Exec summary needed/ })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Why is Uptime 99.20% in Oct 2026? No exec summary yet' }).textContent).toBe('No exec summary yet')
+  })
+
+  it('service rows carry no marks or tags', () => {
+    renderWith({ display: { state: 'missing', canEdit: true }, href: HREF, onOpen: vi.fn() })
+    for (const row of rowButtons()) {
+      expect(row.querySelector('[data-summary-mark], [data-tag]')).toBeNull()
+      expect(row.textContent).not.toMatch(/summary/i)
+    }
+  })
+
+  it('has no axe violations with a summary', async () => {
+    const { container } = renderWith({ display: { state: 'missing', canEdit: true }, href: HREF, onOpen: vi.fn() })
+    expect((await axe(container)).violations).toEqual([])
   })
 })

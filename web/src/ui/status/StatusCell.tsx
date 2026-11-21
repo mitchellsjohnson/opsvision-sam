@@ -2,9 +2,12 @@ import * as Tooltip from '@radix-ui/react-tooltip'
 import clsx from 'clsx'
 import type { CSSProperties, ReactNode } from 'react'
 import { chartTheme, statusFill } from '../../features/scorecard/charts/chartTheme'
+import type { components } from '../../api/schema'
 import type { BoardCell } from '../../features/scorecard/logic/statusBoard'
 import type { StatusLevel } from './StatusChip'
 import type { GridCellProps } from './useGridNavigation'
+
+type MetricSummaryState = components['schemas']['MetricSummaryState']
 
 /** Diagonal hairlines: not applicable, quieter than any status and unlike the no-data dot. */
 export const HATCH: CSSProperties = {
@@ -15,6 +18,16 @@ export const UNRATED_CLASS = 'border-transparent bg-ink/[0.06]'
 
 export function NoDataDot() {
   return <span data-dot="" aria-hidden="true" className="size-1 rounded-full bg-ink/35" />
+}
+
+/** A written exec summary's mark: a 6px white dot with a 1px `ink/70` ring; the cell's name says it. */
+export function SummaryMark({ className }: { className?: string }) {
+  return <span data-summary-mark="" aria-hidden="true" className={clsx('size-1.5 shrink-0 rounded-full bg-white ring-1 ring-ink/70', className)} />
+}
+
+/** Whether a summary state draws the written mark: written or stale. */
+export function summaryWritten(summary: MetricSummaryState | undefined): boolean {
+  return summary?.state === 'written' || summary?.state === 'stale'
 }
 
 const HEIGHT = { md: 'h-6', sm: 'h-[18px]', xs: 'h-3.5' } as const
@@ -33,14 +46,18 @@ export interface StatusCellProps {
   tip?: ReactNode
   grid?: GridCellProps
   onOpen?: (el: HTMLElement) => void
+  /** A company-root cell's exec summary state: written draws the mark in the top-right corner (the name says it). */
+  summary?: MetricSummaryState
 }
 
 /** One period's status: the tier fill and letter, a hatch for n/a, a dot for no data. */
-export function StatusCell({ cell, name, scale, size = 'md', decorative = false, glyph = 'letter', tip, grid, onOpen }: StatusCellProps) {
+export function StatusCell({ cell, name, scale, size = 'md', decorative = false, glyph = 'letter', tip, grid, onOpen, summary }: StatusCellProps) {
   const fill = cell.kind === 'status' ? statusFill(scale, cell.status) : null
+  const marked = summaryWritten(summary)
   const className = clsx(
     'flex w-full items-center justify-center rounded-[3px] border border-transparent text-[11px] font-semibold leading-none',
     HEIGHT[size],
+    marked && 'relative',
     cell.kind === 'na' && 'border-ink/15 bg-white',
     cell.kind === 'unrated' && UNRATED_CLASS,
   )
@@ -53,6 +70,7 @@ export function StatusCell({ cell, name, scale, size = 'md', decorative = false,
     <>
       {fill && chartTheme(scale, cell.status)[glyph === 'shape' ? 'shape' : 'letter']}
       {cell.kind === 'missing' && <NoDataDot />}
+      {marked && <SummaryMark className="absolute top-0.5 right-0.5" />}
     </>
   )
 

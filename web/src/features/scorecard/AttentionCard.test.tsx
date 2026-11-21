@@ -114,6 +114,44 @@ describe('AttentionCard', () => {
     expect(within(card).getByTestId('attention-why').textContent).toBe('Highest: Android App 941 ◆R · 4 of 8 products Red')
   })
 
+  it('the exec summary line sits under the driver line, above the stretched link, and opens the card', async () => {
+    const onOpen = vi.fn()
+    const summary = { display: { state: 'written' as const, excerpt: 'The backlog grew on two Android releases…', author: 'Avery Admin', canEdit: true }, periodLabel: 'Oct 2026', onOpen }
+    renderCard({ meta: { ...META, summary } })
+    const card = screen.getByRole('article')
+    const line = within(card).getByTestId('attention-summary')
+    expect(line.className).toContain('relative')
+    expect(line.className).toContain('z-10')
+    const why = within(line).getByRole('button', { name: 'Why Weighted support backlog is 681 in Oct 2026: exec summary by Avery Admin' })
+    expect(why.textContent).toBe('Summary:The backlog grew on two Android releases…')
+    const driver = within(card).getByTestId('attention-why')
+    expect(driver.compareDocumentPosition(line) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(driver.textContent).toBe('Highest: Android App 941 ◆R · 4 of 8 products Red')
+    await userEvent.setup().click(why)
+    expect(onOpen).toHaveBeenCalledWith(why)
+  })
+
+  it('a missing exec summary reads Exec summary needed for admins and No exec summary yet for others', () => {
+    const base = { periodLabel: 'Oct 2026', onOpen: vi.fn() }
+    const { unmount } = renderCard({ meta: { ...META, summary: { ...base, display: { state: 'missing', canEdit: true } } } })
+    expect(within(screen.getByTestId('attention-summary')).getByRole('button').textContent).toBe('Exec summary needed')
+    unmount()
+    renderCard({ meta: { ...META, summary: { ...base, display: { state: 'missing', canEdit: false } } } })
+    const button = within(screen.getByTestId('attention-summary')).getByRole('button')
+    expect(button.textContent).toBe('No exec summary yet')
+    expect(button.getAttribute('aria-label')).toBe('Why is Weighted support backlog 681 in Oct 2026? No exec summary yet')
+  })
+
+  it('with no driver line, the summary line takes the card’s foot; phones hide it', () => {
+    const summary = { display: { state: 'missing' as const, canEdit: true }, periodLabel: 'Oct 2026', onOpen: vi.fn() }
+    const { unmount } = renderCard({ meta: { ...META, why: null, summary } })
+    expect(screen.queryByTestId('attention-why')).toBeNull()
+    expect(screen.getByTestId('attention-summary').className).toContain('border-t')
+    unmount()
+    renderCard({ meta: { ...META, summary }, compact: true })
+    expect(screen.queryByTestId('attention-summary')).toBeNull()
+  })
+
   it('a tier below Red gives its reason in the middle tone', () => {
     renderCard({ item: ranked({ tier: 2, status: 'Y', reason: 'Fell from Green' }) })
     expect(screen.getByText('Fell from Green').className).toContain('text-status-y')

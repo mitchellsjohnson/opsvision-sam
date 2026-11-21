@@ -1,12 +1,13 @@
 import clsx from 'clsx'
-import { Fragment, useEffect, useId, useMemo, useRef, useSyncExternalStore, type FocusEvent, type RefObject } from 'react'
+import { Fragment, useEffect, useId, useMemo, useRef, useSyncExternalStore, type FocusEvent, type ReactNode, type RefObject } from 'react'
 import { textWidth, uiFont, useFontsReady } from '../../ui/textWidth'
 import { useElementWidth } from '../../ui/useElementWidth'
 import { ItemName, Legend, RollUp, StatusCell, StatusCellTip, StatusChip, useGridNavigation, type StatusLevel } from '../../ui/status'
+import { SummaryMark, summaryWritten } from '../../ui/status/StatusCell'
 import { MOVE_CLASS } from './charts/chartTheme'
 import type { Column } from './columns'
 import { labelsNeedYear } from './logic/itemGrid'
-import { boardLayout, cellName, fiscalGroups, fiscalLabel, rowName, streakAt, type BoardRow } from './logic/statusBoard'
+import { boardLayout, cellName, currentName, fiscalGroups, fiscalLabel, rowName, streakAt, type BoardRow } from './logic/statusBoard'
 import { columnUnit } from './logic/statusText'
 
 export { StatusCellTip, type StatusCellTipProps } from '../../ui/status'
@@ -14,6 +15,17 @@ export { StatusCellTip, type StatusCellTipProps } from '../../ui/status'
 const ROW_HOVER = 'hover:bg-ink/[0.035] focus-within:bg-ink/[0.035]'
 /** The Current cell's `pl-3`. */
 const VALUE_PAD = 12
+/** The stacked ribbon row's trailing Why cell. */
+const TRAILING = 32
+const WHY_HINT = 'Press Enter for why'
+const CELL_FOCUS =
+  'focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ink focus-visible:inset-ring-1 focus-visible:inset-ring-white'
+
+/** Whether the row has a value or status in the selected (counted) period, so its Current cell opens a card. */
+function hasCurrent(row: BoardRow): boolean {
+  const at = row.counted ?? row.cells[row.cells.length - 1]
+  return at?.kind === 'status' || at?.kind === 'unrated'
+}
 
 /** `1 of 21 Red` beside the worst item: how many share its status; '' without the counts. */
 function worstCount(row: BoardRow, scale: StatusLevel[]): string {
@@ -47,18 +59,58 @@ function StackedWorst({ row, scale }: { row: BoardRow; scale: StatusLevel[] }) {
   )
 }
 
+const TAG = 'inline-block whitespace-nowrap rounded px-1.5 text-[11px] font-semibold leading-4'
+
+/**
+ * The Current cell's exec summary state (§10.1): the written mark beside the
+ * value; on the line below, the missing tag (`Exec summary needed` for
+ * admins, `No exec summary yet` for others) or, for admins, `Review`.
+ */
+function summaryState(summary: BoardRow['summary'], isAdmin: boolean): { mark: ReactNode; tag: ReactNode } {
+  if (summaryWritten(summary)) {
+    return {
+      mark: <SummaryMark className="ml-1.5 inline-block align-middle" />,
+      tag:
+        summary?.state === 'stale' && isAdmin ? (
+          <span aria-hidden="true" className="block">
+            <span className={clsx(TAG, 'border border-status-y text-status-y')}>Review</span>
+          </span>
+        ) : null,
+    }
+  }
+  if (summary?.state !== 'missing') return { mark: null, tag: null }
+  return {
+    mark: null,
+    tag: (
+      <span aria-hidden="true" className="block">
+        {isAdmin ? (
+          <span className={clsx(TAG, 'border border-status-r text-status-r')}>Exec summary needed</span>
+        ) : (
+          <span className={clsx(TAG, 'border border-dashed border-ink/40 text-ink/70')}>No exec summary yet</span>
+        )}
+      </span>
+    ),
+  }
+}
+
 function CurrentValue({
   row,
   scale,
   columns,
   compact,
   room,
+  mark = null,
+  tag = null,
 }: {
   row: BoardRow
   scale: StatusLevel[]
   columns: Column[]
   compact: boolean
   room: number
+  /** Beside the value: the written mark. */
+  mark?: ReactNode
+  /** Under the value: the missing or Review tag. */
+  tag?: ReactNode
 }) {
   const last = row.counted ?? row.cells[row.cells.length - 1]
   if (!row.current && row.worst && compact) {
@@ -72,7 +124,11 @@ function CurrentValue({
       // Too narrow for both: the name gets the line to itself, so ItemName keeps more of it, and the count goes under.
       return (
         <>
-          <span className="block text-sm font-semibold tabular-nums">{row.worst.display}</span>
+          <span className="block text-sm font-semibold tabular-nums">
+            {row.worst.display}
+            {mark}
+          </span>
+          {tag}
           <span className="flex min-w-0 justify-end text-[11px] text-ink/70">
             <ItemName name={row.worst.name} className="font-medium text-ink/80" />
           </span>
@@ -82,7 +138,11 @@ function CurrentValue({
     }
     return (
       <>
-        <span className="block text-sm font-semibold tabular-nums">{row.worst.display}</span>
+        <span className="block text-sm font-semibold tabular-nums">
+          {row.worst.display}
+          {mark}
+        </span>
+        {tag}
         <span className="flex min-w-0 justify-end text-[11px] text-ink/70">
           <ItemName name={row.worst.name} className="font-medium text-ink/80" />
           <span className="shrink-0 whitespace-pre">{` · ${count}`}</span>
@@ -93,7 +153,11 @@ function CurrentValue({
   if (!row.current && row.worst) {
     return (
       <>
-        <span className="block text-sm font-semibold tabular-nums">{row.worst.display}</span>
+        <span className="block text-sm font-semibold tabular-nums">
+          {row.worst.display}
+          {mark}
+        </span>
+        {tag}
         <span title={[row.worst.name, row.caption].filter(Boolean).join(' · ')} className="block truncate text-[11px] text-ink/70">
           <span className="font-medium text-ink/80">{row.worst.name}</span>
           {row.caption && (
@@ -117,7 +181,11 @@ function CurrentValue({
   if (row.current) {
     return (
       <>
-        <span className="block text-sm font-semibold tabular-nums">{row.current}</span>
+        <span className="block text-sm font-semibold tabular-nums">
+          {row.current}
+          {mark}
+        </span>
+        {tag}
         {row.caption ? (
           <span className="block truncate text-[11px] text-ink/70">{row.caption}</span>
         ) : row.change ? (
@@ -137,6 +205,8 @@ function CurrentValue({
     return (
       <>
         <StatusChip status={last.status} scale={scale} />
+        {mark}
+        {tag}
         {row.caption && !compact && <span className="block truncate text-[11px] text-ink/70">{row.caption}</span>}
       </>
     )
@@ -160,6 +230,14 @@ export interface StatusBoardProps {
   scale: StatusLevel[]
   /** Opens the metric's full-screen chart; `trigger` gets focus back on close. */
   onOpen: (metricKey: string, trigger: HTMLElement) => void
+  /**
+   * Opens a cell's Why card: the Current cell (Enter, click, or the stacked
+   * row's trailing cell) for the counted period, `W` on a month cell for its
+   * period. Without it, Current is plain text and the grid has no trailing cell.
+   */
+  onWhy?: (metricKey: string, period: string, trigger: HTMLElement) => void
+  /** Admins see `Exec summary needed`, others `No exec summary yet`. */
+  isAdmin?: boolean
   /** Every category in order, so one a filter leaves without rows still shows, reading `none match`; from the rows when absent. */
   categories?: { id: string; name: string }[]
 }
@@ -236,7 +314,7 @@ function useStuckMark(ref: RefObject<HTMLElement | null>) {
  * color: the best status is a soft tint, the worst a solid fill. One tab
  * stop; arrow keys move between cells and Enter opens the metric.
  */
-export function StatusBoard({ label, columns, rows, scale, onOpen, categories: allCategories }: StatusBoardProps) {
+export function StatusBoard({ label, columns, rows, scale, onOpen, onWhy, isAdmin = false, categories: allCategories }: StatusBoardProps) {
   const headingId = useId()
   const noteId = useId()
   const [measure, width] = useElementWidth<HTMLDivElement>()
@@ -250,8 +328,10 @@ export function StatusBoard({ label, columns, rows, scale, onOpen, categories: a
   const reopening = useRef<HTMLElement | null>(null)
   const statusLabel = (key: string) => scale.find((s) => s.key === key)?.label
 
-  const layout = boardLayout(width, columns.length)
+  const why = onWhy !== undefined
+  const layout = boardLayout(width, columns.length, why ? TRAILING : 0)
   const inline = layout.valueColumn
+  const trailingColumn = why && !inline
   const offset = columns.length - layout.count
   const shown = columns.slice(offset)
   const groups = fiscalGroups(shown)
@@ -262,12 +342,30 @@ export function StatusBoard({ label, columns, rows, scale, onOpen, categories: a
     reopening.current = el
     onOpen(metricKey, el)
   }
-  // Anchored at the end, so a narrower board keeps the same period.
+  const rowOf = (key: string) => rows.find((r) => r.key === key)
+  const openCurrent = (row: BoardRow, el: HTMLElement) => onWhy?.(row.key, row.counted?.key ?? shown[lastIndex]?.period ?? '', el)
+  // Anchored at the end, so a narrower board keeps the same period; the Current cell trails the selected one.
   const { cellProps } = useGridNavigation({
     rowIds: rows.map((r) => r.key),
     colCount: shown.length,
     anchor: 'end',
-    onOpen: (rowId, _col, el) => open(rowId, el),
+    trailing: why,
+    onOpen: (rowId, col, el) => {
+      const row = rowOf(rowId)
+      if (col === shown.length && row) openCurrent(row, el)
+      else open(rowId, el)
+    },
+    onWhy: why
+      ? (rowId, col, el) => {
+          const row = rowOf(rowId)
+          if (!row) return
+          if (col === shown.length) return openCurrent(row, el)
+          const cell = row.cells[offset + col]
+          if (!cell || cell.kind === 'notDue') return
+          reopening.current = el
+          onWhy(rowId, cell.period ?? shown[col]?.period ?? '', el)
+        }
+      : undefined,
   })
 
   const categories: { id: string; name: string; rows: BoardRow[] }[] = (allCategories ?? []).map((c) => ({ ...c, rows: [] }))
@@ -278,8 +376,8 @@ export function StatusBoard({ label, columns, rows, scale, onOpen, categories: a
   }
   const grouped = categories.length > 1
   const linked = useLinkedCategories(categories)
-  // Inline: name, cells, value. Stacked: a zero-width row-header column, then the cells.
-  const colSpan = shown.length + (inline ? 2 : 1)
+  // Inline: name, cells, value. Stacked: a zero-width row-header column, then the cells (and the trailing Why cell).
+  const colSpan = shown.length + (inline ? 2 : 1) + (trailingColumn ? 1 : 0)
 
   // The hovered column's header, marked in the DOM so hovering never re-renders the board.
   const markColumn = (back: number | null) => {
@@ -304,7 +402,8 @@ export function StatusBoard({ label, columns, rows, scale, onOpen, categories: a
             cell={cell}
             name={cellName(row.name, column, cell, statusLabel, back === 0)}
             scale={scale}
-            tip={<StatusCellTip column={column} cell={cell} streak={streakAt(row.cells, offset + i)} scale={scale} />}
+            summary={cell.summary}
+            tip={<StatusCellTip column={column} cell={cell} streak={streakAt(row.cells, offset + i)} scale={scale} summary={cell.summary} />}
             grid={{
               ...grid,
               onFocus: (e: FocusEvent<HTMLElement>) => {
@@ -321,6 +420,68 @@ export function StatusBoard({ label, columns, rows, scale, onOpen, categories: a
         </td>
       )
     })
+
+  /** The button a row's Current or trailing cell is: named for the selected period and the exec summary state. */
+  const currentProps = (row: BoardRow) => {
+    const column = shown[lastIndex]
+    const description = [summaryWritten(row.summary) ? row.summary?.excerpt : '', WHY_HINT].filter(Boolean).join(' ')
+    return {
+      ...cellProps(row.key, shown.length),
+      type: 'button' as const,
+      'aria-label': column ? currentName(row, column, statusLabel) : row.name,
+      'aria-description': description,
+      'aria-haspopup': 'dialog' as const,
+      onClick: (e: { currentTarget: HTMLElement }) => openCurrent(row, e.currentTarget),
+      // The grid opens on Space keydown; stop the button's own keyup click from opening it twice.
+      onKeyUp: (e: { key: string; preventDefault: () => void }) => e.key === ' ' && e.preventDefault(),
+    }
+  }
+
+  const currentCell = (row: BoardRow) => {
+    if (!why || !hasCurrent(row)) {
+      return (
+        <td className="py-1 pl-3 text-right align-middle">
+          <CurrentValue row={row} scale={scale} columns={columns} compact={false} room={layout.valueWidth - VALUE_PAD} />
+        </td>
+      )
+    }
+    const state = summaryState(row.summary, isAdmin)
+    return (
+      <td className="py-1 pl-1 text-right align-middle">
+        <button
+          {...currentProps(row)}
+          className={clsx('block w-full min-w-0 rounded-md py-0.5 pr-0.5 pl-1 text-right hover:bg-accent/[0.06]', CELL_FOCUS)}
+        >
+          <CurrentValue
+            row={row}
+            scale={scale}
+            columns={columns}
+            compact={false}
+            room={layout.valueWidth - VALUE_PAD}
+            mark={state.mark}
+            tag={state.tag}
+          />
+        </button>
+      </td>
+    )
+  }
+
+  const trailingCell = (row: BoardRow) => (
+    <td className="w-8 py-1 pl-0.5 align-middle">
+      {hasCurrent(row) && (
+        <button
+          {...currentProps(row)}
+          className={clsx(
+            'flex h-6 w-full items-center justify-center gap-0.5 rounded-[3px] text-[11px] font-semibold leading-none text-accent-deep hover:bg-accent/[0.06]',
+            CELL_FOCUS,
+          )}
+        >
+          {summaryWritten(row.summary) && <SummaryMark />}
+          Why
+        </button>
+      )}
+    </td>
+  )
 
   return (
     <section
@@ -352,7 +513,7 @@ export function StatusBoard({ label, columns, rows, scale, onOpen, categories: a
               data-testid="current-band"
               aria-hidden="true"
               className="pointer-events-none absolute inset-y-0 -z-10 rounded-sm bg-accent/10"
-              style={{ width: layout.cellWidth, right: layout.valueWidth }}
+              style={{ width: layout.cellWidth, right: trailingColumn ? TRAILING : layout.valueWidth }}
             />
           )}
           <table
@@ -361,7 +522,7 @@ export function StatusBoard({ label, columns, rows, scale, onOpen, categories: a
             aria-labelledby={headingId}
             aria-describedby={reduced ? noteId : undefined}
             className={clsx('table-fixed border-separate border-spacing-0 text-sm', inline && 'w-full')}
-            style={!inline && layout.cellWidth ? { width: layout.count * layout.cellWidth } : undefined}
+            style={!inline && layout.cellWidth ? { width: layout.count * layout.cellWidth + (trailingColumn ? TRAILING : 0) } : undefined}
             onMouseLeave={() => markColumn(null)}
           >
             <colgroup>
@@ -370,6 +531,7 @@ export function StatusBoard({ label, columns, rows, scale, onOpen, categories: a
                 <col key={c.key} style={layout.cellWidth ? { width: layout.cellWidth } : undefined} />
               ))}
               {inline && <col style={{ width: layout.valueWidth }} />}
+              {trailingColumn && <col style={{ width: TRAILING }} />}
             </colgroup>
             <thead
               ref={theadRef}
@@ -404,7 +566,7 @@ export function StatusBoard({ label, columns, rows, scale, onOpen, categories: a
                       </th>
                     )
                   })}
-                  {inline && <td />}
+                  {(inline || trailingColumn) && <td />}
                 </tr>
               )}
               <tr>
@@ -442,6 +604,11 @@ export function StatusBoard({ label, columns, rows, scale, onOpen, categories: a
                 {inline && (
                   <th scope="col" className="pb-1.5 pl-3 text-right text-xs font-medium text-ink/70">
                     Current
+                  </th>
+                )}
+                {trailingColumn && (
+                  <th scope="col" className="p-0">
+                    <span className="sr-only">Why</span>
                   </th>
                 )}
               </tr>
@@ -490,9 +657,7 @@ export function StatusBoard({ label, columns, rows, scale, onOpen, categories: a
                           <span className="line-clamp-2 break-words">{row.name}</span>
                         </th>
                         {renderCells(row)}
-                        <td className="py-1 pl-3 text-right align-middle">
-                          <CurrentValue row={row} scale={scale} columns={columns} compact={false} room={layout.valueWidth - VALUE_PAD} />
-                        </td>
+                        {currentCell(row)}
                       </tr>
                     )
                   }
@@ -520,6 +685,7 @@ export function StatusBoard({ label, columns, rows, scale, onOpen, categories: a
                           <span className="sr-only">{row.name}</span>
                         </th>
                         {renderCells(row)}
+                        {trailingColumn && trailingCell(row)}
                       </tr>
                     </Fragment>
                   )

@@ -371,6 +371,53 @@ export const quarterlyVersions: MethodologyVersion[] = versions.map((v) =>
       },
 )
 
+/** Each metric's rule as live views send it on every cell, for the Why? affordances (spec §4.2). */
+export const RCA_RULES: Record<string, Schemas['StatusRule']> = {
+  on_time_pct: {
+    type: 'bands',
+    bands: [
+      { status: 'G', op: '>=', value: 90 },
+      { status: 'Y', op: '>=', value: 80 },
+      { status: 'R', op: '', value: 0 },
+    ],
+  },
+  svc_uptime: {
+    type: 'bands',
+    bands: [
+      { status: 'G', op: '>=', value: 99.9 },
+      { status: 'Y', op: '>', value: 99.8 },
+      { status: 'R', op: '', value: 0 },
+    ],
+  },
+  concepts_value: {
+    type: 'bands',
+    bands: [
+      { status: 'G', op: '>=', value: 80 },
+      { status: 'Y', op: '>=', value: 60 },
+      { status: 'R', op: '', value: 0 },
+    ],
+  },
+}
+
+/**
+ * A view as the live API sends it with exec summary state (spec §9.2): each
+ * cell's rule from `RCA_RULES`, `rcaIdeal` 100 on percent metrics, and
+ * `summaries` as `Cell.summary` on the company-root (`root`) cells of the
+ * periods it names (`metric` → `period` → state).
+ */
+export function withRca(view: ScorecardView, summaries: Record<string, Record<string, Schemas['MetricSummaryState']>> = {}): ScorecardView {
+  for (const row of view.rows) {
+    if (row.format.startsWith('percent')) row.rcaIdeal = 100
+    const rule = RCA_RULES[row.metricKey]
+    for (const c of row.cells) {
+      if (rule) c.rule = rule
+      const summary = row.subjectId === 'root' && !c.ytd ? summaries[row.metricKey]?.[c.period] : undefined
+      if (summary) c.summary = summary
+    }
+  }
+  return view
+}
+
 export interface ViewHandlerOptions {
   /** Called with the URL of each view request. */
   onView?: (url: URL) => void

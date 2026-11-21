@@ -176,8 +176,12 @@ function Harness({
   range,
   restoreId,
   silent,
+  onWhy,
+  why,
 }: {
   onOpenItem?: (id: string) => void
+  onWhy?: ItemGridProps['onWhy']
+  why?: ItemGridProps['why']
   onSort?: (s: ItemSort) => void
   rows?: typeof ROWS
   head?: ViewRow
@@ -215,6 +219,8 @@ function Harness({
         onOpenItem={(id) => onOpenItem(id)}
         range={range}
         restoreId={restoreId}
+        onWhy={onWhy}
+        why={why}
         {...(silent
           ? {
               silentOpen,
@@ -683,5 +689,99 @@ describe('ItemGrid: the 21 deployments', () => {
     width.value = 340
     const stacked = renderDeployments()
     expect((await axe(stacked.container)).violations).toEqual([])
+  })
+})
+
+describe('ItemGrid with Why', () => {
+  const WEB_VALUE = 'Web App, Oct 2026: 99.06%, Red.'
+
+  it('the Value cell is the trailing gridcell: → from Oct reaches it, Enter opens the service’s card', async () => {
+    width.value = 1296
+    const onWhy = vi.fn()
+    const onOpenItem = vi.fn()
+    renderGrid({ onWhy, onOpenItem })
+    const grid = screen.getByRole('grid', { name: 'Uptime by service and month' })
+    const value = within(grid).getByRole('button', { name: WEB_VALUE })
+    expect(value.getAttribute('aria-description')).toBe('Press Enter for why')
+    expect(value.getAttribute('aria-haspopup')).toBe('dialog')
+    expect(value.closest('td')).toBe(within(grid).getByTestId('item-svc-web').lastElementChild?.previousElementSibling)
+    expect(value.textContent).toContain('99.06%')
+    const user = userEvent.setup()
+    within(grid).getByRole('button', { name: 'Web App, Oct 2026: Red, 99.06%' }).focus()
+    await user.keyboard('{ArrowRight}')
+    expect(document.activeElement).toBe(value)
+    await user.keyboard('{Enter}')
+    expect(onWhy).toHaveBeenCalledWith('svc-web', '2026-M10', value)
+    expect(onOpenItem).not.toHaveBeenCalled()
+    await user.keyboard('{ArrowLeft}')
+    expect(document.activeElement?.getAttribute('aria-label')).toBe('Web App, Oct 2026: Red, 99.06%')
+    await user.keyboard('{End}')
+    expect(document.activeElement?.getAttribute('aria-label')).toBe('Web App, Oct 2026: Red, 99.06%')
+  })
+
+  it('W on any month opens that month’s card; the hint says so', async () => {
+    width.value = 1296
+    const onWhy = vi.fn()
+    renderGrid({ onWhy })
+    const sep = screen.getByRole('button', { name: 'Web App, Sep 2026: Green, 99.99%' })
+    sep.focus()
+    await userEvent.setup().keyboard('w')
+    expect(onWhy).toHaveBeenCalledWith('svc-web', '2026-M09', sep)
+    expect(screen.getByText(/W why/)).toBeTruthy()
+  })
+
+  it('a click on the Value cell opens the card; rows not reported have no Value cell to reach', async () => {
+    width.value = 1296
+    const onWhy = vi.fn()
+    renderGrid({ onWhy })
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: WEB_VALUE }))
+    expect(onWhy).toHaveBeenCalledWith('svc-web', '2026-M10', screen.getByRole('button', { name: WEB_VALUE }))
+    screen.getByRole('button', { name: 'Pricing Engine, Oct 2026: No data' }).focus()
+    await user.keyboard('{ArrowRight}')
+    expect(document.activeElement?.getAttribute('aria-label')).toBe('Pricing Engine, Oct 2026: No data')
+  })
+
+  it('no row carries an exec summary mark or tag', () => {
+    width.value = 1296
+    renderGrid({ onWhy: vi.fn() })
+    const grid = screen.getByRole('grid')
+    expect(grid.querySelector('[data-summary-mark]')).toBeNull()
+    expect(within(grid).queryByText(/Exec summary|No exec summary/)).toBeNull()
+  })
+
+  it('stacked: each reported row ends in a 32px trailing cell, reachable by → and by tap', async () => {
+    width.value = 340
+    const onWhy = vi.fn()
+    const { container } = renderDeployments({ onWhy })
+    const grid = screen.getByRole('grid')
+    expect(grid.getAttribute('data-stacked')).toBe('true')
+    const name = 'Notification Relay - Multi-Region Active, Oct 2026: 99.63%, Red.'
+    const trailing = within(grid).getByRole('button', { name })
+    expect(trailing.textContent).toBe('Why')
+    expect(trailing.closest('tr')).toBe(within(grid).getByTestId('item-dep-notify-multi'))
+    expect(trailing.closest('td')!.className).toContain('w-8')
+    const user = userEvent.setup()
+    within(grid).getByRole('button', { name: /^Notification Relay - Multi-Region Active, Oct 2026: Red/ }).focus()
+    await user.keyboard('{ArrowRight}')
+    expect(document.activeElement).toBe(trailing)
+    await user.click(trailing)
+    expect(onWhy).toHaveBeenCalledWith('dep-notify-multi', '2026-M10', trailing)
+    const table = grid as HTMLTableElement
+    expect(parseFloat(table.style.width)).toBeLessThanOrEqual(340)
+    expect((await axe(container)).violations).toEqual([])
+  })
+
+  it('the summary carries the why slot: the company standing at company scope', () => {
+    width.value = 1296
+    renderGrid({ onWhy: vi.fn(), why: <button type="button">Why?</button> })
+    const summary = screen.getByRole('region', { name: 'Summary' })
+    expect(within(summary).getByRole('button', { name: 'Why?' })).toBeTruthy()
+  })
+
+  it('has no axe violations inline with Why', async () => {
+    width.value = 1294
+    const { container } = renderDeployments({ onWhy: vi.fn() })
+    expect((await axe(container)).violations).toEqual([])
   })
 })

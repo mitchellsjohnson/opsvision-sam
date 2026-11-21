@@ -3,6 +3,8 @@ import { useId, useState } from 'react'
 import type { components } from '../../api/schema'
 import { formatPeriod, parsePeriod, prev } from '../../lib/period'
 import { StatusChip, type StatusLevel } from '../../ui/status'
+import { attributionAvailable, type SummaryDisplay } from '../rca/rcaState'
+import { WhyButton } from '../rca/WhyButton'
 import { MOVE_CLASS, valueMove, type Move } from './charts/chartTheme'
 import type { Column } from './columns'
 import { metricDecimals } from './format'
@@ -22,6 +24,10 @@ export interface ItemMonthsProps {
   /** Open state, for a caller that keeps it across items; the disclosure keeps its own when absent. */
   open?: boolean
   onOpenChange?: (open: boolean) => void
+  /** Opens a month's Why card; with it, the Status cell gains a compact `Why` for months with attribution. */
+  onWhy?: (period: string, el: HTMLElement) => void
+  /** At company scope, a month's exec summary state: the compact trigger reads `Summary`, `Needed` or `Review`. */
+  summaryOf?: (period: string) => SummaryDisplay | null
 }
 
 const valued = (c: Cell | undefined): c is Cell & { value: number } => !!c && c.naReason === '' && c.value != null
@@ -53,7 +59,7 @@ function monthChange(
  * default, over a table of every shown period, newest first: the period,
  * the value, the status in words and the change from the period before.
  */
-export function ItemMonths({ row, columns, scale, format, valueLabel, open: openProp, onOpenChange }: ItemMonthsProps) {
+export function ItemMonths({ row, columns, scale, format, valueLabel, open: openProp, onOpenChange, onWhy, summaryOf }: ItemMonthsProps) {
   const tableId = useId()
   const [ownOpen, setOwnOpen] = useState(false)
   const open = openProp ?? ownOpen
@@ -108,6 +114,19 @@ export function ItemMonths({ row, columns, scale, format, valueLabel, open: open
                 const cell = byPeriod.get(col.period)
                 const value = valueOf(col.period)
                 const change = monthChange(value, valueOf(priorOf(col.period)), format, row.direction)
+                const why =
+                  onWhy && cell ? (
+                    <WhyButton
+                      summary={summaryOf?.(col.period) ?? undefined}
+                      attribution={attributionAvailable(row, cell, scale)}
+                      subjectName={row.subjectName}
+                      valueDisplay={cell.display}
+                      periodLabel={col.fullLabel}
+                      nameSubject={false}
+                      compact
+                      onOpen={(el) => onWhy(col.period, el)}
+                    />
+                  ) : null
                 return (
                   <tr key={col.key} className="h-8 border-b border-ink/10 last:border-b-0">
                     <th scope="row" className="pr-2 text-left font-normal whitespace-nowrap sm:pr-3">
@@ -115,18 +134,21 @@ export function ItemMonths({ row, columns, scale, format, valueLabel, open: open
                     </th>
                     <td className={`pr-2 tabular-nums sm:pr-3 ${value === null ? 'text-ink/70' : 'font-semibold'}`}>{value === null ? '—' : cell!.display}</td>
                     <td className="pr-2 sm:pr-3">
-                      {cell?.naReason ? (
-                        <span className="text-ink/70">n/a</span>
-                      ) : cell?.status ? (
-                        <span className="inline-flex items-center gap-1.5">
-                          <span data-role="status-chip" aria-hidden="true" className="inline-flex">
-                            <StatusChip status={cell.status} scale={scale} />
+                      <span className="inline-flex flex-wrap items-center gap-x-2">
+                        {cell?.naReason ? (
+                          <span className="text-ink/70">n/a</span>
+                        ) : cell?.status ? (
+                          <span className="inline-flex items-center gap-1.5">
+                            <span data-role="status-chip" aria-hidden="true" className="inline-flex">
+                              <StatusChip status={cell.status} scale={scale} />
+                            </span>
+                            {label(cell.status)}
                           </span>
-                          {label(cell.status)}
-                        </span>
-                      ) : (
-                        <span className="text-ink/70">No data</span>
-                      )}
+                        ) : (
+                          <span className="text-ink/70">No data</span>
+                        )}
+                        {why}
+                      </span>
                     </td>
                     <td className="tabular-nums whitespace-nowrap">
                       {change ? (

@@ -112,6 +112,31 @@ describe('TileFrame', () => {
     expect(within(tile).queryByTestId('chart')).toBeNull()
   })
 
+  it('the why slot sits after the value row and context sentence, before the chart', () => {
+    frame({ context: 'Reported quarterly', why: <button type="button">Why?</button> })
+    const tile = screen.getByRole('article', { name: 'On-time delivery' })
+    const slot = within(tile).getByRole('button', { name: 'Why?' }).closest('[data-tile-why]')!
+    expect(slot).toBeTruthy()
+    const value = tile.querySelector('[data-tile-value]')!
+    const context = within(tile).getByText('Reported quarterly')
+    const chart = within(tile).getByTestId('chart')
+    expect(value.compareDocumentPosition(slot) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(context.compareDocumentPosition(slot) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(slot.compareDocumentPosition(chart) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('without why, or with a why that draws nothing, the tile has no slot', () => {
+    const { container, unmount } = frame()
+    const before = container.innerHTML
+    expect(container.querySelector('[data-tile-why]')).toBeNull()
+    unmount()
+    const again = frame({ why: undefined })
+    expect(again.container.innerHTML).toBe(before)
+    again.unmount()
+    frame({ why: null })
+    expect(document.querySelector('[data-tile-why]')).toBeNull()
+  })
+
   it('sits clear of the sticky control bar when scrolled to', () => {
     frame()
     expect(screen.getByRole('article', { name: 'On-time delivery' }).style.scrollMarginTop).toBe('calc(var(--control-bar-h, 0px) + 16px)')

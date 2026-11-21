@@ -55,6 +55,35 @@ describe('ItemDrillIn value row', () => {
   })
 })
 
+describe('ItemDrillIn Why', () => {
+  const RULE = {
+    type: 'bands' as const,
+    bands: [
+      { status: 'G', op: '>=', value: 99.9 },
+      { status: 'Y', op: '>', value: 99.8 },
+      { status: 'R', op: '', value: 0 },
+    ],
+  }
+  const rcaRows = rows.map((r) => ({ ...r, rcaIdeal: 100, cells: r.cells.map((c) => ({ ...c, rule: RULE })) }))
+  const rcaItems = buildItemRows(rcaRows, columns, DEPLOYMENT_SCALE, deploymentGroup, 1)
+
+  it('the value row has Why? for the item’s cell, after since when', async () => {
+    const onWhy = vi.fn()
+    draw({ row: rcaItems.find((r) => r.id === 'dep-notify-multi')!, onWhy })
+    const valueRow = screen.getByTestId('drill-value-row')
+    const why = within(valueRow).getByRole('button', { name: 'Why is 99.63% in Oct 2026?' })
+    expect(why.textContent).toBe('Why?')
+    expect(valueRow.lastElementChild).toBe(why)
+    await userEvent.setup().click(why)
+    expect(onWhy).toHaveBeenCalledWith(why)
+  })
+
+  it('a perfect item has no Why?', () => {
+    draw({ row: rcaItems.find((r) => r.id === 'dep-pay-eu')!, onWhy: vi.fn() })
+    expect(within(screen.getByTestId('drill-value-row')).queryByRole('button')).toBeNull()
+  })
+})
+
 describe('ItemDrillIn stepper', () => {
   it('names the neighbours, shows the position and steps on press', async () => {
     const { onStep } = draw({ row: item(WEST.id), position: { index: 1, total: 13, prev: { id: 'dep-notify-multi', name: 'Notification Relay - Multi-Region Active' }, next: PORTAL } })

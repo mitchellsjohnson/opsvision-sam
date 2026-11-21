@@ -2,7 +2,10 @@ import { chartTheme } from '../../features/scorecard/charts/chartTheme'
 import type { Column } from '../../features/scorecard/columns'
 import type { BoardCell } from '../../features/scorecard/logic/statusBoard'
 import { columnUnit } from '../../features/scorecard/logic/statusText'
+import type { components } from '../../api/schema'
 import type { StatusLevel } from './StatusChip'
+
+type MetricSummaryState = components['schemas']['MetricSummaryState']
 
 function capitalize(s: string): string {
   return s ? s[0]!.toUpperCase() + s.slice(1) : s
@@ -18,10 +21,18 @@ export interface StatusCellTipProps {
   title?: string
   /** Follows the title, quieter: the item's group. */
   titleNote?: string
+  /** A company-root cell's exec summary state: `Summary: {excerpt}` or `Exec summary needed`. */
+  summary?: MetricSummaryState
 }
 
 /** The hover label for one cell, in the chart hover label's language: bold value, period, status, change. */
-export function StatusCellTip({ column, cell, streak, scale, title, titleNote }: StatusCellTipProps) {
+export function StatusCellTip({ column, cell, streak, scale, title, titleNote, summary }: StatusCellTipProps) {
+  const summaryLine =
+    summary?.state === 'written' || summary?.state === 'stale'
+      ? `Summary: ${summary.excerpt ?? ''}`
+      : summary?.state === 'missing'
+        ? 'Exec summary needed'
+        : ''
   const theme = cell.kind === 'status' ? chartTheme(scale, cell.status) : null
   const lead =
     cell.kind === 'na'
@@ -49,6 +60,11 @@ export function StatusCellTip({ column, cell, streak, scale, title, titleNote }:
       )}
       {theme && cell.display && cell.caption && <p className="text-white/75">{capitalize(cell.caption)}</p>}
       {cell.change && <p className="text-white/75">{cell.change}</p>}
+      {summaryLine && (
+        <p data-testid="tip-summary" className="mt-0.5 break-words">
+          {summaryLine}
+        </p>
+      )}
     </div>
   )
 }

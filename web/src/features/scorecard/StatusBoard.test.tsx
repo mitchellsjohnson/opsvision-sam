@@ -603,8 +603,156 @@ describe('StatusBoard', () => {
   })
 })
 
+const WRITTEN = { state: 'written' as const, excerpt: 'Seven of 33 epics slipped, four of them in Checkout and Bill…', author: 'Avery Admin' }
+
+/** The default rows with exec summary states: Epics written (Oct and Jul), Customer feedback missing; Accessibility has no data. */
+function summaryRows(): BoardRow[] {
+  const [epics, feedback, audit] = rowsFor(MONTHS)
+  const withSummary = (row: BoardRow, at: Record<number, BoardCell['summary']>, summary: BoardRow['summary']): BoardRow => ({
+    ...row,
+    cells: row.cells.map((c, i) => (at[i] ? { ...c, summary: at[i] } : c)),
+    summary,
+  })
+  return [withSummary(epics!, { 8: WRITTEN, 11: WRITTEN }, WRITTEN), withSummary(feedback!, { 11: { state: 'missing' } }, { state: 'missing' }), audit!]
+}
+
+function renderWhyBoard({ isAdmin = true, rows = summaryRows() } = {}) {
+  const onOpen = vi.fn()
+  const onWhy = vi.fn()
+  render(
+    <Tooltip.Provider>
+      <StatusBoard label="12-month status" columns={MONTHS} rows={rows} scale={SCALE} onOpen={onOpen} onWhy={onWhy} isAdmin={isAdmin} />
+    </Tooltip.Provider>,
+  )
+  return { onOpen, onWhy }
+}
+
+const EPICS_CURRENT = 'Epics delivered on time, Oct 2026: 79%, Off track; exec summary written.'
+
+describe('StatusBoard with Why', () => {
+  it('inline: → from Oct reaches Current, ← returns; Enter on Current opens the company card for the counted period', async () => {
+    measuredAt(1150)
+    const { onOpen, onWhy } = renderWhyBoard()
+    const user = userEvent.setup()
+    await user.tab()
+    expect(document.activeElement?.getAttribute('aria-label')).toBe(`${SELECTED_EPICS}; exec summary written`)
+    await user.keyboard('{ArrowRight}')
+    const current = screen.getByRole('button', { name: EPICS_CURRENT })
+    expect(document.activeElement).toBe(current)
+    expect(current.getAttribute('aria-description')).toBe(`${WRITTEN.excerpt} Press Enter for why`)
+    await user.keyboard('{Enter}')
+    expect(onWhy).toHaveBeenCalledWith('epics', '2026-M10', current)
+    expect(onOpen).not.toHaveBeenCalled()
+    await user.keyboard('{ArrowLeft}')
+    expect(document.activeElement?.getAttribute('aria-label')).toBe(`${SELECTED_EPICS}; exec summary written`)
+    await user.keyboard('{End}')
+    expect(document.activeElement?.getAttribute('aria-label')).toBe(`${SELECTED_EPICS}; exec summary written`)
+    expect(screen.getAllByRole('button').filter((b) => b.tabIndex === 0)).toHaveLength(1)
+  })
+
+  it('a click on Current opens the card; month cells keep opening the dialog and W opens their card', async () => {
+    measuredAt(1150)
+    const { onOpen, onWhy } = renderWhyBoard()
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: EPICS_CURRENT }))
+    expect(onWhy).toHaveBeenLastCalledWith('epics', '2026-M10', screen.getByRole('button', { name: EPICS_CURRENT }))
+    const sep = screen.getByRole('button', { name: /^Epics delivered on time, Sep 2026/ })
+    await user.click(sep)
+    expect(onOpen).toHaveBeenCalledWith('epics', sep)
+    sep.focus()
+    await user.keyboard('w')
+    expect(onWhy).toHaveBeenLastCalledWith('epics', '2026-M09', sep)
+  })
+
+  it('Current shows the written mark, or the missing tag for the admin and for others', () => {
+    measuredAt(1150)
+    renderWhyBoard()
+    const epics = screen.getByRole('button', { name: EPICS_CURRENT })
+    expect(epics.querySelector('[data-summary-mark]')).toBeTruthy()
+    expect(epics.textContent).toContain('79%')
+    const feedback = screen.getByRole('button', { name: 'Customer feedback SLO, Oct 2026: 15 days, Watch; exec summary needed.' })
+    expect(feedback.textContent).toContain('Exec summary needed')
+    expect(within(feedback).getByText('Exec summary needed').className).toContain('text-status-r')
+    cleanup()
+    measuredAt(1150)
+    renderWhyBoard({ isAdmin: false })
+    const viewer = screen.getByRole('button', { name: 'Customer feedback SLO, Oct 2026: 15 days, Watch; exec summary needed.' })
+    expect(viewer.textContent).toContain('No exec summary yet')
+    expect(viewer.textContent).not.toContain('Exec summary needed')
+  })
+
+  it('month cells with a written summary carry the mark and say so in their name and hover label', async () => {
+    measuredAt(1150)
+    renderWhyBoard()
+    const jul = screen.getByRole('button', { name: 'Epics delivered on time, Jul 2026: On track, 90%; exec summary written' })
+    const mark = jul.querySelector('[data-summary-mark]')!
+    expect(mark.getAttribute('aria-hidden')).toBe('true')
+    expect(mark.className).toContain('size-1.5')
+    expect(mark.className).toContain('ring-ink/70')
+    expect(screen.getByRole('button', { name: /^Epics delivered on time, Jun 2026: On track, 90%$/ }).querySelector('[data-summary-mark]')).toBeNull()
+    act(() => jul.focus())
+    await waitFor(() => expect(screen.getByRole('tooltip').textContent).toContain(`Summary: ${WRITTEN.excerpt}`))
+  })
+
+  it('a row with no value in the selected period has no Current cell to reach: → stays on Oct', async () => {
+    measuredAt(1150)
+    renderWhyBoard()
+    const user = userEvent.setup()
+    await user.tab()
+    await user.keyboard('{ArrowDown}{ArrowDown}{ArrowRight}')
+    expect(document.activeElement?.getAttribute('aria-label')).toBe('Accessibility compliance, Oct 2026: No data')
+  })
+
+  it('stacked (360px): each ribbon row ends in a 32px trailing cell, reachable by → and by tap', async () => {
+    measuredAt(310)
+    const { onWhy } = renderWhyBoard()
+    const user = userEvent.setup()
+    const trailing = screen.getByRole('button', { name: EPICS_CURRENT })
+    expect(trailing.closest('tr')).toBe(screen.getByTestId('ribbon-epics'))
+    expect(trailing.textContent).toBe('Why')
+    expect(trailing.closest('td')!.className).toContain('w-8')
+    expect(trailing.querySelector('[data-summary-mark]')).toBeTruthy()
+    await user.tab()
+    await user.keyboard('{ArrowRight}')
+    expect(document.activeElement).toBe(trailing)
+    await user.click(screen.getByRole('button', { name: 'Customer feedback SLO, Oct 2026: 15 days, Watch; exec summary needed.' }))
+    expect(onWhy).toHaveBeenLastCalledWith('feedback', '2026-M10', expect.any(HTMLElement))
+    const grid = screen.getByRole('grid')
+    const cols = [...grid.querySelectorAll('col')]
+    expect(cols.at(-1)!.style.width).toBe('32px')
+    expect((await axe(document.body)).violations).toEqual([])
+  })
+
+  it('has no axe violations inline', async () => {
+    measuredAt(1150)
+    renderWhyBoard()
+    expect((await axe(document.body)).violations).toEqual([])
+  })
+
+  it('without onWhy, Current is plain text and → stops at Oct', async () => {
+    measuredAt(1150)
+    renderBoard({ rows: summaryRows() })
+    const user = userEvent.setup()
+    await user.tab()
+    await user.keyboard('{ArrowRight}')
+    expect(document.activeElement?.getAttribute('aria-label')).toBe(`${SELECTED_EPICS}; exec summary written`)
+    expect(screen.queryByRole('button', { name: EPICS_CURRENT })).toBeNull()
+  })
+})
+
 describe('StatusCellTip', () => {
   const sep = MONTHS[MONTHS.length - 2]!
+
+  it('adds the exec summary line on a company-root cell', () => {
+    const { rerender } = render(
+      <StatusCellTip column={sep} cell={status(sep, 'R', '72%')} streak={1} scale={SCALE} summary={WRITTEN} />,
+    )
+    expect(screen.getByTestId('tip-summary').textContent).toBe(`Summary: ${WRITTEN.excerpt}`)
+    rerender(<StatusCellTip column={sep} cell={status(sep, 'R', '72%')} streak={1} scale={SCALE} summary={{ state: 'missing' }} />)
+    expect(screen.getByTestId('tip-summary').textContent).toBe('Exec summary needed')
+    rerender(<StatusCellTip column={sep} cell={status(sep, 'R', '72%')} streak={1} scale={SCALE} summary={{ state: 'optional' }} />)
+    expect(screen.queryByTestId('tip-summary')).toBeNull()
+  })
 
   it('shows the value, period, status with its shape, streak and change', () => {
     render(<StatusCellTip column={sep} cell={{ ...status(sep, 'R', '72%'), change: '-10 pts vs Aug' }} streak={3} scale={SCALE} />)

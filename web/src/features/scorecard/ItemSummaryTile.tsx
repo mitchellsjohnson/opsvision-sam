@@ -1,5 +1,6 @@
 import clsx from 'clsx'
 import { useMemo, type CSSProperties } from 'react'
+import { Link } from 'react-router'
 import type { components } from '../../api/schema'
 import { HATCH, ItemName, StatusCell, StatusChip, UNRATED_CLASS, type StatusLevel } from '../../ui/status'
 import { textWidth, uiFont, useFontsReady } from '../../ui/textWidth'
@@ -8,6 +9,8 @@ import { chartTheme, statusFill } from './charts/chartTheme'
 import type { Column } from './columns'
 import { groupItems, itemSummary, labelsNeedYear, lastReportedLabel, tileExceptions, type ItemRow } from './logic/itemGrid'
 import { CELL_MIN, itemGridLayout } from './logic/itemGridLayout'
+import type { SummaryDisplay } from '../rca/rcaState'
+import { WhyButton } from '../rca/WhyButton'
 import { countNoun, type NounForms } from './logic/nouns'
 import { columnUnit, sinceText, thresholdText } from './logic/statusText'
 import { TileFrame } from './TileFrame'
@@ -47,6 +50,12 @@ export interface ItemSummaryTileProps {
   onExpand: (trigger: HTMLElement) => void
   /** Opens the dialog drilled into one item; `trigger` gets focus back on close. */
   onOpenItem: (itemId: string, trigger: HTMLElement) => void
+  /**
+   * The company's exec summary state for the selected period, at company
+   * scope: the footer leads with `Summary: …`, or for admins `Exec summary
+   * needed ›` linking `href` (the Exec summaries view at this metric).
+   */
+  summary?: { display: SummaryDisplay; href: string; onOpen: (el: HTMLElement) => void } | null
 }
 
 function segmentStyle(scale: StatusLevel[], key: string): CSSProperties {
@@ -68,7 +77,7 @@ function segmentStyle(scale: StatusLevel[], key: string): CSSProperties {
  * before months: a tile too narrow for 12 months beside a 200px name shows
  * the latest 6.
  */
-export function ItemSummaryTile({ head, rows, columns, scale, direction, noun, rule, onExpand, onOpenItem }: ItemSummaryTileProps) {
+export function ItemSummaryTile({ head, rows, columns, scale, direction, noun, rule, onExpand, onOpenItem, summary: standing }: ItemSummaryTileProps) {
   const [measure, width] = useElementWidth<HTMLDivElement>()
   const statusLabel = (key: string) => scale.find((s) => s.key === key)?.label
   const byRank = [...scale].sort((a, b) => a.rank - b.rank)
@@ -216,13 +225,31 @@ export function ItemSummaryTile({ head, rows, columns, scale, direction, noun, r
       state="normal"
       footer={
         <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
-          <button
-            type="button"
-            className="text-sm font-medium text-accent-deep hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-deep"
-            onClick={(e) => onExpand(e.currentTarget)}
-          >
-            See all {countNoun(summary.total, noun)} <span aria-hidden="true">›</span>
-          </button>
+          <span className="flex min-w-0 max-w-full items-center gap-x-3">
+            {standing?.display.state === 'missing' && standing.display.canEdit ? (
+              <Link to={standing.href} className="shrink-0 text-xs font-semibold text-status-r hover:underline">
+                Exec summary needed <span aria-hidden="true">›</span>
+              </Link>
+            ) : standing ? (
+              <WhyButton
+                summary={standing.display}
+                attribution
+                subjectName={head.metricName}
+                valueDisplay={worst?.display ?? ''}
+                periodLabel={selected?.fullLabel ?? ''}
+                nameSubject
+                prefix="summary"
+                onOpen={standing.onOpen}
+              />
+            ) : null}
+            <button
+              type="button"
+              className="shrink-0 text-sm font-medium text-accent-deep hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-deep"
+              onClick={(e) => onExpand(e.currentTarget)}
+            >
+              See all {countNoun(summary.total, noun)} <span aria-hidden="true">›</span>
+            </button>
+          </span>
           <span className="text-[11px] text-ink/70">
             {['Exceptions first', layout.count < columns.length ? `last ${layout.count} ${columnUnit(selected, layout.count)}` : '', selected?.fullLabel ?? '']
               .filter(Boolean)

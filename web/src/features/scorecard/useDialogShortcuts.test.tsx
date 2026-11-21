@@ -51,6 +51,32 @@ function none(h: Partial<ReturnType<typeof handlers>>) {
 }
 
 describe('useDialogShortcuts', () => {
+  it('W opens the Why card; never with a modifier, in a field or in a grid (the grid’s own W opens the cell’s)', async () => {
+    const h = { ...handlers(), why: vi.fn<() => void>() }
+    render(<Harness h={h} />)
+    const user = userEvent.setup()
+    screen.getByRole('button', { name: 'Plain' }).focus()
+    await user.keyboard('w')
+    expect(h.why).toHaveBeenCalledTimes(1)
+    await user.keyboard('W')
+    expect(h.why).toHaveBeenCalledTimes(2)
+    await user.keyboard('{Control>}w{/Control}{Alt>}w{/Alt}')
+    screen.getByRole('textbox', { name: 'Filter' }).focus()
+    await user.keyboard('w')
+    screen.getByRole('gridcell', { name: 'Cell' }).focus()
+    await user.keyboard('w')
+    expect(h.why).toHaveBeenCalledTimes(2)
+  })
+
+  it('without a why handler, W does nothing', async () => {
+    const h = handlers()
+    render(<Harness h={h} />)
+    screen.getByRole('button', { name: 'Plain' }).focus()
+    const event = fireEvent.keyDown(screen.getByRole('button', { name: 'Plain' }), { key: 'w' })
+    expect(event).toBe(true)
+    none(h)
+  })
+
   it('arrow keys move between metrics; T, L and P run their actions', async () => {
     const h = handlers()
     render(<Harness h={h} />)

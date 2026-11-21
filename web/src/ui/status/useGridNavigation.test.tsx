@@ -208,3 +208,126 @@ describe('useGridNavigation', () => {
     expect(tabbable().map((b) => b.textContent)).toEqual(['r1:1'])
   })
 })
+
+/** A grid whose rows end in a trailing cell (`r:T`) after the selected period, except the rows in `spacers`. */
+function TrailingHarness({ spacers = [], colCount = 4, ...opts }: Partial<Opts> & { spacers?: string[] }) {
+  const nav = useGridNavigation({ rowIds: ROWS, colCount, anchor: 'end', trailing: true, onOpen: () => {}, ...opts })
+  return (
+    <>
+      <input aria-label="Filter" />
+      <div role="grid" aria-label="Harness">
+        {ROWS.map((rowId) => (
+          <div role="row" key={rowId}>
+            {Array.from({ length: colCount }, (_, col) => (
+              <button key={col} type="button" {...nav.cellProps(rowId, col)}>
+                {`${rowId}:${col}`}
+              </button>
+            ))}
+            {!spacers.includes(rowId) && (
+              <button type="button" {...nav.cellProps(rowId, colCount)}>
+                {`${rowId}:T`}
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
+    </>
+  )
+}
+
+describe('useGridNavigation with a trailing cell', () => {
+  it('the first tab stop and End stay on the selected period; → reaches the trailing cell and ← returns', async () => {
+    render(<TrailingHarness />)
+    expect(tabbable().map((b) => b.textContent)).toEqual(['r1:3'])
+    const user = userEvent.setup()
+    await user.tab()
+    await user.tab()
+    expect(focused()).toBe('r1:3')
+    await user.keyboard('{ArrowRight}')
+    expect(focused()).toBe('r1:T')
+    await user.keyboard('{ArrowRight}')
+    expect(focused()).toBe('r1:T')
+    await user.keyboard('{End}')
+    expect(focused()).toBe('r1:3')
+    await user.keyboard('{ArrowRight}{ArrowLeft}')
+    expect(focused()).toBe('r1:3')
+    await user.keyboard('{Home}{End}')
+    expect(focused()).toBe('r1:3')
+  })
+
+  it('↓ and ↑ keep to the trailing column; a spacer row keeps → on the selected period', async () => {
+    render(<TrailingHarness spacers={['r2']} />)
+    const user = userEvent.setup()
+    await user.tab()
+    await user.tab()
+    await user.keyboard('{ArrowRight}{ArrowDown}')
+    expect(focused()).toBe('r2:3')
+    await user.keyboard('{ArrowRight}')
+    expect(focused()).toBe('r2:3')
+    await user.keyboard('{ArrowDown}{ArrowRight}')
+    expect(focused()).toBe('r3:T')
+    await user.keyboard('{ArrowUp}{ArrowUp}')
+    expect(focused()).toBe('r1:3')
+  })
+
+  it('Enter on the trailing cell opens it as the column after the last period', async () => {
+    const onOpen = vi.fn()
+    render(<TrailingHarness onOpen={onOpen} />)
+    const user = userEvent.setup()
+    await user.tab()
+    await user.tab()
+    await user.keyboard('{ArrowRight}{Enter}')
+    expect(onOpen).toHaveBeenCalledWith('r1', 4, screen.getByRole('button', { name: 'r1:T' }))
+  })
+
+  it('W calls onWhy for the cell; not with Ctrl, Cmd or Alt, and never from an input', async () => {
+    const onWhy = vi.fn()
+    const onOpen = vi.fn()
+    render(<TrailingHarness onWhy={onWhy} onOpen={onOpen} />)
+    const user = userEvent.setup()
+    await user.tab()
+    await user.tab()
+    await user.keyboard('{ArrowLeft}w')
+    expect(onWhy).toHaveBeenCalledWith('r1', 2, screen.getByRole('button', { name: 'r1:2' }))
+    await user.keyboard('{ArrowRight}{ArrowRight}W')
+    expect(onWhy).toHaveBeenLastCalledWith('r1', 4, screen.getByRole('button', { name: 'r1:T' }))
+    expect(onWhy).toHaveBeenCalledTimes(2)
+    await user.keyboard('{Control>}w{/Control}{Meta>}w{/Meta}{Alt>}w{/Alt}')
+    expect(onWhy).toHaveBeenCalledTimes(2)
+    await user.click(screen.getByRole('textbox', { name: 'Filter' }))
+    await user.keyboard('w')
+    expect(onWhy).toHaveBeenCalledTimes(2)
+    expect(onOpen).not.toHaveBeenCalled()
+  })
+
+  it('W typed in an input inside a cell is the input’s', async () => {
+    const onWhy = vi.fn()
+    function Probe() {
+      const nav = useGridNavigation({ rowIds: ['r1'], colCount: 1, anchor: 'end', onOpen: () => {}, onWhy })
+      return (
+        <div role="grid" aria-label="Probe">
+          <div role="row">
+            <div role="gridcell" {...nav.cellProps('r1', 0)}>
+              <input aria-label="Note" />
+            </div>
+          </div>
+        </div>
+      )
+    }
+    render(<Probe />)
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('textbox', { name: 'Note' }))
+    await user.keyboard('w')
+    expect(onWhy).not.toHaveBeenCalled()
+    expect((screen.getByRole('textbox', { name: 'Note' }) as HTMLInputElement).value).toBe('w')
+  })
+
+  it('without onWhy, W does nothing', async () => {
+    render(<TrailingHarness />)
+    const user = userEvent.setup()
+    await user.tab()
+    await user.tab()
+    await user.keyboard('w')
+    expect(focused()).toBe('r1:3')
+  })
+})

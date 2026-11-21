@@ -2,12 +2,15 @@ import * as Dialog from '@radix-ui/react-dialog'
 import { X } from 'lucide-react'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router'
-import { useItemKinds, useMe, useOrgLevels, useOrgUnits, useScorecards, useVersions, useView } from '../../api/queries'
+import { useItemKinds, useMe, useMetricSummaries, useOrgLevels, useOrgUnits, useScorecards, useVersions, useView } from '../../api/queries'
 import type { components } from '../../api/schema'
 import { parsePeriod, periodLabel } from '../../lib/period'
 import { usePeriodState } from '../../shell/usePeriodState'
 import { StatusChip } from '../../ui/status'
 import { useAskSam } from '../assistant/useAssistant'
+import { attributionAvailable, summaryDisplay } from '../rca/rcaState'
+import { WhyButton } from '../rca/WhyButton'
+import { useWhyCard } from '../rca/WhyCardProvider'
 import { Breakdown } from './Breakdown'
 import { defaultStatusScale, MOVE_CLASS } from './charts/chartTheme'
 import { FOCUS_CHART_HEIGHT, MetricChart, type ChartParts } from './charts/MetricChart'
@@ -33,6 +36,7 @@ import { periodStatus } from './logic/coarse'
 import {
   buildItemRows,
   ITEM_PARAM,
+  itemSummary,
   parseItemSort,
   partitionItems,
   SORT_PARAM,
@@ -43,7 +47,7 @@ import {
 import { defaultLayout } from './logic/layout'
 import { nounForms, nounFromId, valueHeader, type NounForms } from './logic/nouns'
 import { cellReported, statusAtScope, type StatusScaleEntry } from './logic/statusAtScope'
-import { buildBoardRow } from './logic/statusBoard'
+import { buildBoardRow, listedState, stateDisplay } from './logic/statusBoard'
 import { columnUnit, sinceText } from './logic/statusText'
 import { Kbd, MoreMenu } from './MoreMenu'
 import { RangeStrip } from './RangeStrip'
@@ -302,6 +306,23 @@ function MetricFocus({
   const drilling = drillRow !== undefined
   const gridShown = isItems && !drilling
   const settled = view.data !== undefined && !view.isPlaceholderData && metricGroup !== undefined
+
+  // Why cards (§10.1): the company's standing carries the exec summary state; every other cell, attribution.
+  const why = useWhyCard()
+  const role = me.data?.role ?? 'viewer'
+  const roots = orgUnits.data?.units.filter((u) => u.parentId === '') ?? []
+  const company = roots.length === 1 ? roots[0] : undefined
+  const companyScope = period.scope === '' || period.scope === company?.id
+  // Item metrics have no company row: their summary state comes from the month's list (live months only).
+  const listPeriod = companyScope && !period.restate && monthGrain && isItems ? period.period : ''
+  const listed = useMetricSummaries(scorecardId, { period: listPeriod, state: 'all' })
+  const listedSummary = listedState(listed.data?.pages.flatMap((p) => p.items).find((s) => s.metricKey === metricKey))
+  /** Opens a cell's Why card; the company's is titled with the company and the metric. */
+  const openCard = (subject: string, periodKey: string, el: HTMLElement, atCompany: boolean) => {
+    if (!subject || !periodKey) return
+    const name = company?.name ?? scope?.subjectName ?? ''
+    why.open({ metric: metricKey, subject, period: periodKey }, el, atCompany && name ? { title: `${name} · ${head?.metricName ?? metricKey}` } : undefined)
+  }
   const hasSubjectRow = subjectRow !== undefined
 
   useEffect(() => {
@@ -635,6 +656,7 @@ function MetricFocus({
       present,
       nextItem: drilling ? () => position.next && stepTo(position.next.id) : undefined,
       prevItem: drilling ? () => position.prev && stepTo(position.prev.id) : undefined,
+      why: () => bodyRef.current?.querySelector<HTMLElement>('[data-why-row] button[aria-haspopup="dialog"]')?.click(),
     },
     { rangeKeys: gridShown ? 3 : 5 },
   )
@@ -688,6 +710,35 @@ function MetricFocus({
   // No company value: the value row leads with the worst of the lines shown (§7.6); its count names them with `withNouns`, as the tile does.
   const worstSeries = multiSeries ? multiSeriesHeader(chartRows, columnKey, statusColors, (k) => statusLabel(k) ?? k, noun) : null
   const markers = useVersionMarkers(trendColumns, metricKey)
+
+  // The scope's subject (the company's root unit for an item metric with no company row) and its exec summary state.
+  const scopeSubject = scope?.subjectId ?? (companyScope ? company?.id : period.scope) ?? ''
+  const companySummary = !companyScope ? null : scope && cell ? summaryDisplay(cell, role) : stateDisplay(listedSummary, role)
+  const selectedPeriod = selectedColumn?.period ?? ''
+  const valueWhy = (valueDisplay: string) => {
+    const attribution = scope && cell ? attributionAvailable(scope, cell, statusColors) : false
+    if (!head || (!companySummary && !attribution)) return null
+    return (
+      <WhyButton
+        summary={companySummary ?? undefined}
+        attribution={attribution}
+        subjectName={companyScope ? head.metricName : (scope?.subjectName ?? head.metricName)}
+        valueDisplay={valueDisplay}
+        periodLabel={selectedColumn?.fullLabel ?? ''}
+        nameSubject
+        className="self-center"
+        onOpen={(el) => openCard(scopeSubject, selectedPeriod, el, companyScope)}
+      />
+    )
+  }
+  /** At company scope, a month's exec summary state from the scope row's cells (Monthly values). */
+  const monthSummary =
+    companyScope && scope
+      ? (p: string) => {
+          const c = scope.cells.find((x) => !x.ytd && x.period === p)
+          return c ? summaryDisplay(c, role) : null
+        }
+      : undefined
 
   let chartArea
   let details = null
@@ -753,6 +804,7 @@ function MetricFocus({
               markers={markers}
               position={position}
               onStep={stepTo}
+              onWhy={(el) => openCard(drillRow.id, selectedPeriod, el, false)}
             />
           ) : (
             <ItemGrid
@@ -771,6 +823,8 @@ function MetricFocus({
               announce={announce}
               silentOpen={silentOpen}
               onSilentOpen={setSilentOpen}
+              onWhy={(itemId, p, el) => openCard(itemId, p, el, false)}
+              why={valueWhy(itemSummary(itemRows, scale).worst?.display ?? '')}
               range={
                 itemRangeShown
                   ? {
@@ -795,7 +849,7 @@ function MetricFocus({
   } else {
     chartArea = (
       <>
-        <div data-testid="focus-value-row" className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        <div data-testid="focus-value-row" data-why-row="" className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
           {worstSeries?.worst ? (
             <>
               <span className="text-xs text-ink/70">Worst</span>
@@ -860,6 +914,7 @@ function MetricFocus({
           {goal && <span className="text-sm text-ink/70">Goal {goal}</span>}
           {ytd && <span className="text-sm text-ink/70">YTD {ytd}</span>}
           {planned && <span className="text-sm text-ink/70">{planned}</span>}
+          {!stopped && unreported?.kind !== 'na' && valueWhy(cell?.display || worstSeries?.worst?.display || '')}
         </div>
         <div data-chart-region="" className="mt-2" aria-busy={view.isPlaceholderData || undefined}>
           <MetricChart
@@ -983,6 +1038,21 @@ function MetricFocus({
             valueLabel={valueHeader(head.metricName)}
             open={monthsOpen}
             onOpenChange={setMonthsOpen}
+            onWhy={(p, el) => openCard(drillRow.id, p, el, false)}
+          />
+        )}
+        {/* Every other body's Monthly values are the scope's own, where it has a row (an item metric may have none). */}
+        {!drillRow && head && scope && settled && !noReports && !view.isError && (
+          <ItemMonths
+            row={scope}
+            columns={isItems ? itemColumns : trendColumns}
+            scale={statusColors}
+            format={head.format}
+            valueLabel={valueHeader(head.metricName)}
+            open={monthsOpen}
+            onOpenChange={setMonthsOpen}
+            onWhy={(p, el) => openCard(scopeSubject, p, el, companyScope)}
+            summaryOf={monthSummary}
           />
         )}
         {!isItems && details}
@@ -1009,6 +1079,9 @@ function MetricFocus({
               </span>
               <span data-hint="" className="hidden sm:inline">
                 <Kbd>L</Kbd> copy link
+              </span>
+              <span data-hint="" className="hidden sm:inline">
+                <Kbd>W</Kbd> why
               </span>
             </>
           )}
