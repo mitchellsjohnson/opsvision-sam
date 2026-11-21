@@ -1037,7 +1037,8 @@ describe('Why? and exec summary states', () => {
       const asked: URL[] = []
       server.use(
         http.get(`${API}/v1/scorecards/:sc/metric-summaries`, ({ request }) => {
-          asked.push(new URL(request.url))
+          // The control bar's tab pill asks for counts only on every view; these tests are about the Overview's list.
+          if (new URL(request.url).searchParams.get('countsOnly') !== 'true') asked.push(new URL(request.url))
           const s: MetricSummary = {
             metricKey: 'svc_uptime',
             metricName: 'Service uptime',

@@ -7,7 +7,15 @@ import { axe } from 'vitest-axe'
 import { App } from '../../App'
 import { API, server, state } from '../../test/server'
 import {
+  defectOptional,
+  missingSummaries,
   newSeen,
+  ON_TIME_TEXT,
+  onTimeWritten,
+  publishBlockedResponse,
+  spendStale,
+  trainingMissing,
+  writtenSummaries,
   publishedDocV1,
   publishedDocV2,
   publishedMonths,
@@ -553,5 +561,152 @@ describe('ReportPage: Draft with SAM', () => {
     renderReport()
     expect(await screen.findByText(REPORT_SUMMARY)).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Draft with SAM' })).toBeNull()
+  })
+})
+
+describe('ReportPage: exec summaries and the publish gate', () => {
+  const blockName = '3 exec summaries needed before Oct 2026 can be published'
+
+  it('a live report lists the missing summaries, with links to write them, and holds Publish', async () => {
+    const seen = newSeen()
+    renderReport(ROUTE, { seen, summaries: missingSummaries })
+    const heading = await screen.findByRole('heading', { name: blockName, level: 2 })
+    const block = heading.closest('section')!
+    const items = within(block).getAllByRole('listitem')
+    expect(items.map((li) => within(li).getAllByRole('link')[0]!.textContent)).toEqual([
+      'On-time delivery',
+      'Service uptime',
+      'Security training completion',
+    ])
+    expect(within(items[0]!).getByRole('link', { name: 'On-time delivery' }).getAttribute('href')).toBe(
+      '/scorecards/sc-main/exec-summaries?period=2026-M10&why=on_time_pct',
+    )
+    expect(items[0]!.textContent).toContain('84.3%')
+    expect(items[0]!.textContent).toContain('Yellow')
+    expect(items[2]!.textContent).toContain('Below 100% (94%)')
+    const write = within(items[1]!).getByRole('link', { name: 'Write exec summary for Service uptime' })
+    expect(write.textContent).toBe('Write exec summary for Service uptime ›')
+    expect(write.getAttribute('href')).toBe('/scorecards/sc-main/exec-summaries?period=2026-M10&why=svc_uptime')
+    expect(within(block).getByRole('link', { name: 'View all exec summaries ›' }).getAttribute('href')).toBe(
+      '/scorecards/sc-main/exec-summaries?period=2026-M10',
+    )
+    expect(block.textContent).toContain('1 written summary may be out of date (Spend vs plan); that does not block publishing.')
+    expect(screen.queryByText(/Publishing is allowed/)).toBeNull()
+
+    const publish = screen.getByRole('button', { name: 'Publish' }) as HTMLButtonElement
+    expect(publish.getAttribute('aria-disabled')).toBe('true')
+    expect(publish.disabled).toBe(false)
+    expect(publish.getAttribute('aria-describedby')).toContain(heading.id)
+    const line = screen.getByText('Publishing needs 3 more exec summaries.')
+    expect(publish.getAttribute('aria-describedby')).toContain(line.id)
+    publish.focus()
+    expect(document.activeElement).toBe(publish)
+    await userEvent.setup().click(publish)
+    expect(seen.publishes).toHaveLength(0)
+  })
+
+  it('shows the block to a viewer, without Write links or Publish', async () => {
+    state.role = 'viewer'
+    renderReport(ROUTE, { summaries: missingSummaries })
+    const block = (await screen.findByRole('heading', { name: blockName })).closest('section')!
+    expect(within(block).queryByRole('link', { name: /^Write/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Publish' })).toBeNull()
+  })
+
+  it('with nothing missing, Publish is enabled and a stale summary is mentioned, not blocking', async () => {
+    const seen = newSeen()
+    renderReport(ROUTE, { seen, summaries: [onTimeWritten, spendStale, defectOptional] })
+    expect(await screen.findByText('1 exec summary may be out of date: Spend vs plan. Publishing is allowed.')).toBeTruthy()
+    expect(screen.queryByRole('heading', { name: /exec summar(y|ies) needed before/ })).toBeNull()
+    const publish = screen.getByRole('button', { name: 'Publish' })
+    expect(publish.getAttribute('aria-disabled')).not.toBe('true')
+    expect(screen.queryByText(/Publishing needs/)).toBeNull()
+    await userEvent.setup().click(publish)
+    await waitFor(() => expect(seen.publishes).toHaveLength(1))
+  })
+
+  it('a 409 from Publish re-renders the block from its list and moves focus to its heading', async () => {
+    renderReport(ROUTE, { summaries: writtenSummaries, publish: () => publishBlockedResponse([trainingMissing]) })
+    await screen.findByRole('heading', { name: 'Needs attention', level: 2 })
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Publish' }))
+    const heading = await screen.findByRole('heading', { name: '1 exec summary needed before Oct 2026 can be published' })
+    await waitFor(() => expect(document.activeElement).toBe(heading))
+    expect(within(heading.closest('section')!).getByRole('link', { name: 'Security training completion' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Publish' }).getAttribute('aria-disabled')).toBe('true')
+    expect(screen.getByText('Publishing needs 1 more exec summary.')).toBeTruthy()
+  })
+
+  it('a metric block shows the summary, its first 3 links with Show all, and the attribution line', async () => {
+    renderReport(ROUTE, { summaries: writtenSummaries })
+    const needs = (await screen.findByRole('heading', { name: 'Needs attention', level: 2 })).closest('section')!
+    const block = (await within(needs).findByRole('heading', { name: 'On-time delivery', level: 3 })).closest('article')!
+    const summary = await within(block).findByRole('group', { name: 'Exec summary' })
+    expect(within(summary).getByText(ON_TIME_TEXT)).toBeTruthy()
+    expect(within(summary).getByText('Avery Admin · Nov 2')).toBeTruthy()
+    expect(within(summary).getAllByRole('link', { name: /opens in a new tab/ })).toHaveLength(3)
+    const all = within(summary).getByRole('button', { name: 'Show all 12 links' })
+    expect(all.getAttribute('aria-expanded')).toBe('false')
+    const user = userEvent.setup()
+    await user.click(all)
+    expect(within(summary).getAllByRole('link', { name: /opens in a new tab/ })).toHaveLength(12)
+    expect(document.activeElement).toBe(within(summary).getByRole('button', { name: 'Show fewer' }))
+    const line = within(block).getByTestId('summary-attribution')
+    expect(line.textContent).toBe('Attribution: 15.7 pts short of 100% · 6 of 38 items missed: DEL-101 · DEL-104')
+    expect(within(line).getByRole('link', { name: 'DEL-101' }).getAttribute('href')).toBe('https://tracker.example/browse/DEL-101')
+  })
+
+  it('a missing summary says `Exec summary needed`, with Write for admins, and never other text', async () => {
+    renderReport(ROUTE, { summaries: missingSummaries })
+    const needs = (await screen.findByRole('heading', { name: 'Needs attention', level: 2 })).closest('section')!
+    const block = (await within(needs).findByRole('heading', { name: 'On-time delivery', level: 3 })).closest('article')!
+    const summary = await within(block).findByRole('group', { name: 'Exec summary' })
+    expect(within(summary).getByText('Exec summary needed')).toBeTruthy()
+    expect(within(summary).getByRole('link', { name: 'Write exec summary for On-time delivery' }).getAttribute('href')).toBe(
+      '/scorecards/sc-main/exec-summaries?period=2026-M10&why=on_time_pct',
+    )
+    expect(summary.textContent).toBe('Exec summaryExec summary neededWrite exec summary for On-time delivery ›')
+    expect(block.textContent).not.toContain(ON_TIME_TEXT)
+  })
+
+  it('collects the month’s summaries under Notes → Exec summaries, worst first', async () => {
+    renderReport(ROUTE, { summaries: missingSummaries })
+    const notes = (await screen.findByRole('heading', { name: 'Notes', level: 2 })).closest('section')!
+    const heading = await within(notes).findByRole('heading', { name: 'Exec summaries', level: 3 })
+    const lines = within(heading.parentElement!).getAllByRole('listitem').map((li) => li.textContent)
+    expect(lines).toEqual([
+      'Service uptime · 99.20% Red: Exec summary needed',
+      'On-time delivery · 84.3% Yellow: Exec summary needed',
+      'Security training completion · 94% Green: Exec summary needed',
+      'Spend vs plan · 104% Green: Vendor renewals landed a month early.',
+    ])
+  })
+
+  it('a published revision shows its frozen summaries and flags one edited since', async () => {
+    const frozen = { ...onTimeWritten, text: 'As published.', revision: 2 }
+    renderReport(ROUTE, {
+      document: () => reportDocument({ live: false, revision: 1 }),
+      months: publishedMonths,
+      revisionSummaries: { 1: [frozen] },
+      summaries: [{ ...onTimeWritten, revision: 3 }],
+    })
+    const needs = (await screen.findByRole('heading', { name: 'Needs attention', level: 2 })).closest('section')!
+    const block = within(needs).getByRole('heading', { name: 'On-time delivery', level: 3 }).closest('article')!
+    expect(await within(block).findByText('As published.')).toBeTruthy()
+    expect(await within(block).findByText('Exec summary edited since publication')).toBeTruthy()
+    expect(within(block).queryByText(ON_TIME_TEXT)).toBeNull()
+    expect(screen.queryByRole('heading', { name: /needed before/ })).toBeNull()
+  })
+
+  it('a revision published before summaries says so and shows none', async () => {
+    renderReport(ROUTE, { document: () => publishedDocV2(), months: publishedMonths, summaries: writtenSummaries })
+    expect(await screen.findByText('This revision was published before exec summaries were required.')).toBeTruthy()
+    expect(screen.queryByRole('group', { name: 'Exec summary' })).toBeNull()
+    expect(screen.queryByText(ON_TIME_TEXT)).toBeNull()
+  })
+
+  it('has no axe violations with the required block and summaries', async () => {
+    const { container } = renderReport(ROUTE, { summaries: missingSummaries })
+    await screen.findByRole('heading', { name: blockName })
+    expect((await axe(container)).violations).toEqual([])
   })
 })

@@ -9,14 +9,21 @@ import {
   metricValue,
   noteSections,
   statusTable,
+  SUMMARY_LINKS_SHOWN,
+  SUMMARY_NOT_WRITTEN,
+  showsSummary,
+  summaryChunks,
   tableCellText,
   tableChunks,
+  type ExecSummaryNote,
   type ReportMetric,
   type ReportModel,
 } from './model'
+import { safeHref } from '../../rca/rcaText'
 
 type Slide = PptxGenJS.Slide
 type TableRow = PptxGenJS.TableRow
+type TextRun = PptxGenJS.TextProps
 
 const INK = '1D2433'
 const ACCENT = '5B4BDB'
@@ -24,7 +31,11 @@ const MUTED = '4B5563'
 const FAINT = '6B7280'
 const RULE = 'E5E7EB'
 const CREAM = 'FFF6E5'
+/** The status-r token: a missing exec summary. */
+const RED = 'B42318'
 const FONT = 'Arial'
+/** The appendix lists this many summaries a slide. */
+const APPENDIX_ROWS = 6
 const SERIES_COLORS = ['5B4BDB', '0E7490', '475569', 'A21CAF', '1D4ED8']
 /** Wrapped notes lines per slide before the notes continue on another. */
 const NOTES_LINES = 16
@@ -173,11 +184,40 @@ function statusTableRows(model: ReportModel, metric: ReportMetric, fontSize: num
   ]
 }
 
+/** A link title as a run: a hyperlink when its URL is https (`safeHref`), else plain text. */
+function linkRun(title: string, url: string, fontSize?: number): TextRun {
+  const href = safeHref(url)
+  return { text: title, options: { ...(href ? { hyperlink: { url: href }, color: ACCENT } : { color: INK }), ...(fontSize ? { fontSize } : {}) } }
+}
+
+/**
+ * The metric slide's `Exec summary` box: the text, byline and first three
+ * links, then how many more the appendix lists. A missing summary prints
+ * only `Exec summary not written yet`.
+ */
+function summaryRuns(metric: ReportMetric): TextRun[] {
+  const s = metric.summary!
+  if (s.state === 'missing' || !s.text) return [{ text: SUMMARY_NOT_WRITTEN, options: { color: RED, bold: true } }]
+  const runs: TextRun[] = [{ text: s.text, options: { color: INK, breakLine: true } }]
+  const byline = [s.author, s.date].filter(Boolean).join(' · ')
+  if (byline) runs.push({ text: byline, options: { color: FAINT, fontSize: 9, breakLine: true } })
+  const shown = s.links.slice(0, SUMMARY_LINKS_SHOWN)
+  shown.forEach((l, i) => {
+    if (i > 0) runs.push({ text: ' · ', options: { color: MUTED } })
+    runs.push(linkRun(l.title, l.url))
+  })
+  const more = s.linksTotal - shown.length
+  if (more > 0) runs.push({ text: ` · + ${more} more link${more === 1 ? '' : 's'} in the appendix`, options: { color: MUTED } })
+  return runs
+}
+
 function metricSlide(pres: PptxGenJS, model: ReportModel, metric: ReportMetric, attention: boolean) {
   const slide = pres.addSlide()
   header(slide, model, attention ? 'Needs attention' : metric.categoryName, metric.name)
   const kind = exportChart(metric)
-  const left = { x: M, y: 1.3, w: 5.8, h: 3.7 }
+  const summary = showsSummary(metric)
+  // With an exec summary, the right column holds it and the facts move under the chart.
+  const left = { x: M, y: 1.3, w: 5.8, h: summary ? 3.2 : 3.7 }
   const right = { x: 6.6, w: W - M - 6.6 }
 
   if (kind === 'table') {
@@ -239,6 +279,35 @@ function metricSlide(pres: PptxGenJS, model: ReportModel, metric: ReportMetric, 
     { x: right.x, y: 1.9, w: right.w, h: 0.35, fontFace: FONT, fontSize: 14 },
   )
   const facts = metricFacts(metric)
+  if (summary) {
+    if (facts.length > 0) {
+      slide.addText(facts.join('   ·   '), { x: left.x, y: 4.55, w: left.w, h: 0.5, fontFace: FONT, fontSize: 10, color: MUTED, valign: 'top', fit: 'shrink' })
+    }
+    slide.addText('Exec summary', { x: right.x, y: 2.3, w: right.w, h: 0.22, fontFace: FONT, fontSize: 9, bold: true, color: INK, objectName: 'Exec summary label' })
+    slide.addText(summaryRuns(metric), {
+      x: right.x,
+      y: 2.52,
+      w: right.w,
+      h: 1.6,
+      fontFace: FONT,
+      fontSize: 11,
+      valign: 'top',
+      fit: 'shrink',
+      objectName: 'Exec summary',
+    })
+    const line = metric.summary!.attributionLine
+    if (line) {
+      slide.addText(
+        [
+          { text: 'Attribution: ', options: { bold: true } },
+          { text: line, options: {} },
+        ],
+        { x: right.x, y: 4.15, w: right.w, h: 0.9, fontFace: FONT, fontSize: 9, color: MUTED, valign: 'top', fit: 'shrink', objectName: 'Attribution' },
+      )
+    }
+    slide.addNotes(metricNotes(metric))
+    return
+  }
   if (facts.length > 0) {
     slide.addText(facts.join('\n'), { x: right.x, y: 2.3, w: right.w, h: 1.2, fontFace: FONT, fontSize: 11, color: MUTED, valign: 'top' })
   }
@@ -284,6 +353,44 @@ function tableSlides(pres: PptxGenJS, model: ReportModel) {
       autoPage: false,
     })
     slide.addNotes(`Scorecard table at ${model.scopeLabel}, ${first} to ${last} and year to date.\n${versionsNote(model)}`)
+  })
+}
+
+/** `Exec summaries · Oct 2026`: every summary of the month, 6 a slide, every link listed. */
+function appendixSlides(pres: PptxGenJS, model: ReportModel) {
+  const title = `Exec summaries · ${model.monthLabel}`
+  const head = (text: string): PptxGenJS.TableCell => ({ text, options: { bold: true, fill: { color: CREAM }, color: INK } })
+  summaryChunks(model, APPENDIX_ROWS).forEach((rows, i) => {
+    const slide = pres.addSlide()
+    header(slide, model, model.monthLabel, i === 0 ? title : `${title} (continued)`)
+    const body: TableRow[] = rows.map((n: ExecSummaryNote) => [
+      { text: n.name, options: { color: INK, bold: true } },
+      { text: [n.display, n.status].filter(Boolean).join(' '), options: { color: INK } },
+      n.text === null
+        ? { text: SUMMARY_NOT_WRITTEN, options: { color: RED, bold: true } }
+        : { text: n.text, options: { color: INK } },
+      n.links.length === 0
+        ? { text: '', options: { color: INK } }
+        : {
+            text: n.links.map((l, k) => {
+              const run = linkRun(l.title, l.url, 8)
+              return { text: run.text ?? '', options: { ...run.options, breakLine: k < n.links.length - 1 } }
+            }),
+            options: { color: INK },
+          },
+    ])
+    slide.addTable([[head('Metric'), head('Value'), head('Exec summary'), head('Links')], ...body], {
+      x: M,
+      y: 1.3,
+      w: W - 2 * M,
+      colW: [1.8, 0.9, 3.6, 2.7],
+      fontFace: FONT,
+      fontSize: 9,
+      valign: 'top',
+      border: { type: 'solid', pt: 0.5, color: RULE },
+      autoPage: false,
+    })
+    slide.addNotes(`Exec summaries for ${model.monthLabel}, worst first. Every link is listed.\n${versionsNote(model)}`)
   })
 }
 
@@ -341,6 +448,7 @@ export async function buildPptx(model: ReportModel): Promise<Uint8Array> {
   for (const m of model.needsAttention) metricSlide(pres, model, m, true)
   for (const c of model.categories) for (const m of c.metrics) if (!attention.has(m.key)) metricSlide(pres, model, m, false)
   tableSlides(pres, model)
+  appendixSlides(pres, model)
   notesSlides(pres, model)
 
   return (await pres.write({ outputType: 'uint8array' })) as Uint8Array

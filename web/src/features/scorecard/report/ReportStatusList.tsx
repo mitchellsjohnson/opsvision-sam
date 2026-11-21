@@ -11,6 +11,7 @@ import { metricStandings, type MetricStanding } from '../logic/standings'
 import { cellReported, type StatusScaleEntry } from '../logic/statusAtScope'
 import { buildBoardRow, type BoardCell } from '../logic/statusBoard'
 import { cellKey } from '../viewHelpers'
+import { rcaExcerpt } from '../../rca/rcaText'
 import { metricValue, NOT_IN_REVISION, type ReportMetric, type ReportModel } from './model'
 
 type ScorecardView = components['schemas']['ScorecardView']
@@ -249,6 +250,17 @@ export function ReportStatusList({ model, scale, counted, fiscalYearStartMonth: 
                           {caption.rest && <span>{caption.rest}</span>}
                         </div>
                       ))}
+                    {metric.summary?.state === 'missing' ? (
+                      <div data-summary-caption="" className={clsx(CAPTION, 'text-right font-semibold text-status-r')}>
+                        Exec summary needed
+                      </div>
+                    ) : (
+                      metric.summary?.text && (
+                        <div data-summary-caption="" dir="auto" className={clsx(CAPTION, 'text-right break-words')}>
+                          {`Summary: ${rcaExcerpt(metric.summary.text)}`}
+                        </div>
+                      )
+                    )}
                     <div className={clsx(MONTHS_GRID, 'mt-1.5')}>
                       {cells.map((c) => (
                         <StatusCell key={c.key} cell={c} name="" scale={scale} decorative />

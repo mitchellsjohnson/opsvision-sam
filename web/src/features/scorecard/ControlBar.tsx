@@ -4,7 +4,7 @@ import clsx from 'clsx'
 import { ChevronDown, ChevronLeft, ChevronRight, SlidersHorizontal } from 'lucide-react'
 import { useEffect, useId, useMemo, useState, useSyncExternalStore } from 'react'
 import { NavLink, useLocation, useParams } from 'react-router'
-import { useMe, useOrgUnits, useVersions } from '../../api/queries'
+import { useMe, useMetricSummaryCounts, useOrgUnits, useVersions } from '../../api/queries'
 import {
   GRAINS,
   convertGrain,
@@ -105,6 +105,9 @@ export function ControlBar({ scorecardId }: { scorecardId: string }) {
   }, [parsed, start, view.period])
 
   const restated = versions.data?.versions.find((v) => v.id === view.restate)
+  // The month's missing exec summaries, for everyone: the month cannot be published until it is 0.
+  const counts = useMetricSummaryCounts(parsed?.grain === 'month' ? scorecardId : undefined, view.period)
+  const needed = counts.data?.counts.missing ?? 0
 
   if (!parsed) return null
 
@@ -135,6 +138,22 @@ export function ControlBar({ scorecardId }: { scorecardId: string }) {
             {v.label}
           </NavLink>
         ))}
+        <NavLink
+          to={{ pathname: `/scorecards/${sc}/exec-summaries`, search }}
+          aria-label={needed > 0 ? `Exec summaries, ${needed} needed` : undefined}
+          className={(s) => clsx(viewLinkClass(s), 'inline-flex items-center gap-1.5')}
+          onClick={() => setSheetOpen(false)}
+        >
+          {phone ? 'Summaries' : 'Exec summaries'}
+          {needed > 0 && (
+            <span
+              aria-hidden="true"
+              className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-status-r px-1 text-[11px] font-semibold leading-4 text-white"
+            >
+              {needed}
+            </span>
+          )}
+        </NavLink>
       </nav>
 
       <Popover.Root>

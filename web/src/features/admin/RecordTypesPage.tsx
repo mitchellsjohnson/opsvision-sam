@@ -1,10 +1,25 @@
 import { ArrowDown, ArrowUp } from 'lucide-react'
-import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { useEffect, useId, useRef, useState, type FormEvent } from 'react'
 import { ApiError } from '../../api/errors'
-import { useFiscalYearStartMonth, usePutRecordType, useRecordTypes, type RecordType } from '../../api/queries'
+import { useFiscalYearStartMonth, usePutRecordType, useRecordTypes, useScorecards, useVersions, type RecordType } from '../../api/queries'
 import type { components } from '../../api/schema'
 import { currentMonth } from '../../lib/period'
-import { NO_ERRORS, errorsFrom, forField, labelOfMonth, monthOptions, slugify, unclaimed, type FormErrors } from './adminModel'
+import {
+  INCIDENT_TYPE_ID,
+  NO_ERRORS,
+  errorsFrom,
+  explainLinkOf,
+  explainsText,
+  forField,
+  incidentPreset,
+  labelOfMonth,
+  monthOptions,
+  slugify,
+  unclaimed,
+  type FormErrors,
+} from './adminModel'
+import { ConditionBuilder } from './ConditionBuilder'
+import { conditionFields, dateFieldsOf, rowsFor, toWhere, type ConditionRow } from './conditionModel'
 import {
   FieldMessages,
   FormActions,
@@ -20,12 +35,14 @@ import {
 } from './formUi'
 
 type AttributeDef = components['schemas']['AttributeDef']
+type ExplainLink = components['schemas']['ExplainLink']
 
 const TYPE_OPTIONS: { value: AttributeDef['type']; label: string }[] = [
   { value: 'string', label: 'Text' },
   { value: 'number', label: 'Number' },
   { value: 'bool', label: 'Yes or no' },
   { value: 'date', label: 'Date' },
+  { value: 'datetime', label: 'Date and time' },
 ]
 
 const TYPE_TEXT: Record<AttributeDef['type'], string> = {
@@ -37,6 +54,9 @@ const TYPE_TEXT: Record<AttributeDef['type'], string> = {
 }
 
 const KEY_PATTERN = /^[a-z][a-z0-9_]*$/
+
+/** Where the API reports a problem with one Explains row: `explains[0].where`. */
+const EXPLAIN_FIELDS = ['', '.where', '.metricKey', '.mode', '.downMeasure', '.scorecardId']
 
 /** "Support incident" => "support_incident", the form record type IDs take. */
 export function recordTypeId(name: string): string {
@@ -137,6 +157,9 @@ interface Draft {
   priorities: string[]
   attributes: AttrRow[]
   tracked: [string, string][]
+  explains: ExplainLink[]
+  /** Send `explains` on save: the type had them, or they were edited (an absent field keeps the stored links). */
+  sendExplains: boolean
 }
 
 function draftOf(t: RecordType): Draft {
@@ -145,7 +168,274 @@ function draftOf(t: RecordType): Draft {
     priorities: [...t.priorities],
     attributes: t.attributes.map((a) => ({ ...a, isNew: false, keyEdited: true })),
     tracked: Object.entries(t.trackedFrom),
+    explains: (t.explains ?? []).map((l) => ({ ...l })),
+    sendExplains: t.explains !== undefined,
   }
+}
+
+/** A scorecard's metrics across its versions, newest name first, for the Explains picker and rows. */
+function useScorecardMetrics(scorecardId: string | undefined): { key: string; name: string }[] {
+  const versions = useVersions(scorecardId)
+  const out = new Map<string, string>()
+  for (const v of versions.data?.versions ?? []) for (const m of v.content.metrics) if (!out.has(m.key)) out.set(m.key, m.name)
+  return [...out].map(([key, name]) => ({ key, name }))
+}
+
+function ScorecardOptions({ scorecardId, name }: { scorecardId: string; name: string }) {
+  const metrics = useScorecardMetrics(scorecardId)
+  if (metrics.length === 0) return null
+  return (
+    <optgroup label={name}>
+      {metrics.map((m) => (
+        <option key={m.key} value={`${scorecardId}|${m.key}`}>
+          {m.name}
+        </option>
+      ))}
+    </optgroup>
+  )
+}
+
+interface ExplainForm {
+  /** The row being edited; null adds one. */
+  index: number | null
+  metric: string
+  mode: ExplainLink['mode']
+  rows: ConditionRow[]
+  /** A filter the condition builder cannot show, edited as text. */
+  whereText: string | null
+  downMeasure: string
+}
+
+function ExplainRow({
+  link,
+  index,
+  errors,
+  onEdit,
+  onRemove,
+}: {
+  link: ExplainLink
+  index: number
+  errors: string[]
+  onEdit: () => void
+  onRemove: () => void
+}) {
+  const metrics = useScorecardMetrics(link.scorecardId)
+  const names = new Map(metrics.map((m) => [`${link.scorecardId}|${m.key}`, m.name]))
+  const metricName = names.get(`${link.scorecardId}|${link.metricKey}`) ?? link.metricKey
+  const errId = `explain-${index}-err`
+  return (
+    <li className="flex flex-wrap items-center gap-2" aria-describedby={errors.length > 0 ? errId : undefined}>
+      <span data-explain="" className="min-w-0 break-words text-sm">
+        {explainsText(link, names)}
+      </span>
+      <button type="button" className={linkButton} aria-label={`Edit the ${metricName} link`} onClick={onEdit}>
+        Edit
+      </button>
+      <button type="button" className={linkButton} aria-label={`Remove the ${metricName} link`} onClick={onRemove}>
+        Remove
+      </button>
+      <FieldMessages id={errId} errors={errors} />
+    </li>
+  )
+}
+
+/**
+ * Explains (spec §7.1): the metrics this type's records explain, as
+ * `{metric} · {Downtime | List} · {filter}` rows edited in a small form.
+ * Explaining changes no value, so it is not versioned.
+ */
+function ExplainsEditor({
+  type,
+  links,
+  errorsAt,
+  onChange,
+}: {
+  /** The type as edited: its fields are what the filter can use. */
+  type: RecordType
+  links: ExplainLink[]
+  errorsAt: (i: number) => string[]
+  onChange: (links: ExplainLink[]) => void
+}) {
+  const id = useId()
+  const scorecards = useScorecards()
+  const [form, setForm] = useState<ExplainForm | null>(null)
+  const [formError, setFormError] = useState('')
+  const addRef = useRef<HTMLButtonElement>(null)
+  const metricRef = useRef<HTMLSelectElement>(null)
+  const focusAdd = useRef(false)
+  const fields = conditionFields(type)
+  const dates = dateFieldsOf(fields)
+
+  useEffect(() => {
+    if (form) metricRef.current?.focus()
+    // Only when the form opens.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form === null, form?.index])
+  useEffect(() => {
+    if (!focusAdd.current) return
+    focusAdd.current = false
+    addRef.current?.focus()
+  })
+
+  const open = (index: number | null) => {
+    const l = index === null ? undefined : links[index]
+    const rows = l ? rowsFor(l.where ?? '', fields) : []
+    setFormError('')
+    setForm({
+      index,
+      metric: l ? `${l.scorecardId}|${l.metricKey}` : '',
+      mode: l?.mode ?? 'downtime',
+      rows: rows ?? [],
+      whereText: rows === null ? (l?.where ?? '') : null,
+      downMeasure: l?.downMeasure ?? '',
+    })
+  }
+  const close = () => {
+    setForm(null)
+    focusAdd.current = true
+  }
+  const submit = () => {
+    if (!form) return
+    const [scorecardId, metricKey] = form.metric.split('|')
+    if (!scorecardId || !metricKey) {
+      setFormError('Choose a metric.')
+      metricRef.current?.focus()
+      return
+    }
+    const where = form.whereText ?? toWhere(form.rows, dates)
+    const link = explainLinkOf({ scorecardId, metricKey, mode: form.mode, where, downMeasure: form.downMeasure })
+    onChange(form.index === null ? [...links, link] : links.map((l, i) => (i === form.index ? link : l)))
+    close()
+  }
+
+  return (
+    <div role="group" aria-labelledby={`${id}-h`} className="space-y-2">
+      <h3 id={`${id}-h`} className="text-base font-semibold">
+        Explains
+      </h3>
+      <p className="text-sm text-ink/80">
+        The metrics these records explain, such as incidents behind uptime. Explaining changes no value.
+      </p>
+      {links.length === 0 ? (
+        <p className="text-sm">These records explain no metric yet.</p>
+      ) : (
+        <ul className="space-y-1">
+          {links.map((l, i) => (
+            <ExplainRow
+              key={`${i}:${l.scorecardId}|${l.metricKey}`}
+              link={l}
+              index={i}
+              errors={errorsAt(i)}
+              onEdit={() => open(i)}
+              onRemove={() => {
+                onChange(links.filter((_, j) => j !== i))
+                if (form?.index === i) setForm(null)
+                focusAdd.current = true
+              }}
+            />
+          ))}
+        </ul>
+      )}
+      {form ? (
+        <fieldset className="space-y-3 rounded-md border border-ink/20 p-3">
+          <legend className="px-1 text-sm font-medium">Metric these records explain</legend>
+          <div>
+            <label htmlFor={`${id}-metric`} className="block text-sm font-medium">
+              Metric
+            </label>
+            <select
+              ref={metricRef}
+              id={`${id}-metric`}
+              className={`${inputClass} max-w-sm`}
+              value={form.metric}
+              aria-invalid={formError ? true : undefined}
+              aria-describedby={formError ? `${id}-metric-err` : undefined}
+              onChange={(e) => {
+                setFormError('')
+                setForm({ ...form, metric: e.target.value })
+              }}
+            >
+              <option value="">Choose a metric</option>
+              {(scorecards.data?.scorecards ?? []).map((s) => (
+                <ScorecardOptions key={s.id} scorecardId={s.id} name={s.name} />
+              ))}
+            </select>
+            <FieldMessages id={`${id}-metric-err`} errors={formError ? [formError] : []} />
+          </div>
+          <div>
+            <p id={`${id}-mode`} className="text-sm font-medium">
+              Mode
+            </p>
+            <div role="radiogroup" aria-labelledby={`${id}-mode`} className="mt-1 inline-flex rounded-md border border-ink/40 bg-white p-0.5">
+              {(
+                [
+                  ['downtime', 'Downtime'],
+                  ['list', 'List'],
+                ] as const
+              ).map(([value, label]) => (
+                <label
+                  key={value}
+                  className="cursor-pointer rounded px-3 py-1 text-sm font-medium has-[:checked]:bg-accent has-[:checked]:text-white has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-accent-deep"
+                >
+                  <input
+                    type="radio"
+                    name={`${id}-mode`}
+                    value={value}
+                    className="sr-only"
+                    checked={form.mode === value}
+                    onChange={() => setForm({ ...form, mode: value })}
+                  />
+                  {label}
+                </label>
+              ))}
+            </div>
+            <p className="mt-1 text-sm text-ink/80">
+              {form.mode === 'downtime'
+                ? 'Counts the records’ minutes against the metric’s gap. Needs start and end times or minutes down.'
+                : 'Lists the records in the period, with no arithmetic.'}
+            </p>
+          </div>
+          {form.mode === 'downtime' && (
+            <TextField
+              label="Downtime measure (optional)"
+              hint="The measure in the metric’s formula that holds the reported downtime, such as seconds_down."
+              className="max-w-sm"
+              value={form.downMeasure}
+              onChange={(e) => setForm({ ...form, downMeasure: e.target.value })}
+            />
+          )}
+          {form.whereText === null ? (
+            <ConditionBuilder
+              legend="Records that count"
+              fields={fields}
+              rows={form.rows}
+              recordType={type.id}
+              onChange={(rows) => setForm({ ...form, rows })}
+            />
+          ) : (
+            <TextField
+              label="Records that count (filter)"
+              hint="This filter is written as an expression the builder cannot show."
+              value={form.whereText}
+              onChange={(e) => setForm({ ...form, whereText: e.target.value })}
+            />
+          )}
+          <div className="flex flex-wrap gap-2">
+            <button type="button" className={primaryButton} onClick={submit}>
+              {form.index === null ? 'Add' : 'Update'}
+            </button>
+            <button type="button" className={secondaryButton} onClick={close}>
+              Cancel
+            </button>
+          </div>
+        </fieldset>
+      ) : (
+        <button ref={addRef} type="button" className={secondaryButton} onClick={() => open(null)}>
+          Add a metric
+        </button>
+      )}
+    </div>
+  )
 }
 
 function RecordTypeEditor({
@@ -260,6 +550,7 @@ function RecordTypeEditor({
       priorities: draft.priorities.map((p) => p.trim()),
       attributes: draft.attributes.map((a) => ({ key: a.key, name: a.name, type: a.type })),
       trackedFrom: Object.fromEntries(draft.tracked),
+      ...(draft.sendExplains ? { explains: draft.explains } : {}),
       revision: revision.current,
     }
     try {
@@ -295,8 +586,11 @@ function RecordTypeEditor({
     ...draft.priorities.map((_, i) => `priorities[${i}]`),
     ...draft.attributes.flatMap((_, i) => [`attributes[${i}].key`, `attributes[${i}].name`, `attributes[${i}].type`]),
     ...draft.tracked.map(([s]) => `trackedFrom.${s}`),
+    'explains',
+    ...draft.explains.flatMap((_, i) => EXPLAIN_FIELDS.map((f) => `explains[${i}]${f}`)),
   ]
   const at = (path: string) => errors.fields[path] ?? []
+  const explainErrors = (i: number) => EXPLAIN_FIELDS.flatMap((f) => at(`explains[${i}]${f}`))
 
   return (
     <section aria-labelledby={headingId} className="space-y-4 rounded-lg border border-ink/20 p-4">
@@ -625,6 +919,13 @@ function RecordTypeEditor({
           </div>
         </div>
 
+        <ExplainsEditor
+          type={{ ...type, priorities: draft.priorities, attributes: draft.attributes }}
+          links={draft.explains}
+          errorsAt={explainErrors}
+          onChange={(explains) => set({ explains, sendExplains: true })}
+        />
+
         <div className="flex flex-wrap items-center gap-3">
           <button type="submit" className={primaryButton} disabled={put.isPending}>
             {put.isPending ? 'Saving…' : `Save ${label}`}
@@ -645,31 +946,74 @@ export function RecordTypesPage() {
   const [selected, setSelected] = useState<string | null>(null)
   const [focusEditor, setFocusEditor] = useState(false)
   const [notice, setNotice] = useState('')
+  const [incidentError, setIncidentError] = useState('')
+  const putIncident = usePutRecordType()
   const list = types.data ?? []
   const open = list.find((t) => t.id === selected)
+  const hasIncident = list.some((t) => t.id === INCIDENT_TYPE_ID)
+  const incidentHintId = useId()
+
+  const addIncident = async () => {
+    setIncidentError('')
+    try {
+      const created = await putIncident.mutateAsync(incidentPreset())
+      setNotice(`Added ${created.name}.`)
+      setFocusEditor(false)
+      setSelected(created.id)
+    } catch (err) {
+      setIncidentError(
+        err instanceof ApiError && err.status === 409 ? 'An incident type already exists.' : errorsFrom(err).general.join(' '),
+      )
+    }
+  }
 
   return (
     <section className="space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <h1 className="text-2xl font-semibold text-accent-deep">Record types</h1>
-        <FormDialog
-          triggerLabel="Add record type"
-          triggerClassName={primaryButton}
-          title="Add record type"
-          description="A kind of record your uploads bring in, such as defects or epics. You can add priorities and custom fields next."
-        >
-          {(close) => (
-            <AddRecordTypeForm
-              close={close}
-              onCreated={(t) => {
-                setNotice(`Added ${t.name}.`)
-                setFocusEditor(false)
-                setSelected(t.id)
-              }}
-            />
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          {types.data && (
+            <>
+              {hasIncident && (
+                <span id={incidentHintId} className="text-xs text-ink/70">
+                  An incident type exists.
+                </span>
+              )}
+              <button
+                type="button"
+                className={secondaryButton}
+                disabled={hasIncident || putIncident.isPending}
+                aria-describedby={hasIncident ? incidentHintId : undefined}
+                onClick={() => void addIncident()}
+              >
+                Add incident type
+              </button>
+            </>
           )}
-        </FormDialog>
+          <FormDialog
+            triggerLabel="Add record type"
+            triggerClassName={primaryButton}
+            title="Add record type"
+            description="A kind of record your uploads bring in, such as defects or epics. You can add priorities and custom fields next."
+          >
+            {(close) => (
+              <AddRecordTypeForm
+                close={close}
+                onCreated={(t) => {
+                  setNotice(`Added ${t.name}.`)
+                  setFocusEditor(false)
+                  setSelected(t.id)
+                }}
+              />
+            )}
+          </FormDialog>
+        </div>
       </div>
+      {incidentError && (
+        <p role="alert" className="text-sm text-status-r">
+          {incidentError}
+        </p>
+      )}
       <p className="text-sm text-ink/80">
         The kinds of records you upload, with their priorities, custom fields, and the month each source system is
         tracked from.
@@ -682,7 +1026,7 @@ export function RecordTypesPage() {
         <p>No record types yet. Add one, or set one up from a file on the Import page.</p>
       )}
       {list.length > 0 && (
-        <table className="w-full text-left text-sm">
+        <table className="w-full text-left text-sm [overflow-wrap:anywhere]">
           <caption className="sr-only">Record types</caption>
           <thead>
             <tr className="border-b border-ink/20">

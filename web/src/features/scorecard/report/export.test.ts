@@ -1,15 +1,26 @@
 import { PDFDocument } from 'pdf-lib'
 import { describe, expect, it } from 'vitest'
 import { tenant } from '../../../test/fixtures'
-import { reportDocument, reportView, reportViewWithUptime } from '../../../test/reportFixtures'
-import { buildReportModel, type ReportModel } from './model'
+import {
+  defectOptional,
+  ON_TIME_TEXT,
+  onTimeLinks,
+  onTimeMissing,
+  onTimeWritten,
+  reportDocument,
+  reportView,
+  reportViewWithUptime,
+  trainingMissing,
+} from '../../../test/reportFixtures'
+import { buildReportModel, type ReportModel, type ReportModelInput } from './model'
 import { buildPdf } from './pdf'
 import { buildPptx } from './pptx'
 
-function fixtureModel(edit?: (doc: ReturnType<typeof reportDocument>) => void): ReportModel {
+function fixtureModel(edit?: (doc: ReturnType<typeof reportDocument>) => void, summaries?: ReportModelInput['summaries']): ReportModel {
   const doc = reportDocument({ view: reportView() })
   edit?.(doc)
   return buildReportModel({
+    summaries,
     doc,
     scorecardName: 'Main scorecard',
     companyName: 'Example Co',
@@ -244,6 +255,132 @@ describe('buildPptx', () => {
     const tables = slides(entries, 'ppt/slides/slide').filter((x) => x.includes('<a:t>Scorecard table'))
     expect(tables).toHaveLength(2)
     expect(tables[1]).toContain('Extra metric 12')
+  })
+})
+
+/** XML text decoded the way PowerPoint reads it. */
+function unescapeXml(s: string): string {
+  return s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&')
+}
+
+/** The texts of a slide's shape named `name`, in order. */
+function shapeTexts(slide: string, name: string): string[] {
+  const shape = [...slide.matchAll(/<p:sp>[\s\S]*?<\/p:sp>/g)].map((m) => m[0]).find((s) => s.includes(`name="${name}"`))
+  if (!shape) return []
+  return [...shape.matchAll(/<a:t>([\s\S]*?)<\/a:t>/g)].map((m) => unescapeXml(m[1]!))
+}
+
+/** Each slide's XML with the external targets its relationships point at. */
+function slidesWithLinks(entries: Map<string, string>): { xml: string; targets: string[] }[] {
+  return slides(entries, 'ppt/slides/slide').map((xml, i) => {
+    const rels = entries.get(`ppt/slides/_rels/slide${i + 1}.xml.rels`) ?? ''
+    return {
+      xml,
+      targets: [...rels.matchAll(/Target="([^"]+)"[^>]*TargetMode="External"/g)].map((m) => unescapeXml(m[1]!)),
+    }
+  })
+}
+
+const onTimeSlide = (deck: { xml: string; targets: string[] }[]) =>
+  deck.find((s) => s.xml.includes('<a:t>On-time delivery</a:t>') && !s.xml.includes('Scorecard table') && !s.xml.includes('Exec summaries · '))!
+
+describe('exec summaries in the PPTX', () => {
+  it('a live download with a missing summary prints `Exec summary not written yet` and nothing else in its box', async () => {
+    const entries = storedZipEntries(await buildPptx(fixtureModel(undefined, { source: 'live', items: [onTimeMissing, defectOptional] })))
+    const slide = onTimeSlide(slidesWithLinks(entries))
+    expect(shapeTexts(slide.xml, 'Exec summary')).toEqual(['Exec summary not written yet'])
+    expect(slide.xml).not.toContain(ON_TIME_TEXT)
+    // The attribution line is its own box, labelled as attribution.
+    expect(shapeTexts(slide.xml, 'Attribution').join('')).toBe('Attribution: 15.7 pts short of 100% · 6 of 38 items missed: DEL-101 · DEL-104')
+  })
+
+  it('hyperlinks the first 3 links through safeHref and points to the appendix for the rest', async () => {
+    const links = [onTimeLinks[0]!, { title: 'Old wiki', url: 'http://wiki.example/page' }, ...onTimeLinks.slice(1)]
+    const summary = { ...onTimeWritten, links, linksTotal: links.length }
+    const entries = storedZipEntries(await buildPptx(fixtureModel(undefined, { source: 'live', items: [summary] })))
+    const slide = onTimeSlide(slidesWithLinks(entries))
+    const texts = shapeTexts(slide.xml, 'Exec summary')
+    expect(texts[0]).toBe(ON_TIME_TEXT)
+    expect(texts).toContain('Postmortem: release train slip')
+    expect(texts).toContain('Old wiki')
+    expect(texts).toContain('DEL-101')
+    expect(texts.at(-1)).toBe(' · + 10 more links in the appendix')
+    // Only https links are hyperlinks: the http one is plain text.
+    expect(slide.targets).toEqual(['https://docs.example/postmortems/release-oct', 'https://tracker.example/browse/DEL-101'])
+    expect(slide.xml.match(/<a:hlinkClick /g)).toHaveLength(2)
+  })
+
+  it('says `+ 9 more links in the appendix` for a 12-link summary', async () => {
+    const entries = storedZipEntries(await buildPptx(fixtureModel(undefined, { source: 'live', items: [onTimeWritten] })))
+    expect(shapeTexts(onTimeSlide(slidesWithLinks(entries)).xml, 'Exec summary').at(-1)).toBe(' · + 9 more links in the appendix')
+  })
+
+  it('appends `Exec summaries · Oct 2026`, 6 rows a slide, listing every link', async () => {
+    const items = Array.from({ length: 7 }, (_, i) => ({
+      ...onTimeWritten,
+      metricKey: `m${i}`,
+      metricName: `Metric ${i + 1}`,
+    }))
+    const deck = slidesWithLinks(storedZipEntries(await buildPptx(fixtureModel(undefined, { source: 'live', items }))))
+    const appendix = deck.filter((s) => /<a:t>Exec summaries · Oct 2026( \(continued\))?<\/a:t>/.test(s.xml))
+    expect(appendix).toHaveLength(2)
+    expect(appendix[0]!.xml).toMatch(/<a:t>Metric<\/a:t>[\s\S]*<a:t>Value<\/a:t>[\s\S]*<a:t>Exec summary<\/a:t>[\s\S]*<a:t>Links<\/a:t>/)
+    expect(appendix[0]!.xml.match(/<a:tr /g)).toHaveLength(7)
+    expect(appendix[1]!.xml.match(/<a:tr /g)).toHaveLength(2)
+    for (const s of appendix) {
+      const rows = (s.xml.match(/<a:tr /g)?.length ?? 1) - 1
+      expect(s.targets).toHaveLength(rows * 12)
+      expect(new Set(s.targets)).toEqual(new Set(onTimeLinks.map((l) => l.url)))
+    }
+  })
+
+  it('lists a missing summary in the appendix as not written yet', async () => {
+    const deck = slidesWithLinks(storedZipEntries(await buildPptx(fixtureModel(undefined, { source: 'live', items: [trainingMissing] }))))
+    const appendix = deck.find((s) => s.xml.includes('<a:t>Exec summaries · Oct 2026</a:t>'))!
+    expect(appendix.xml).toContain('<a:t>Security training completion</a:t>')
+    expect(appendix.xml).toContain('<a:t>Exec summary not written yet</a:t>')
+  })
+
+  it('round-trips a title like `Queue < 5 & retries > 3` literally', async () => {
+    const title = 'Queue < 5 & retries > 3'
+    const summary = { ...onTimeWritten, text: `${title} held the month.`, links: [{ title, url: 'https://docs.example/q?a=1&b=2' }], linksTotal: 1 }
+    const entries = storedZipEntries(await buildPptx(fixtureModel(undefined, { source: 'live', items: [summary] })))
+    const deck = slidesWithLinks(entries)
+    const texts = shapeTexts(onTimeSlide(deck).xml, 'Exec summary')
+    expect(texts).toContain(title)
+    expect(texts[0]).toBe(`${title} held the month.`)
+    expect(onTimeSlide(deck).targets).toEqual(['https://docs.example/q?a=1&b=2'])
+    expect(onTimeSlide(deck).xml).not.toContain('&amp;amp;')
+  })
+
+  it('writes no exec summary box without summaries', async () => {
+    const slide = onTimeSlide(slidesWithLinks(storedZipEntries(await buildPptx(fixtureModel()))))
+    expect(shapeTexts(slide.xml, 'Exec summary')).toEqual([])
+  })
+})
+
+describe('exec summaries in the PDF', () => {
+  it('prints the text, the first links’ titles and, in the appendix, every title with its https URL', async () => {
+    const links = [{ title: 'Queue < 5 & retries > 3', url: 'https://docs.example/q' }, { title: 'Old wiki', url: 'http://wiki.example/page' }, ...onTimeLinks]
+    const summary = { ...onTimeWritten, links, linksTotal: links.length }
+    const strings = await pdfStrings(await buildPdf(fixtureModel(undefined, { source: 'live', items: [summary, trainingMissing] })))
+    expect(strings.join(' ')).toContain('Two releases slipped a week')
+    expect(strings).toContain('Exec summaries · Oct 2026')
+    expect(strings).toContain('+ 11 more links in the appendix')
+    for (const l of onTimeLinks) {
+      expect(strings).toContain(l.title)
+      expect(strings).toContain(l.url)
+    }
+    expect(strings).toContain('Queue < 5 & retries > 3')
+    expect(strings).toContain('Old wiki')
+    expect(strings.some((s) => s.includes('http://wiki.example'))).toBe(false)
+    expect(strings).toContain('Exec summary not written yet')
+  })
+
+  it('prints `Exec summary not written yet` on a metric page whose summary is missing, and no other text there', async () => {
+    const strings = await pdfStrings(await buildPdf(fixtureModel(undefined, { source: 'live', items: [onTimeMissing] })))
+    expect(strings.filter((s) => s === 'Exec summary not written yet')).toHaveLength(2)
+    expect(strings.join(' ')).not.toContain(ON_TIME_TEXT)
   })
 })
 

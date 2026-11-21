@@ -1,14 +1,18 @@
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import clsx from 'clsx'
 import { ChevronDown } from 'lucide-react'
-import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
+import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type RefObject } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router'
 import {
+  keys,
+  PublishBlockedError,
   useDraftReportSummary,
   useItems,
   useLayout,
   useMe,
   useMembers,
+  useMetricSummaries,
   useOrgUnits,
   usePublishReport,
   usePutReportSummary,
@@ -19,7 +23,11 @@ import {
   useVersions,
   useView,
   type AssistantUsage,
+  type MetricSummary,
+  type MetricSummaryListQuery,
 } from '../../api/queries'
+import { LinkList } from '../rca/LinkList'
+import { RCA_LINKS_SHOWN, safeHref } from '../rca/rcaText'
 import { ApiError } from '../../api/errors'
 import type { components } from '../../api/schema'
 import { parsePeriod, periodLabel } from '../../lib/period'
@@ -42,6 +50,7 @@ import {
   reportStatusLine,
   type ReportMetric,
   type ReportModel,
+  type ReportSummaries,
 } from './report/model'
 import { coarseGrains } from './logic/coarse'
 import { scorecardViewRequest, subtreeSubjects, versionInForce } from './viewRequest'
@@ -314,7 +323,103 @@ function SummaryEditor({ scorecardId, period, summary, reload, onDirtyChange }: 
   )
 }
 
-function MetricBlock({ metric, scale }: { metric: ReportMetric; scale: StatusLevel[] }) {
+/** Where an admin writes a metric's exec summary: its card, opened from the Exec summaries view. */
+function writeHref(scorecardId: string, period: string, metricKey: string): string {
+  return `/scorecards/${scorecardId}/exec-summaries?${new URLSearchParams({ period, why: metricKey })}`
+}
+
+/** `Write ›`, named for the metric. */
+function WriteLink({ to, metricName, className }: { to: string; metricName: string; className?: string }) {
+  return (
+    <Link to={to} className={clsx('font-medium text-accent-deep hover:underline', className)}>
+      Write <span className="sr-only">exec summary for {metricName}</span> <span aria-hidden="true">›</span>
+    </Link>
+  )
+}
+
+/** The metric's exec summary after its facts (spec §10.8): text, byline, links, then the attribution line. */
+function MetricSummaryBlock({ metric, writeTo, isAdmin }: { metric: ReportMetric; writeTo: string; isAdmin: boolean }) {
+  const labelId = useId()
+  const [allLinks, setAllLinks] = useState(false)
+  const toggleRef = useRef<HTMLButtonElement>(null)
+  const s = metric.summary
+  if (!s || s.state === 'optional') return null
+  const links = allLinks ? s.links : s.links.slice(0, RCA_LINKS_SHOWN)
+  return (
+    <div className="mt-3 border-t border-ink/10 pt-3">
+      <div role="group" aria-labelledby={labelId}>
+        <p id={labelId} className="text-[11px] font-semibold uppercase leading-4 tracking-wide text-ink/70">
+          Exec summary
+        </p>
+        {s.state === 'missing' ? (
+          <p className="mt-1 text-xs font-semibold leading-4 text-status-r">Exec summary needed</p>
+        ) : (
+          <>
+            {s.editedSincePublication && <p className="mt-1 text-[11px] leading-4 text-ink/70">Exec summary edited since publication</p>}
+            <p dir="auto" className="mt-1 text-sm leading-5 break-words">
+              {s.text}
+            </p>
+            {(s.author || s.date) && (
+              <p className="mt-0.5 text-[11px] leading-4 text-ink/70">{[s.author, s.date].filter(Boolean).join(' · ')}</p>
+            )}
+            <LinkList links={links} />
+            {s.links.length > RCA_LINKS_SHOWN && (
+              <button
+                ref={toggleRef}
+                type="button"
+                aria-expanded={allLinks}
+                className="-mx-1 mt-1 min-h-6 rounded-md px-1 text-xs font-medium text-accent-deep hover:bg-accent/[0.06]"
+                onClick={() => {
+                  setAllLinks((v) => !v)
+                  requestAnimationFrame(() => toggleRef.current?.focus())
+                }}
+              >
+                {allLinks ? 'Show fewer' : `Show all ${s.linksTotal} links`}
+              </button>
+            )}
+          </>
+        )}
+        {s.state === 'missing' && isAdmin && <WriteLink to={writeTo} metricName={metric.name} className="text-xs" />}
+      </div>
+      {s.attributionLine && (
+        <p data-testid="summary-attribution" className="mt-2 text-xs leading-4 text-ink/70 break-words">
+          <span className="sr-only">Attribution: </span>
+          {metric.summary?.evidence.length ? <EvidenceLine summary={s} /> : s.attributionLine}
+        </p>
+      )}
+    </div>
+  )
+}
+
+/** The attribution line with each evidence key linked (`safeHref`), else as text. */
+function EvidenceLine({ summary }: { summary: NonNullable<ReportMetric['summary']> }) {
+  const line = summary.attributionLine ?? ''
+  const cut = summary.evidence.length > 0 ? line.lastIndexOf(`: ${summary.evidence[0]!.key}`) : -1
+  const headline = cut > 0 ? line.slice(0, cut) : ''
+  return (
+    <>
+      {headline && `${headline}: `}
+      {summary.evidence.map((e, i) => {
+        const href = safeHref(e.url)
+        return (
+          <span key={`${e.key}:${i}`}>
+            {i > 0 && ' · '}
+            {href ? (
+              <a href={href} target="_blank" rel="noopener noreferrer" className="font-medium text-accent-deep hover:underline">
+                {e.key}
+              </a>
+            ) : (
+              e.key
+            )}
+            {e.pointsDisplay && ` ${e.pointsDisplay}`}
+          </span>
+        )
+      })}
+    </>
+  )
+}
+
+function MetricBlock({ metric, scale, writeTo, isAdmin }: { metric: ReportMetric; scale: StatusLevel[]; writeTo: string; isAdmin: boolean }) {
   const id = useId()
   return (
     <article aria-labelledby={id} className="h-full rounded-lg border border-ink/20 bg-white p-4">
@@ -330,7 +435,95 @@ function MetricBlock({ metric, scale }: { metric: ReportMetric; scale: StatusLev
           <li key={f}>{f}</li>
         ))}
       </ul>
+      <MetricSummaryBlock metric={metric} writeTo={writeTo} isAdmin={isAdmin} />
     </article>
+  )
+}
+
+/** Notes → Exec summaries: every summary of the month, worst first; a missing one says so. */
+function ExecSummaryNotes({ model }: { model: ReportModel }) {
+  if (model.execSummaries.length === 0) return null
+  return (
+    <div className="mt-3">
+      <h3 className="text-sm font-semibold">Exec summaries</h3>
+      <ul className="mt-1 list-disc pl-5 text-sm text-ink/80">
+        {model.execSummaries.map((n) => (
+          <li key={n.key} className="break-words">
+            <span className="font-medium text-ink">{`${n.name} · ${[n.display, n.statusLabel].filter(Boolean).join(' ')}`}</span>
+            {': '}
+            {n.text === null ? (
+              <span className="font-semibold text-status-r">Exec summary needed</span>
+            ) : (
+              <span dir="auto">
+                {n.text}
+                {n.keys.length > 0 && ` (${n.keys.join(', ')})`}
+              </span>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+/** `3 exec summaries needed before Oct 2026 can be published`, or for one, `1 exec summary needed …`. */
+function neededHeading(n: number, month: string): string {
+  return `${n} exec ${n === 1 ? 'summary' : 'summaries'} needed before ${month} can be published`
+}
+
+/** `1 exec summary may be out of date: Spend vs plan. Publishing is allowed.` */
+function staleLine(names: string[]): string {
+  const n = names.length
+  return `${n} exec ${n === 1 ? 'summary may' : 'summaries may'} be out of date: ${names.join(', ')}. Publishing is allowed.`
+}
+
+interface RequiredBlockProps {
+  missing: MetricSummary[]
+  /** Names of the stale summaries, which do not block. */
+  stale: string[]
+  monthLabel: string
+  scorecardId: string
+  period: string
+  isAdmin: boolean
+  scale: StatusLevel[]
+  headingId: string
+  headingRef: RefObject<HTMLHeadingElement | null>
+}
+
+/** The live report's list of required exec summaries not yet written (spec §10.8), shown to everyone. */
+function RequiredBlock({ missing, stale, monthLabel, scorecardId, period, isAdmin, scale, headingId, headingRef }: RequiredBlockProps) {
+  return (
+    <section aria-labelledby={headingId} className="mt-4 rounded-lg border border-status-r/40 bg-status-r-bg p-4">
+      <h2 id={headingId} ref={headingRef} tabIndex={-1} className="text-base font-semibold text-ink">
+        {neededHeading(missing.length, monthLabel)}
+      </h2>
+      <ul className="mt-2 divide-y divide-status-r/20">
+        {missing.map((s) => (
+          <li key={s.metricKey} className="flex flex-wrap items-center gap-x-2 gap-y-1 py-1.5 text-sm">
+            <Link to={writeHref(scorecardId, period, s.metricKey)} className="font-medium text-accent-deep hover:underline">
+              {s.metricName}
+            </Link>
+            {s.standing.display && <span className="font-semibold tabular-nums">{s.standing.display}</span>}
+            {s.standing.status && <SpokenChip status={s.standing.status} scale={scale} />}
+            {s.requirementReason && <span className="text-xs text-ink/80">{s.requirementReason}</span>}
+            {isAdmin && <WriteLink to={writeHref(scorecardId, period, s.metricKey)} metricName={s.metricName} className="ml-auto text-sm" />}
+          </li>
+        ))}
+      </ul>
+      <p className="mt-2 text-sm">
+        <Link
+          to={`/scorecards/${scorecardId}/exec-summaries?${new URLSearchParams({ period })}`}
+          className="font-medium text-accent-deep hover:underline"
+        >
+          View all exec summaries ›
+        </Link>
+        {stale.length > 0 && (
+          <span className="text-xs text-ink/70">
+            {` · ${stale.length} written ${stale.length === 1 ? 'summary' : 'summaries'} may be out of date (${stale.join(', ')}); that does not block publishing.`}
+          </span>
+        )}
+      </p>
+    </section>
   )
 }
 
@@ -343,9 +536,12 @@ interface ReportBodyProps {
   /** The view the report counts from, at its scope (see `ReportStatusList`). */
   counted: ScorecardView
   fiscalYearStartMonth: number
+  scorecardId: string
+  isAdmin: boolean
 }
 
-function ReportBody({ model, scorecardName, scale, phone, counted, fiscalYearStartMonth }: ReportBodyProps) {
+function ReportBody({ model, scorecardName, scale, phone, counted, fiscalYearStartMonth, scorecardId, isAdmin }: ReportBodyProps) {
+  const writeTo = (key: string) => writeHref(scorecardId, model.period, key)
   const first = model.columns[0]?.fullLabel ?? ''
   const last = model.columns.filter((c) => !c.ytd).at(-1)?.fullLabel ?? ''
   return (
@@ -360,7 +556,7 @@ function ReportBody({ model, scorecardName, scale, phone, counted, fiscalYearSta
           <ul className="mt-3 grid gap-4 lg:grid-cols-3">
             {model.needsAttention.map((m) => (
               <li key={m.key}>
-                <MetricBlock metric={m} scale={scale} />
+                <MetricBlock metric={m} scale={scale} writeTo={writeTo(m.key)} isAdmin={isAdmin} />
               </li>
             ))}
           </ul>
@@ -375,7 +571,7 @@ function ReportBody({ model, scorecardName, scale, phone, counted, fiscalYearSta
           <ul className="mt-3 grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(min(100%,22rem),1fr))]">
             {c.metrics.map((m) => (
               <li key={m.key}>
-                <MetricBlock metric={m} scale={scale} />
+                <MetricBlock metric={m} scale={scale} writeTo={writeTo(m.key)} isAdmin={isAdmin} />
               </li>
             ))}
           </ul>
@@ -452,6 +648,7 @@ function ReportBody({ model, scorecardName, scale, phone, counted, fiscalYearSta
         <h2 id="report-notes" className="text-lg font-semibold text-accent-deep">
           Notes
         </h2>
+        <ExecSummaryNotes model={model} />
         {noteSections(model).map((s) => (
           <div key={s.heading} className="mt-3">
             <h3 className="text-sm font-semibold">{s.heading}</h3>
@@ -496,6 +693,12 @@ export function ReportPage() {
   const phone = useSyncExternalStore(subscribePhone, phoneSnapshot, () => false)
   const warningId = useId()
   const unsavedId = useId()
+  const requiredId = useId()
+  const gateLineId = useId()
+  const requiredHeadingRef = useRef<HTMLHeadingElement>(null)
+  const queryClient = useQueryClient()
+  /** The 409's missing summaries, and when the list was last read as it came back. */
+  const [blocked, setBlocked] = useState<{ missing: MetricSummary[]; at: number } | null>(null)
   const refetchSummary = summary.refetch
   const reloadSummary = useCallback(async () => {
     const result = await refetchSummary()
@@ -547,6 +750,32 @@ export function ReportPage() {
   const overview = useView(isMonth && live && !versions.isPending && !scopeLoading ? scorecardId : undefined, overviewRequest)
   const overviewSettled = !live || (!versions.isPending && !overview.isPending)
 
+  // Exec summaries are not in the report document: a live month reads them now, a published one its frozen copies
+  // (with today's, to flag edits since), whole and in pages of 16.
+  const publishedRevision = doc.data && !doc.data.live ? doc.data.revision : undefined
+  const summariesQuery: MetricSummaryListQuery = {
+    period: isMonth && doc.data ? period.period : '',
+    state: 'all',
+    full: true,
+    ...(publishedRevision !== undefined ? { revision: publishedRevision } : {}),
+  }
+  const summaryList = useMetricSummaries(scorecardId, summariesQuery)
+  const currentList = useMetricSummaries(scorecardId, { period: publishedRevision !== undefined ? period.period : '', state: 'all' })
+  const { hasNextPage, isFetchingNextPage, fetchNextPage } = summaryList
+  useEffect(() => {
+    if (hasNextPage && !isFetchingNextPage) void fetchNextPage()
+  }, [hasNextPage, isFetchingNextPage, fetchNextPage])
+  const summaries = useMemo<ReportSummaries | null>(() => {
+    const pages = summaryList.data?.pages
+    if (!pages || hasNextPage) return null
+    const items = pages.flatMap((p) => p.items)
+    if (publishedRevision === undefined) return { source: 'live', items }
+    const counts = pages[0]!.counts
+    // A revision published before the gate froze no summaries: no rows and nothing counted.
+    if (items.length === 0 && counts.required === 0 && counts.written === 0) return { source: 'before', items }
+    return { source: 'published', items, current: currentList.data?.pages.flatMap((p) => p.items) }
+  }, [summaryList.data, hasNextPage, publishedRevision, currentList.data])
+
   const layoutItems = useMemo(() => (useMyLayout ? (layout.data?.items ?? []) : null), [useMyLayout, layout.data?.items])
   const model = useMemo(
     () =>
@@ -565,6 +794,7 @@ export function ReportPage() {
             statusLine,
             overview: live ? (overview.data ?? null) : null,
             versions: versions.data?.versions,
+            summaries,
           })
         : null,
     [
@@ -585,6 +815,7 @@ export function ReportPage() {
       live,
       overview.data,
       versions.data?.versions,
+      summaries,
     ],
   )
   // What the model counted from, at the scope: the status list draws a coarse metric's periods from it.
@@ -629,19 +860,47 @@ export function ReportPage() {
     }
   }
 
+  // The required block lists what the live list says is missing, or, right after a refused publish, the 409's
+  // own list until the summaries are read again.
+  const missing =
+    blocked && summaryList.dataUpdatedAt <= blocked.at ? blocked.missing : live ? (model?.summariesMissing ?? []) : []
+  const gated = live && missing.length > 0
+  useEffect(() => {
+    if (blocked) requiredHeadingRef.current?.focus()
+  }, [blocked])
+
   const controlsDisabled = !isMonth || !model
   const publishDisabled = !isMonth || !model || publish.isPending || summaryDirty
-  const runPublish = () => publish.mutate(undefined, { onSuccess: () => setRevision(false) })
+  const runPublish = () => {
+    if (gated) return
+    publish.mutate(undefined, {
+      onSuccess: () => setRevision(false),
+      onError: (e) => {
+        if (!(e instanceof PublishBlockedError)) return
+        // The hook has already re-read the list; this list stands until it is read again.
+        const at = queryClient.getQueryState(keys.metricSummaries(scorecardId, summariesQuery))?.dataUpdatedAt ?? 0
+        setBlocked({ missing: e.missing, at })
+      },
+    })
+  }
   const publishButton = (
     <button
       type="button"
-      className={primaryButton}
+      className={clsx(primaryButton, gated && 'cursor-not-allowed opacity-60 hover:bg-accent')}
       disabled={publishDisabled}
-      aria-describedby={isMonth ? [warningId, summaryDirty ? unsavedId : ''].join(' ').trim() : undefined}
+      aria-disabled={gated ? true : undefined}
+      aria-describedby={
+        isMonth ? [gated ? `${requiredId} ${gateLineId}` : '', warningId, summaryDirty ? unsavedId : ''].join(' ').trim() : undefined
+      }
       onClick={runPublish}
     >
       Publish
     </button>
+  )
+  const gateLine = gated && isAdmin && (
+    <span id={gateLineId} className="text-xs leading-4 text-status-r">
+      {`Publishing needs ${missing.length} more exec ${missing.length === 1 ? 'summary' : 'summaries'}.`}
+    </span>
   )
   const subtitle = [scorecardName, parsed ? periodLabel(parsed, fy) : period.period, companyScope ? `All of ${companyName}` : scopeName]
 
@@ -654,6 +913,7 @@ export function ReportPage() {
       <div role="toolbar" aria-label="Report controls" className="mt-3 flex flex-wrap items-center gap-2">
         {phone && isAdmin && publishButton}
         {phone && <DownloadMenu disabled={controlsDisabled || exporting !== ''} onDownload={(kind) => void download(kind)} />}
+        {phone && gateLine && <div className="basis-full">{gateLine}</div>}
         {doc.data && !doc.data.live && (
           <button type="button" className={secondaryButton} onClick={() => setRevision(true)}>
             View live
@@ -691,6 +951,7 @@ export function ReportPage() {
         {isAdmin && (
           <>
             {!phone && publishButton}
+            {!phone && gateLine}
             {isMonth && (
               <span id={warningId} className="rounded-md border border-amber bg-cream px-2 py-1 text-sm">
                 This month is not locked.
@@ -721,10 +982,29 @@ export function ReportPage() {
           {exportError}
         </p>
       )}
-      {publish.isError && (
+      {publish.isError && !(publish.error instanceof PublishBlockedError) && (
         <p role="alert" className="mt-2 text-sm text-status-r">
           Could not publish: {publish.error.message}
         </p>
+      )}
+      {isMonth && gated && model && (
+        <RequiredBlock
+          missing={missing}
+          stale={model.summariesStaleNames}
+          monthLabel={model.monthLabel}
+          scorecardId={scorecardId}
+          period={period.period}
+          isAdmin={isAdmin}
+          scale={scale}
+          headingId={requiredId}
+          headingRef={requiredHeadingRef}
+        />
+      )}
+      {isMonth && live && !gated && model && model.summariesStaleNames.length > 0 && (
+        <p className="mt-3 text-xs leading-4 text-ink/70">{staleLine(model.summariesStaleNames)}</p>
+      )}
+      {isMonth && model?.summariesBefore && (
+        <p className="mt-3 text-sm text-ink/80">This revision was published before exec summaries were required.</p>
       )}
       {isMonth && (period.restate !== '' || period.structure === 'current') && (
         <p className="mt-2 text-sm text-ink/80">
@@ -852,6 +1132,8 @@ export function ReportPage() {
             phone={phone}
             counted={counted ?? doc.data!.view}
             fiscalYearStartMonth={fy}
+            scorecardId={scorecardId}
+            isAdmin={isAdmin}
           />
         </>
       )}

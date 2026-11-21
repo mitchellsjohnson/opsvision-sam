@@ -1,6 +1,54 @@
 import { ApiError } from '../../api/errors'
-import type { OrgTreeNode } from '../../api/queries'
+import type { OrgTreeNode, RecordType } from '../../api/queries'
+import type { components } from '../../api/schema'
 import { formatPeriod, monthLabel, parsePeriod } from '../../lib/period'
+
+type ExplainLink = components['schemas']['ExplainLink']
+
+// ---- Incident record types ----------------------------------------------------
+
+/** The ID `Add incident type` creates; once a type has it, the button is disabled. */
+export const INCIDENT_TYPE_ID = 'incident'
+
+/**
+ * The incident record type `Add incident type` creates (spec §7.1), as the
+ * API's preset: severities SEV1 to SEV4, start and end instants, an
+ * optional duration in minutes and an optional impact percentage.
+ */
+export function incidentPreset(): RecordType {
+  return {
+    id: INCIDENT_TYPE_ID,
+    name: 'Incident',
+    priorities: ['SEV1', 'SEV2', 'SEV3', 'SEV4'],
+    attributes: [
+      { key: 'startedAt', name: 'Started', type: 'datetime' },
+      { key: 'endedAt', name: 'Ended', type: 'datetime' },
+      { key: 'minutesDown', name: 'Minutes down', type: 'number' },
+      { key: 'impactPct', name: 'Impact (%)', type: 'number' },
+    ],
+    trackedFrom: {},
+    revision: 0,
+  }
+}
+
+/** `Uptime · Downtime · category != 'maintenance'`: one Explains row, named from `names` (`{scorecard}|{metric}`). */
+export function explainsText(link: ExplainLink, names: ReadonlyMap<string, string>): string {
+  const metric = names.get(`${link.scorecardId}|${link.metricKey}`) ?? link.metricKey
+  const mode = link.mode === 'downtime' ? 'Downtime' : 'List'
+  return `${metric} · ${mode} · ${link.where?.trim() || 'every record'}`
+}
+
+/** The link the API takes: a downtime measure only for downtime links, and only when one is set. */
+export function explainLinkOf(d: { scorecardId: string; metricKey: string; mode: ExplainLink['mode']; where: string; downMeasure: string }): ExplainLink {
+  const measure = d.downMeasure.trim()
+  return {
+    scorecardId: d.scorecardId,
+    metricKey: d.metricKey,
+    mode: d.mode,
+    where: d.where,
+    ...(d.mode === 'downtime' && measure ? { downMeasure: measure } : {}),
+  }
+}
 
 // ---- Identifiers and source keys --------------------------------------------
 

@@ -9,9 +9,25 @@ import {
   reportView,
   reportViewWithUptime,
   standingView,
+  defectOptional,
+  missingSummaries,
+  ON_TIME_TEXT,
+  onTimeMissing,
+  onTimeWritten,
+  spendStale,
+  uptimeMissing,
 } from '../../../test/reportFixtures'
 import { addQuarterly, buildView, quarterlyVersions } from '../../../test/viewFixtures'
-import { buildReportModel, exportChart, goalSeries, metricFacts, metricValue, reportStatusLine, type ReportModelInput } from './model'
+import {
+  buildReportModel,
+  exportChart,
+  goalSeries,
+  metricFacts,
+  metricValue,
+  reportStatusLine,
+  summaryAttributionLine,
+  type ReportModelInput,
+} from './model'
 
 type ScorecardView = components['schemas']['ScorecardView']
 
@@ -382,5 +398,110 @@ describe('reportStatusLine', () => {
     expect(
       reportStatusLine({ live: true, period: '2026-M09', today: new Date(2026, 10, 13), fiscalYearStartMonth: 1 }),
     ).toBe('Live data as of Nov 13, 2026')
+  })
+})
+
+describe('buildReportModel: exec summaries', () => {
+  const live = (items = missingSummaries) => input({ summaries: { source: 'live', items } })
+
+  it('joins each metric to its summary at the company scope; nothing without summaries', () => {
+    const none = buildReportModel(input())
+    expect(none.categories.flatMap((c) => c.metrics).every((m) => m.summary === undefined)).toBe(true)
+    expect(none.summariesMissing).toEqual([])
+    expect(none.summariesStale).toBe(0)
+
+    const model = buildReportModel(input({ summaries: { source: 'live', items: [onTimeWritten, defectOptional] } }))
+    const onTime = model.categories.flatMap((c) => c.metrics).find((m) => m.key === 'on_time_pct')!
+    expect(onTime.summary).toEqual({
+      state: 'written',
+      text: ON_TIME_TEXT,
+      author: 'Avery Admin',
+      date: 'Nov 2',
+      links: onTimeWritten.links,
+      linksTotal: 12,
+      reason: 'Yellow',
+      evidence: onTimeWritten.evidence,
+      attributionLine: '15.7 pts short of 100% · 6 of 38 items missed: DEL-101 · DEL-104',
+      editedSincePublication: false,
+    })
+    const defect = model.categories.flatMap((c) => c.metrics).find((m) => m.key === 'defect_rate')!
+    expect(defect.summary?.state).toBe('optional')
+    expect(defect.summary?.text).toBeUndefined()
+  })
+
+  it('a missing summary carries no text, author or links: only its state, reason and attribution', () => {
+    const model = buildReportModel(live())
+    const onTime = model.categories.flatMap((c) => c.metrics).find((m) => m.key === 'on_time_pct')!
+    expect(onTime.summary).toEqual({
+      state: 'missing',
+      links: [],
+      linksTotal: 0,
+      reason: 'Yellow',
+      evidence: onTimeMissing.evidence,
+      attributionLine: '15.7 pts short of 100% · 6 of 38 items missed: DEL-101 · DEL-104',
+      editedSincePublication: false,
+    })
+  })
+
+  it('lists the live month’s missing summaries and counts the stale ones', () => {
+    const model = buildReportModel(live())
+    expect(model.summariesMissing.map((s) => s.metricKey)).toEqual(['on_time_pct', 'svc_uptime', 'security_training'])
+    expect(model.summariesStale).toBe(1)
+    expect(model.summariesStaleNames).toEqual(['Spend vs plan'])
+    expect(model.summariesBefore).toBe(false)
+  })
+
+  it('collects every summary of the month for the notes, worst first, missing ones as such', () => {
+    const model = buildReportModel(live())
+    expect(model.execSummaries.map((n) => [n.name, n.display, n.status, n.text])).toEqual([
+      ['Service uptime', '99.20%', 'R', null],
+      ['On-time delivery', '84.3%', 'Y', null],
+      ['Security training completion', '94%', 'G', null],
+      ['Spend vs plan', '104%', 'G', 'Vendor renewals landed a month early.'],
+    ])
+  })
+
+  it('a published revision: frozen texts count as written, never missing, and a newer live revision is flagged', () => {
+    const frozen = { ...onTimeWritten, state: 'written' as const, revision: 2 }
+    const doc = reportDocument({ live: false, revision: 1 })
+    const at = (current: number) =>
+      buildReportModel(input({ doc, summaries: { source: 'published', items: [frozen], current: [{ ...onTimeWritten, revision: current }] } }))
+    const same = at(2).categories.flatMap((c) => c.metrics).find((m) => m.key === 'on_time_pct')!
+    expect(same.summary?.editedSincePublication).toBe(false)
+    const edited = at(3)
+    expect(edited.categories.flatMap((c) => c.metrics).find((m) => m.key === 'on_time_pct')!.summary?.editedSincePublication).toBe(true)
+    expect(edited.summariesMissing).toEqual([])
+    expect(edited.summariesStale).toBe(0)
+  })
+
+  it('a revision published before exec summaries says so and joins nothing', () => {
+    const model = buildReportModel(input({ doc: publishedDocV2(), summaries: { source: 'before', items: [] } }))
+    expect(model.summariesBefore).toBe(true)
+    expect(model.categories.flatMap((c) => c.metrics).every((m) => m.summary === undefined)).toBe(true)
+    expect(model.execSummaries).toEqual([])
+  })
+
+  it('joins nothing away from the company scope: the summaries are the company’s', () => {
+    const model = buildReportModel(
+      input({ scope: 'unit-a', scopeName: 'Unit A', scopeSubjects: ['unit-a'], summaries: { source: 'live', items: [onTimeWritten] } }),
+    )
+    expect(model.categories.flatMap((c) => c.metrics).every((m) => m.summary === undefined)).toBe(true)
+  })
+})
+
+describe('summaryAttributionLine', () => {
+  it('is the standing headline and the evidence keys with their points', () => {
+    expect(summaryAttributionLine(onTimeWritten)).toBe('15.7 pts short of 100% · 6 of 38 items missed: DEL-101 · DEL-104')
+    expect(
+      summaryAttributionLine({
+        ...uptimeMissing,
+        evidence: [
+          { key: 'INC-2041', title: 'Queue saturation', url: 'https://tracker.example/browse/INC-2041', pointsDisplay: '0.56 pts' },
+          { key: 'INC-2047', title: 'Crash loop', url: 'https://tracker.example/browse/INC-2047', pointsDisplay: '0.25 pts' },
+        ],
+      }),
+    ).toBe('1 of 2 services below 100% · worst Web service 99.20%: INC-2041 0.56 pts · INC-2047 0.25 pts')
+    expect(summaryAttributionLine(spendStale)).toBe('4% over plan · $46k over')
+    expect(summaryAttributionLine(defectOptional)).toBe('')
   })
 })

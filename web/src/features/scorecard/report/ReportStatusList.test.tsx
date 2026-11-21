@@ -4,7 +4,17 @@ import { axe } from 'vitest-axe'
 import type { components } from '../../../api/schema'
 import { tenant } from '../../../test/fixtures'
 import { deploymentRows } from '../../../test/deploymentFixtures'
-import { publishedDocV1, publishedDocV2, reportDocument, reportView } from '../../../test/reportFixtures'
+import {
+  defectOptional,
+  ON_TIME_TEXT,
+  onTimeMissing,
+  onTimeWritten,
+  publishedDocV1,
+  publishedDocV2,
+  reportDocument,
+  reportView,
+} from '../../../test/reportFixtures'
+import { rcaExcerpt } from '../../rca/rcaText'
 import { quarterlyVersions } from '../../../test/viewFixtures'
 import { buildTrendColumns } from '../columns'
 import { buildReportModel, type ReportModelInput } from './model'
@@ -156,5 +166,30 @@ describe('ReportStatusList', () => {
   it('has no axe violations', async () => {
     const { container } = renderList(deploymentDoc())
     expect((await axe(container)).violations).toEqual([])
+  })
+
+  describe('exec summaries', () => {
+    function renderWith(items: ReportModelInput['summaries']) {
+      const doc = reportDocument()
+      const model = modelOf(doc, { summaries: items })
+      return render(<ReportStatusList model={model} scale={scale} counted={doc.view} fiscalYearStartMonth={1} />)
+    }
+
+    it('captions a written summary with its excerpt', () => {
+      renderWith({ source: 'live', items: [onTimeWritten] })
+      const caption = rowOf('On-time delivery').querySelector('[data-summary-caption]')!
+      expect(caption.textContent).toBe(`Summary: ${rcaExcerpt(ON_TIME_TEXT)}`)
+    })
+
+    it('captions a missing one `Exec summary needed`, and an optional one with nothing', () => {
+      renderWith({ source: 'live', items: [onTimeMissing, defectOptional] })
+      expect(rowOf('On-time delivery').querySelector('[data-summary-caption]')!.textContent).toBe('Exec summary needed')
+      expect(rowOf('Defect rate').querySelector('[data-summary-caption]')).toBeNull()
+    })
+
+    it('draws no summary caption without summaries', () => {
+      renderWith(null)
+      expect(document.querySelector('[data-summary-caption]')).toBeNull()
+    })
   })
 })

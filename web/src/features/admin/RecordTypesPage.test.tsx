@@ -1,11 +1,14 @@
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { http, HttpResponse } from 'msw'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { axe } from 'vitest-axe'
 import type { RecordType } from '../../api/queries'
 import { newRulesFake, rulesHandlers, type RulesFake } from '../../test/rulesFixtures'
-import { server } from '../../test/server'
+import { API, server } from '../../test/server'
 import { renderApp } from '../../test/utils'
+import { versions } from '../../test/viewFixtures'
+import { incidentPreset } from './adminModel'
 import { RecordTypesPage } from './RecordTypesPage'
 
 let fake: RulesFake
@@ -188,6 +191,144 @@ describe('RecordTypesPage', () => {
   it('has no axe violations', async () => {
     const { user, container } = await setup()
     await openEditor(user, 'Defect')
+    expect((await axe(container)).violations).toEqual([])
+  })
+
+  it('offers Date and time in the custom field type picker', async () => {
+    const { user } = await setup()
+    const editor = await openEditor(user, 'Epic')
+    await user.click(within(editor).getByRole('button', { name: 'Add custom field' }))
+    const type = within(editor).getByLabelText('Custom field 1 type')
+    expect(within(type).getAllByRole('option').map((o) => o.textContent)).toEqual(['Text', 'Number', 'Yes or no', 'Date', 'Date and time'])
+    await user.selectOptions(type, 'datetime')
+    await user.type(within(editor).getByLabelText('Custom field 1 name'), 'Started')
+    await user.click(within(editor).getByRole('button', { name: 'Save Epic' }))
+    await waitFor(() => expect(puts('epic')).toHaveLength(1))
+    expect((puts('epic')[0]?.body as RecordType).attributes).toEqual([{ key: 'started', name: 'Started', type: 'datetime' }])
+  })
+})
+
+describe('RecordTypesPage: incidents', () => {
+  beforeEach(() => {
+    const version = structuredClone(versions.find((v) => v.status === 'published')!)
+    version.content.metrics.push({ ...version.content.metrics[0]!, key: 'uptime', name: 'Uptime' })
+    server.use(http.get(`${API}/v1/scorecards/sc-main/versions`, () => HttpResponse.json({ versions: [version] })))
+  })
+
+  it('Add incident type creates the preset, then is disabled', async () => {
+    const { user } = await setup()
+    const add = screen.getByRole('button', { name: 'Add incident type' }) as HTMLButtonElement
+    expect(add.disabled).toBe(false)
+    await user.click(add)
+    await waitFor(() => expect(puts('incident')).toHaveLength(1))
+    expect(puts('incident')[0]?.body).toEqual(incidentPreset())
+    expect(await screen.findByText('Added Incident.')).toBeTruthy()
+    expect(await screen.findByRole('region', { name: 'Edit Incident' })).toBeTruthy()
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Add incident type' }) as HTMLButtonElement).disabled).toBe(true))
+    expect(screen.getByText('An incident type exists.')).toBeTruthy()
+  })
+
+  async function openIncident() {
+    fake.recordTypes.push({ ...incidentPreset(), revision: 4 })
+    const { user, container } = await setup()
+    const editor = await openEditor(user, 'Incident')
+    return { user, editor, container }
+  }
+
+  it('lists the attribute types in words, date-times as date and time', async () => {
+    fake.recordTypes.push({ ...incidentPreset(), revision: 4 })
+    await setup()
+    const row = within(screen.getByRole('table', { name: 'Record types' })).getByRole('row', { name: /Incident/ })
+    expect(within(row).getByText(/Started \(date and time\), Ended \(date and time\)/)).toBeTruthy()
+  })
+
+  it('an Explains row saves the link with the loaded revision', async () => {
+    const { user, editor } = await openIncident()
+    const explains = within(editor).getByRole('group', { name: 'Explains' })
+    expect(within(explains).getByText('These records explain no metric yet.')).toBeTruthy()
+    await user.click(within(explains).getByRole('button', { name: 'Add a metric' }))
+    const form = within(explains).getByRole('group', { name: 'Metric these records explain' })
+    await user.selectOptions(within(form).getByLabelText('Metric'), 'Uptime')
+    const mode = within(form).getByRole('radiogroup', { name: 'Mode' })
+    expect((within(mode).getByRole('radio', { name: 'Downtime' }) as HTMLInputElement).checked).toBe(true)
+    await user.click(within(form).getByRole('button', { name: 'Add condition' }))
+    await user.selectOptions(within(form).getByLabelText('Condition 1 field'), 'category')
+    await user.selectOptions(within(form).getByLabelText('Condition 1 operator'), 'is_not')
+    await user.type(within(form).getByLabelText('Condition 1 value'), 'maintenance')
+    await user.click(within(form).getByRole('button', { name: 'Add' }))
+    const rows = within(explains).getAllByRole('listitem')
+    expect(rows.map((r) => r.querySelector('[data-explain]')!.textContent)).toEqual(["Uptime · Downtime · category != 'maintenance'"])
+    await user.click(within(editor).getByRole('button', { name: 'Save Incident' }))
+    await waitFor(() => expect(puts('incident')).toHaveLength(1))
+    const body = puts('incident')[0]?.body as RecordType
+    expect(body.revision).toBe(4)
+    expect(body.explains).toEqual([{ scorecardId: 'sc-main', metricKey: 'uptime', mode: 'downtime', where: "category != 'maintenance'" }])
+  })
+
+  it('edits and removes an Explains row; List has no downtime measure', async () => {
+    fake.recordTypes.push({
+      ...incidentPreset(),
+      revision: 4,
+      explains: [{ scorecardId: 'sc-main', metricKey: 'uptime', mode: 'downtime', downMeasure: 'seconds_down', where: '' }],
+    })
+    const { user } = await setup()
+    const editor = await openEditor(user, 'Incident')
+    const explains = within(editor).getByRole('group', { name: 'Explains' })
+    expect(within(explains).getByText('Uptime · Downtime · every record')).toBeTruthy()
+    await user.click(within(explains).getByRole('button', { name: 'Edit the Uptime link' }))
+    const form = within(explains).getByRole('group', { name: 'Metric these records explain' })
+    expect((within(form).getByLabelText('Downtime measure (optional)') as HTMLInputElement).value).toBe('seconds_down')
+    await user.click(within(form).getByRole('radio', { name: 'List' }))
+    expect(within(form).queryByLabelText('Downtime measure (optional)')).toBeNull()
+    await user.click(within(form).getByRole('button', { name: 'Update' }))
+    expect(within(explains).getByText('Uptime · List · every record')).toBeTruthy()
+    await user.click(within(editor).getByRole('button', { name: 'Save Incident' }))
+    await waitFor(() => expect(puts('incident')).toHaveLength(1))
+    expect((puts('incident')[0]?.body as RecordType).explains).toEqual([{ scorecardId: 'sc-main', metricKey: 'uptime', mode: 'list', where: '' }])
+
+    await user.click(within(explains).getByRole('button', { name: 'Remove the Uptime link' }))
+    expect(within(explains).getByText('These records explain no metric yet.')).toBeTruthy()
+    await user.click(within(editor).getByRole('button', { name: 'Save Incident' }))
+    await waitFor(() => expect(puts('incident')).toHaveLength(2))
+    expect((puts('incident')[1]?.body as RecordType).explains).toEqual([])
+  })
+
+  it('a 409 on save shows the conflict message', async () => {
+    const { user, editor } = await openIncident()
+    fake.recordTypes.find((t) => t.id === 'incident')!.revision = 9
+    const explains = within(editor).getByRole('group', { name: 'Explains' })
+    await user.click(within(explains).getByRole('button', { name: 'Add a metric' }))
+    const form = within(explains).getByRole('group', { name: 'Metric these records explain' })
+    await user.selectOptions(within(form).getByLabelText('Metric'), 'Uptime')
+    await user.click(within(form).getByRole('button', { name: 'Add' }))
+    await user.click(within(editor).getByRole('button', { name: 'Save Incident' }))
+    expect(
+      await within(editor).findByText(
+        'This record type was changed somewhere else since you opened it, so your changes could not be saved.',
+      ),
+    ).toBeTruthy()
+  })
+
+  it('shows a where problem the server reports at the link', async () => {
+    const { user, editor } = await openIncident()
+    fake.failNext.set('PUT /record-types/incident', {
+      status: 400,
+      code: 'invalid',
+      message: 'invalid request',
+      details: [{ path: 'explains[0].where', message: 'unknown field "nope" on record type "incident"' }],
+    })
+    const explains = within(editor).getByRole('group', { name: 'Explains' })
+    await user.click(within(explains).getByRole('button', { name: 'Add a metric' }))
+    const form = within(explains).getByRole('group', { name: 'Metric these records explain' })
+    await user.selectOptions(within(form).getByLabelText('Metric'), 'Uptime')
+    await user.click(within(form).getByRole('button', { name: 'Add' }))
+    await user.click(within(editor).getByRole('button', { name: 'Save Incident' }))
+    expect(await within(explains).findByText('unknown field "nope" on record type "incident"')).toBeTruthy()
+  })
+
+  it('has no axe violations with the Explains form open', async () => {
+    const { user, editor, container } = await openIncident()
+    await user.click(within(within(editor).getByRole('group', { name: 'Explains' })).getByRole('button', { name: 'Add a metric' }))
     expect((await axe(container)).violations).toEqual([])
   })
 })

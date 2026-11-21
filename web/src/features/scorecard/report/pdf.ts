@@ -8,12 +8,16 @@ import {
   metricFacts,
   metricValue,
   noteSections,
+  showsSummary,
   statusTable,
+  SUMMARY_LINKS_SHOWN,
+  SUMMARY_NOT_WRITTEN,
   tableCellText,
   tableChunks,
   type ReportMetric,
   type ReportModel,
 } from './model'
+import { safeHref } from '../../rca/rcaText'
 
 type Lib = typeof import('pdf-lib')
 
@@ -30,6 +34,8 @@ const MUTED = '#4B5563'
 const FAINT = '#6B7280'
 const RULE = '#E5E7EB'
 const CREAM = '#FFF6E5'
+/** The status-r token: a missing exec summary. */
+const RED = '#B42318'
 const SERIES_COLORS = ['#5B4BDB', '#0E7490', '#475569', '#A21CAF', '#1D4ED8']
 
 interface Ctx {
@@ -141,6 +147,8 @@ interface Line {
   indent?: number
   /** Space before the line. */
   gap?: number
+  /** Points the next lines need on the same page; a line that would leave less starts a new page. */
+  keep?: number
 }
 
 /** Writes wrapped lines from `y` down, continuing on new pages titled `continued`. */
@@ -151,6 +159,10 @@ function flow(ctx: Ctx, page: PDFPage, y: number, lines: Line[], continued: () =
     const font = l.font ?? ctx.font
     const indent = l.indent ?? 0
     at -= l.gap ?? 0
+    if (l.keep && at - l.size * 1.35 - l.keep < CONTENT_BOTTOM) {
+      cur = continued()
+      at = CONTENT_TOP
+    }
     for (const piece of wrap(ctx, l.text, font, l.size, PAGE_W - 2 * M - indent)) {
       if (at - l.size < CONTENT_BOTTOM) {
         cur = continued()
@@ -355,7 +367,63 @@ function metricPage(ctx: Ctx, metric: ReportMetric, attention: boolean) {
       text(ctx, page, rx, y, line, { size: 11, color: MUTED })
     }
   }
+  if (showsSummary(metric)) {
+    drawSummary(ctx, page, metric, rx, y - 22, rw)
+    return
+  }
   if (kind !== 'table') drawStatusTable(ctx, page, metric, rx, y - 18, rw, 9)
+}
+
+/**
+ * A metric page's exec summary under the facts: the text, byline, the first
+ * three link titles and how many more the appendix lists, then the
+ * attribution line. A missing summary prints only `Exec summary not written yet`.
+ */
+function drawSummary(ctx: Ctx, page: PDFPage, metric: ReportMetric, x: number, top: number, width: number) {
+  const s = metric.summary!
+  let y = top
+  const line = (content: string, size: number, o: { font?: PDFFont; color?: string } = {}) => {
+    for (const piece of wrap(ctx, content, o.font ?? ctx.font, size, width)) {
+      if (y - size < CONTENT_BOTTOM) return
+      y -= size * 1.35
+      text(ctx, page, x, y, piece, { size, font: o.font, color: o.color })
+    }
+  }
+  line('Exec summary', 10, { font: ctx.bold })
+  if (s.state === 'missing' || !s.text) {
+    line(SUMMARY_NOT_WRITTEN, 11, { font: ctx.bold, color: RED })
+  } else {
+    line(s.text, 11)
+    const byline = [s.author, s.date].filter(Boolean).join(' · ')
+    if (byline) line(byline, 9, { color: FAINT })
+    const shown = s.links.slice(0, SUMMARY_LINKS_SHOWN)
+    for (const l of shown) line(l.title, 10, { color: safeHref(l.url) ? ACCENT : INK })
+    const more = s.linksTotal - shown.length
+    if (more > 0) line(`+ ${more} more link${more === 1 ? '' : 's'} in the appendix`, 9, { color: MUTED })
+  }
+  if (s.attributionLine) {
+    y -= 4
+    line(`Attribution: ${s.attributionLine}`, 9, { color: MUTED })
+  }
+}
+
+/** `Exec summaries · Oct 2026`: every summary of the month with each link's title and https URL (no annotations in v1). */
+function appendixPages(ctx: Ctx) {
+  const { model } = ctx
+  if (model.execSummaries.length === 0) return
+  const title = `Exec summaries · ${model.monthLabel}`
+  const lines: Line[] = []
+  model.execSummaries.forEach((n, i) => {
+    lines.push({ text: [n.name, [n.display, n.status].filter(Boolean).join(' ')].filter(Boolean).join(' · '), size: 12, font: ctx.bold, gap: i === 0 ? 0 : 14, keep: 40 })
+    if (n.text === null) lines.push({ text: SUMMARY_NOT_WRITTEN, size: 11, font: ctx.bold, color: RED, gap: 2 })
+    else lines.push({ text: n.text, size: 11, gap: 2 })
+    for (const l of n.links) {
+      lines.push({ text: l.title, size: 10, indent: 8, gap: 4, keep: 14 })
+      const href = safeHref(l.url)
+      if (href) lines.push({ text: href, size: 9, color: MUTED, indent: 8 })
+    }
+  })
+  flow(ctx, newPage(ctx, model.monthLabel, title), CONTENT_TOP, lines, () => newPage(ctx, model.monthLabel, `${title} (continued)`))
 }
 
 function tablePages(ctx: Ctx) {
@@ -428,6 +496,7 @@ export async function buildPdf(model: ReportModel): Promise<Uint8Array> {
   for (const m of model.needsAttention) metricPage(ctx, m, true)
   for (const c of model.categories) for (const m of c.metrics) if (!attention.has(m.key)) metricPage(ctx, m, false)
   tablePages(ctx)
+  appendixPages(ctx)
   notesPages(ctx)
   return doc.save()
 }

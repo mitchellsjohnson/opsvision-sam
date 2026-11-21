@@ -3,7 +3,7 @@ import type { components } from '../api/schema'
 import { coarseColumns } from '../features/scorecard/columns'
 import { formatPeriod, parsePeriod, prev, type Period } from '../lib/period'
 import { member } from './adminFixtures'
-import { API } from './server'
+import { API, state } from './server'
 import { addQuarterly, addServiceUptime, buildView, QUARTERLY_VALUES } from './viewFixtures'
 
 type Schemas = components['schemas']
@@ -12,8 +12,184 @@ type ReportMonth = Schemas['ReportMonth']
 type ReportSummary = Schemas['ReportSummary']
 type ScorecardView = Schemas['ScorecardView']
 type Membership = Schemas['Membership']
+type MetricSummary = Schemas['MetricSummary']
+type MetricSummaryList = Schemas['MetricSummaryList']
+type RcaLink = Schemas['RcaLink']
 
 // All data is synthetic.
+
+// ---- Exec summaries -----------------------------------------------------------
+
+const link = (title: string, url: string): RcaLink => ({ title, url })
+
+/** On-time delivery's 12 links, the first a postmortem. */
+export const onTimeLinks: RcaLink[] = [
+  link('Postmortem: release train slip', 'https://docs.example/postmortems/release-oct'),
+  ...Array.from({ length: 11 }, (_, i) => link(`DEL-${101 + i}`, `https://tracker.example/browse/DEL-${101 + i}`)),
+]
+
+export const ON_TIME_TEXT = 'Two releases slipped a week behind a certificate change; both shipped by Oct 28.'
+
+function exec(over: Partial<MetricSummary> & Pick<MetricSummary, 'metricKey' | 'metricName'>): MetricSummary {
+  return {
+    period: '2026-M10',
+    requirement: 'required',
+    state: 'missing',
+    standing: { display: '', status: '', headline: '' },
+    links: [],
+    linksTotal: 0,
+    stale: false,
+    staleReasons: [],
+    canEdit: true,
+    ...over,
+  }
+}
+
+/** On-time delivery: Yellow at 84.3%, written with 12 links and two evidence keys. */
+export const onTimeWritten: MetricSummary = exec({
+  metricKey: 'on_time_pct',
+  metricName: 'On-time delivery',
+  categoryId: 'delivery',
+  requirementReason: 'Yellow',
+  state: 'written',
+  standing: { display: '84.3%', status: 'Y', headline: '15.7 pts short of 100% · 6 of 38 items missed' },
+  text: ON_TIME_TEXT,
+  links: onTimeLinks,
+  linksTotal: onTimeLinks.length,
+  authorName: 'Avery Admin',
+  channel: 'web',
+  updatedAt: '2026-11-02T10:00:00Z',
+  revision: 2,
+  evidence: [
+    { key: 'DEL-101', title: 'Release train A', url: 'https://tracker.example/browse/DEL-101', pointsDisplay: '' },
+    { key: 'DEL-104', title: 'Release train B', url: 'https://tracker.example/browse/DEL-104', pointsDisplay: '' },
+  ],
+})
+
+/** The same metric with nothing written: required, so publishing is blocked. */
+export const onTimeMissing: MetricSummary = exec({
+  metricKey: 'on_time_pct',
+  metricName: 'On-time delivery',
+  categoryId: 'delivery',
+  requirementReason: 'Yellow',
+  standing: onTimeWritten.standing,
+  evidence: onTimeWritten.evidence,
+})
+
+/** Service uptime: no company value; the worst service is Red. */
+export const uptimeMissing: MetricSummary = exec({
+  metricKey: 'svc_uptime',
+  metricName: 'Service uptime',
+  categoryId: 'delivery',
+  requirementReason: '1 of 2 services below 100%',
+  standing: { display: '99.20%', status: 'R', headline: '1 of 2 services below 100% · worst Web service 99.20%' },
+})
+
+/** Green below 100%: still required. */
+export const trainingMissing: MetricSummary = exec({
+  metricKey: 'security_training',
+  metricName: 'Security training completion',
+  categoryId: 'quality',
+  requirementReason: 'Below 100% (94%)',
+  standing: { display: '94%', status: 'G', headline: '6 pts short of 100%' },
+})
+
+/** Written, but its numbers moved since: allowed to publish, and flagged. */
+export const spendStale: MetricSummary = exec({
+  metricKey: 'spend_vs_plan',
+  metricName: 'Spend vs plan',
+  categoryId: 'quality',
+  requirementReason: 'Above 100% (104%)',
+  state: 'stale',
+  stale: true,
+  staleReasons: ['The value changed from 102% to 104%.'],
+  standing: { display: '104%', status: 'G', headline: '4% over plan · $46k over' },
+  text: 'Vendor renewals landed a month early.',
+  authorName: 'Avery Admin',
+  channel: 'mcp',
+  updatedAt: '2026-10-30T09:00:00Z',
+  revision: 1,
+})
+
+/** Defect rate is not measured in Oct: nothing is required. */
+export const defectOptional: MetricSummary = exec({
+  metricKey: 'defect_rate',
+  metricName: 'Defect rate',
+  categoryId: 'quality',
+  requirement: 'optional',
+  state: 'optional',
+})
+
+/** A month with every required summary written. */
+export const writtenSummaries: MetricSummary[] = [onTimeWritten, defectOptional]
+
+/** Oct 2026 with three required summaries missing (and one stale). */
+export const missingSummaries: MetricSummary[] = [onTimeMissing, uptimeMissing, trainingMissing, spendStale, defectOptional]
+
+const STATE_ORDER = ['missing', 'stale', 'written', 'optional']
+
+/** The list as `listMetricSummaries` returns it: counts over every row, rows of one state, excerpts unless `full`. */
+export function summaryListBody(items: MetricSummary[], q: URLSearchParams, frozen = false): MetricSummaryList {
+  const rows = [...items].sort((a, b) => STATE_ORDER.indexOf(a.state) - STATE_ORDER.indexOf(b.state))
+  const count = (s: string) => rows.filter((r) => r.state === s).length
+  const counts = {
+    required: rows.filter((r) => r.requirement === 'required').length,
+    missing: count('missing'),
+    stale: count('stale'),
+    written: count('written'),
+    optional: count('optional'),
+  }
+  const wanted = q.get('state') ?? (frozen ? 'all' : 'missing')
+  const full = q.get('full') === 'true'
+  const shown =
+    q.get('countsOnly') === 'true'
+      ? []
+      : rows
+          .filter((r) => wanted === 'all' || r.state === wanted)
+          .map((r) => ({
+            ...r,
+            canEdit: !frozen && state.role === 'admin',
+            ...(full || r.text === undefined || [...r.text].length <= 60 ? {} : { text: `${[...r.text].slice(0, 60).join('').trimEnd()}…` }),
+            links: full ? r.links : r.links.slice(0, 3),
+          }))
+  return { period: q.get('period') ?? '2026-M10', counts, items: shown }
+}
+
+export interface SummaryListOptions {
+  /** The live rows; a function is read on every request. */
+  summaries?: MetricSummary[] | (() => MetricSummary[])
+  /** Frozen rows by published revision; a revision not listed answers with no rows (published before exec summaries). */
+  revisions?: Record<number, MetricSummary[]>
+  /** Each list request's URL. */
+  seen?: URL[]
+}
+
+/** `GET /scorecards/{sc}/metric-summaries` over fixture rows. */
+export function summaryListHandler(sc: string, options: SummaryListOptions = {}) {
+  return http.get(`${API}/v1/scorecards/${sc}/metric-summaries`, ({ request }) => {
+    const url = new URL(request.url)
+    options.seen?.push(url)
+    const revision = url.searchParams.get('revision')
+    if (revision !== null) {
+      return HttpResponse.json(summaryListBody(options.revisions?.[Number(revision)] ?? [], url.searchParams, true))
+    }
+    const live = typeof options.summaries === 'function' ? options.summaries() : (options.summaries ?? writtenSummaries)
+    return HttpResponse.json(summaryListBody(live, url.searchParams))
+  })
+}
+
+/** The 409 a publish gets while required summaries are missing. */
+export function publishBlockedResponse(missing: MetricSummary[], stale = 0) {
+  const n = missing.length
+  return HttpResponse.json(
+    {
+      error: { code: 'summaries_missing', message: `${n} exec ${n === 1 ? 'summary is' : 'summaries are'} missing for Oct 2026.` },
+      missing,
+      stale,
+    },
+    { status: 409 },
+  )
+}
 
 /** The report's view: the month and the five before it, with year to date through the month. */
 export function reportView(period = '2026-M10'): ScorecardView {
@@ -154,14 +330,20 @@ export interface ReportHandlerOptions {
   /** Answers a summary PUT instead of the default success, e.g. with a 409. */
   putSummary?: (body: { text: string; expectedRevision: number }) => Response | undefined
   members?: Membership[]
+  /** Answers a publish instead of the default success, e.g. with `publishBlockedResponse`. */
+  publish?: () => Response | undefined
+  /** The month's exec summaries (live, and frozen by revision); every required one is written by default. */
+  summaries?: SummaryListOptions['summaries']
+  revisionSummaries?: SummaryListOptions['revisions']
   /** Records each request so tests can assert what was asked for. */
-  seen?: { documents: URL[]; publishes: URL[]; summaryPuts: unknown[]; members: number }
+  seen?: { documents: URL[]; publishes: URL[]; summaryPuts: unknown[]; members: number; summaryLists?: URL[] }
 }
 
-/** MSW handlers for the report endpoints and the members list. */
+/** MSW handlers for the report endpoints, the month's exec summaries and the members list. */
 export function reportHandlers(options: ReportHandlerOptions = {}) {
   const base = `${API}/v1/scorecards/sc-main/reports`
   return [
+    summaryListHandler('sc-main', { summaries: options.summaries, revisions: options.revisionSummaries, seen: options.seen?.summaryLists }),
     http.get(base, () => HttpResponse.json({ months: options.months ?? liveMonths })),
     http.get(`${base}/:period`, ({ request }) => {
       const url = new URL(request.url)
@@ -180,7 +362,7 @@ export function reportHandlers(options: ReportHandlerOptions = {}) {
     }),
     http.post(`${base}/:period/publish`, ({ request }) => {
       options.seen?.publishes.push(new URL(request.url))
-      return HttpResponse.json({ revision: 1, unlocked: true })
+      return options.publish?.() ?? HttpResponse.json({ revision: 1, unlocked: true })
     }),
     http.get(`${API}/v1/members`, () => {
       if (options.seen) options.seen.members++
@@ -190,5 +372,5 @@ export function reportHandlers(options: ReportHandlerOptions = {}) {
 }
 
 export function newSeen(): NonNullable<ReportHandlerOptions['seen']> {
-  return { documents: [], publishes: [], summaryPuts: [], members: 0 }
+  return { documents: [], publishes: [], summaryPuts: [], members: 0, summaryLists: [] }
 }

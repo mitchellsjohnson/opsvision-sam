@@ -4,7 +4,10 @@ import type { OrgTreeNode } from '../../api/queries'
 import {
   addMonths,
   errorsFrom,
+  explainsText,
+  explainLinkOf,
   flattenTree,
+  incidentPreset,
   forField,
   isPending,
   monthOptions,
@@ -123,5 +126,53 @@ describe('form errors', () => {
     const e = errorsFrom(new ApiError({ status: 400, code: 'invalid', message: 'tenant must keep at least one admin' }))
     expect(e.general).toEqual(['tenant must keep at least one admin'])
     expect(errorsFrom(new Error('boom')).general).toEqual(['boom'])
+  })
+})
+
+describe('incident record types', () => {
+  it('the preset is the API’s: severities, start and end instants, minutes down and impact', () => {
+    expect(incidentPreset()).toEqual({
+      id: 'incident',
+      name: 'Incident',
+      priorities: ['SEV1', 'SEV2', 'SEV3', 'SEV4'],
+      attributes: [
+        { key: 'startedAt', name: 'Started', type: 'datetime' },
+        { key: 'endedAt', name: 'Ended', type: 'datetime' },
+        { key: 'minutesDown', name: 'Minutes down', type: 'number' },
+        { key: 'impactPct', name: 'Impact (%)', type: 'number' },
+      ],
+      trackedFrom: {},
+      revision: 0,
+    })
+  })
+
+  it('words an Explains row as metric · mode · filter', () => {
+    const names = new Map([['sc-main|uptime', 'Uptime']])
+    expect(explainsText({ scorecardId: 'sc-main', metricKey: 'uptime', mode: 'downtime', where: "category != 'maintenance'" }, names)).toBe(
+      "Uptime · Downtime · category != 'maintenance'",
+    )
+    expect(explainsText({ scorecardId: 'sc-main', metricKey: 'postmortems', mode: 'list' }, names)).toBe('postmortems · List · every record')
+  })
+
+  it('builds the link the API takes: a downtime measure only for downtime, and only when set', () => {
+    expect(explainLinkOf({ scorecardId: 'sc-main', metricKey: 'uptime', mode: 'downtime', where: '', downMeasure: ' seconds_down ' })).toEqual({
+      scorecardId: 'sc-main',
+      metricKey: 'uptime',
+      mode: 'downtime',
+      where: '',
+      downMeasure: 'seconds_down',
+    })
+    expect(explainLinkOf({ scorecardId: 'sc-main', metricKey: 'uptime', mode: 'list', where: 'x', downMeasure: 'seconds_down' })).toEqual({
+      scorecardId: 'sc-main',
+      metricKey: 'uptime',
+      mode: 'list',
+      where: 'x',
+    })
+    expect(explainLinkOf({ scorecardId: 'sc-main', metricKey: 'uptime', mode: 'downtime', where: '', downMeasure: '' })).toEqual({
+      scorecardId: 'sc-main',
+      metricKey: 'uptime',
+      mode: 'downtime',
+      where: '',
+    })
   })
 })

@@ -5,8 +5,8 @@ import { axe } from 'vitest-axe'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { App } from '../../App'
 import { filterHandlers } from '../../test/filterFixtures'
-import { server } from '../../test/server'
-import { reportHandlers } from '../../test/reportFixtures'
+import { server, state } from '../../test/server'
+import { missingSummaries, reportHandlers, summaryListHandler, writtenSummaries } from '../../test/reportFixtures'
 import { renderApp } from '../../test/utils'
 import { viewHandlers } from '../../test/viewFixtures'
 
@@ -138,6 +138,8 @@ describe('ControlBar', () => {
       expect(within(toolbar).getByRole('button', { name: /Period:/ })).toBeTruthy()
       expect(within(toolbar).getByRole('button', { name: 'As reported' })).toBeTruthy()
       expect(within(toolbar).getByRole('link', { name: 'Table' })).toBeTruthy()
+      // Phones name the tab `Summaries`.
+      expect((await within(toolbar).findByRole('link', { name: 'Exec summaries, 3 needed' })).textContent).toBe('Summaries3')
       await user.click(within(sheet).getByRole('button', { name: 'Done' }))
       await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Scorecard controls' })).toBeNull())
       expect(document.activeElement).toBe(summary)
@@ -163,6 +165,54 @@ describe('ControlBar', () => {
       await screen.findByRole('heading', { name: 'Overview', level: 1 })
       const summary = await screen.findByRole('button', { name: 'Oct 2026 · Unit A · Filters, 4 active' })
       expect(within(summary).getByText('Filters · 4')).toBeTruthy()
+    })
+  })
+
+  describe('Exec summaries tab', () => {
+    it('is the fourth view, with a pill counting the summaries needed, for everyone', async () => {
+      for (const role of ['admin', 'viewer'] as const) {
+        state.role = role
+        const { unmount } = renderScorecard('/scorecards/sc-main/overview?period=2026-M10')
+        const views = await screen.findByRole('navigation', { name: 'Scorecard views' })
+        expect(within(views).getAllByRole('link').map((l) => l.textContent)).toEqual(['Overview', 'Table', 'Report', 'Exec summaries3'])
+        const tab = await within(views).findByRole('link', { name: 'Exec summaries, 3 needed' })
+        expect(tab.getAttribute('href')).toBe('/scorecards/sc-main/exec-summaries?period=2026-M10')
+        unmount()
+      }
+    })
+
+    it('has no pill when nothing is needed', async () => {
+      server.use(summaryListHandler('sc-main', { summaries: writtenSummaries }))
+      renderScorecard('/scorecards/sc-main/overview?period=2026-M10')
+      const views = await screen.findByRole('navigation', { name: 'Scorecard views' })
+      await screen.findByRole('heading', { name: 'Overview', level: 1 })
+      await waitFor(() => expect(within(views).getByRole('link', { name: 'Exec summaries' }).textContent).toBe('Exec summaries'))
+    })
+
+    it('asks for the counts once and does not ask again within a minute', async () => {
+      const seen: URL[] = []
+      server.use(summaryListHandler('sc-main', { summaries: missingSummaries, seen }))
+      renderScorecard('/scorecards/sc-main/overview?period=2026-M10')
+      const views = await screen.findByRole('navigation', { name: 'Scorecard views' })
+      await within(views).findByRole('link', { name: 'Exec summaries, 3 needed' })
+      const user = userEvent.setup()
+      await user.click(within(views).getByRole('link', { name: 'Table' }))
+      await screen.findByRole('heading', { name: 'Table', level: 1 })
+      await user.click(within(views).getByRole('link', { name: 'Overview' }))
+      await screen.findByRole('heading', { name: 'Overview', level: 1 })
+      const counts = seen.filter((u) => u.searchParams.get('countsOnly') === 'true')
+      expect(counts).toHaveLength(1)
+      expect(counts[0]!.searchParams.get('period')).toBe('2026-M10')
+    })
+
+    it('asks nothing away from a month', async () => {
+      const seen: URL[] = []
+      server.use(summaryListHandler('sc-main', { summaries: missingSummaries, seen }))
+      renderScorecard('/scorecards/sc-main/overview?period=2026-Q3')
+      const views = await screen.findByRole('navigation', { name: 'Scorecard views' })
+      await screen.findByRole('heading', { name: 'Overview', level: 1 })
+      expect(within(views).getByRole('link', { name: 'Exec summaries' })).toBeTruthy()
+      expect(seen.filter((u) => u.searchParams.get('countsOnly') === 'true')).toEqual([])
     })
   })
 

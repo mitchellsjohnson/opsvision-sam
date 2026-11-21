@@ -9,6 +9,7 @@ import { absentItemMetrics, attentionInputs, healthTally, metricNoun, metricStan
 import { cellReported, statusAtScope, type StatusScaleEntry } from '../logic/statusAtScope'
 import { worstChildValue } from '../logic/statusBoard'
 import { cellKey, groupRows, metricScope } from '../viewHelpers'
+import { noteDate } from '../../rca/rcaText'
 
 type Schemas = components['schemas']
 type ReportDocument = Schemas['ReportDocument']
@@ -17,6 +18,54 @@ type ViewRow = Schemas['ViewRow']
 type Cell = Schemas['Cell']
 type StatusLevel = Schemas['StatusLevel']
 type MethodologyVersion = Schemas['MethodologyVersion']
+type MetricSummary = Schemas['MetricSummary']
+type RcaLink = Schemas['RcaLink']
+type RcaEvidenceKey = Schemas['RcaEvidenceKey']
+
+/** The month's exec summaries, read with `listMetricSummaries` (the report document carries none). */
+export interface ReportSummaries {
+  /**
+   * `live`: the month's summaries now; `published`: a revision's frozen
+   * copies; `before`: a revision published before exec summaries were
+   * required (v1 and v2), which has none.
+   */
+  source: 'live' | 'published' | 'before'
+  items: MetricSummary[]
+  /** A published revision's live summaries now: a newer revision is `Exec summary edited since publication`. */
+  current?: MetricSummary[]
+}
+
+/** A metric's exec summary as the report shows it. A missing one carries no text, author or links. */
+export interface ReportMetricSummary {
+  state: 'missing' | 'written' | 'stale' | 'optional'
+  text?: string
+  author?: string
+  /** `Nov 2`: when it was last written. */
+  date?: string
+  links: RcaLink[]
+  linksTotal: number
+  /** Why it is required (`Red`, `Below 100% (94%)`). */
+  reason?: string
+  /** The company-level evidence keys behind the attribution line. */
+  evidence: RcaEvidenceKey[]
+  /** `{standing headline}: {key} {points} · …`, shown and exported as attribution, never as the summary. */
+  attributionLine?: string
+  editedSincePublication: boolean
+}
+
+/** One line of Notes → Exec summaries and one row of the downloads' appendix. */
+export interface ExecSummaryNote {
+  key: string
+  name: string
+  display: string
+  status: string
+  statusLabel: string
+  /** Null when the summary is missing. */
+  text: string | null
+  links: RcaLink[]
+  /** Evidence keys, for `(INC-2041, INC-2047)`. */
+  keys: string[]
+}
 
 export interface ReportModelInput {
   doc: ReportDocument
@@ -43,6 +92,8 @@ export interface ReportModelInput {
   overview?: ScorecardView | null
   /** The scorecard's methodology versions: rules, item kinds and item-only metrics with no rows. */
   versions?: MethodologyVersion[]
+  /** The month's exec summaries; absent or null while they are not loaded. */
+  summaries?: ReportSummaries | null
 }
 
 export interface ReportPoint {
@@ -92,6 +143,8 @@ export interface ReportMetric {
   driver: string | null
   /** The scope row's six months, or its reported children when it has no value. */
   series: ReportSeries[]
+  /** The company's exec summary for the month; absent away from the company scope or without summaries. */
+  summary?: ReportMetricSummary
 }
 
 export interface ReportTableCell {
@@ -146,6 +199,15 @@ export interface ReportModel {
     notReported: string[]
     versionIds: string[]
   }
+  /** A live month's required exec summaries that are not written: publishing waits for them. */
+  summariesMissing: MetricSummary[]
+  /** A live month's stale summaries, which do not block. */
+  summariesStale: number
+  summariesStaleNames: string[]
+  /** A revision published before exec summaries were required. */
+  summariesBefore: boolean
+  /** Every summary of the month (missing ones too, when live), worst first. */
+  execSummaries: ExecSummaryNote[]
 }
 
 /** Table slides and pages split after this many metric rows. */
@@ -233,6 +295,58 @@ export function metricFacts(metric: ReportMetric): string[] {
 /** A metric's speaker notes: its definition (or name), then the methodology version. */
 export function metricNotes(metric: ReportMetric): string {
   return `${metric.definition}\nMethodology version: ${metric.versionId || 'none'}`
+}
+
+/**
+ * A summary's attribution line: the company standing's headline, then its
+ * top evidence keys with their points (`INC-2041 0.56 pts · INC-2047 0.25 pts`).
+ */
+export function summaryAttributionLine(s: Pick<MetricSummary, 'standing' | 'evidence'>): string {
+  const keys = (s.evidence ?? []).map((e) => (e.pointsDisplay ? `${e.key} ${e.pointsDisplay}` : e.key)).join(' · ')
+  const headline = s.standing.headline
+  if (!headline) return keys
+  return keys ? `${headline}: ${keys}` : headline
+}
+
+/** Links an export shows before pointing at the appendix. */
+export const SUMMARY_LINKS_SHOWN = 3
+/** What a download prints for a required summary not written; nothing else fills its place. */
+export const SUMMARY_NOT_WRITTEN = 'Exec summary not written yet'
+
+/** The month's appendix of exec summaries in slide- and page-sized chunks. */
+export function summaryChunks(model: ReportModel, size: number): ExecSummaryNote[][] {
+  const out: ExecSummaryNote[][] = []
+  for (let i = 0; i < model.execSummaries.length; i += size) out.push(model.execSummaries.slice(i, i + size))
+  return out
+}
+
+/** Whether a metric's slide or page shows an exec summary block: written, stale or missing (optional ones show nothing). */
+export function showsSummary(metric: ReportMetric): boolean {
+  return metric.summary !== undefined && metric.summary.state !== 'optional'
+}
+
+function metricSummaryOf(s: MetricSummary, published: boolean, current: MetricSummary | undefined): ReportMetricSummary {
+  const state = published ? 'written' : s.state
+  const base = {
+    reason: s.requirementReason,
+    evidence: s.evidence ?? [],
+    attributionLine: summaryAttributionLine(s) || undefined,
+    editedSincePublication: false,
+  }
+  // Nothing stands in for a summary that is not written: no text, author or links.
+  if (state === 'missing' || state === 'optional' || !s.text) {
+    return { state: state === 'missing' ? 'missing' : 'optional', links: [], linksTotal: 0, ...base }
+  }
+  return {
+    state,
+    text: s.text,
+    author: s.authorName,
+    date: s.updatedAt ? noteDate(s.updatedAt) : undefined,
+    links: s.links,
+    linksTotal: s.linksTotal,
+    ...base,
+    editedSincePublication: published && current?.revision !== undefined && s.revision !== undefined && current.revision > s.revision,
+  }
 }
 
 /** The notes section's headings and lines, empty sections left out. */
@@ -522,7 +636,34 @@ export function buildReportModel(input: ReportModelInput): ReportModel {
     }
   }
 
-  const byKey = new Map(metrics.map((m) => [m.key, reportMetric(m)]))
+  // Exec summaries are the company's: joined only at the company scope.
+  const sums = input.summaries ?? null
+  const published = sums?.source === 'published'
+  const sumItems = sums && sums.source !== 'before' ? sums.items : []
+  const summaryByKey = new Map(sumItems.map((s) => [s.metricKey, s]))
+  const currentByKey = new Map((sums?.current ?? []).map((s) => [s.metricKey, s]))
+  const withSummary = (rm: ReportMetric): ReportMetric => {
+    const s = companyScope ? summaryByKey.get(rm.key) : undefined
+    return s ? { ...rm, summary: metricSummaryOf(s, published, currentByKey.get(rm.key)) } : rm
+  }
+  const live = sums?.source === 'live'
+  const staleItems = live ? sumItems.filter((s) => s.state === 'stale') : []
+  const execSummaries: ExecSummaryNote[] = sumItems
+    .filter((s) => (live && s.state === 'missing') || (s.state !== 'missing' && s.state !== 'optional' && !!s.text))
+    .map((s, i) => ({ s, i }))
+    .sort((a, b) => rankOf(b.s.standing.status) - rankOf(a.s.standing.status) || a.i - b.i)
+    .map(({ s }) => ({
+      key: s.metricKey,
+      name: s.metricName,
+      display: s.standing.display,
+      status: s.standing.status,
+      statusLabel: s.standing.status ? statusLabel(s.standing.status) : '',
+      text: s.state === 'missing' ? null : (s.text ?? null),
+      links: s.state === 'missing' ? [] : s.links,
+      keys: (s.evidence ?? []).map((e) => e.key),
+    }))
+
+  const byKey = new Map(metrics.map((m) => [m.key, withSummary(reportMetric(m))]))
 
   const shown = metrics.flatMap((m) => (m.standing ? [m.standing] : []))
   const attentionItems = attentionInputs(shown, { categories: view.categories, scale: scaleEntries, fy, statusLabel })
@@ -607,5 +748,10 @@ export function buildReportModel(input: ReportModelInput): ReportModel {
       notReported: unreported,
       versionIds: [...new Set(Object.values(doc.view.versionByPeriod).filter(Boolean))].sort(),
     },
+    summariesMissing: live ? sumItems.filter((s) => s.state === 'missing') : [],
+    summariesStale: staleItems.length,
+    summariesStaleNames: staleItems.map((s) => s.metricName),
+    summariesBefore: sums?.source === 'before',
+    execSummaries,
   }
 }

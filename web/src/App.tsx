@@ -4,6 +4,7 @@ import { ItemsPage } from './features/admin/ItemsPage'
 import { MembersPage } from './features/admin/MembersPage'
 import { OrgPage } from './features/admin/OrgPage'
 import { EntryPage } from './features/entry/EntryPage'
+import { ExecSummariesPage } from './features/rca/ExecSummariesPage'
 import { HomeRedirect } from './pages/HomeRedirect'
 import { NotFoundPage } from './pages/NotFoundPage'
 import { RequireAdmin } from './pages/RequireAdmin'
@@ -32,6 +33,7 @@ export function App() {
           <Route path="overview" element={<OverviewPage />} />
           <Route path="table" element={<TablePageRoute />} />
           <Route path="report" element={<ReportPage />} />
+          <Route path="exec-summaries" element={<ExecSummariesPage />} />
         </Route>
         <Route path="entry" element={<EntryPage />} />
         <Route path="settings">
