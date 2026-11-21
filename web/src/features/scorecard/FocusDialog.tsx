@@ -8,7 +8,7 @@ import { parsePeriod, periodLabel } from '../../lib/period'
 import { usePeriodState } from '../../shell/usePeriodState'
 import { StatusChip } from '../../ui/status'
 import { useAskSam } from '../assistant/useAssistant'
-import { attributionAvailable, summaryDisplay } from '../rca/rcaState'
+import { attributionAvailable, neededFor, summaryDisplay } from '../rca/rcaState'
 import { WhyButton } from '../rca/WhyButton'
 import { useWhyCard } from '../rca/WhyCardProvider'
 import { Breakdown } from './Breakdown'
@@ -713,8 +713,13 @@ function MetricFocus({
 
   // The scope's subject (the company's root unit for an item metric with no company row) and its exec summary state.
   const scopeSubject = scope?.subjectId ?? (companyScope ? company?.id : period.scope) ?? ''
-  const companySummary = !companyScope ? null : scope && cell ? summaryDisplay(cell, role) : stateDisplay(listedSummary, role)
   const selectedPeriod = selectedColumn?.period ?? ''
+  const needed = neededFor(selectedPeriod, period.period, fy)
+  const companySummary = !companyScope
+    ? null
+    : scope && cell
+      ? summaryDisplay(cell, role, needed)
+      : stateDisplay(listedSummary, role, needed)
   const valueWhy = (valueDisplay: string) => {
     const attribution = scope && cell ? attributionAvailable(scope, cell, statusColors) : false
     if (!head || (!companySummary && !attribution)) return null

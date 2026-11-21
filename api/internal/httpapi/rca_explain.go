@@ -177,8 +177,8 @@ func (s *Server) newExplainer(ctx context.Context, p auth.Principal, sc string, 
 	return e, nil
 }
 
-// needed is periods plus, for each month, the coarse periods of the metrics
-// in force that month (a quarterly metric's quarter), in a stable order.
+// needed is periods plus, for each month, the coarse periods the metrics in
+// force that month may count (periodOf's candidates), in a stable order.
 func (e *explainer) needed(periods []period.Period) []period.Period {
 	var out []period.Period
 	add := func(q period.Period) {
@@ -197,7 +197,11 @@ func (e *explainer) needed(periods []period.Period) []period.Period {
 		}
 		for _, m := range v.Content.Metrics {
 			if g, ok := frequencyGrain(m.Frequency); ok && g != period.Month {
-				add(e.in.Cal.Parent(q, g))
+				last := closedBy(e.in.Cal, q, g)
+				add(last)
+				if inGrace(e.in.Cal, last, q) {
+					add(e.in.Cal.Prev(last))
+				}
 			}
 		}
 	}
@@ -239,13 +243,62 @@ func (e *explainer) ctxFor(root string) *summaryContext {
 	return &c
 }
 
-// periodOf is the period metric m's summary belongs to in month: the month,
-// or its coarse period.
-func (e *explainer) periodOf(m domain.Metric, month period.Period) period.Period {
-	if g, ok := frequencyGrain(m.Frequency); ok && g != period.Month {
-		return e.in.Cal.Parent(month, g)
+// periodOf is the period whose summary slot metric m shows in month (spec
+// §4.1): the month, or for a coarse metric its counted period as the
+// Overview counts it: the latest period of its grain that month has closed
+// (the one month closes, when it closes one); in that period's closing month
+// and the month after, while nothing is reported for it, the one before it.
+// Only a period month closes can be required in month, so the publish gate
+// judges the same slots.
+func (e *explainer) periodOf(m domain.Metric, month period.Period) (period.Period, error) {
+	g, ok := frequencyGrain(m.Frequency)
+	if !ok || g == period.Month {
+		return month, nil
 	}
-	return month
+	last := closedBy(e.in.Cal, month, g)
+	if !inGrace(e.in.Cal, last, month) {
+		return last, nil
+	}
+	for _, q := range []period.Period{last, e.in.Cal.Prev(last)} {
+		ref, err := e.column(q)
+		if err != nil {
+			return period.Period{}, err
+		}
+		if accounted(ref, m.Key) {
+			return q, nil
+		}
+	}
+	return last, nil
+}
+
+// closedBy is the latest period of grain g that month has closed.
+func closedBy(cal period.Calendar, month period.Period, g period.Grain) period.Period {
+	p := cal.Parent(month, g)
+	if last, ok := lastMonth(cal, p); ok && last == month {
+		return p
+	}
+	return cal.Prev(p)
+}
+
+// inGrace reports whether month is the month that closes p or the one after
+// it, when p's report may still be outstanding.
+func inGrace(cal period.Calendar, p, month period.Period) bool {
+	last, ok := lastMonth(cal, p)
+	return ok && (last == month || monthAfter(cal, last) == month)
+}
+
+// accounted reports whether metric has anything reported in the column, or
+// a cell marked not applicable, at any subject.
+func accounted(ref colRef, metric string) bool {
+	for _, r := range ref.rows {
+		if r.MetricKey != metric || ref.col >= len(r.Cells) {
+			continue
+		}
+		if c := r.Cells[ref.col]; c.Display != "" || c.Status != "" || c.Value != nil || c.NAReason != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // factsOf judges metric m (of version v) at company scope for period per, as
@@ -313,12 +366,20 @@ func (e *explainer) items(month period.Period) ([]metricItem, error) {
 	if !ok || reportRoot(e.in, month) == "" {
 		return []metricItem{}, nil
 	}
-	if err := e.preloadIncidents(v, func(m domain.Metric) period.Period { return e.periodOf(m, month) }); err != nil {
+	pers := make(map[string]period.Period, len(v.Content.Metrics))
+	for _, m := range v.Content.Metrics {
+		q, err := e.periodOf(m, month)
+		if err != nil {
+			return nil, err
+		}
+		pers[m.Key] = q
+	}
+	if err := e.preloadIncidents(v, func(m domain.Metric) period.Period { return pers[m.Key] }); err != nil {
 		return nil, err
 	}
 	out := make([]metricItem, 0, len(v.Content.Metrics))
 	for _, m := range v.Content.Metrics {
-		it, err := e.item(v, m, e.periodOf(m, month), month)
+		it, err := e.item(v, m, pers[m.Key], month)
 		if err != nil {
 			return nil, err
 		}

@@ -174,9 +174,10 @@ describe('buildBoardRow', () => {
     expect(board.change?.move.tone).toBe('bad')
   })
 
-  it('carries the scope cells’ exec summary state, and the selected one’s on the row', () => {
+  it('carries the scope cells’ exec summary state, and the selected one’s on the row; only the selected month is needed', () => {
     const written = { state: 'written' as const, excerpt: 'Seven of 33 epics slipped…', author: 'Avery Admin' }
     const scope = row([
+      cell('2026-M08', { status: 'Y', summary: written }),
       cell('2026-M09', { status: 'Y', summary: { state: 'missing' } }),
       cell('2026-M10', { value: 72, display: '72%', status: 'R', summary: written }),
     ])
@@ -192,9 +193,25 @@ describe('buildBoardRow', () => {
       scale: SCALE,
       fyStart: 1,
     })
-    expect(board.cells.map((c) => c.summary)).toEqual([undefined, { state: 'missing' }, written])
+    // A past month is announced as written, never as needed: it may have been published before the gate.
+    expect(board.cells.map((c) => c.summary)).toEqual([written, undefined, written])
     expect(board.summary).toEqual(written)
     expect(currentName(board, columns.at(-1)!, (k) => ({ R: 'Red' })[k])).toBe('On-time delivery, Oct 2026: 72%, Red; exec summary written.')
+    const missingNow = buildBoardRow({
+      key: 'm',
+      category: { id: 'delivery', name: 'Delivery' },
+      scope: row([cell('2026-M10', { value: 72, display: '72%', status: 'R', summary: { state: 'missing' } })]),
+      head: scope,
+      children: [],
+      noun: 'segments',
+      columns,
+      scale: SCALE,
+      fyStart: 1,
+    })
+    expect(missingNow.cells.at(-1)?.summary).toEqual({ state: 'missing' })
+    expect(currentName({ ...missingNow, neededFor: 'Jun 2026' }, columns.at(-1)!, (k) => ({ R: 'Red' })[k])).toBe(
+      'On-time delivery, Oct 2026: 72%, Red; exec summary needed for Jun 2026.',
+    )
     const none = buildBoardRow({ key: 'm', category: { id: 'delivery', name: 'Delivery' }, scope: null, head: scope, children: [child], noun: 'segments', columns, scale: SCALE, fyStart: 1 })
     expect(none.cells.every((c) => c.summary === undefined)).toBe(true)
     expect(none.summary).toBeUndefined()

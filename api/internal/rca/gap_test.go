@@ -203,6 +203,12 @@ func TestGapOf(t *testing.T) {
 			kind: "ratio", headline: "27 pts short of 100% · 3 of 11 missed", detail: "Red · Green at 90% or better · each miss costs 9.1 pts", units: 27,
 		},
 		{
+			name: "ratio without records names the parts with the record noun",
+			in: rca.GapInput{Metric: epicsMetric, Cell: rca.CellFacts{Display: "73%", Status: "R",
+				Components: map[string]float64{"epics_on_time": 8, "epics_committed": 11}}, Threshold: "Green at 90% or better", Noun: "epics"},
+			kind: "ratio", headline: "27 pts short of 100% · 3 of 11 epics missed", detail: "Red · Green at 90% or better · each miss costs 9.1 pts", units: 27,
+		},
+		{
 			name: "percent, not a ratio",
 			in: rca.GapInput{Metric: domain.Metric{Formula: "trained_pct", Format: domain.FormatPercent1, Direction: domain.DirectionHigherBetter,
 				Rule: bands(domain.Band{Status: "G", Op: ">=", Value: 98}, domain.Band{Status: "R"})},

@@ -343,7 +343,7 @@ function MetricSummaryBlock({ metric, writeTo, isAdmin }: { metric: ReportMetric
   const [allLinks, setAllLinks] = useState(false)
   const toggleRef = useRef<HTMLButtonElement>(null)
   const s = metric.summary
-  if (!s || s.state === 'optional') return null
+  if (!s || (s.state === 'optional' && !s.neededFor)) return null
   const links = allLinks ? s.links : s.links.slice(0, RCA_LINKS_SHOWN)
   return (
     <div className="mt-3 border-t border-ink/10 pt-3">
@@ -353,6 +353,8 @@ function MetricSummaryBlock({ metric, writeTo, isAdmin }: { metric: ReportMetric
         </p>
         {s.state === 'missing' ? (
           <p className="mt-1 text-xs font-semibold leading-4 text-status-r">Exec summary needed</p>
+        ) : s.state === 'optional' ? (
+          <p className="mt-1 text-xs font-semibold leading-4 text-ink/80">{`Needed for ${s.neededFor}`}</p>
         ) : (
           <>
             {s.editedSincePublication && <p className="mt-1 text-[11px] leading-4 text-ink/70">Exec summary edited since publication</p>}
@@ -697,8 +699,8 @@ export function ReportPage() {
   const gateLineId = useId()
   const requiredHeadingRef = useRef<HTMLHeadingElement>(null)
   const queryClient = useQueryClient()
-  /** The 409's missing summaries, and when the list was last read as it came back. */
-  const [blocked, setBlocked] = useState<{ missing: MetricSummary[]; at: number } | null>(null)
+  /** The 409's missing summaries, for the month and revision refused, and when the list was last read as it came back. */
+  const [blocked, setBlocked] = useState<{ key: string; missing: MetricSummary[]; at: number } | null>(null)
   const refetchSummary = summary.refetch
   const reloadSummary = useCallback(async () => {
     const result = await refetchSummary()
@@ -760,11 +762,16 @@ export function ReportPage() {
     ...(publishedRevision !== undefined ? { revision: publishedRevision } : {}),
   }
   const summaryList = useMetricSummaries(scorecardId, summariesQuery)
-  const currentList = useMetricSummaries(scorecardId, { period: publishedRevision !== undefined ? period.period : '', state: 'all' })
+  const currentQuery: MetricSummaryListQuery = { period: publishedRevision !== undefined ? period.period : '', state: 'all' }
+  const currentList = useMetricSummaries(scorecardId, currentQuery)
   const { hasNextPage, isFetchingNextPage, fetchNextPage } = summaryList
   useEffect(() => {
     if (hasNextPage && !isFetchingNextPage) void fetchNextPage()
   }, [hasNextPage, isFetchingNextPage, fetchNextPage])
+  const { hasNextPage: currentMore, isFetchingNextPage: currentFetching, fetchNextPage: fetchCurrent } = currentList
+  useEffect(() => {
+    if (currentMore && !currentFetching) void fetchCurrent()
+  }, [currentMore, currentFetching, fetchCurrent])
   const summaries = useMemo<ReportSummaries | null>(() => {
     const pages = summaryList.data?.pages
     if (!pages || hasNextPage) return null
@@ -860,14 +867,24 @@ export function ReportPage() {
     }
   }
 
-  // The required block lists what the live list says is missing, or, right after a refused publish, the 409's
-  // own list until the summaries are read again.
-  const missing =
-    blocked && summaryList.dataUpdatedAt <= blocked.at ? blocked.missing : live ? (model?.summariesMissing ?? []) : []
-  const gated = live && missing.length > 0
+  // Publishing (and republishing from a published revision) is gated by the live month: the live report's own
+  // list, or beside a published revision the live list read with it.
+  const gateKey = `${period.period}|${publishedRevision ?? 'live'}`
+  const gateQuery = publishedRevision === undefined ? summariesQuery : currentQuery
+  const gateList = publishedRevision === undefined ? summaryList : currentList
+  const currentItems = useMemo(() => currentList.data?.pages.flatMap((p) => p.items) ?? [], [currentList.data])
+  const liveMissing = live ? (model?.summariesMissing ?? []) : currentItems.filter((s) => s.state === 'missing')
+  const liveStale = live ? (model?.summariesStaleNames ?? []) : currentItems.filter((s) => s.state === 'stale').map((s) => s.metricName)
+  // A refused publish's own list stands for its month and revision until the summaries are read again.
+  if (blocked && blocked.key !== gateKey) setBlocked(null)
+  const refused = blocked && blocked.key === gateKey && gateList.dataUpdatedAt <= blocked.at ? blocked.missing : null
+  const missing = refused ?? liveMissing
+  const gated = missing.length > 0
   useEffect(() => {
     if (blocked) requiredHeadingRef.current?.focus()
   }, [blocked])
+  const resetPublish = publish.reset
+  useEffect(() => resetPublish(), [gateKey, resetPublish])
 
   const controlsDisabled = !isMonth || !model
   const publishDisabled = !isMonth || !model || publish.isPending || summaryDirty
@@ -878,8 +895,8 @@ export function ReportPage() {
       onError: (e) => {
         if (!(e instanceof PublishBlockedError)) return
         // The hook has already re-read the list; this list stands until it is read again.
-        const at = queryClient.getQueryState(keys.metricSummaries(scorecardId, summariesQuery))?.dataUpdatedAt ?? 0
-        setBlocked({ missing: e.missing, at })
+        const at = queryClient.getQueryState(keys.metricSummaries(scorecardId, gateQuery))?.dataUpdatedAt ?? 0
+        setBlocked({ key: gateKey, missing: e.missing, at })
       },
     })
   }
@@ -982,7 +999,7 @@ export function ReportPage() {
           {exportError}
         </p>
       )}
-      {publish.isError && !(publish.error instanceof PublishBlockedError) && (
+      {publish.isError && !(publish.error instanceof PublishBlockedError && isMonth && gated && model) && (
         <p role="alert" className="mt-2 text-sm text-status-r">
           Could not publish: {publish.error.message}
         </p>
@@ -990,7 +1007,7 @@ export function ReportPage() {
       {isMonth && gated && model && (
         <RequiredBlock
           missing={missing}
-          stale={model.summariesStaleNames}
+          stale={liveStale}
           monthLabel={model.monthLabel}
           scorecardId={scorecardId}
           period={period.period}

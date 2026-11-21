@@ -224,6 +224,7 @@ function EditForm({ scorecardId, summary, attribution, samEnabled, startDraft = 
   })
 
   const draftWithSam = () => {
+    if (drafting.isPending) return
     abortDraft.current?.abort()
     const controller = new AbortController()
     abortDraft.current = controller
@@ -279,6 +280,7 @@ function EditForm({ scorecardId, summary, attribution, samEnabled, startDraft = 
   }
 
   const save = () => {
+    if (busy) return
     setSubmitted(true)
     setFailure(null)
     setServer({ rows: {} })
@@ -359,8 +361,8 @@ function EditForm({ scorecardId, summary, attribution, samEnabled, startDraft = 
             <button
               ref={draftRef}
               type="button"
-              className={clsx(secondaryButton, 'inline-flex h-7 items-center gap-1.5 px-2 py-0 text-xs')}
-              disabled={drafting.isPending}
+              className={clsx(secondaryButton, 'inline-flex h-7 items-center gap-1.5 px-2 py-0 text-xs', drafting.isPending && 'cursor-wait opacity-60')}
+              aria-disabled={drafting.isPending || undefined}
               onClick={draftWithSam}
             >
               <Sam pose={drafting.isPending ? 'thinking' : 'mark'} className={clsx('size-4', drafting.isPending && 'ov-sam-think')} />
@@ -624,7 +626,13 @@ function EditForm({ scorecardId, summary, attribution, samEnabled, startDraft = 
                 Delete exec summary
               </button>
             )}
-            <button type="submit" className={clsx(primaryButton, 'h-8')} disabled={busy || over > 0 || problems.links !== undefined}>
+            {/* Held with aria-disabled while saving, so focus stays on Save through a 409. */}
+            <button
+              type="submit"
+              className={clsx(primaryButton, 'h-8', busy && 'cursor-wait opacity-60')}
+              aria-disabled={busy || undefined}
+              disabled={over > 0 || problems.links !== undefined}
+            >
               Save
             </button>
             <button type="button" className={clsx(secondaryButton, 'h-8')} onClick={onCancel}>

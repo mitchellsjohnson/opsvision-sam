@@ -12,6 +12,7 @@ import (
 	"opsvision/internal/auth"
 	"opsvision/internal/demo"
 	"opsvision/internal/domain"
+	"opsvision/internal/engine"
 	"opsvision/internal/period"
 	"opsvision/internal/store"
 )
@@ -92,6 +93,11 @@ func TestGetMetricSummary(t *testing.T) {
 		t.Errorf("security_training = %+v", st)
 	}
 
+	// A company ratio's headline names its records, as its children's do.
+	if ep := getSummary(t, e, admin, "epics_on_time", "2026-M10"); ep.Standing.Headline != "21 pts short of 100% · 7 of 33 epics missed" {
+		t.Errorf("epics_on_time headline = %q", ep.Standing.Headline)
+	}
+
 	// A quarterly metric is read at its quarter; its month is refused.
 	q := getSummary(t, e, admin, "concepts_expected_value", "2026-Q3")
 	if q.State != SummaryStateWritten || q.Period != "2026-Q3" {
@@ -116,9 +122,11 @@ func TestListMetricSummaries(t *testing.T) {
 	if got := listCells(missing); !slices.Equal(got, demo.SummaryMissing) {
 		t.Errorf("missing = %+v, want %+v", got, demo.SummaryMissing)
 	}
+	// Written counts the quarterly metric's Q3 summary, which October shows
+	// but does not require.
 	c := missing.Counts
-	if c.Missing != len(demo.SummaryMissing) || c.Stale != len(demo.SummaryStale) || c.Written != len(demo.SummaryWritten) ||
-		c.Required != len(demo.SummaryMissing)+len(demo.SummaryStale)+len(demo.SummaryWritten) || c.Optional != 5 {
+	if c.Missing != len(demo.SummaryMissing) || c.Stale != len(demo.SummaryStale) || c.Written != len(demo.SummaryWritten)+1 ||
+		c.Required != len(demo.SummaryMissing)+len(demo.SummaryStale)+len(demo.SummaryWritten) || c.Optional != 4 {
 		t.Errorf("counts = %+v", c)
 	}
 	if missing.Period != "2026-M10" || missing.NextCursor != nil {
@@ -152,7 +160,7 @@ func TestListMetricSummaries(t *testing.T) {
 		}
 	}
 	written := listMetricSummariesAs(t, e, admin, "period=2026-M10&state=written")
-	if got := listCells(written); len(got) != len(demo.SummaryWritten) {
+	if got := listCells(written); len(got) != len(demo.SummaryWritten)+1 {
 		t.Errorf("written = %+v", got)
 	}
 	stale := listMetricSummariesAs(t, e, admin, "period=2026-M10&state=stale")
@@ -190,6 +198,100 @@ func TestListMetricSummaries(t *testing.T) {
 
 	e.expectError(t, 400, "invalid", admin, "GET", demoSummaries+"?period=2026-Q4", nil)
 	e.expectError(t, 404, "not_found", admin, "GET", demoSummaries+"?period=2026-M09&revision=1", nil)
+}
+
+// TestListCountedCoarsePeriods: a coarse metric's slot in a month is its
+// counted period, the latest one the month has closed, as on the Overview
+// (spec §4.1). Only the month that closes the period requires it.
+func TestListCountedCoarsePeriods(t *testing.T) {
+	e := newDemoEnv(t)
+	admin := e.tokens["admin"]
+	slot := func(month, metric string) MetricSummary {
+		t.Helper()
+		for _, it := range listMetricSummariesAs(t, e, admin, "period="+month+"&state=all").Items {
+			if it.MetricKey == metric {
+				return it
+			}
+		}
+		t.Fatalf("%s has no %s slot", month, metric)
+		return MetricSummary{}
+	}
+
+	// October closes no quarter or half: it shows Q3's written summary and
+	// H1's slot, neither required this month.
+	q := slot("2026-M10", "concepts_expected_value")
+	if q.Period != "2026-Q3" || q.State != SummaryStateWritten || q.Requirement != MetricSummaryRequirementOptional || q.Text == nil {
+		t.Errorf("Oct concepts_expected_value = %+v", q)
+	}
+	h := slot("2026-M10", "accessibility_compliance")
+	if h.Period != "2026-H1" || h.State != SummaryStateOptional || h.Requirement != MetricSummaryRequirementOptional || h.Standing.Headline == "" {
+		t.Errorf("Oct accessibility_compliance = %+v", h)
+	}
+	// September closes Q3, which it requires; H1 closed in June.
+	if q := slot("2026-M09", "concepts_expected_value"); q.Period != "2026-Q3" || q.Requirement != MetricSummaryRequirementRequired || q.State != SummaryStateWritten {
+		t.Errorf("Sep concepts_expected_value = %+v", q)
+	}
+	if h := slot("2026-M09", "accessibility_compliance"); h.Period != "2026-H1" || h.Requirement != MetricSummaryRequirementOptional {
+		t.Errorf("Sep accessibility_compliance = %+v", h)
+	}
+	// June closes H1 and requires its summary.
+	if h := slot("2026-M06", "accessibility_compliance"); h.Period != "2026-H1" || h.Requirement != MetricSummaryRequirementRequired || h.State != SummaryStateMissing {
+		t.Errorf("Jun accessibility_compliance = %+v", h)
+	}
+
+	// The October gate is unchanged: the counted coarse slots never block.
+	for _, it := range demoGate(t, e, oct2026) {
+		if (it.MetricKey == "concepts_expected_value" || it.MetricKey == "accessibility_compliance") && it.Requirement.Required {
+			t.Errorf("Oct gate requires %+v", it)
+		}
+	}
+
+	// October's published revision freezes the counted Q3 summary, which the
+	// Report and its downloads read.
+	writeMissingSummaries(t, e, admin, demo.ScorecardID, "2026-M10")
+	e.expect(t, 200, admin, "POST", demoOctReport+"/publish", map[string]any{}, nil)
+	frozen := listMetricSummariesAs(t, e, admin, "period=2026-M10&revision=1")
+	if !slices.ContainsFunc(frozen.Items, func(it MetricSummary) bool {
+		return it.MetricKey == "concepts_expected_value" && it.Period == "2026-Q3"
+	}) {
+		t.Errorf("Oct revision 1 froze %+v, want the Q3 summary", listCells(frozen))
+	}
+}
+
+// TestCountedPeriodHelpers: the latest period a month has closed, and the
+// months a period's report may still be outstanding in.
+func TestCountedPeriodHelpers(t *testing.T) {
+	cal := period.Calendar{FiscalYearStartMonth: time.January}
+	m := func(i int) period.Period { return period.Period{Grain: period.Month, FY: 2026, Index: i} }
+	q := func(fy, i int) period.Period { return period.Period{Grain: period.Quarter, FY: fy, Index: i} }
+	h := func(fy, i int) period.Period { return period.Period{Grain: period.Half, FY: fy, Index: i} }
+	for _, c := range []struct {
+		month period.Period
+		g     period.Grain
+		want  period.Period
+	}{
+		{m(9), period.Quarter, q(2026, 3)},
+		{m(10), period.Quarter, q(2026, 3)},
+		{m(2), period.Quarter, q(2025, 4)},
+		{m(6), period.Half, h(2026, 1)},
+		{m(10), period.Half, h(2026, 1)},
+		{m(5), period.Half, h(2025, 2)},
+		{m(10), period.Year, period.Period{Grain: period.Year, FY: 2025}},
+		{m(12), period.Year, period.Period{Grain: period.Year, FY: 2026}},
+	} {
+		if got := closedBy(cal, c.month, c.g); got != c.want {
+			t.Errorf("closedBy(%s, %v) = %s, want %s", c.month, c.g, got, c.want)
+		}
+	}
+	for month, want := range map[int]bool{9: true, 10: true, 11: false, 8: false} {
+		if got := inGrace(cal, q(2026, 3), m(month)); got != want {
+			t.Errorf("inGrace(Q3, M%02d) = %v, want %v", month, got, want)
+		}
+	}
+	rows := []engine.Row{{MetricKey: "a", Cells: []engine.Cell{{}, {NAReason: "paused"}}}, {MetricKey: "b", Cells: []engine.Cell{{Display: "5"}, {}}}}
+	if accounted(colRef{rows: rows, col: 0}, "a") || !accounted(colRef{rows: rows, col: 1}, "a") || !accounted(colRef{rows: rows, col: 0}, "b") {
+		t.Error("accounted: want a reported or not-applicable cell of the metric")
+	}
 }
 
 // TestSummaryStaleSubjects: a summary written when other services were short
@@ -240,7 +342,7 @@ func TestListMetricSummariesCountsOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	l := MetricSummaryList(res.(ListMetricSummaries200JSONResponse))
-	if len(l.Items) != 0 || l.Counts.Missing != 3 || l.Counts.Stale != 1 || l.Counts.Written != 7 {
+	if len(l.Items) != 0 || l.Counts.Missing != 3 || l.Counts.Stale != 1 || l.Counts.Written != 8 {
 		t.Errorf("countsOnly = %d items, counts %+v", len(l.Items), l.Counts)
 	}
 	for typ, n := range counting.reads {

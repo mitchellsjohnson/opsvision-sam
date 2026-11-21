@@ -5,7 +5,7 @@ export interface SamSuggestionProps {
   text: string
   /** What the draft was written from: `from 3 services' attribution and 4 incidents`. */
   sources: string
-  /** Keys SAM named that were not in the data it was given. */
+  /** Keys and URLs SAM named that were not in the data it was given. */
   warnings: string[]
   onUse: () => void
   onDiscard: () => void
@@ -26,8 +26,10 @@ export function SamSuggestion({ text, sources, warnings, onUse, onDiscard }: Sam
         {text}
       </p>
       {warnings.map((k) => (
-        <p key={k} className="mt-1 text-xs leading-4 text-status-y">
-          SAM mentioned {k}, which is not linked to this metric. Check it before using this draft.
+        <p key={k} className="mt-1 break-words text-xs leading-4 text-status-y">
+          {/^[a-z][a-z0-9+.-]*:\/\//i.test(k)
+            ? `SAM’s draft has a link that is not in this metric’s attribution: ${k}. Check it before using this draft.`
+            : `SAM mentioned ${k}, which is not linked to this metric. Check it before using this draft.`}
         </p>
       ))}
       <div className="mt-2 flex flex-wrap gap-2">

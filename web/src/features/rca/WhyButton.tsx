@@ -33,7 +33,7 @@ export interface WhyButtonProps {
 function Tag({ summary }: { summary: Extract<SummaryDisplay, { state: 'missing' }> }) {
   return summary.canEdit ? (
     <span data-tag="" className={NEEDED_TAG}>
-      Exec summary needed
+      {summary.neededFor ? `Needed for ${summary.neededFor}` : 'Exec summary needed'}
     </span>
   ) : (
     <span data-tag="" className={NOT_YET_TAG}>
@@ -45,7 +45,7 @@ function Tag({ summary }: { summary: Extract<SummaryDisplay, { state: 'missing' 
 function content(summary: SummaryDisplay | undefined, prefix: 'why' | 'summary', compact: boolean): ReactNode {
   if (compact) {
     if (!summary) return 'Why'
-    if (summary.state === 'missing') return 'Needed'
+    if (summary.state === 'missing') return summary.neededFor ? 'Why' : 'Needed'
     return summary.state === 'stale' && summary.canEdit ? 'Review' : 'Summary'
   }
   if (!summary) return 'Why?'

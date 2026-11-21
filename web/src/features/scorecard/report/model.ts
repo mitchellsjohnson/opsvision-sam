@@ -9,6 +9,7 @@ import { absentItemMetrics, attentionInputs, healthTally, metricNoun, metricStan
 import { cellReported, statusAtScope, type StatusScaleEntry } from '../logic/statusAtScope'
 import { worstChildValue } from '../logic/statusBoard'
 import { cellKey, groupRows, metricScope } from '../viewHelpers'
+import { requiredFor } from '../../rca/rcaState'
 import { noteDate } from '../../rca/rcaText'
 
 type Schemas = components['schemas']
@@ -51,6 +52,8 @@ export interface ReportMetricSummary {
   /** `{standing headline}: {key} {points} · …`, shown and exported as attribution, never as the summary. */
   attributionLine?: string
   editedSincePublication: boolean
+  /** An unwritten coarse period another month required (`Jun 2026`): `requiredFor`. Screens say so; downloads do not. */
+  neededFor?: string
 }
 
 /** One line of Notes → Exec summaries and one row of the downloads' appendix. */
@@ -313,11 +316,9 @@ export const SUMMARY_LINKS_SHOWN = 3
 /** What a download prints for a required summary not written; nothing else fills its place. */
 export const SUMMARY_NOT_WRITTEN = 'Exec summary not written yet'
 
-/** The month's appendix of exec summaries in slide- and page-sized chunks. */
-export function summaryChunks(model: ReportModel, size: number): ExecSummaryNote[][] {
-  const out: ExecSummaryNote[][] = []
-  for (let i = 0; i < model.execSummaries.length; i += size) out.push(model.execSummaries.slice(i, i + size))
-  return out
+/** An appendix row's value in the tenant's words: `84.3% Yellow`. */
+export function appendixValue(n: ExecSummaryNote): string {
+  return [n.display, n.statusLabel || n.status].filter(Boolean).join(' ')
 }
 
 /** Whether a metric's slide or page shows an exec summary block: written, stale or missing (optional ones show nothing). */
@@ -325,7 +326,7 @@ export function showsSummary(metric: ReportMetric): boolean {
   return metric.summary !== undefined && metric.summary.state !== 'optional'
 }
 
-function metricSummaryOf(s: MetricSummary, published: boolean, current: MetricSummary | undefined): ReportMetricSummary {
+function metricSummaryOf(s: MetricSummary, published: boolean, current: MetricSummary | undefined, neededFor?: string): ReportMetricSummary {
   const state = published ? 'written' : s.state
   const base = {
     reason: s.requirementReason,
@@ -335,7 +336,8 @@ function metricSummaryOf(s: MetricSummary, published: boolean, current: MetricSu
   }
   // Nothing stands in for a summary that is not written: no text, author or links.
   if (state === 'missing' || state === 'optional' || !s.text) {
-    return { state: state === 'missing' ? 'missing' : 'optional', links: [], linksTotal: 0, ...base }
+    const unwritten = { state: state === 'missing' ? ('missing' as const) : ('optional' as const), links: [], linksTotal: 0, ...base }
+    return neededFor && unwritten.state === 'optional' ? { ...unwritten, neededFor } : unwritten
   }
   return {
     state,
@@ -644,7 +646,7 @@ export function buildReportModel(input: ReportModelInput): ReportModel {
   const currentByKey = new Map((sums?.current ?? []).map((s) => [s.metricKey, s]))
   const withSummary = (rm: ReportMetric): ReportMetric => {
     const s = companyScope ? summaryByKey.get(rm.key) : undefined
-    return s ? { ...rm, summary: metricSummaryOf(s, published, currentByKey.get(rm.key)) } : rm
+    return s ? { ...rm, summary: metricSummaryOf(s, published, currentByKey.get(rm.key), requiredFor(s, input.period, fy)) } : rm
   }
   const live = sums?.source === 'live'
   const staleItems = live ? sumItems.filter((s) => s.state === 'stale') : []

@@ -2,6 +2,7 @@ import type { PDFDocument, PDFFont, PDFPage, RGB } from 'pdf-lib'
 import { letterUsesInkOnWhite } from '../../../ui/contrast'
 import { formatMetricValue } from '../format'
 import {
+  appendixValue,
   exportChart,
   goalSeries,
   healthParts,
@@ -414,7 +415,7 @@ function appendixPages(ctx: Ctx) {
   const title = `Exec summaries · ${model.monthLabel}`
   const lines: Line[] = []
   model.execSummaries.forEach((n, i) => {
-    lines.push({ text: [n.name, [n.display, n.status].filter(Boolean).join(' ')].filter(Boolean).join(' · '), size: 12, font: ctx.bold, gap: i === 0 ? 0 : 14, keep: 40 })
+    lines.push({ text: [n.name, appendixValue(n)].filter(Boolean).join(' · '), size: 12, font: ctx.bold, gap: i === 0 ? 0 : 14, keep: 40 })
     if (n.text === null) lines.push({ text: SUMMARY_NOT_WRITTEN, size: 11, font: ctx.bold, color: RED, gap: 2 })
     else lines.push({ text: n.text, size: 11, gap: 2 })
     for (const l of n.links) {

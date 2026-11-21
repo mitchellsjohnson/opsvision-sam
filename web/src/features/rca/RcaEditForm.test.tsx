@@ -42,7 +42,7 @@ function renderForm(summary: MetricSummary, extra: { samEnabled?: boolean } = {}
 
 const textbox = () => screen.getByRole('textbox', { name: LABEL })
 
-function capturePut(respond?: (body: PutMetricSummaryRequest) => Response) {
+function capturePut(respond?: (body: PutMetricSummaryRequest) => Response | Promise<Response>) {
   const bodies: PutMetricSummaryRequest[] = []
   server.use(
     http.put(PUT_PATH, async ({ request }) => {
@@ -231,6 +231,47 @@ describe('RcaEditForm: races, deletes and drafts (Review Focus 2, 3)', () => {
     expect(bodies.map((b) => b.expectedRevision)).toEqual([1, 2])
   })
 
+  it('keeps focus on Save through a 409, holding it with aria-disabled while the save runs', async () => {
+    let release = () => {}
+    capturePut(async () => {
+      await new Promise<void>((r) => (release = r))
+      return HttpResponse.json(
+        { error: { code: 'conflict', message: 'Someone else changed this exec summary while you were editing.' }, current: uptimeSummary },
+        { status: 409 },
+      )
+    })
+    const { user } = renderForm(uptimeSummary)
+    fireEvent.change(await screen.findByRole('textbox', { name: LABEL }), { target: { value: 'Mine: only the deploy.' } })
+    const save = screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement
+    await user.click(save)
+    await waitFor(() => expect(save.getAttribute('aria-disabled')).toBe('true'))
+    expect(save.disabled).toBe(false)
+    expect(document.activeElement).toBe(save)
+    release()
+    await screen.findByRole('alert')
+    expect(document.activeElement).toBe(save)
+    expect(save.getAttribute('aria-disabled')).toBeNull()
+  })
+
+  it('keeps focus on Draft with SAM while SAM drafts and once the draft is ready', async () => {
+    server.use(
+      http.post(`${PUT_PATH}/draft`, async () => {
+        await delay(50)
+        return HttpResponse.json({ id: 'd1', pending: false, text: 'INC-2041 saturated the queue.', createdAt: '2026-11-20T12:00:00Z', warnings: [] }, { status: 202 })
+      }),
+    )
+    const { user } = renderForm(uptimeSummary, { samEnabled: true })
+    const draft = await screen.findByRole('button', { name: 'Draft with SAM' })
+    await user.click(draft)
+    expect(await screen.findByRole('button', { name: 'Drafting…' })).toBe(draft)
+    // A disabled button loses focus in browsers (jsdom keeps it), so it is held with aria-disabled instead.
+    expect(draft.getAttribute('aria-disabled')).toBe('true')
+    expect((draft as HTMLButtonElement).disabled).toBe(false)
+    expect(document.activeElement).toBe(draft)
+    await screen.findByRole('region', { name: 'Suggested by SAM' })
+    expect(document.activeElement).toBe(draft)
+  })
+
   it('says only admins write exec summaries on a 403', async () => {
     capturePut(() =>
       HttpResponse.json({ error: { code: 'forbidden', message: 'Only admins can write exec summaries.' } }, { status: 403 }),
@@ -309,7 +350,7 @@ describe('RcaEditForm: races, deletes and drafts (Review Focus 2, 3)', () => {
     const { user } = renderForm(uptimeSummary, { samEnabled: true })
     await user.click(await screen.findByRole('button', { name: 'Draft with SAM' }))
     const drafting = await screen.findByRole('button', { name: 'Drafting…' })
-    expect((drafting as HTMLButtonElement).disabled).toBe(true)
+    expect(drafting.getAttribute('aria-disabled')).toBe('true')
     await user.click(screen.getByRole('button', { name: 'Cancel draft' }))
     expect(await screen.findByRole('button', { name: 'Draft with SAM' })).toBeTruthy()
     expect(screen.queryByRole('alert')).toBeNull()

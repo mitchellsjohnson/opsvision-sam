@@ -35,7 +35,8 @@ type SubjectFacts struct {
 // scale, and the noun for the subjects. A coarse metric (quarterly, twice
 // yearly, yearly) is judged at its own period, and only the month that
 // closes that period (ClosesInMonth) needs its summary. ComparedLabel names
-// a change rule's comparison (Sep) in the headline.
+// a change rule's comparison (Sep) in the headline, RecordNoun a ratio's
+// records (epics).
 type SummaryInput struct {
 	Metric                domain.Metric
 	Company               *CellFacts
@@ -45,6 +46,7 @@ type SummaryInput struct {
 	Coarse, ClosesInMonth bool
 	Noun                  NounForms
 	ComparedLabel         string
+	RecordNoun            string
 }
 
 // SummaryRequired says whether the metric-month needs an exec summary: when
@@ -90,7 +92,7 @@ func CompanyHeadline(in SummaryInput) string {
 		}
 		m := in.Metric
 		m.Rule = in.CompanyRule
-		return GapOf(GapInput{Metric: m, Cell: *c, StatusLabel: scaleLabel(in.Scale), BestStatus: best, ComparedLabel: in.ComparedLabel}).Headline
+		return GapOf(GapInput{Metric: m, Cell: *c, StatusLabel: scaleLabel(in.Scale), BestStatus: best, ComparedLabel: in.ComparedLabel, Noun: in.RecordNoun}).Headline
 	}
 	k, n, worst := subjectGaps(in)
 	if k == 0 {

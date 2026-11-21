@@ -11,9 +11,9 @@ import (
 
 // annotateSummaries sets Cell.summary on the company-root cells of a live
 // view (spec §9.2): on a month column, the state of the metric's summary as
-// that month sees it (a coarse metric's period, required only in the month
-// that closes it); on a coarse column, the summaries of the metrics
-// reported at that grain. Only metric-months that need a summary or have
+// that month sees it (for a coarse metric, only the period the month
+// closes); on a coarse column, the summaries of the metrics reported at that
+// grain, as the month that closes the period sees them. Only metric-months that need a summary or have
 // one get a state; never service, product or year-to-date cells.
 func annotateSummaries(v *ScorecardView, e *explainer) error {
 	periods := make([]period.Period, len(v.Periods))
@@ -59,10 +59,19 @@ func annotateSummaries(v *ScorecardView, e *explainer) error {
 			}
 			m := ver.Content.Metrics[mi]
 			itemPer := per
-			if per.Grain == period.Month {
-				itemPer = e.periodOf(m, per)
-			} else if g, ok := frequencyGrain(m.Frequency); !ok || g != per.Grain {
-				continue
+			g, ok := frequencyGrain(m.Frequency)
+			switch {
+			case per.Grain != period.Month:
+				if !ok || g != per.Grain {
+					continue
+				}
+			case ok && g != period.Month:
+				// A month column carries only the coarse period it closes; the
+				// counted period's state is on that period's own column.
+				itemPer = e.in.Cal.Parent(per, g)
+				if itemPer != closedBy(e.in.Cal, per, g) {
+					continue
+				}
 			}
 			it, err := e.item(ver, m, itemPer, month)
 			if err != nil {

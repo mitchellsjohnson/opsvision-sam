@@ -60,20 +60,16 @@ func linksOf(tenantID, sc string, rt domain.RecordType, metricKeys []string) []c
 	return out
 }
 
-// explainLinks reads the explain links of scorecard sc from the tenant's
-// record types, without their records.
-func (s *Server) explainLinks(ctx context.Context, tenantID, sc string) (incidentLinks, error) {
-	types, err := s.store.ListRecordTypes(ctx, tenantID)
-	if err != nil {
-		return nil, err
-	}
+// explainLinks are the explain links of scorecard sc in the tenant's record
+// types.
+func explainLinks(tenantID, sc string, types []domain.RecordType) incidentLinks {
 	out := incidentLinks{}
 	for _, rt := range types {
 		for _, l := range linksOf(tenantID, sc, rt, nil) {
 			out[l.MetricKey] = append(out[l.MetricKey], l.ExplainLink)
 		}
 	}
-	return out, nil
+	return out
 }
 
 // loadIncidents returns the incidents of every record type whose explain
@@ -173,16 +169,18 @@ func (s *Server) incidentsFor(ctx context.Context, tenantID, sc string, metricKe
 
 // summaryContext is what judging the metrics of one scorecard at company
 // scope needs beyond a computed view: the company root, how deep each level
-// sits, the subject nouns, the tenant's scale and the explain links.
+// sits, the subject and record nouns, the tenant's scale and the explain
+// links.
 type summaryContext struct {
-	in        *engine.Input
-	root      string
-	levels    []domain.Level
-	depth     map[string]int
-	levelName map[string]string
-	kindName  map[string]string
-	scale     []domain.StatusLevel
-	links     incidentLinks
+	in         *engine.Input
+	root       string
+	levels     []domain.Level
+	depth      map[string]int
+	levelName  map[string]string
+	kindName   map[string]string
+	recordName map[string]string
+	scale      []domain.StatusLevel
+	links      incidentLinks
 }
 
 func (s *Server) newSummaryContext(ctx context.Context, tenant domain.Tenant, sc string, in *engine.Input, root string) (*summaryContext, error) {
@@ -194,19 +192,40 @@ func (s *Server) newSummaryContext(ctx context.Context, tenant domain.Tenant, sc
 	if err != nil {
 		return nil, err
 	}
-	links, err := s.explainLinks(ctx, tenant.ID, sc)
+	types, err := s.store.ListRecordTypes(ctx, tenant.ID)
 	if err != nil {
 		return nil, err
 	}
 	c := &summaryContext{in: in, root: root, levels: levels, depth: map[string]int{}, levelName: map[string]string{}, kindName: map[string]string{},
-		scale: statusScale(tenant), links: links}
+		recordName: map[string]string{}, scale: statusScale(tenant), links: explainLinks(tenant.ID, sc, types)}
 	for _, l := range levels {
 		c.depth[l.ID], c.levelName[l.ID] = l.Depth, l.Name
 	}
 	for _, k := range kinds {
 		c.kindName[k.ID] = k.Name
 	}
+	for _, rt := range types {
+		c.recordName[rt.ID] = rt.Name
+	}
 	return c, nil
+}
+
+// ratioNoun is the plural of the record type a ratio metric's denominator
+// counts (epics), for its headline; "" when it counts no records.
+func (c *summaryContext) ratioNoun(v domain.MethodologyVersion, m domain.Metric) string {
+	_, den, ok := rca.RatioParts(m.Formula)
+	if !ok {
+		return ""
+	}
+	for _, ms := range v.Content.Measures {
+		if ms.Key != den || ms.Derive == nil {
+			continue
+		}
+		if name, ok := c.recordName[ms.Derive.RecordType]; ok {
+			return rca.Nouns(name, "record").Many
+		}
+	}
+	return ""
 }
 
 // summaryFacts is one metric-month's company standing.
@@ -241,7 +260,7 @@ func (c *summaryContext) facts(v domain.MethodologyVersion, m domain.Metric, per
 	// to infer (money plans from two-sided bands).
 	m.ChartKind = engine.ChartKind(m)
 	in := rca.SummaryInput{Metric: m, CompanyRule: m.Rule, Scale: c.scale, Coarse: coarse, ClosesInMonth: closes, Noun: c.noun(m),
-		ComparedLabel: comparedLabel(c.in.Cal, m.Rule, per)}
+		ComparedLabel: comparedLabel(c.in.Cal, m.Rule, per), RecordNoun: c.ratioNoun(v, m)}
 	var company *engine.Cell
 	rowSubjects := map[string]bool{}
 	for i := range rows {

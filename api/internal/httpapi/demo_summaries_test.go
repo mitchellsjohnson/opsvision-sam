@@ -75,15 +75,21 @@ func TestDemoSummaryGate(t *testing.T) {
 	if got := gateCells(oct, summaryStale); !reflect.DeepEqual(got, demo.SummaryStale) {
 		t.Errorf("October stale = %+v, want %+v", got, demo.SummaryStale)
 	}
-	if got := gateCells(oct, summaryWritten); !reflect.DeepEqual(got, demo.SummaryWritten) {
-		t.Errorf("October written = %+v, want %+v", got, demo.SummaryWritten)
+	// October also shows the quarterly metric's Q3 summary, the quarter it
+	// counts, written in September and not required in October.
+	q3 := demo.SummaryCell{MetricKey: "concepts_expected_value", Period: period.Period{Grain: period.Quarter, FY: 2026, Index: 3}}
+	if got := gateCells(oct, summaryWritten); !reflect.DeepEqual(slices.DeleteFunc(got, func(c demo.SummaryCell) bool { return c == q3 }), demo.SummaryWritten) {
+		t.Errorf("October written = %+v, want %+v and Q3", got, demo.SummaryWritten)
 	}
 	for _, it := range oct {
-		if it.State != summaryOptional && !it.Requirement.Required {
+		if (it.State == summaryMissing || it.State == summaryStale) && !it.Requirement.Required {
 			t.Errorf("%s is %s but not required", it.MetricKey, it.State)
 		}
 	}
 	by := gateByMetric(oct)
+	if q := by[q3.MetricKey]; q.Period != q3.Period || q.State != summaryWritten || q.Requirement.Required {
+		t.Errorf("October %s = %+v, want Q3 written, not required", q3.MetricKey, q)
+	}
 	if st := by["security_training"]; st.Standing.Status != "G" || st.Requirement.Reason != "Below 100% ("+st.Standing.Display+")" {
 		t.Errorf("security_training = %+v, want Green below 100%%", st)
 	}

@@ -64,7 +64,8 @@ type RecordSummary struct {
 // rule's comparison period (Sep). BestStatus is the cell's best status
 // (BestStatus of its rule and the tenant's scale); GapOf no longer reads it,
 // since a cell short of 100% at its best status needs its gap stated like
-// any other (spec §4.1).
+// any other (spec §4.1). Noun is a ratio's record noun (epics) for when
+// Records is not given and the misses come from the cell's parts.
 type GapInput struct {
 	Metric        domain.Metric
 	Cell          CellFacts
@@ -73,6 +74,7 @@ type GapInput struct {
 	Downtime      *Downtime
 	FromValue     bool
 	Records       *RecordSummary
+	Noun          string
 	ComparedLabel string
 	BestStatus    string
 }
@@ -166,7 +168,11 @@ func idealGap(g Gap, in GapInput, kind string, label func(string) string) Gap {
 		case hasComponents(in.Cell.Components, num, den):
 			denominator = in.Cell.Components[den]
 			short := denominator - in.Cell.Components[num]
-			head += fmt.Sprintf(" · %s of %s missed", trimmed(short, 2), trimmed(denominator, 2))
+			noun := ""
+			if in.Noun != "" {
+				noun = " " + in.Noun
+			}
+			head += fmt.Sprintf(" · %s of %s%s missed", trimmed(short, 2), trimmed(denominator, 2), noun)
 		}
 		if denominator > 0 {
 			g.Detail = joinDetail(g.Detail, "each miss costs "+trimmed(100/denominator, g.Decimals+1)+" pts")

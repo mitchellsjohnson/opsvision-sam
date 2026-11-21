@@ -16,9 +16,10 @@ import { primaryButton, secondaryButton } from '../admin/formUi'
 import { defaultStatusScale } from '../scorecard/charts/chartTheme'
 import { SpokenChip } from '../scorecard/report/ReportStatusList'
 import { versionInForce } from '../scorecard/viewRequest'
+import { requiredFor } from './rcaState'
 import { noteDate } from './rcaText'
 import { reminderText, standingLine } from './summaryReminder'
-import { useWhyCard } from './WhyCardProvider'
+import { useWhyCard, useWhyCardAnnounce } from './WhyCardProvider'
 
 type ListState = Exclude<SummaryListState, 'optional'>
 
@@ -125,10 +126,10 @@ interface Pin {
 
 const NO_PINS: ReadonlyMap<string, Pin> = new Map()
 
-function MissingTag({ isAdmin }: { isAdmin: boolean }) {
+function MissingTag({ isAdmin, neededFor }: { isAdmin: boolean; neededFor?: string }) {
   return isAdmin ? (
     <span className="inline-flex whitespace-nowrap rounded border border-status-r px-1.5 text-[11px] font-semibold leading-4 text-status-r">
-      Exec summary needed
+      {neededFor ? `Needed for ${neededFor}` : 'Exec summary needed'}
     </span>
   ) : (
     <span className="inline-flex whitespace-nowrap rounded border border-dashed border-ink/40 px-1.5 text-[11px] font-semibold leading-4 text-ink/70">
@@ -137,8 +138,14 @@ function MissingTag({ isAdmin }: { isAdmin: boolean }) {
   )
 }
 
-function SummaryCell({ s, isAdmin }: { s: MetricSummary; isAdmin: boolean }) {
-  if (s.state === 'missing') return <MissingTag isAdmin={isAdmin} />
+/** Why the row's summary is required: the reason, the month a coarse period was required for, or not at all. */
+function reasonText(s: MetricSummary, neededFor: string | undefined): string {
+  if (s.requirement === 'required') return s.requirementReason ?? ''
+  return neededFor ? `Required for ${neededFor}` : 'Not required (100%)'
+}
+
+function SummaryCell({ s, isAdmin, neededFor }: { s: MetricSummary; isAdmin: boolean; neededFor?: string }) {
+  if (s.state === 'missing' || (neededFor && !s.text)) return <MissingTag isAdmin={isAdmin} neededFor={neededFor} />
   if (!s.text) return <span className="text-ink/70">None</span>
   const byline = [s.authorName, s.updatedAt ? noteDate(s.updatedAt) : '', s.linksTotal > 0 ? `${s.linksTotal} link${s.linksTotal === 1 ? '' : 's'}` : '']
     .filter(Boolean)
@@ -211,13 +218,15 @@ export function ExecSummariesPage() {
   const scale = me.data?.tenant?.statusScale?.length ? me.data.tenant.statusScale : defaultStatusScale()
   const statusLabel = (key: string) => scale.find((s) => s.key === key)?.label || key
   const why = useWhyCard()
+  const announce = useWhyCardAnnounce()
   const phone = useSyncExternalStore(subscribePhone, phoneSnapshot, () => false)
   const headingRef = useRef<HTMLHeadingElement>(null)
   const filterId = useId()
 
   const [filter, setFilter] = useState('')
-  const [copied, setCopied] = useState(false)
-  const [announcement, setAnnouncement] = useState('')
+  const [copied, setCopied] = useState<'' | 'copied' | 'failed'>('')
+  const [noCompany, setNoCompany] = useState(false)
+  const neededOf = (s: MetricSummary) => requiredFor(s, month, fy)
   const pinKey = `${month}|${listState}`
   const [pinState, setPinState] = useState<{ key: string; pins: Map<string, Pin> }>({ key: pinKey, pins: new Map() })
   const pins = pinState.key === pinKey ? pinState.pins : NO_PINS
@@ -267,12 +276,15 @@ export function ExecSummariesPage() {
       })
       return { key: pinKey, pins: next }
     })
-    setAnnouncement(saved ? `Exec summary saved for ${s.metricName}` : `Exec summary deleted for ${s.metricName}`)
+    // The card's own live region, so the save is announced once, naming the metric.
+    announce(saved ? `Exec summary saved for ${s.metricName}` : `Exec summary deleted for ${s.metricName}`)
   }
 
   const openCard = (s: MetricSummary, anchor: HTMLElement) => {
-    if (!company) return
-    setAnnouncement('')
+    if (!company) {
+      setNoCompany(units.isSuccess)
+      return
+    }
     why.open({ metric: s.metricKey, subject: company.id, period: s.period }, anchor, {
       title: `${company.name} · ${s.metricName}`,
       showValue: true,
@@ -304,7 +316,7 @@ export function ExecSummariesPage() {
   })
 
   const setState = (s: ListState) => {
-    setCopied(false)
+    setCopied('')
     setParams((prev) => {
       const next = new URLSearchParams(prev)
       if (s === 'missing') next.delete('state')
@@ -313,11 +325,16 @@ export function ExecSummariesPage() {
     })
   }
 
+  const missingItems = missingList.data?.pages.flatMap((p) => p.items) ?? []
   const copyReminder = async () => {
-    const items = missingList.data?.pages.flatMap((p) => p.items) ?? []
+    if (missingItems.length === 0) return
     const url = `${window.location.origin}/scorecards/${scorecardId}/exec-summaries?${new URLSearchParams({ period: month })}`
-    await navigator.clipboard.writeText(reminderText(items, url, monthLabel, statusLabel))
-    setCopied(true)
+    try {
+      await navigator.clipboard.writeText(reminderText(missingItems, url, monthLabel, statusLabel))
+      setCopied('copied')
+    } catch {
+      setCopied('failed')
+    }
   }
 
   const total = counts ? counts.missing + counts.stale + counts.written + counts.optional : 0
@@ -386,13 +403,13 @@ export function ExecSummariesPage() {
               <ThisMonth s={s} scale={scale} worst={false} />
               <span className="text-ink/80">
                 {' · '}
-                {s.requirement === 'optional' ? 'Not required (100%)' : s.requirementReason}
+                {reasonText(s, neededOf(s))}
               </span>
             </p>
             {worstLine(s) && <p className="text-xs leading-4 text-ink/70 break-words">{worstLine(s)}</p>}
             <p className="mt-1 text-xs leading-4 text-ink/70 break-words">{attributionText(s)}</p>
             <div className="mt-2 text-sm">
-              <SummaryCell s={s} isAdmin={isAdmin} />
+              <SummaryCell s={s} isAdmin={isAdmin} neededFor={neededOf(s)} />
             </div>
             {action(s, 'mt-3 h-10 w-full')}
           </li>
@@ -443,12 +460,10 @@ export function ExecSummariesPage() {
                   <td className="border-b border-ink/10 px-3 py-2.5">
                     <ThisMonth s={s} scale={scale} />
                   </td>
-                  <td className="border-b border-ink/10 px-3 py-2.5 break-words">
-                    {s.requirement === 'optional' ? 'Not required (100%)' : (s.requirementReason ?? '')}
-                  </td>
+                  <td className="border-b border-ink/10 px-3 py-2.5 break-words">{reasonText(s, neededOf(s))}</td>
                   <td className="border-b border-ink/10 px-3 py-2.5 text-xs leading-4 break-words">{attributionText(s)}</td>
                   <td className="border-b border-ink/10 px-3 py-2.5">
-                    <SummaryCell s={s} isAdmin={isAdmin} />
+                    <SummaryCell s={s} isAdmin={isAdmin} neededFor={neededOf(s)} />
                   </td>
                   <td className="border-b border-ink/10 px-3 py-2 text-right">{action(s, 'h-7 py-0 text-xs')}</td>
                 </tr>
@@ -505,13 +520,17 @@ export function ExecSummariesPage() {
               />
             </div>
             <div className="ml-auto flex items-center gap-2">
-              <p role="status" className="text-xs text-ink/70">
-                {copied ? 'Reminder copied' : ''}
+              <p role="status" className={clsx('text-xs', copied === 'failed' ? 'text-status-r' : 'text-ink/70')}>
+                {copied === 'copied'
+                  ? 'Reminder copied'
+                  : copied === 'failed'
+                    ? 'Couldn’t copy the reminder: the browser did not allow it.'
+                    : ''}
               </p>
               <button
                 type="button"
                 className={clsx(secondaryButton, 'inline-flex h-9 items-center gap-1.5')}
-                disabled={!missingList.data}
+                disabled={missingItems.length === 0}
                 onClick={() => void copyReminder()}
               >
                 <Copy aria-hidden="true" className="size-4" />
@@ -522,10 +541,12 @@ export function ExecSummariesPage() {
         </>
       )}
 
+      {noCompany && (
+        <p role="alert" className="mt-3 text-sm text-status-r">
+          No exec summary can be written: the organization has no single top-level unit.
+        </p>
+      )}
       {body}
-      <p role="status" className="sr-only">
-        {announcement}
-      </p>
     </div>
   )
 }

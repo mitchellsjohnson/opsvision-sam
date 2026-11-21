@@ -53,6 +53,18 @@ describe('WhyButton: exec summary states on company-standing surfaces', () => {
     expect(tag.className).toContain('text-ink/70')
   })
 
+  it('says which month needs a coarse summary instead of Exec summary needed, when the month shown is not gated', () => {
+    const { button } = renderButton({ summary: { state: 'missing', canEdit: true, neededFor: 'Jun 2026' } })
+    expect(button?.textContent).toBe('Why?Needed for Jun 2026')
+    expect(button?.getAttribute('aria-label')).toBe('Why is Uptime 99.06% in Oct 2026? Exec summary needed for Jun 2026')
+    expect(screen.queryByText('Exec summary needed')).toBeNull()
+  })
+
+  it('keeps compact cells from saying Needed for a month that is not gated', () => {
+    const { button } = renderButton({ compact: true, summary: { state: 'missing', canEdit: true, neededFor: 'Jun 2026' } })
+    expect(button?.textContent).toBe('Why')
+  })
+
   it('shows a missing tag even when the cell has no attribution of its own', () => {
     const { button } = renderButton({ attribution: false, summary: { state: 'missing', canEdit: false } })
     expect(button?.textContent).toBe('Why?No exec summary yet')

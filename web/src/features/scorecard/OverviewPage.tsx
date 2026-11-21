@@ -9,7 +9,7 @@ import type { components } from '../../api/schema'
 import { lastMonth, monthLabel, monthsOf, parent, parsePeriod, periodLabel, type Grain, type Period } from '../../lib/period'
 import { StatusChip } from '../../ui/status'
 import { usePeriodState } from '../../shell/usePeriodState'
-import { attributionAvailable, summaryDisplay } from '../rca/rcaState'
+import { attributionAvailable, neededFor, summaryDisplay } from '../rca/rcaState'
 import { WhyButton } from '../rca/WhyButton'
 import { useWhyCard } from '../rca/WhyCardProvider'
 import { NeedsAttention, type AttentionMeta } from './AttentionCard'
@@ -310,15 +310,17 @@ export function OverviewPage() {
     if (!companyScope) return undefined
     return m.scope ? m.cell?.summary : m.isItems ? listedState(listedByMetric.get(m.key)) : undefined
   }
+  /** A coarse metric's counted period that another month's publication needs: `Jun 2026`. */
+  const neededOf = (m: MetricStanding) => neededFor(m.status?.counted.period ?? '', period.period, fy)
   const displayOf = (m: MetricStanding) => {
     if (!companyScope) return null
-    return m.scope && m.cell ? summaryDisplay(m.cell, role) : stateDisplay(summaryOf(m), role)
+    return m.scope && m.cell ? summaryDisplay(m.cell, role, neededOf(m)) : stateDisplay(summaryOf(m), role, neededOf(m))
   }
   /** Opens the metric's Why card for a period (the counted one by default): the company's at company scope, else the scope's. */
   const openWhy = (m: MetricStanding, el: HTMLElement, periodKey = m.status?.counted.period ?? period.period) => {
     const subject = m.scope?.subjectId ?? (companyScope ? company?.id : period.scope)
     if (!subject) return
-    const title = companyScope ? `${company?.name ?? m.scope?.subjectName ?? companyName} · ${m.head.metricName}` : undefined
+    const title = companyScope ? `${m.scope?.subjectName ?? company?.name ?? companyName} · ${m.head.metricName}` : undefined
     why.open({ metric: m.head.metricKey, subject, period: periodKey }, el, title ? { title } : undefined)
   }
 
@@ -338,7 +340,8 @@ export function OverviewPage() {
       coarse,
     })
     const listedSummary = scope ? undefined : summaryOf(m)
-    return listedSummary ? { ...row, summary: listedSummary } : row
+    const needed = neededOf(m)
+    return { ...row, ...(listedSummary && { summary: listedSummary }), ...(needed && { neededFor: needed }) }
   })
 
   const ribbonLabel =

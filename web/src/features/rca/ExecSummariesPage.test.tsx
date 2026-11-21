@@ -1,7 +1,8 @@
 import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { http, HttpResponse } from 'msw'
 import { useLocation } from 'react-router'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { axe } from 'vitest-axe'
 import { App } from '../../App'
 import type { MetricSummary } from '../../api/queries'
@@ -14,7 +15,7 @@ import {
   trainingMissing,
   uptimeMissing,
 } from '../../test/reportFixtures'
-import { companyUnitsHandler, server, state } from '../../test/server'
+import { API, companyUnitsHandler, server, state } from '../../test/server'
 import { renderApp } from '../../test/utils'
 import { viewHandlers } from '../../test/viewFixtures'
 import { reminderText } from './summaryReminder'
@@ -184,6 +185,73 @@ describe('ExecSummariesPage', () => {
     const row = rowOf('Security training completion')
     expect(row.textContent).toContain('Two teams finished after the deadline.')
     expect(document.activeElement).toBe(within(row).getByRole('button', { name: 'Edit exec summary for Security training completion' }))
+  })
+
+  it('announces a save once, in one live region', async () => {
+    renderPage()
+    await table()
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: 'Write exec summary for Security training completion' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Acme Demo · Security training completion' })
+    await user.click(await within(dialog).findByRole('button', { name: 'Write exec summary' }))
+    const box = await within(dialog).findByRole('textbox', { name: 'Exec summary for Security training completion, Oct 2026' })
+    fireEvent.change(box, { target: { value: 'Two teams finished after the deadline.' } })
+    await user.click(within(dialog).getByRole('button', { name: 'Save' }))
+    await screen.findByText('Exec summary saved for Security training completion')
+    const saying = screen.getAllByRole('status', { hidden: true }).filter((s) => /saved/.test(s.textContent ?? ''))
+    expect(saying.map((s) => s.textContent)).toEqual(['Exec summary saved for Security training completion'])
+  })
+
+  it('shows a coarse metric’s counted period, required in the month that closed it, as needed for that month', async () => {
+    const a11y: MetricSummary = {
+      ...defectOptional,
+      metricKey: 'a11y_pct',
+      metricName: 'Accessibility compliance',
+      period: '2026-H1',
+      standing: { display: '82%', status: 'G', headline: '18 pts short of 100%' },
+    }
+    renderPage(`${ROUTE}&state=all`, [...ROWS, a11y])
+    await table()
+    const cells = [...rowOf('Accessibility compliance').querySelectorAll('td')].map((td) => td.textContent)
+    expect(cells[1]).toBe('Required for Jun 2026')
+    expect(cells[3]).toBe('Needed for Jun 2026')
+    expect(screen.queryAllByText('Not required (100%)')).toHaveLength(1)
+  })
+
+  it('Copy reminder is unavailable with nothing needed, and says so when the clipboard refuses', async () => {
+    const { unmount } = renderPage(ROUTE, [uptime, defectOptional])
+    await screen.findByText(/Every exec summary for Oct 2026 is written/)
+    expect((screen.getByRole('button', { name: 'Copy reminder' }) as HTMLButtonElement).disabled).toBe(true)
+    unmount()
+
+    renderPage()
+    await table()
+    const user = userEvent.setup()
+    const refuse = vi.spyOn(navigator.clipboard, 'writeText').mockRejectedValue(new Error('denied'))
+    await user.click(screen.getByRole('button', { name: 'Copy reminder' }))
+    expect(await screen.findByText('Couldn’t copy the reminder: the browser did not allow it.')).toBeTruthy()
+    expect(screen.queryByText('Reminder copied')).toBeNull()
+    refuse.mockRestore()
+  })
+
+  it('Write explains itself when the organization has no single top-level unit', async () => {
+    server.use(
+      ...viewHandlers(),
+      summaryListHandler('sc-main', { summaries: ROWS }),
+      http.get(`${API}/v1/org/units`, () =>
+        HttpResponse.json({
+          units: [
+            { id: 'a', name: 'Unit A', levelId: 'l1', parentId: '', sourceKeys: [] },
+            { id: 'b', name: 'Unit B', levelId: 'l1', parentId: '', sourceKeys: [] },
+          ],
+        }),
+      ),
+    )
+    renderApp(<App />, { route: ROUTE })
+    await table()
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Write exec summary for Service uptime' }))
+    expect((await screen.findByRole('alert')).textContent).toBe('No exec summary can be written: the organization has no single top-level unit.')
+    expect(screen.queryByRole('dialog')).toBeNull()
   })
 
   it('opens the card named by ?why= on load', async () => {

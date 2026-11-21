@@ -27,13 +27,14 @@ export function renderApp(
   {
     route = '/',
     auth = testAuth(),
-  }: { route?: string | { pathname: string; search?: string; state?: unknown }; auth?: AuthState } = {},
+    client = newQueryClient(),
+  }: { route?: string | { pathname: string; search?: string; state?: unknown }; auth?: AuthState; client?: QueryClient } = {},
 ) {
   // A data router (as in the app) so useBlocker works; one splat route renders the UI.
   const router = createMemoryRouter([{ path: '*', element: ui }], { initialEntries: [route] })
   return render(
     <AuthContext.Provider value={auth}>
-      <QueryClientProvider client={newQueryClient()}>
+      <QueryClientProvider client={client}>
         <RouterProvider router={router} />
       </QueryClientProvider>
     </AuthContext.Provider>,

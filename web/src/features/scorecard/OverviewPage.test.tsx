@@ -418,6 +418,25 @@ describe('OverviewPage', () => {
       expect(cards[2]!.textContent).toContain('Due by Jan 2027')
     })
 
+    it('in a month that closes no half, a missing H1 summary says the month it is needed for, not Exec summary needed', async () => {
+      server.use(
+        http.get(`${API}/v1/scorecards/sc-main/versions`, () => HttpResponse.json({ versions: a11yVersions })),
+        ...viewHandlers({
+          respond: (u) => HttpResponse.json(withRca(addHalves(buildView(u.searchParams)), { a11y_pct: { '2026-H1': { state: 'missing' } } })),
+        }),
+      )
+      renderApp(<App />, { route: ROUTE })
+      await screen.findByRole('heading', { name: 'Overview', level: 1 })
+      const tile = await waitFor(() => metricTile('Accessibility compliance'))
+      const why = within(tile.querySelector<HTMLElement>('[data-tile-why]')!).getByRole('button')
+      expect(why.textContent).toBe('Why?Needed for Jun 2026')
+      expect(why.getAttribute('aria-label')).toBe('Why is Accessibility compliance 82% in H1 FY2026? Exec summary needed for Jun 2026')
+      const board = screen.getByRole('grid', { name: '12-month status' })
+      const current = within(board).getByRole('button', { name: /^Accessibility compliance, Oct 2026: 82%, Green; exec summary needed for Jun 2026\.$/ })
+      expect(current.textContent).toContain('Needed for Jun 2026')
+      expect(current.textContent).not.toContain('Exec summary needed')
+    })
+
     it('full screen names the half it compares with as the tile does (vs H2 FY25)', async () => {
       server.use(
         http.get(`${API}/v1/scorecards/sc-main/versions`, () => HttpResponse.json({ versions: a11yVersions })),
@@ -1005,6 +1024,28 @@ describe('Why? and exec summary states', () => {
     const why = within(tileWhy('On-time delivery')!).getByRole('button')
     expect(why.textContent).toBe('Why?')
     expect(why.getAttribute('aria-label')).toBe('Why is Unit A 70.0% in Oct 2026?')
+  })
+
+  it('a viewer who reads only one unit gets that unit’s card, titled with its name, not the company’s', async () => {
+    state.role = 'viewer'
+    server.use(
+      http.get(`${API}/v1/org/units`, () =>
+        HttpResponse.json({
+          units: [
+            { id: 'root', name: 'Example Co', levelId: 'l0', parentId: '', sourceKeys: [] },
+            ...orgUnits.map((u) => ({ ...u, parentId: 'root' })),
+          ],
+        }),
+      ),
+    )
+    renderRca(null, (view) => {
+      view.rows = view.rows.filter((r) => r.subjectId !== 'root' && r.subjectId !== 'unit-b')
+    })
+    await screen.findByRole('heading', { name: 'Overview', level: 1 })
+    const why = within(tileWhy('On-time delivery')!).getByRole('button')
+    await userEvent.setup().click(why)
+    const dialog = await screen.findByRole('dialog')
+    expect(document.getElementById(dialog.getAttribute('aria-labelledby') ?? '')?.textContent).toBe('Unit A · On-time delivery')
   })
 
   it('a perfect tile shows nothing', async () => {

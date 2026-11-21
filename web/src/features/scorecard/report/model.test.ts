@@ -25,6 +25,7 @@ import {
   metricFacts,
   metricValue,
   reportStatusLine,
+  showsSummary,
   summaryAttributionLine,
   type ReportModelInput,
 } from './model'
@@ -441,6 +442,16 @@ describe('buildReportModel: exec summaries', () => {
       attributionLine: '15.7 pts short of 100% · 6 of 38 items missed: DEL-101 · DEL-104',
       editedSincePublication: false,
     })
+  })
+
+  it('a coarse metric’s counted period, unwritten and required in the month that closed it, says that month', () => {
+    const counted = { ...defectOptional, period: '2026-H1', standing: { display: '82%', status: 'G', headline: '18 pts short of 100%' } }
+    const model = buildReportModel(live([counted]))
+    const defect = model.categories.flatMap((c) => c.metrics).find((m) => m.key === 'defect_rate')!
+    expect(defect.summary?.state).toBe('optional')
+    expect(defect.summary?.neededFor).toBe('Jun 2026')
+    expect(showsSummary(defect)).toBe(false)
+    expect(model.summariesMissing).toEqual([])
   })
 
   it('lists the live month’s missing summaries and counts the stale ones', () => {

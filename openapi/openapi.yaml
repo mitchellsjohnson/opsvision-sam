@@ -1043,7 +1043,10 @@ paths:
         whether the month needs an exec summary (`requirement`) and its
         state (`missing`, `stale`, `written`, `optional`). Sorted missing,
         stale, written, optional, then status, then category and metric
-        order. `counts` covers every metric whatever `state`;
+        order. A quarterly, twice-yearly or yearly metric's row is its
+        counted period, the latest one the month has closed (`period`); only
+        the month that closes a period requires its summary.
+        `counts` covers every metric whatever `state`;
         `countsOnly=true` returns the counts only. Without `full`, each row
         carries an excerpt and the first 3 links; with `full`, the whole
         text and every link, 16 rows a page. `revision` reads the summaries

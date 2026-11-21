@@ -1,6 +1,8 @@
 import type PptxGenJS from 'pptxgenjs'
 import { letterUsesInkOnWhite } from '../../../ui/contrast'
+import type { components } from '../../../api/schema'
 import {
+  appendixValue,
   exportChart,
   goalSeries,
   healthParts,
@@ -12,7 +14,6 @@ import {
   SUMMARY_LINKS_SHOWN,
   SUMMARY_NOT_WRITTEN,
   showsSummary,
-  summaryChunks,
   tableCellText,
   tableChunks,
   type ExecSummaryNote,
@@ -21,6 +22,7 @@ import {
 } from './model'
 import { safeHref } from '../../rca/rcaText'
 
+type RcaLink = components['schemas']['RcaLink']
 type Slide = PptxGenJS.Slide
 type TableRow = PptxGenJS.TableRow
 type TextRun = PptxGenJS.TextProps
@@ -34,8 +36,16 @@ const CREAM = 'FFF6E5'
 /** The status-r token: a missing exec summary. */
 const RED = 'B42318'
 const FONT = 'Arial'
-/** The appendix lists this many summaries a slide. */
-const APPENDIX_ROWS = 6
+/** The appendix table: where it starts, its columns (Metric, Value, Exec summary, Links) and type sizes. */
+const APPENDIX_TOP = 1.3
+const APPENDIX_COLS = [1.8, 0.9, 3.6, 2.7]
+const APPENDIX_FONT = 9
+const APPENDIX_LINK_FONT = 8
+/** Table cell margins, inches: PowerPoint's Normal, set explicitly so the height estimate holds. */
+const CELL_PAD_X = 0.1
+const CELL_PAD_Y = 0.05
+/** The appendix rows' room on a slide, inches: from under the header row to above the footer rule at 5.15. */
+export const APPENDIX_ROOM = 5.05 - APPENDIX_TOP - ((APPENDIX_FONT * 1.2) / 72 + 2 * CELL_PAD_Y)
 const SERIES_COLORS = ['5B4BDB', '0E7490', '475569', 'A21CAF', '1D4ED8']
 /** Wrapped notes lines per slide before the notes continue on another. */
 const NOTES_LINES = 16
@@ -356,37 +366,103 @@ function tableSlides(pres: PptxGenJS, model: ReportModel) {
   })
 }
 
-/** `Exec summaries · Oct 2026`: every summary of the month, 6 a slide, every link listed. */
+/** One appendix table row: a summary, or the rest of its links when they outgrow a slide (`continued`). */
+export interface AppendixRow {
+  note: ExecSummaryNote
+  links: RcaLink[]
+  continued: boolean
+  /** The row's estimated height. */
+  inches: number
+}
+
+/** Line height, inches, of single-spaced text at `fontSize`. */
+function lineInches(fontSize: number): number {
+  return (fontSize * 1.2) / 72
+}
+
+/** The estimated height of an appendix row, from its tallest cell. */
+function appendixRowInches(note: ExecSummaryNote, links: RcaLink[], continued: boolean): number {
+  const [metricW, valueW, textW, linksW] = APPENDIX_COLS.map((w) => w - 2 * CELL_PAD_X)
+  const name = continued ? `${note.name} (continued)` : note.name
+  const text = continued ? '' : (note.text ?? SUMMARY_NOT_WRITTEN)
+  const lines9 = Math.max(
+    wrappedLines(name, APPENDIX_FONT, metricW!),
+    wrappedLines(appendixValue(note), APPENDIX_FONT, valueW!),
+    text ? wrappedLines(text, APPENDIX_FONT, textW!) : 1,
+  )
+  const linkInches = links.reduce((h, l) => h + wrappedLines(l.title, APPENDIX_LINK_FONT, linksW!) * lineInches(APPENDIX_LINK_FONT), 0)
+  return Math.max(lines9 * lineInches(APPENDIX_FONT), linkInches) + 2 * CELL_PAD_Y
+}
+
+/**
+ * The appendix's rows in slides, by estimated height (pptxgenjs cannot
+ * measure text and pages no table itself here): each slide's rows fit its
+ * room under the header row. A summary whose links alone outgrow a slide
+ * goes on in `continued` rows, so every link is listed, in order.
+ */
+export function appendixPages(notes: ExecSummaryNote[]): AppendixRow[][] {
+  const rows: AppendixRow[] = []
+  for (const note of notes) {
+    let links: RcaLink[] = []
+    let continued = false
+    const push = () => {
+      rows.push({ note, links, continued, inches: appendixRowInches(note, links, continued) })
+      links = []
+      continued = true
+    }
+    for (const l of note.links) {
+      if (links.length > 0 && appendixRowInches(note, [...links, l], continued) > APPENDIX_ROOM) push()
+      links.push(l)
+    }
+    push()
+  }
+  const pages: AppendixRow[][] = []
+  let used = Infinity
+  for (const r of rows) {
+    if (used + r.inches > APPENDIX_ROOM) {
+      pages.push([])
+      used = 0
+    }
+    pages[pages.length - 1]!.push(r)
+    used += r.inches
+  }
+  return pages
+}
+
+/** `Exec summaries · Oct 2026`: every summary of the month, as many a slide as fit, every link listed. */
 function appendixSlides(pres: PptxGenJS, model: ReportModel) {
   const title = `Exec summaries · ${model.monthLabel}`
   const head = (text: string): PptxGenJS.TableCell => ({ text, options: { bold: true, fill: { color: CREAM }, color: INK } })
-  summaryChunks(model, APPENDIX_ROWS).forEach((rows, i) => {
+  appendixPages(model.execSummaries).forEach((rows, i) => {
     const slide = pres.addSlide()
     header(slide, model, model.monthLabel, i === 0 ? title : `${title} (continued)`)
-    const body: TableRow[] = rows.map((n: ExecSummaryNote) => [
-      { text: n.name, options: { color: INK, bold: true } },
-      { text: [n.display, n.status].filter(Boolean).join(' '), options: { color: INK } },
-      n.text === null
-        ? { text: SUMMARY_NOT_WRITTEN, options: { color: RED, bold: true } }
-        : { text: n.text, options: { color: INK } },
-      n.links.length === 0
+    const body: TableRow[] = rows.map(({ note: n, links, continued }) => [
+      { text: continued ? `${n.name} (continued)` : n.name, options: { color: INK, bold: true } },
+      { text: appendixValue(n), options: { color: INK } },
+      continued
+        ? { text: '', options: { color: INK } }
+        : n.text === null
+          ? { text: SUMMARY_NOT_WRITTEN, options: { color: RED, bold: true } }
+          : { text: n.text, options: { color: INK } },
+      links.length === 0
         ? { text: '', options: { color: INK } }
         : {
-            text: n.links.map((l, k) => {
-              const run = linkRun(l.title, l.url, 8)
-              return { text: run.text ?? '', options: { ...run.options, breakLine: k < n.links.length - 1 } }
+            text: links.map((l, k) => {
+              const run = linkRun(l.title, l.url, APPENDIX_LINK_FONT)
+              return { text: run.text ?? '', options: { ...run.options, breakLine: k < links.length - 1 } }
             }),
             options: { color: INK },
           },
     ])
     slide.addTable([[head('Metric'), head('Value'), head('Exec summary'), head('Links')], ...body], {
       x: M,
-      y: 1.3,
+      y: APPENDIX_TOP,
       w: W - 2 * M,
-      colW: [1.8, 0.9, 3.6, 2.7],
+      colW: APPENDIX_COLS,
       fontFace: FONT,
-      fontSize: 9,
+      fontSize: APPENDIX_FONT,
       valign: 'top',
+      margin: [CELL_PAD_Y, CELL_PAD_X, CELL_PAD_Y, CELL_PAD_X],
       border: { type: 'solid', pt: 0.5, color: RULE },
       autoPage: false,
     })

@@ -66,7 +66,7 @@ const TAG = 'inline-block whitespace-nowrap rounded px-1.5 text-[11px] font-semi
  * value; on the line below, the missing tag (`Exec summary needed` for
  * admins, `No exec summary yet` for others) or, for admins, `Review`.
  */
-function summaryState(summary: BoardRow['summary'], isAdmin: boolean): { mark: ReactNode; tag: ReactNode } {
+function summaryState(summary: BoardRow['summary'], isAdmin: boolean, neededFor?: string): { mark: ReactNode; tag: ReactNode } {
   if (summaryWritten(summary)) {
     return {
       mark: <SummaryMark className="ml-1.5 inline-block align-middle" />,
@@ -84,7 +84,9 @@ function summaryState(summary: BoardRow['summary'], isAdmin: boolean): { mark: R
     tag: (
       <span aria-hidden="true" className="block">
         {isAdmin ? (
-          <span className={clsx(TAG, 'border border-status-r text-status-r')}>Exec summary needed</span>
+          <span className={clsx(TAG, 'border border-status-r text-status-r')}>
+            {neededFor ? `Needed for ${neededFor}` : 'Exec summary needed'}
+          </span>
         ) : (
           <span className={clsx(TAG, 'border border-dashed border-ink/40 text-ink/70')}>No exec summary yet</span>
         )}
@@ -445,7 +447,7 @@ export function StatusBoard({ label, columns, rows, scale, onOpen, onWhy, isAdmi
         </td>
       )
     }
-    const state = summaryState(row.summary, isAdmin)
+    const state = summaryState(row.summary, isAdmin, row.neededFor)
     return (
       <td className="py-1 pl-1 text-right align-middle">
         <button

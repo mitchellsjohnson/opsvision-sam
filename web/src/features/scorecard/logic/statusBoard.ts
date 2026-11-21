@@ -62,6 +62,16 @@ export interface BoardRow {
    * or for an item metric with no company row, from the metric-summaries list.
    */
   summary?: MetricSummaryState
+  /** A coarse metric's counted period that another month's publication needs (`Jun 2026`): `neededFor`. */
+  neededFor?: string
+}
+
+/** Past months keep a written summary's state; only the selected one is announced as needed. */
+function pastSummary(c: BoardCell): BoardCell {
+  if (c.summary?.state !== 'missing') return c
+  const out = { ...c }
+  delete out.summary
+  return out
 }
 
 /** Inline rows keep at least this much for the metric name; cells grow only once it is comfortable. */
@@ -252,10 +262,13 @@ export function buildBoardRow({
   if (last && selectedGrain && own !== 'month' && coarse.length > 0 && coarserGrain(own, selectedGrain)) {
     const coarsePoints = buildPoints(row, coarse, fyStart)
     const byEnd = new Map(coarse.map((c, i) => [endOrdinal(parsePeriod(c.period)!), i]))
-    const cells = columns.map((col): BoardCell => {
+    const cells = columns.map((col, ci): BoardCell => {
       const p = parsePeriod(col.period)
       const i = p ? byEnd.get(endOrdinal(p)) : undefined
-      if (i !== undefined) return cellAt(coarse[i]!, coarsePoints[i]!, col.key)
+      if (i !== undefined) {
+        const at = cellAt(coarse[i]!, coarsePoints[i]!, col.key)
+        return ci === columns.length - 1 ? at : pastSummary(at)
+      }
       const blank = { key: col.key, status: '', display: '', naReason: '', change: null }
       // A column that closes an older period than those asked for has no data; any other is not due.
       const closes = p !== null && endOrdinal(parent(lastMonth(p), own)) === endOrdinal(p)
@@ -283,7 +296,7 @@ export function buildBoardRow({
   }
 
   const points = buildPoints(row, columns, fyStart)
-  const cells = columns.map((col, i): BoardCell => cellAt(col, points[i]!))
+  const cells = columns.map((col, i): BoardCell => (i === columns.length - 1 ? cellAt(col, points[i]!) : pastSummary(cellAt(col, points[i]!))))
   const currentCell = scope && last ? scope.cells.find((c) => cellKey(c) === last.key) : undefined
   const current = cells[cells.length - 1]
   const worst = last ? worstAt(last.key, current) : undefined
@@ -306,15 +319,19 @@ export function listedState(s: MetricSummary | undefined): MetricSummaryState | 
 }
 
 /** `summaryDisplay` for a summary state with no cell of its own (an item metric's, from the list). */
-export function stateDisplay(summary: MetricSummaryState | undefined, role: Role): SummaryDisplay | null {
+export function stateDisplay(summary: MetricSummaryState | undefined, role: Role, neededFor?: string): SummaryDisplay | null {
   // summaryDisplay reads only `ytd` and `summary`.
-  return summary ? summaryDisplay({ ytd: false, summary } as Cell, role) : null
+  return summary ? summaryDisplay({ ytd: false, summary } as Cell, role, neededFor) : null
 }
 
-/** How a cell's name ends with its exec summary state: written (or stale), needed, or '' (none, optional). */
-export function summaryPhrase(summary: MetricSummaryState | undefined): string {
+/**
+ * How a cell's name ends with its exec summary state: written (or stale),
+ * needed (`needed for Jun 2026` with `neededFor`), or '' (none, optional).
+ */
+export function summaryPhrase(summary: MetricSummaryState | undefined, neededFor?: string): string {
   if (summary?.state === 'written' || summary?.state === 'stale') return 'exec summary written'
-  return summary?.state === 'missing' ? 'exec summary needed' : ''
+  if (summary?.state !== 'missing') return ''
+  return neededFor ? `exec summary needed for ${neededFor}` : 'exec summary needed'
 }
 
 /** A trailing value cell's name: `Webhooks, Oct 2026: 99.06%, Red.`, with any `extras` after semicolons. */
@@ -329,7 +346,7 @@ export function currentName(row: BoardRow, column: Column, statusLabel: (key: st
   if (named) return `${named}.`
   const at = row.counted ?? row.cells[row.cells.length - 1]
   const label = at?.kind === 'status' ? (statusLabel(at.status) ?? at.status) : undefined
-  return valueName(row.name, column, row.current || at?.display || '', label, [summaryPhrase(row.summary)])
+  return valueName(row.name, column, row.current || at?.display || '', label, [summaryPhrase(row.summary, row.neededFor)])
 }
 
 /**
@@ -347,7 +364,7 @@ export function rowName(row: BoardRow, column: Column, statusLabel: (key: string
     `worst ${row.worst.name}`,
     `${same} of ${total} ${label}`,
     ...(notReported > 0 ? [`${notReported} not reported`] : []),
-    summaryPhrase(row.summary),
+    summaryPhrase(row.summary, row.neededFor),
   ]
     .filter(Boolean)
     .join('; ')

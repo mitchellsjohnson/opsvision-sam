@@ -939,7 +939,9 @@ func TestPublishGateBlocksMissingSummaries(t *testing.T) {
 			t.Errorf("%s frozen = %+v, live %+v", it.MetricKey, s, it)
 		}
 	}
-	if required != len(demo.SummaryWritten)+len(demo.SummaryStale)+len(demo.SummaryMissing) || len(doc.Summaries) != required {
+	// Every required one, and the quarterly metric's Q3 summary, which October
+	// counts but does not require.
+	if required != len(demo.SummaryWritten)+len(demo.SummaryStale)+len(demo.SummaryMissing) || len(doc.Summaries) != required+1 {
 		t.Errorf("frozen %d summaries, %d required", len(doc.Summaries), required)
 	}
 	if up := frozen["uptime|2026-M10"]; len(up.Links) != 4 || len(up.Evidence) != 3 || up.Evidence[0].Key != "INC-2041" {
@@ -1070,8 +1072,10 @@ func TestPublishWithEverySummary(t *testing.T) {
 			optional++
 		}
 	}
-	if optional != len(all.Items) {
-		t.Errorf("%d optional summaries frozen, want %d", optional, len(all.Items))
+	// The optional ones written now, and the quarterly metric's Q3 summary,
+	// which October counts but does not require.
+	if optional != len(all.Items)+1 {
+		t.Errorf("%d optional summaries frozen, want %d", optional, len(all.Items)+1)
 	}
 }
 

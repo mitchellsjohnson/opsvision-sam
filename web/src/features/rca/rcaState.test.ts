@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { components } from '../../api/schema'
-import { attributionAvailable, bestStatus, summaryDisplay } from './rcaState'
+import { attributionAvailable, bestStatus, neededFor, requiredFor, summaryDisplay } from './rcaState'
 
 type Cell = components['schemas']['Cell']
 type ViewRow = components['schemas']['ViewRow']
@@ -106,6 +106,43 @@ describe('summaryDisplay', () => {
 
   it('reads an absent author and excerpt as empty', () => {
     expect(summaryDisplay(company({ state: 'written' }), 'viewer')).toEqual({ state: 'written', excerpt: '', author: '', canEdit: false })
+  })
+
+  it('says which month a missing coarse summary is needed for, when that is not the month shown', () => {
+    expect(summaryDisplay(company({ state: 'missing' }), 'admin', 'Jun 2026')).toEqual({ state: 'missing', canEdit: true, neededFor: 'Jun 2026' })
+    expect(summaryDisplay(company({ state: 'written', author: 'A' }), 'admin', 'Jun 2026')).toEqual({
+      state: 'written',
+      excerpt: '',
+      author: 'A',
+      canEdit: true,
+    })
+  })
+})
+
+describe('neededFor', () => {
+  it('is the closing month of a coarse period the shown month does not close', () => {
+    expect(neededFor('2026-H1', '2026-M10', 1)).toBe('Jun 2026')
+    expect(neededFor('2026-Q3', '2026-M10', 1)).toBe('Sep 2026')
+  })
+
+  it('is undefined for the month that closes it, a month slot, or a period that is not a month', () => {
+    expect(neededFor('2026-Q3', '2026-M09', 1)).toBeUndefined()
+    expect(neededFor('2026-M10', '2026-M10', 1)).toBeUndefined()
+    expect(neededFor('2026-H1', '2026-Q3', 1)).toBeUndefined()
+    expect(neededFor('', '2026-M10', 1)).toBeUndefined()
+  })
+})
+
+describe('requiredFor', () => {
+  const slot = { period: '2026-H1', requirement: 'optional' as const, standing: { display: '82%', status: 'Y', headline: '18 pts short of 100%' } }
+
+  it('names the closing month of a counted coarse slot that was required there', () => {
+    expect(requiredFor(slot, '2026-M10', 1)).toBe('Jun 2026')
+  })
+
+  it('is undefined when the slot is required now, or perfect', () => {
+    expect(requiredFor({ ...slot, requirement: 'required' }, '2026-M10', 1)).toBeUndefined()
+    expect(requiredFor({ ...slot, standing: { ...slot.standing, headline: '' } }, '2026-M10', 1)).toBeUndefined()
   })
 })
 

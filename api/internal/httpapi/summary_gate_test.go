@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"opsvision/internal/auth"
 	"opsvision/internal/demo"
 	"opsvision/internal/domain"
 	"opsvision/internal/engine"
@@ -14,6 +15,49 @@ import (
 	"opsvision/internal/rca"
 	"opsvision/internal/store"
 )
+
+// Summary states, as in the API.
+const (
+	summaryMissing  = string(SummaryStateMissing)
+	summaryWritten  = string(SummaryStateWritten)
+	summaryStale    = string(SummaryStateStale)
+	summaryOptional = string(SummaryStateOptional)
+)
+
+// GateItem is one metric of a month in the publish gate: the period of its
+// summary slot (the month, or a coarse metric's counted period), whether
+// that summary is required to publish the month, its state (stale judged as
+// the gate's cheap check does) and the company standing.
+type GateItem struct {
+	MetricKey, MetricName string
+	Period                period.Period
+	Requirement           rca.Requirement
+	State                 string
+	Standing              MetricSummaryStanding
+}
+
+// summaryGate judges every metric of the methodology in force for month at
+// company scope, as the publish gate does, through the explainer at its
+// cheapest: it derives nothing and reads no records.
+func (s *Server) summaryGate(ctx context.Context, tenant domain.Tenant, sc string, month period.Period) ([]GateItem, error) {
+	if month.Grain != period.Month {
+		return nil, badRequest("request validation failed", detail{Path: "period", Message: "must be a month"})
+	}
+	e, err := s.newExplainer(ctx, auth.Principal{Tenant: &tenant}, sc, []period.Period{month}, explainOpts{gate: true})
+	if err != nil {
+		return nil, err
+	}
+	its, err := e.items(month)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]GateItem, 0, len(its))
+	for _, it := range its {
+		out = append(out, GateItem{MetricKey: it.m.Key, MetricName: it.m.Name, Period: it.per, Requirement: it.facts.req,
+			Standing: it.facts.standing, State: string(it.state)})
+	}
+	return out, nil
+}
 
 // countingStore counts the reads of records and snapshots: what deriving
 // measures and loading incidents cost, and what the gate must not do.
@@ -147,8 +191,9 @@ func TestSummaryGate(t *testing.T) {
 		}
 	}
 	// A quarterly metric is judged at its quarter, and only the month that
-	// closes the quarter needs its summary.
-	if q := by["concepts_expected_value"]; q.Period != (period.Period{Grain: period.Quarter, FY: 2026, Index: 4}) || q.Requirement.Required {
+	// closes the quarter needs its summary: October shows Q3, the quarter it
+	// counts, and does not require it.
+	if q := by["concepts_expected_value"]; q.Period != (period.Period{Grain: period.Quarter, FY: 2026, Index: 3}) || q.Requirement.Required {
 		t.Errorf("quarterly in Oct = %+v", q)
 	}
 	sep := gateByMetric(demoGate(t, e, period.Period{Grain: period.Month, FY: 2026, Index: 9}))

@@ -14,7 +14,7 @@ import {
 } from '../../../test/reportFixtures'
 import { buildReportModel, type ReportModel, type ReportModelInput } from './model'
 import { buildPdf } from './pdf'
-import { buildPptx } from './pptx'
+import { APPENDIX_ROOM, appendixPages, buildPptx } from './pptx'
 
 function fixtureModel(edit?: (doc: ReturnType<typeof reportDocument>) => void, summaries?: ReportModelInput['summaries']): ReportModel {
   const doc = reportDocument({ view: reportView() })
@@ -315,7 +315,7 @@ describe('exec summaries in the PPTX', () => {
     expect(shapeTexts(onTimeSlide(slidesWithLinks(entries)).xml, 'Exec summary').at(-1)).toBe(' · + 9 more links in the appendix')
   })
 
-  it('appends `Exec summaries · Oct 2026`, 6 rows a slide, listing every link', async () => {
+  it('appends `Exec summaries · Oct 2026`, paged by height, listing every link with the value in the tenant’s label', async () => {
     const items = Array.from({ length: 7 }, (_, i) => ({
       ...onTimeWritten,
       metricKey: `m${i}`,
@@ -323,15 +323,40 @@ describe('exec summaries in the PPTX', () => {
     }))
     const deck = slidesWithLinks(storedZipEntries(await buildPptx(fixtureModel(undefined, { source: 'live', items }))))
     const appendix = deck.filter((s) => /<a:t>Exec summaries · Oct 2026( \(continued\))?<\/a:t>/.test(s.xml))
-    expect(appendix).toHaveLength(2)
+    expect(appendix.length).toBeGreaterThan(1)
     expect(appendix[0]!.xml).toMatch(/<a:t>Metric<\/a:t>[\s\S]*<a:t>Value<\/a:t>[\s\S]*<a:t>Exec summary<\/a:t>[\s\S]*<a:t>Links<\/a:t>/)
-    expect(appendix[0]!.xml.match(/<a:tr /g)).toHaveLength(7)
-    expect(appendix[1]!.xml.match(/<a:tr /g)).toHaveLength(2)
-    for (const s of appendix) {
-      const rows = (s.xml.match(/<a:tr /g)?.length ?? 1) - 1
-      expect(s.targets).toHaveLength(rows * 12)
-      expect(new Set(s.targets)).toEqual(new Set(onTimeLinks.map((l) => l.url)))
-    }
+    expect(appendix[0]!.xml).toContain('<a:t>84.3% Yellow</a:t>')
+    expect(appendix[0]!.xml).not.toContain('<a:t>84.3% Y</a:t>')
+    expect(appendix.flatMap((s) => s.targets)).toHaveLength(7 * 12)
+    for (const s of appendix) expect(new Set(s.targets)).toEqual(new Set(onTimeLinks.map((l) => l.url)))
+  })
+
+  it('fits 25-link summaries: every link is on an appendix slide and no slide runs past its room', async () => {
+    const many = Array.from({ length: 25 }, (_, k) => ({ title: `INC-${2000 + k}`, url: `https://tracker.example/browse/INC-${2000 + k}` }))
+    const items = Array.from({ length: 6 }, (_, i) => ({ ...onTimeWritten, metricKey: `m${i}`, metricName: `Metric ${i + 1}`, links: many, linksTotal: 25 }))
+    const model = fixtureModel(undefined, { source: 'live', items })
+    const pages = appendixPages(model.execSummaries)
+    for (const page of pages) expect(page.reduce((h, r) => h + r.inches, 0)).toBeLessThanOrEqual(APPENDIX_ROOM)
+    expect(pages.flat().flatMap((r) => r.links)).toEqual(items.flatMap((s) => s.links))
+
+    const deck = slidesWithLinks(storedZipEntries(await buildPptx(model)))
+    const appendix = deck.filter((s) => /<a:t>Exec summaries · Oct 2026( \(continued\))?<\/a:t>/.test(s.xml))
+    expect(appendix).toHaveLength(pages.length)
+    expect(appendix.flatMap((s) => s.targets)).toEqual(items.flatMap((s) => s.links.map((l) => l.url)))
+  })
+
+  it('splits one summary whose 25 long links outgrow a slide across continued rows, every link kept in order', () => {
+    const long = Array.from({ length: 25 }, (_, k) => ({
+      title: `Postmortem for the October checkout latency regression, part ${k + 1} of 25`,
+      url: `https://docs.example/postmortems/checkout-${k + 1}`,
+    }))
+    const model = fixtureModel(undefined, { source: 'live', items: [{ ...onTimeWritten, links: long, linksTotal: 25 }] })
+    const pages = appendixPages(model.execSummaries)
+    expect(pages.length).toBeGreaterThan(1)
+    for (const page of pages) expect(page.reduce((h, r) => h + r.inches, 0)).toBeLessThanOrEqual(APPENDIX_ROOM)
+    const rows = pages.flat()
+    expect(rows.map((r) => r.continued)).toEqual([false, ...rows.slice(1).map(() => true)])
+    expect(rows.flatMap((r) => r.links)).toEqual(long)
   })
 
   it('lists a missing summary in the appendix as not written yet', async () => {
@@ -366,6 +391,8 @@ describe('exec summaries in the PDF', () => {
     const strings = await pdfStrings(await buildPdf(fixtureModel(undefined, { source: 'live', items: [summary, trainingMissing] })))
     expect(strings.join(' ')).toContain('Two releases slipped a week')
     expect(strings).toContain('Exec summaries · Oct 2026')
+    expect(strings).toContain('On-time delivery · 84.3% Yellow')
+    expect(strings).not.toContain('On-time delivery · 84.3% Y')
     expect(strings).toContain('+ 11 more links in the appendix')
     for (const l of onTimeLinks) {
       expect(strings).toContain(l.title)

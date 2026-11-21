@@ -1,3 +1,4 @@
+import { QueryClient } from '@tanstack/react-query'
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
@@ -22,6 +23,7 @@ import {
   REPORT_SUMMARY,
   reportDocument,
   reportHandlers,
+  reportView,
   reportViewWithUptime,
   type ReportHandlerOptions,
 } from '../../test/reportFixtures'
@@ -634,6 +636,79 @@ describe('ReportPage: exec summaries and the publish gate', () => {
     expect(within(heading.closest('section')!).getByRole('link', { name: 'Security training completion' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Publish' }).getAttribute('aria-disabled')).toBe('true')
     expect(screen.getByText('Publishing needs 1 more exec summary.')).toBeTruthy()
+  })
+
+  it('a refusal’s list belongs to its month: Sep, with every summary written, shows its own state after Oct was refused', async () => {
+    const seen = newSeen()
+    const byMonth = (u: URL) => reportDocument({ view: reportView(u.pathname.split('/').at(-1)) })
+    server.use(
+      ...viewHandlers(),
+      ...reportHandlers({ seen, document: byMonth, summaries: writtenSummaries, publish: () => publishBlockedResponse([trainingMissing]) }),
+    )
+    // As in the app, Sep's list is still fresh when the Report comes back to it, so it is not read again.
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity, staleTime: 30_000 } } })
+    renderApp(
+      <>
+        <App />
+        <Probe />
+      </>,
+      { route: '/scorecards/sc-main/report?period=2026-M09', client },
+    )
+    const user = userEvent.setup()
+    const history = () => screen.getByRole('region', { name: 'Report history' })
+    await screen.findByRole('heading', { name: 'Needs attention', level: 2 })
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Publish' }).getAttribute('aria-disabled')).not.toBe('true'))
+
+    await user.click(within(history()).getByRole('link', { name: 'Oct 2026' }))
+    await waitFor(() => expect(location()).toContain('period=2026-M10'))
+    await screen.findByRole('heading', { name: 'Needs attention', level: 2 })
+    await user.click(screen.getByRole('button', { name: 'Publish' }))
+    expect(await screen.findByRole('heading', { name: '1 exec summary needed before Oct 2026 can be published' })).toBeTruthy()
+
+    await user.click(within(history()).getByRole('link', { name: 'Sep 2026' }))
+    await waitFor(() => expect(location()).toContain('period=2026-M09'))
+    await screen.findByRole('heading', { name: 'Needs attention', level: 2 })
+    expect(screen.queryByRole('heading', { name: /needed before/ })).toBeNull()
+    expect(screen.queryByText(/Publishing needs/)).toBeNull()
+    const publish = screen.getByRole('button', { name: 'Publish' })
+    expect(publish.getAttribute('aria-disabled')).not.toBe('true')
+    await user.click(publish)
+    await waitFor(() => expect(seen.publishes.map((u) => u.pathname.split('/').at(-2))).toEqual(['2026-M10', '2026-M09']))
+  })
+
+  it('republishing from a published revision is gated by the live month: the required block shows and Publish holds', async () => {
+    const seen = newSeen()
+    renderReport(ROUTE, {
+      seen,
+      document: () => reportDocument({ live: false, revision: 1 }),
+      months: publishedMonths,
+      revisionSummaries: { 1: [onTimeWritten] },
+      summaries: missingSummaries,
+    })
+    const heading = await screen.findByRole('heading', { name: blockName, level: 2 })
+    const publish = screen.getByRole('button', { name: 'Publish' })
+    expect(publish.getAttribute('aria-disabled')).toBe('true')
+    expect(publish.getAttribute('aria-describedby')).toContain(heading.id)
+    expect(screen.getByText('Publishing needs 3 more exec summaries.')).toBeTruthy()
+    await userEvent.setup().click(publish)
+    expect(seen.publishes).toHaveLength(0)
+  })
+
+  it('a 409 when republishing from a published revision shows the required block and moves focus to it', async () => {
+    renderReport(ROUTE, {
+      document: () => reportDocument({ live: false, revision: 1 }),
+      months: publishedMonths,
+      revisionSummaries: { 1: [onTimeWritten] },
+      summaries: writtenSummaries,
+      publish: () => publishBlockedResponse([trainingMissing]),
+    })
+    await screen.findByRole('heading', { name: 'Needs attention', level: 2 })
+    const publish = screen.getByRole('button', { name: 'Publish' })
+    await waitFor(() => expect(publish.getAttribute('aria-disabled')).not.toBe('true'))
+    await userEvent.setup().click(publish)
+    const heading = await screen.findByRole('heading', { name: '1 exec summary needed before Oct 2026 can be published' })
+    await waitFor(() => expect(document.activeElement).toBe(heading))
+    expect(screen.getByRole('button', { name: 'Publish' }).getAttribute('aria-disabled')).toBe('true')
   })
 
   it('a metric block shows the summary, its first 3 links with Show all, and the attribution line', async () => {

@@ -179,12 +179,17 @@ export interface WhyNameInput {
   periodLabel: string
 }
 
+/** `Exec summary needed`, or `Exec summary needed for Jun 2026` when another month's publication needs it. */
+export function neededText(neededFor: string | undefined): string {
+  return neededFor ? `Exec summary needed for ${neededFor}` : 'Exec summary needed'
+}
+
 /** The Why trigger's accessible name (spec §10.1); hints belong in `aria-description`. */
 export function whyName({ summary, subjectName, valueDisplay, periodLabel }: WhyNameInput): string {
   const subject = subjectName ? `${subjectName} ` : ''
   const question = `Why is ${subject}${valueDisplay} in ${periodLabel}?`
   if (!summary) return question
-  if (summary.state === 'missing') return `${question} ${summary.canEdit ? 'Exec summary needed' : 'No exec summary yet'}`
+  if (summary.state === 'missing') return `${question} ${summary.canEdit ? neededText(summary.neededFor) : 'No exec summary yet'}`
   const written = `Why ${subject}is ${valueDisplay} in ${periodLabel}: exec summary by ${summary.author}`
   return summary.state === 'stale' && summary.canEdit ? `${written}. Exec summary may be out of date` : written
 }

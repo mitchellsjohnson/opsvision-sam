@@ -170,6 +170,9 @@ func TestCompanyHeadline(t *testing.T) {
 		{"perfect", rca.SummaryInput{Metric: uptimeMetric, Company: company("100.00%", "G"), CompanyRule: uptimeMetric.Rule}, ""},
 		{"change rule", rca.SummaryInput{Metric: defectMetric, Company: &rca.CellFacts{Display: "22.8", Status: "R", Change: fp(-26)}, CompanyRule: defectMetric.Rule, ComparedLabel: "Sep"},
 			"26% worse than Sep · Green needs any improvement"},
+		{"ratio, with the record noun", rca.SummaryInput{Metric: epicsMetric, CompanyRule: epicsMetric.Rule, RecordNoun: "epics",
+			Company: &rca.CellFacts{Display: "79%", Status: "R", Components: map[string]float64{"epics_on_time": 26, "epics_committed": 33}}},
+			"21 pts short of 100% · 7 of 33 epics missed"},
 	}
 	for _, c := range cases {
 		c.in.Scale = scale
