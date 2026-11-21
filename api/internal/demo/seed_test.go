@@ -1228,95 +1228,162 @@ func cellOf(t *testing.T, in *engine.Input, metric, subject string, p period.Per
 	return engine.Cell{}
 }
 
-func TestSeedRCANotes(t *testing.T) {
+func summaryCells(p period.Period, keys ...string) []demo.SummaryCell {
+	out := make([]demo.SummaryCell, len(keys))
+	for i, k := range keys {
+		out[i] = demo.SummaryCell{MetricKey: k, Period: p}
+	}
+	return out
+}
+
+// TestSeedExecSummaries: every stored summary is a company summary by the
+// admin; October has the written, stale and missing sets of spec §14 pinned
+// to the metrics the seed makes required, and September has one for every
+// required metric. The gate's view of the same sets is checked in httpapi.
+func TestSeedExecSummaries(t *testing.T) {
 	st, id := seeded(t)
 	ctx := context.Background()
 	in := input(t, st, id)
 
-	if len(demo.RCAExamples) != 3 || len(demo.RCANeeded) != 2 {
-		t.Fatalf("examples %+v, needed %+v", demo.RCAExamples, demo.RCANeeded)
+	roots := in.Tree.RootsAt(oct2026)
+	if len(roots) != 1 {
+		t.Fatalf("roots in 2026-M10 = %v, want one company", roots)
 	}
-	notes := make([]domain.CellRCA, len(demo.RCAExamples))
-	for i, c := range demo.RCAExamples {
-		n, err := st.GetRCA(ctx, id, demo.ScorecardID, c.MetricKey, c.SubjectID, c.Period)
-		if err != nil {
-			t.Fatalf("note on %+v: %v", c, err)
-		}
-		if errs := n.Validate(); len(errs) != 0 {
-			t.Errorf("note on %+v invalid: %v", c, errs)
-		}
-		if n.Revision != 1 || n.Channel != domain.RCAChannelWeb || n.AuthorName == "" || n.CreatedAt.IsZero() {
-			t.Errorf("note on %+v = %+v", c, n)
-		}
-		notes[i] = n
+	root := roots[0]
+	all, err := st.ListRCAsRange(ctx, id, demo.ScorecardID, month2026(1), month2026(12))
+	if err != nil {
+		t.Fatal(err)
 	}
-	var authors []string
-	for _, n := range notes {
-		authors = append(authors, n.AuthorID)
-	}
-	if want := []string{"dev|admin", "dev|admin", "dev|contributor"}; !reflect.DeepEqual(authors, want) {
-		t.Errorf("authors = %v, want %v", authors, want)
+	stored := map[demo.SummaryCell]domain.CellRCA{}
+	for _, r := range all {
+		if r.SubjectID != root {
+			t.Errorf("%s %s is on %q, want only company summaries (%s)", r.MetricKey, r.Period, r.SubjectID, root)
+		}
+		if r.AuthorID != demo.Users[0].UserID || r.AuthorName != demo.Users[0].Name {
+			t.Errorf("%s %s by %s (%s), want only the admin", r.MetricKey, r.Period, r.AuthorID, r.AuthorName)
+		}
+		if r.Revision != 1 || r.Channel != domain.RCAChannelWeb || r.CreatedAt.IsZero() || r.Basis.Evidence == nil {
+			t.Errorf("%s %s = %+v", r.MetricKey, r.Period, r)
+		}
+		if errs := r.Validate(); len(errs) != 0 {
+			t.Errorf("%s %s invalid: %v", r.MetricKey, r.Period, errs)
+		}
+		stored[demo.SummaryCell{MetricKey: r.MetricKey, Period: r.Period}] = r
 	}
 
-	// Webhooks: written against the cell as it is.
-	wh := notes[0]
-	if wh.MetricKey != "uptime" || wh.SubjectID != "webhooks" || wh.Period != oct2026 {
-		t.Fatalf("RCAExamples[0] = %+v, want Webhooks uptime in 2026-M10", demo.RCAExamples[0])
+	wantWritten := summaryCells(oct2026, "epics_on_time", "concepts_on_budget", "weighted_defect_score", "uptime",
+		"postmortems_on_time", "customer_satisfaction", "open_source_risk_slo")
+	wantStale := summaryCells(oct2026, "spend_vs_plan")
+	wantMissing := summaryCells(oct2026, "support_backlog", "deployment_uptime", "security_training")
+	if !reflect.DeepEqual(demo.SummaryWritten, wantWritten) {
+		t.Errorf("SummaryWritten = %+v, want %+v", demo.SummaryWritten, wantWritten)
 	}
-	b := wh.Basis
-	if b.Display != "99.06%" || b.Status != "R" || b.ReportedMinutes == nil || *b.ReportedMinutes != 420 ||
-		!reflect.DeepEqual(b.Evidence, []string{"incident-tracker:INC-2041", "incident-tracker:INC-2047", "incident-tracker:INC-2049"}) {
-		t.Errorf("Webhooks basis = %+v", b)
+	if !reflect.DeepEqual(demo.SummaryStale, wantStale) {
+		t.Errorf("SummaryStale = %+v, want %+v", demo.SummaryStale, wantStale)
 	}
-	if c := cellOf(t, in, "uptime", "webhooks", oct2026); c.Display != b.Display || c.Status != b.Status ||
-		c.Components["seconds_down"] != 420*60 {
+	if !reflect.DeepEqual(demo.SummaryMissing, wantMissing) {
+		t.Errorf("SummaryMissing = %+v, want %+v", demo.SummaryMissing, wantMissing)
+	}
+	var october []demo.SummaryCell
+	for k := range stored {
+		if k.Period == oct2026 {
+			october = append(october, k)
+		}
+	}
+	if want := len(wantWritten) + len(wantStale); len(october) != want {
+		t.Errorf("October summaries = %+v, want %d", october, want)
+	}
+	for _, c := range slices.Concat(wantWritten, wantStale) {
+		if _, ok := stored[c]; !ok {
+			t.Errorf("no summary for %+v", c)
+		}
+	}
+	for _, c := range wantMissing {
+		if _, ok := stored[c]; ok {
+			t.Errorf("%+v has a summary; it is meant to be missing", c)
+		}
+	}
+
+	// Uptime: spec §14's text and four links, written against the company
+	// standing (the worst service), with no company downtime.
+	up := stored[demo.SummaryCell{MetricKey: "uptime", Period: oct2026}]
+	const upText = "Webhooks lost 7h to a queue saturation after the 3 Oct deploy (INC-2041) and an overlapping crash loop " +
+		"and DNS fault on 17 Oct; Analytics Ingest and Search had short incidents. 40m on Webhooks has no incident."
+	if up.Text != upText || len(up.Links) != 4 {
+		t.Errorf("uptime summary = %q with %d links", up.Text, len(up.Links))
+	}
+	if b := up.Basis; b.Display != "99.06%" || b.Status != "R" || b.ReportedMinutes != nil ||
+		!slices.Contains(b.Evidence, "subject:webhooks") || !slices.Contains(b.Evidence, "incident-tracker:INC-2041@Webhooks") {
+		t.Errorf("uptime basis = %+v", b)
+	}
+	if ep := stored[demo.SummaryCell{MetricKey: "epics_on_time", Period: oct2026}]; len(ep.Links) != 2 {
+		t.Errorf("epics summary has %d links, want 2", len(ep.Links))
+	}
+
+	// Spend vs plan: written when the company cell read lower, so it reads stale.
+	sp := stored[demo.SummaryCell{MetricKey: "spend_vs_plan", Period: oct2026}]
+	if c := cellOf(t, in, "spend_vs_plan", root, oct2026); sp.Basis.Display == "" || sp.Basis.Display == c.Display || sp.Basis.Status != c.Status {
+		t.Errorf("spend basis %s %s, company cell %s %s; want only the display to differ", sp.Basis.Display, sp.Basis.Status, c.Display, c.Status)
+	}
+
+	// September is publishable: a summary for every required metric, the
+	// quarterly one at the quarter that September closes.
+	q3 := period.Period{Grain: period.Quarter, FY: 2026, Index: 3}
+	wantSep := append(summaryCells(month2026(9), "epics_on_time", "concepts_on_budget", "spend_vs_plan"),
+		demo.SummaryCell{MetricKey: "concepts_expected_value", Period: q3})
+	wantSep = append(wantSep, summaryCells(month2026(9), "weighted_defect_score", "support_backlog", "uptime",
+		"deployment_uptime", "security_training", "customer_satisfaction", "open_source_risk_slo")...)
+	if !reflect.DeepEqual(demo.SummarySeptember, wantSep) {
+		t.Errorf("SummarySeptember = %+v, want %+v", demo.SummarySeptember, wantSep)
+	}
+	for _, c := range wantSep {
+		if _, ok := stored[c]; !ok {
+			t.Errorf("no summary for %+v", c)
+		}
+	}
+	if want := len(wantWritten) + len(wantStale) + len(wantSep); len(all) != want {
+		t.Errorf("fiscal 2026 summaries = %d, want %d", len(all), want)
+	}
+
+	// No per-cell note remains on any subject of any period.
+	for _, u := range in.Tree.UnitIDs() {
+		if u == root {
+			continue
+		}
+		if _, err := st.GetRCA(ctx, id, demo.ScorecardID, "epics_on_time", u, oct2026); !errors.Is(err, store.ErrNotFound) {
+			t.Errorf("epics_on_time on %s has a note: %v", u, err)
+		}
+	}
+	for _, s := range []string{"webhooks", "search"} {
+		if _, err := st.GetRCA(ctx, id, demo.ScorecardID, "uptime", s, oct2026); !errors.Is(err, store.ErrNotFound) {
+			t.Errorf("uptime on %s has a note: %v", s, err)
+		}
+	}
+
+	// Webhooks' October value stays as seeded.
+	if c := cellOf(t, in, "uptime", "webhooks", oct2026); c.Display != "99.06%" || c.Status != "R" || c.Components["seconds_down"] != 420*60 {
 		t.Errorf("Webhooks October = %s %s %v; no seeded value may move", c.Display, c.Status, c.Components)
 	}
+}
 
-	// Search: written when the value read 99.90%, so it reads stale.
-	se := notes[1]
-	if se.SubjectID != "search" || se.Basis.Display != "99.90%" || len(se.Basis.Evidence) != 0 {
-		t.Errorf("Search note = %+v", se)
-	}
-	if c := cellOf(t, in, "uptime", "search", oct2026); c.Display == se.Basis.Display {
-		t.Errorf("Search October = %s, want it to differ from the note's basis", c.Display)
-	}
-
-	// The Payments contributor's note on a product cell of epics on time
-	// that is not at its best, written against the cell as it is.
-	ep := demo.RCAExamples[2]
-	if ep.MetricKey != "epics_on_time" {
-		t.Fatalf("RCAExamples[2] = %+v", ep)
-	}
-	c := cellOf(t, in, ep.MetricKey, ep.SubjectID, ep.Period)
-	if c.Status == "" || c.Status == "G" {
-		t.Errorf("RCAExamples[2] cell = %s %q, want a status that is not the best", c.Display, c.Status)
-	}
-	if u, ok := in.Tree.Unit(ep.SubjectID); !ok || u.ParentID != "payments" {
-		t.Errorf("RCAExamples[2] subject %q is not a Payments product", ep.SubjectID)
-	}
-	if nb := notes[2].Basis; nb.Display != c.Display || nb.Status != c.Status || nb.ReportedMinutes != nil || nb.Evidence == nil {
-		t.Errorf("epics note basis = %+v, cell %s %s", nb, c.Display, c.Status)
-	}
-
-	// The needed cells have no note and are not at their best.
-	want := []demo.RCACell{
+// TestSeedAttributionExamples: the four October cells whose attribution the
+// demo shows, each short of its best.
+func TestSeedAttributionExamples(t *testing.T) {
+	st, id := seeded(t)
+	in := input(t, st, id)
+	want := []demo.AttributionCell{
+		{MetricKey: "uptime", SubjectID: "webhooks", Period: oct2026},
+		{MetricKey: "uptime", SubjectID: "search", Period: oct2026},
 		{MetricKey: "uptime", SubjectID: "analytics-ingest", Period: oct2026},
 		{MetricKey: "deployment_uptime", SubjectID: "dep-notify-multi", Period: oct2026},
 	}
-	if !reflect.DeepEqual(demo.RCANeeded, want) {
-		t.Errorf("RCANeeded = %+v, want %+v", demo.RCANeeded, want)
+	if !reflect.DeepEqual(demo.AttributionExamples, want) {
+		t.Errorf("AttributionExamples = %+v, want %+v", demo.AttributionExamples, want)
 	}
-	for _, n := range demo.RCANeeded {
-		if _, err := st.GetRCA(ctx, id, demo.ScorecardID, n.MetricKey, n.SubjectID, n.Period); !errors.Is(err, store.ErrNotFound) {
-			t.Errorf("%+v has a note: %v", n, err)
+	for _, a := range demo.AttributionExamples {
+		if c := cellOf(t, in, a.MetricKey, a.SubjectID, a.Period); c.Status == "" || c.Status == "G" {
+			t.Errorf("%+v = %s %q, want it short of its best", a, c.Display, c.Status)
 		}
-		if c := cellOf(t, in, n.MetricKey, n.SubjectID, n.Period); c.Status == "" || c.Status == "G" {
-			t.Errorf("%+v = %s %q, want it short of its best", n, c.Display, c.Status)
-		}
-	}
-	if all, _ := st.ListRCAs(ctx, id, demo.ScorecardID, oct2026); len(all) != 3 {
-		t.Errorf("October notes = %d, want 3", len(all))
 	}
 }
 

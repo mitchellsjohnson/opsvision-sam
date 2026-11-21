@@ -4,7 +4,8 @@
 // 2026-M10), and, from 2026-M07, synthetic tracker records (epics and
 // defects, with monthly snapshots) that the latest version derives four
 // measures from, plus one incident export (as of 2026-11-01) that explains
-// part of October's uptime and three RCA notes. The proof of concept, the
+// part of October's uptime, and company exec summaries for September and
+// October (October with some stale and missing). The proof of concept, the
 // web app's development, and the end-to-end tests all run against it.
 //
 // The data exercises every chart kind at realistic density: ratio, line
@@ -105,30 +106,78 @@ const NoCompanyTotal = "customer_satisfaction"
 // months (no incident needed a postmortem), so it charts as lettered results.
 const SparseMetric = "postmortems_on_time"
 
-// RCACell names one cell of the demo scorecard.
-type RCACell struct {
+// AttributionCell names one cell of the demo scorecard.
+type AttributionCell struct {
 	MetricKey string
 	SubjectID string
 	Period    period.Period
 }
 
-// RCAExamples are the cells of 2026-M10 with an RCA note: Webhooks' uptime,
-// written against the cell as it is; Search's uptime, written when it read
-// 99.90%, so it reads stale; and Checkout's epics on time (not at its best),
-// written by the Payments contributor. Treat it as read-only.
-var RCAExamples = []RCACell{
+// AttributionExamples are the cells of 2026-M10 whose incidents the demo
+// explains: Webhooks' uptime (three incidents, two overlapping, and minutes
+// no incident explains), Search's (a fan-out incident; the planned failover
+// is filtered out), Analytics Ingest's (incidents add up to more than it
+// reports) and a deployment's (an incident from September and one at partial
+// impact). Treat it as read-only.
+var AttributionExamples = []AttributionCell{
 	{MetricKey: "uptime", SubjectID: "webhooks", Period: latestMonth},
 	{MetricKey: "uptime", SubjectID: "search", Period: latestMonth},
-	{MetricKey: "epics_on_time", SubjectID: "checkout", Period: latestMonth},
-}
-
-// RCANeeded are two cells of 2026-M10 short of their best with no RCA note:
-// Analytics Ingest's uptime, whose incidents add up to more than it reports,
-// and a deployment with an incident that started in September and one at
-// partial impact. Treat it as read-only.
-var RCANeeded = []RCACell{
 	{MetricKey: "uptime", SubjectID: "analytics-ingest", Period: latestMonth},
 	{MetricKey: "deployment_uptime", SubjectID: "dep-notify-multi", Period: latestMonth},
+}
+
+// SummaryCell names one metric's exec summary: the metric and the period it
+// belongs to (the month, or a coarse metric's quarter, half or year).
+type SummaryCell struct {
+	MetricKey string
+	Period    period.Period
+}
+
+// The exec summaries of 2026-M10, each set in methodology order. Every
+// metric required that month is in exactly one set. Treat them as read-only.
+var (
+	// SummaryWritten have a summary written against the company standing as
+	// it is.
+	SummaryWritten = []SummaryCell{
+		{MetricKey: "epics_on_time", Period: latestMonth},
+		{MetricKey: "concepts_on_budget", Period: latestMonth},
+		{MetricKey: "weighted_defect_score", Period: latestMonth},
+		{MetricKey: "uptime", Period: latestMonth},
+		{MetricKey: "postmortems_on_time", Period: latestMonth},
+		{MetricKey: "customer_satisfaction", Period: latestMonth},
+		{MetricKey: "open_source_risk_slo", Period: latestMonth},
+	}
+	// SummaryStale has a summary written when the company value was lower,
+	// so it reads stale.
+	SummaryStale = []SummaryCell{
+		{MetricKey: "spend_vs_plan", Period: latestMonth},
+	}
+	// SummaryMissing are required and have no summary, so 2026-M10 cannot be
+	// published until an admin writes them. Security training is Green
+	// below 100%.
+	SummaryMissing = []SummaryCell{
+		{MetricKey: "support_backlog", Period: latestMonth},
+		{MetricKey: "deployment_uptime", Period: latestMonth},
+		{MetricKey: "security_training", Period: latestMonth},
+	}
+)
+
+// SummarySeptember are the summaries of every metric required to publish
+// 2026-M09, in methodology order, so the demo has a month that publishes.
+// The quarterly metric's belongs to the quarter September closes. Treat it
+// as read-only.
+var SummarySeptember = []SummaryCell{
+	{MetricKey: "epics_on_time", Period: month(2026, 9)},
+	{MetricKey: "concepts_on_budget", Period: month(2026, 9)},
+	{MetricKey: "spend_vs_plan", Period: month(2026, 9)},
+	{MetricKey: "concepts_expected_value", Period: period.Period{Grain: period.Quarter, FY: 2026, Index: 3}},
+	{MetricKey: "weighted_defect_score", Period: month(2026, 9)},
+	{MetricKey: "support_backlog", Period: month(2026, 9)},
+	{MetricKey: "uptime", Period: month(2026, 9)},
+	{MetricKey: "deployment_uptime", Period: month(2026, 9)},
+	{MetricKey: "security_training", Period: month(2026, 9)},
+	{MetricKey: "customer_satisfaction", Period: month(2026, 9)},
+	{MetricKey: "open_source_risk_slo", Period: month(2026, 9)},
 }
 
 // Fixed instants keep the seed reproducible.
@@ -210,7 +259,7 @@ func Seed(ctx context.Context, st store.Store, cal period.Calendar) (string, err
 	if err := seedIncidents(ctx, st, tenant); err != nil {
 		return "", err
 	}
-	if err := seedRCAs(ctx, st); err != nil {
+	if err := seedSummaries(ctx, st); err != nil {
 		return "", err
 	}
 	return TenantID, nil
@@ -1527,7 +1576,7 @@ func seedDerived(ctx context.Context, st store.Store, tenant domain.Tenant) erro
 	return nil
 }
 
-// --- incidents and RCA notes -----------------------------------------------
+// --- incidents and exec summaries ------------------------------------------
 
 // The incident tracker export the demo's incidents come from, read as of
 // 2026-11-01: September incidents for history and October's, which explain
@@ -1634,57 +1683,184 @@ func seedIncidents(ctx context.Context, st store.Store, tenant domain.Tenant) er
 	return nil
 }
 
-// seedRCAs stores the RCA notes on RCAExamples, each with the basis it was
-// written against: Webhooks' and Checkout's as the cells are now, Search's
-// from before its value and incidents changed.
-func seedRCAs(ctx context.Context, st store.Store) error {
-	admin, contributor := Users[0], Users[1]
-	webhooksDown := 420
-	at := func(d, h, m int) time.Time { return time.Date(2026, time.November, d, h, m, 0, 0, time.UTC) }
-	notes := []struct {
-		text   string
-		links  []domain.RCALink
-		author User
-		at     time.Time
-		basis  domain.RCABasis
-	}{
-		{
-			text: "A config deploy on Oct 3 saturated the delivery queue for four hours. On Oct 17 a retry worker crash loop " +
-				"overlapped a regional DNS failure. The queue now scales on its depth and the retry worker has a restart budget.",
-			links: []domain.RCALink{
-				{Title: "Delivery queue saturation postmortem", URL: "https://docs.example/postmortems/inc-2041"},
-				{Title: "Retry worker restart budget", URL: "https://tracker.example/browse/INC-2047"},
-			},
-			author: admin, at: at(3, 15, 20),
-			basis: domain.RCABasis{Display: "99.06%", Status: "R", ReportedMinutes: &webhooksDown,
-				Evidence: []string{incidentSource + ":INC-2041", incidentSource + ":INC-2047", incidentSource + ":INC-2049"}},
-		},
-		{
-			text:   "A slow index rebuild after the Oct 9 schema change raised query errors for about 45 minutes. Rebuilds now run off-peak.",
-			links:  []domain.RCALink{{Title: "Index rebuild runbook", URL: "https://docs.example/runbooks/search-index-rebuild"}},
-			author: admin, at: time.Date(2026, time.October, 30, 11, 5, 0, 0, time.UTC),
-			basis: domain.RCABasis{Display: "99.90%", Status: "Y", Evidence: []string{}},
-		},
-		{
-			text: "Three epics slipped when a partner changed its refund interface mid-month. The team re-planned them for " +
-				"November and now checks partner interface notices in sprint planning.",
-			links:  []domain.RCALink{{Title: "November re-plan", URL: "https://docs.example/plans/checkout-november"}},
-			author: contributor, at: at(4, 9, 40),
-			basis: domain.RCABasis{Display: "57%", Status: "R", Evidence: []string{}},
-		},
+// summary is one seeded exec summary and the company standing it was
+// written against.
+type summary struct {
+	SummaryCell
+	text  string
+	links []domain.RCALink
+	at    time.Time
+	basis domain.RCABasis
+}
+
+func basis(display, status string, evidence ...string) domain.RCABasis {
+	return domain.RCABasis{Display: display, Status: status, Evidence: append([]string{}, evidence...)}
+}
+
+// subjects are the evidence keys of the reporting subjects short of perfect.
+func subjects(ids ...string) []string {
+	out := make([]string, len(ids))
+	for i, id := range ids {
+		out[i] = "subject:" + id
 	}
-	for i, n := range notes {
-		c := RCAExamples[i]
-		note := domain.CellRCA{
-			ScorecardID: ScorecardID, MetricKey: c.MetricKey, SubjectID: c.SubjectID, Period: c.Period,
-			Text: n.text, Links: n.links, AuthorID: n.author.UserID, AuthorName: n.author.Name, Channel: domain.RCAChannelWeb,
-			CreatedAt: n.at, UpdatedAt: n.at, Basis: n.basis,
+	return out
+}
+
+// incidents are the evidence keys of the incident records counted.
+func incidents(externalIDs ...string) []string {
+	out := make([]string, len(externalIDs))
+	for i, id := range externalIDs {
+		out[i] = incidentSource + ":" + id
+	}
+	return out
+}
+
+func tracker(title, key string) domain.RCALink {
+	return domain.RCALink{Title: title, URL: "https://tracker.example/browse/" + key}
+}
+
+func docs(title, path string) domain.RCALink {
+	return domain.RCALink{Title: title, URL: "https://docs.example/" + path}
+}
+
+// octoberSummaries are SummaryWritten and SummaryStale, in that order. Each
+// basis is the company standing the summary was written against: the
+// written ones as it is now (the display, the status, the reporting
+// subjects short of perfect, then the incidents counted), the stale one from
+// before the late invoices raised spend.
+func octoberSummaries() []summary {
+	at := func(d, h, m int) time.Time { return time.Date(2026, time.November, d, h, m, 0, 0, time.UTC) }
+	oct := func(i int) SummaryCell { return SummaryWritten[i] }
+	return []summary{
+		{SummaryCell: oct(0), at: at(3, 9, 10),
+			text: "Seven of 33 epics slipped, four of them in Checkout and Billing after a partner changed its refund interface " +
+				"mid-month. They are re-planned for November.",
+			links: []domain.RCALink{docs("November re-plan", "plans/checkout-november"), tracker("Partner refund interface change", "PAY-1187")},
+			basis: basis("79%", "R", subjects("android-app", "billing", "checkout", "pipelines")...)},
+		{SummaryCell: oct(1), at: at(3, 9, 25),
+			text:  "Eight of 40 concepts ran over budget, mostly in Billing and Checkout, where vendor rates rose in September.",
+			links: []domain.RCALink{docs("Vendor rate review", "finance/vendor-rates-q4")},
+			basis: basis("80%", "Y", subjects("analytics", "android-app", "billing", "checkout", "ios-app")...)},
+		{SummaryCell: oct(2), at: at(3, 10, 5),
+			text: "The score rose 26% on a burst of high-priority defects in the mobile apps after their 6.2 release; " +
+				"Billing's backlog also grew.",
+			links: []domain.RCALink{tracker("Mobile 6.2 defect triage", "MOB-3302")},
+			basis: basis("22.81", "R", subjects("android-app", "billing", "ios-app")...)},
+		{SummaryCell: oct(3), at: at(3, 15, 20),
+			text: "Webhooks lost 7h to a queue saturation after the 3 Oct deploy (INC-2041) and an overlapping crash loop " +
+				"and DNS fault on 17 Oct; Analytics Ingest and Search had short incidents. 40m on Webhooks has no incident.",
+			links: []domain.RCALink{
+				docs("Delivery queue saturation postmortem", "postmortems/inc-2041"),
+				tracker("Retry worker crash loop", "INC-2047"),
+				tracker("Regional DNS fault", "INC-2049"),
+				tracker("Ingest backlog", "INC-2052"),
+			},
+			basis: basis("99.06%", "R", slices.Concat(
+				subjects("analytics-ingest", "billing-worker", "data-export", "email-relay", "feature-flags", "inventory-api", "ledger",
+					"mobile-backend", "scheduler", "search", "status-page", "web-app", "webhooks"),
+				incidents("INC-2041@Webhooks", "INC-2047@Webhooks", "INC-2049@Search", "INC-2049@Webhooks", "INC-2052@Analytics Ingest"))...)},
+		{SummaryCell: oct(4), at: at(4, 11, 0),
+			text:  "One of five postmortems was late: the 17 Oct crash loop review waited on the DNS provider's report. It closed on 4 Nov.",
+			links: []domain.RCALink{},
+			basis: basis("80%", "Y", subjects(companyID)...)},
+		{SummaryCell: oct(5), at: at(4, 14, 30),
+			text: "All four segments fell short; Data dropped to 74% while the export redesign was in beta. Survey comments " +
+				"point at slow exports.",
+			links: []domain.RCALink{docs("October survey comments", "research/csat-2026-10")},
+			basis: basis("74%", "R", subjects("data", "mobile", "payments", "platform")...)},
+		{SummaryCell: oct(6), at: at(5, 10, 15),
+			text:  "Eight of 41 open-source findings passed their fix date, most of them waiting on an upstream library release.",
+			links: []domain.RCALink{tracker("Upstream release tracking", "SEC-912")},
+			basis: basis("80%", "Y", subjects("data", "mobile", "payments", "platform")...)},
+		{SummaryCell: SummaryStale[0], at: at(2, 16, 45),
+			text: "Spend ran over plan on two vendor renewals in Checkout and Billing that landed early; both were " +
+				"budgeted for November.",
+			links: []domain.RCALink{docs("Vendor renewals", "finance/renewals-2026")},
+			basis: basis("102%", "G", subjects("android-app", "billing", "checkout", "identity", "messaging", "pipelines")...)},
+	}
+}
+
+// septemberSummaries are SummarySeptember, each written against the company
+// standing as it is now.
+func septemberSummaries() []summary {
+	at := func(d, h, m int) time.Time { return time.Date(2026, time.October, d, h, m, 0, 0, time.UTC) }
+	sep := func(i int) SummaryCell { return SummarySeptember[i] }
+	return []summary{
+		{SummaryCell: sep(0), at: at(2, 9, 0),
+			text:  "Nine in ten epics landed on time; the two that slipped, in Billing and Pipelines, waited on a shared schema migration.",
+			links: []domain.RCALink{tracker("Shared schema migration", "PLAT-2210")},
+			basis: basis("90%", "G", subjects("billing", "pipelines")...)},
+		{SummaryCell: sep(1), at: at(2, 9, 20),
+			text:  "Ten of 46 concepts ran over budget as vendor rates rose mid-quarter; rates are now locked through year end.",
+			links: []domain.RCALink{docs("Vendor rate review", "finance/vendor-rates-q4")},
+			basis: basis("78%", "R", subjects("android-app", "billing", "checkout", "ios-app", "messaging", "pipelines")...)},
+		{SummaryCell: sep(2), at: at(2, 9, 40),
+			text:  "Spend ran 10% over plan because October hardware orders were placed in September to hold their pricing.",
+			links: []domain.RCALink{docs("Hardware order timing", "finance/hardware-2026-09")},
+			basis: basis("110%", "G", subjects("android-app", "billing", "checkout", "ios-app", "messaging", "pipelines")...)},
+		{SummaryCell: sep(3), at: at(2, 10, 0),
+			text: "Thirteen of 78 concepts fell short of their expected value in Q3, most of them early bets in Billing and " +
+				"Checkout that are being re-scoped.",
+			links: []domain.RCALink{docs("Q3 concept review", "plans/concepts-2026-q3")},
+			basis: basis("83%", "Y", subjects("analytics", "android-app", "billing", "checkout", "messaging", "pipelines")...)},
+		{SummaryCell: sep(4), at: at(2, 10, 30),
+			text:  "The score worsened 27% as older defects in Billing and Checkout were re-triaged to a higher priority.",
+			links: []domain.RCALink{},
+			basis: basis("18.10", "R", subjects("analytics", "billing", "checkout", "messaging", "pipelines")...)},
+		{SummaryCell: sep(5), at: at(2, 11, 0),
+			text:  "The weighted backlog reached 647 after the billing statement change raised ticket volume; two more agents joined in late September.",
+			links: []domain.RCALink{docs("Statement change support plan", "support/statement-change")},
+			basis: basis("647", "R", subjects("android-app", "billing", "checkout", "ios-app", "messaging", "pipelines")...)},
+		{SummaryCell: sep(6), at: at(5, 14, 0),
+			text: "Short incidents across services; the longest was on Notifications (INC-1996). Webhooks and Public API also had " +
+				"brief incidents. Reporting was lowest at 99.90%.",
+			links: []domain.RCALink{
+				tracker("Notifications incident", "INC-1996"),
+				tracker("Webhooks incident", "INC-2003"),
+				tracker("Public API incident", "INC-2008"),
+			},
+			basis: basis("99.90%", "G", slices.Concat(
+				subjects("admin-console", "analytics-ingest", "audit-log", "billing-worker", "data-export", "email-relay",
+					"inventory-api", "media-cdn", "notifications", "public-api", "reporting", "scheduler", "search", "status-page",
+					"web-app", "webhooks"),
+				incidents("INC-1996@Notifications", "INC-2003@Webhooks", "INC-2008@Public API"))...)},
+		{SummaryCell: sep(7), at: at(5, 14, 30),
+			text: "Search Indexer cluster A-1 lost about six hours to a failed node replacement; Notification Relay's outage " +
+				"began late on 30 Sep (INC-2036) and ran into October.",
+			links: []domain.RCALink{tracker("Notification Relay outage", "INC-2036")},
+			basis: basis("99.09%", "R", slices.Concat(
+				subjects("dep-identity-west", "dep-ledger", "dep-notify-multi", "dep-portal-cloud", "dep-search-a1"),
+				incidents("INC-2036@Notification Relay - Multi-Region Active"))...)},
+		{SummaryCell: sep(8), at: at(6, 9, 0),
+			text:  "45 of 419 people missed the September deadline, mostly new joiners; reminders now go out two weeks ahead.",
+			links: []domain.RCALink{},
+			basis: basis("89%", "Y", subjects("analytics", "android-app", "billing", "checkout", "ios-app", "messaging", "pipelines")...)},
+		{SummaryCell: sep(9), at: at(6, 9, 30),
+			text:  "All four segments fell short; Mobile was lowest at 76% on reviews about sign-in after the 6.1 release.",
+			links: []domain.RCALink{docs("September survey comments", "research/csat-2026-09")},
+			basis: basis("76%", "Y", subjects("data", "mobile", "payments", "platform")...)},
+		{SummaryCell: sep(10), at: at(6, 10, 0),
+			text:  "Eight of 44 findings in Data, Mobile and Payments missed their fix date while waiting on upstream releases.",
+			links: []domain.RCALink{tracker("Upstream release tracking", "SEC-912")},
+			basis: basis("82%", "Y", subjects("data", "mobile", "payments")...)},
+	}
+}
+
+// seedSummaries stores the company exec summaries of 2026-M09 and 2026-M10,
+// all by the admin, each with the basis it was written against.
+func seedSummaries(ctx context.Context, st store.Store) error {
+	admin := Users[0]
+	for _, s := range slices.Concat(septemberSummaries(), octoberSummaries()) {
+		r := domain.CellRCA{
+			ScorecardID: ScorecardID, MetricKey: s.MetricKey, SubjectID: companyID, Period: s.Period,
+			Text: s.text, Links: s.links, AuthorID: admin.UserID, AuthorName: admin.Name, Channel: domain.RCAChannelWeb,
+			CreatedAt: s.at, UpdatedAt: s.at, Basis: s.basis,
 		}
-		if errs := note.Validate(); len(errs) != 0 {
-			return fmt.Errorf("demo: RCA note on %s/%s: %v", c.MetricKey, c.SubjectID, errs)
+		if errs := r.Validate(); len(errs) != 0 {
+			return fmt.Errorf("demo: exec summary of %s %s: %v", s.MetricKey, s.Period, errs)
 		}
-		if _, err := st.PutRCA(ctx, TenantID, note.Normalize(), 0); err != nil {
-			return fmt.Errorf("demo: RCA note on %s/%s: %w", c.MetricKey, c.SubjectID, err)
+		if _, err := st.PutRCA(ctx, TenantID, r.Normalize(), 0); err != nil {
+			return fmt.Errorf("demo: exec summary of %s %s: %w", s.MetricKey, s.Period, err)
 		}
 	}
 	return nil
