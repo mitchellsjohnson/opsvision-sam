@@ -47,20 +47,21 @@ func TestToolSetIsReadOnlyAndExcludesPrivatePaths(t *testing.T) {
 	}
 }
 
-func TestToolSetReadsRCAsAndNeverDraftsThem(t *testing.T) {
+func TestToolSetReadsSummariesAndNeverDraftsThem(t *testing.T) {
 	catalog := []mcp.Tool{
-		tool("get_cell_rca", "GET", "/scorecards/{sc}/rca"),
-		tool("put_cell_rca", "PUT", "/scorecards/{sc}/rca"),
-		tool("delete_cell_rca", "DELETE", "/scorecards/{sc}/rca"),
-		tool("list_cell_rcas", "GET", "/scorecards/{sc}/rcas"),
-		tool("draft_cell_rca", "POST", "/scorecards/{sc}/rca/draft"),
-		tool("get_cell_rca_draft", "GET", "/scorecards/{sc}/rca/draft/{id}"),
+		tool("get_cell_attribution", "GET", "/scorecards/{sc}/attribution"),
+		tool("list_metric_summaries", "GET", "/scorecards/{sc}/metric-summaries"),
+		tool("get_metric_summary", "GET", "/scorecards/{sc}/metric-summaries/{metric}/{period}"),
+		tool("put_metric_summary", "PUT", "/scorecards/{sc}/metric-summaries/{metric}/{period}"),
+		tool("delete_metric_summary", "DELETE", "/scorecards/{sc}/metric-summaries/{metric}/{period}"),
+		tool("draft_metric_summary", "POST", "/scorecards/{sc}/metric-summaries/{metric}/{period}/draft"),
+		tool("get_metric_summary_draft", "GET", "/scorecards/{sc}/metric-summaries/{metric}/{period}/draft/{id}"),
 	}
 	var names []string
 	for _, tl := range ToolSet(catalog) {
 		names = append(names, tl.Name)
 	}
-	if want := []string{"get_cell_rca", "list_cell_rcas"}; !slices.Equal(names, want) {
+	if want := []string{"get_cell_attribution", "list_metric_summaries", "get_metric_summary"}; !slices.Equal(names, want) {
 		t.Fatalf("ToolSet = %v, want %v", names, want)
 	}
 }

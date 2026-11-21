@@ -11,33 +11,37 @@ import (
 	"opsvision/internal/period"
 )
 
-// RCA note limits.
+// Exec summary limits. MaxRCAEvidence bounds the basis's evidence keys, which
+// are stored with the summary and in its audit entries.
 const (
 	MaxRCATextRunes   = 280
-	MaxRCALinks       = 5
+	MaxRCALinks       = 25
 	MaxRCATitleRunes  = 80
 	MaxRCAURLBytes    = 2048
-	MaxRCALinkBytes   = 4096
+	MaxRCALinkBytes   = 16384
+	MaxRCAEvidence    = 200
 	rcaHTTPSScheme    = "https"
 	rcaHTTPSPrefixLen = len("https://")
 )
 
-// RCA note channels for CellRCA.Channel.
+// Exec summary channels for CellRCA.Channel.
 const (
 	RCAChannelWeb = "web"
 	RCAChannelAPI = "api"
 	RCAChannelMCP = "mcp"
 )
 
-// RCALink is one link on an RCA note: plain-text title and an https URL.
+// RCALink is one link on an exec summary: plain-text title and an https URL.
 type RCALink struct {
 	Title string `json:"title"`
 	URL   string `json:"url"`
 }
 
-// RCABasis is what a note was written against, to tell when it goes stale:
-// the displayed value, the status, the sorted "source:externalId" of the
-// incidents counted, and the reported downtime in whole minutes.
+// RCABasis is what a summary was written against, to tell when it goes
+// stale: the company standing's displayed value and status, the evidence
+// ("subject:{id}" of the reporting subjects with a gap, sorted, then the
+// sorted "source:externalId" of the incidents counted; at most
+// MaxRCAEvidence), and the reported downtime in whole minutes.
 type RCABasis struct {
 	Display         string   `json:"display"`
 	Status          string   `json:"status"`
@@ -45,7 +49,8 @@ type RCABasis struct {
 	ReportedMinutes *int     `json:"reportedMinutes,omitempty"`
 }
 
-// CellRCA is the human write-up for one cell (metric × subject × period).
+// CellRCA is the stored shape of an exec summary: one metric's write-up for
+// one period, kept on the company root unit (SubjectID).
 type CellRCA struct {
 	ScorecardID string        `json:"scorecardId"`
 	MetricKey   string        `json:"metricKey"`
@@ -62,7 +67,7 @@ type CellRCA struct {
 	Basis       RCABasis      `json:"basis"`
 }
 
-// RCAChannel maps a principal's channel to a note's: a browser session ("")
+// RCAChannel maps a principal's channel to a summary's: a browser session ("")
 // is web, an access token is api, and MCP is mcp.
 func RCAChannel(principalChannel string) string {
 	switch principalChannel {
@@ -103,15 +108,16 @@ func lowerScheme(u string) string {
 	return u
 }
 
-// Validate returns every problem with the note's text and links, with the
+// Validate returns every problem with the summary's text and links, with the
 // message shown under the field, or nil. Paths are text, links,
-// links[0].title and links[0].url. It judges the note as Normalize stores it.
+// links[0].title and links[0].url. It judges the summary as Normalize stores
+// it.
 func (r CellRCA) Validate() []ValidationError {
 	v := &validator{}
 	text := NormalizeRCAText(r.Text)
 	switch {
 	case text == "":
-		v.add("text", "Write what caused the gap")
+		v.add("text", "Write what drove this metric this month")
 	case utf8.RuneCountInString(text) > MaxRCATextRunes:
 		v.add("text", "Write up to 280 characters")
 	case strings.ContainsFunc(text, isControl):
@@ -119,7 +125,7 @@ func (r CellRCA) Validate() []ValidationError {
 	}
 
 	if len(r.Links) > MaxRCALinks {
-		v.add("links", "Up to 5 links")
+		v.add("links", "Up to 25 links")
 	}
 	total := 0
 	seen := map[string]bool{}
@@ -147,7 +153,7 @@ func (r CellRCA) Validate() []ValidationError {
 		}
 	}
 	if total > MaxRCALinkBytes {
-		v.add("links", "These links are too long together; shorten or remove one")
+		v.add("links", "These links are too long together; shorten or remove some")
 	}
 	if len(v.errs) == 0 {
 		return nil

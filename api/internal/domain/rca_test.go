@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -37,8 +38,8 @@ func TestCellRCAValidateText(t *testing.T) {
 	cases := []struct {
 		name, text, want string
 	}{
-		{"only newlines", "\n\n\n", "Write what caused the gap"},
-		{"only spaces and tabs", " \t  ", "Write what caused the gap"},
+		{"only newlines", "\n\n\n", "Write what drove this metric this month"},
+		{"only spaces and tabs", " \t  ", "Write what drove this metric this month"},
 		{"281 code points", strings.Repeat("é", 281), "Write up to 280 characters"},
 		{"control character", "caused by\x00 a bad deploy", "Use plain text without control characters"},
 	}
@@ -143,13 +144,20 @@ func TestCellRCAValidateLinks(t *testing.T) {
 			t.Fatalf("got %v", errs)
 		}
 	})
-	t.Run("six links", func(t *testing.T) {
+	t.Run("25 links are fine, 26 are not", func(t *testing.T) {
+		if MaxRCALinks != 25 || MaxRCALinkBytes != 16384 {
+			t.Fatalf("limits = %d links, %d bytes; want 25 and 16384", MaxRCALinks, MaxRCALinkBytes)
+		}
 		r := validRCA()
 		r.Links = nil
-		for i := range 6 {
-			r.Links = append(r.Links, RCALink{Title: "T", URL: "https://docs.example/" + string(rune('a'+i))})
+		for i := range 25 {
+			r.Links = append(r.Links, RCALink{Title: fmt.Sprintf("INC-%d", 2000+i), URL: fmt.Sprintf("https://tracker.example/browse/INC-%d", 2000+i)})
 		}
-		if got := messageAt(r.Validate(), "links"); got != "Up to 5 links" {
+		if errs := r.Validate(); errs != nil {
+			t.Fatalf("25 links rejected: %v", errs)
+		}
+		r.Links = append(r.Links, RCALink{Title: "One more", URL: "https://tracker.example/browse/INC-3000"})
+		if got := messageAt(r.Validate(), "links"); got != "Up to 25 links" {
 			t.Fatalf("message %q", got)
 		}
 	})
@@ -164,15 +172,24 @@ func TestCellRCAValidateLinks(t *testing.T) {
 			t.Fatalf("the first copy should be fine: %v", errs)
 		}
 	})
-	t.Run("five links over 4 KB together", func(t *testing.T) {
+	t.Run("links over 16 KB together", func(t *testing.T) {
 		r := validRCA()
 		r.Links = nil
-		for i := range 5 {
-			r.Links = append(r.Links, RCALink{Title: "T", URL: "https://docs.example/" + string(rune('a'+i)) + strings.Repeat("x", 900)})
+		for i := range 25 {
+			r.Links = append(r.Links, RCALink{Title: "T", URL: fmt.Sprintf("https://docs.example/%02d/", i) + strings.Repeat("x", 640)})
 		}
 		errs := r.Validate()
-		if got := messageAt(errs, "links"); got != "These links are too long together; shorten or remove one" {
+		if got := messageAt(errs, "links"); got != "These links are too long together; shorten or remove some" {
 			t.Fatalf("message %q (%v)", got, errs)
+		}
+		// At exactly 16,384 bytes of titles and URLs they fit.
+		r.Links = nil
+		for i := range 16 {
+			u := fmt.Sprintf("https://docs.example/%02d/", i)
+			r.Links = append(r.Links, RCALink{Title: "T", URL: u + strings.Repeat("y", 1024-1-len(u))})
+		}
+		if errs := r.Validate(); errs != nil {
+			t.Fatalf("16,384 bytes rejected: %v", errs)
 		}
 	})
 	t.Run("uppercase scheme accepted and stored lowercase", func(t *testing.T) {
@@ -211,5 +228,11 @@ func TestRCAChannel(t *testing.T) {
 		if got := RCAChannel(in); got != want {
 			t.Errorf("RCAChannel(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestRCAEvidenceLimit(t *testing.T) {
+	if MaxRCAEvidence != 200 {
+		t.Fatalf("MaxRCAEvidence = %d, want 200", MaxRCAEvidence)
 	}
 }

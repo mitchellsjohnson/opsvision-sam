@@ -2,12 +2,12 @@ package httpapi
 
 import "context"
 
-// DraftCellRca is not implemented yet.
-func (s *Server) DraftCellRca(context.Context, DraftCellRcaRequestObject) (DraftCellRcaResponseObject, error) {
+// DraftMetricSummary is not implemented yet.
+func (s *Server) DraftMetricSummary(context.Context, DraftMetricSummaryRequestObject) (DraftMetricSummaryResponseObject, error) {
 	return nil, errNotImplemented
 }
 
-// GetCellRcaDraft is not implemented yet.
-func (s *Server) GetCellRcaDraft(context.Context, GetCellRcaDraftRequestObject) (GetCellRcaDraftResponseObject, error) {
+// GetMetricSummaryDraft is not implemented yet.
+func (s *Server) GetMetricSummaryDraft(context.Context, GetMetricSummaryDraftRequestObject) (GetMetricSummaryDraftResponseObject, error) {
 	return nil, errNotImplemented
 }

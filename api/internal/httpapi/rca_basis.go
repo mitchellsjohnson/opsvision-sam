@@ -5,9 +5,9 @@ import (
 	"log/slog"
 	"math"
 	"slices"
+	"strings"
 	"time"
 
-	"opsvision/internal/auth"
 	"opsvision/internal/domain"
 	"opsvision/internal/engine"
 	"opsvision/internal/period"
@@ -31,6 +31,49 @@ func (l incidentLinks) downtime(metric string) (linked bool, downMeasure string)
 		}
 	}
 	return linked, downMeasure
+}
+
+// compiledLink is an explain link with its where condition compiled.
+type compiledLink struct {
+	domain.ExplainLink
+	cond *records.Cond
+}
+
+// linksOf returns record type rt's explain links that name one of
+// metricKeys of scorecard sc (every metric when metricKeys is nil), with
+// their conditions compiled. A link whose condition no longer compiles is
+// skipped with a warning.
+func linksOf(tenantID, sc string, rt domain.RecordType, metricKeys []string) []compiledLink {
+	var out []compiledLink
+	for _, l := range rt.Explains {
+		if l.ScorecardID != sc || (metricKeys != nil && !slices.Contains(metricKeys, l.MetricKey)) {
+			continue
+		}
+		cond, err := records.CompileWhere(l.Where, rt)
+		if err != nil {
+			// Checked on save; a later edit of the type can still break it.
+			slog.Warn("httpapi: an explain link's condition does not compile", "tenant", tenantID, "recordType", rt.ID, "metric", l.MetricKey, "err", err)
+			continue
+		}
+		out = append(out, compiledLink{l, cond})
+	}
+	return out
+}
+
+// explainLinks reads the explain links of scorecard sc from the tenant's
+// record types, without their records.
+func (s *Server) explainLinks(ctx context.Context, tenantID, sc string) (incidentLinks, error) {
+	types, err := s.store.ListRecordTypes(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	out := incidentLinks{}
+	for _, rt := range types {
+		for _, l := range linksOf(tenantID, sc, rt, nil) {
+			out[l.MetricKey] = append(out[l.MetricKey], l.ExplainLink)
+		}
+	}
+	return out, nil
 }
 
 // loadIncidents returns the incidents of every record type whose explain
@@ -63,23 +106,9 @@ func (s *Server) incidentsFor(ctx context.Context, tenantID, sc string, metricKe
 	}
 	var res *records.Resolver
 	for _, rt := range types {
-		type link struct {
-			domain.ExplainLink
-			cond *records.Cond
-		}
-		var ls []link
-		for _, l := range rt.Explains {
-			if l.ScorecardID != sc || !slices.Contains(metricKeys, l.MetricKey) {
-				continue
-			}
-			cond, err := records.CompileWhere(l.Where, rt)
-			if err != nil {
-				// Checked on save; a later edit of the type can still break it.
-				slog.Warn("httpapi: an explain link's condition does not compile", "tenant", tenantID, "recordType", rt.ID, "metric", l.MetricKey, "err", err)
-				continue
-			}
-			ls = append(ls, link{l, cond})
-			links[l.MetricKey] = append(links[l.MetricKey], l)
+		ls := linksOf(tenantID, sc, rt, metricKeys)
+		for _, l := range ls {
+			links[l.MetricKey] = append(links[l.MetricKey], l.ExplainLink)
 		}
 		if len(ls) == 0 {
 			continue
@@ -142,76 +171,234 @@ func (s *Server) incidentsFor(ctx context.Context, tenantID, sc string, metricKe
 	return out, links, nil
 }
 
-// cellBasis is what a note on one cell is written against: the cell's
-// displayed value and status, the incidents counted in it (sorted
-// "source:externalId", over the leaves below a roll-up that p may read),
-// and, for a downtime metric, the reported downtime in whole minutes: the
-// link's down measure converted by its unit, else derived from the
-// displayed value.
-func (s *Server) cellBasis(ctx context.Context, p auth.Principal, sc, metric, subject string, per period.Period) (domain.RCABasis, error) {
-	in, err := s.loadInput(ctx, *p.Tenant, sc, fiscalYears(true, per))
+// summaryContext is what judging the metrics of one scorecard at company
+// scope needs beyond a computed view: the company root, how deep each level
+// sits, the subject nouns, the tenant's scale and the explain links.
+type summaryContext struct {
+	in        *engine.Input
+	root      string
+	levels    []domain.Level
+	depth     map[string]int
+	levelName map[string]string
+	kindName  map[string]string
+	scale     []domain.StatusLevel
+	links     incidentLinks
+}
+
+func (s *Server) newSummaryContext(ctx context.Context, tenant domain.Tenant, sc string, in *engine.Input, root string) (*summaryContext, error) {
+	levels, err := s.store.ListLevels(ctx, tenant.ID)
 	if err != nil {
-		return domain.RCABasis{}, err
+		return nil, err
 	}
-	v, ok := engine.VersionFor(in.Versions, per, in.Cal)
-	if !ok {
-		return domain.RCABasis{}, notFound("no methodology version is in force for " + per.String())
-	}
-	mi := slices.IndexFunc(v.Content.Metrics, func(m domain.Metric) bool { return m.Key == metric })
-	if mi < 0 {
-		return domain.RCABasis{}, notFound("metric " + metric + " is not in the methodology in force for " + per.String())
-	}
-	m := v.Content.Metrics[mi]
-	view, err := engine.Compute(in, engine.ViewRequest{
-		Periods: []period.Period{per}, SubjectIDs: []string{subject}, MetricKeys: []string{metric}, Structure: engine.StructureAsOf,
-	})
+	kinds, err := s.store.ListItemKinds(ctx, tenant.ID)
 	if err != nil {
-		return domain.RCABasis{}, err
+		return nil, err
 	}
-	var cell *engine.Cell
-	for _, r := range view.Rows {
-		if r.MetricKey == metric && r.SubjectID == subject && len(r.Cells) > 0 {
-			cell = &r.Cells[0]
+	links, err := s.explainLinks(ctx, tenant.ID, sc)
+	if err != nil {
+		return nil, err
+	}
+	c := &summaryContext{in: in, root: root, levels: levels, depth: map[string]int{}, levelName: map[string]string{}, kindName: map[string]string{},
+		scale: statusScale(tenant), links: links}
+	for _, l := range levels {
+		c.depth[l.ID], c.levelName[l.ID] = l.Depth, l.Name
+	}
+	for _, k := range kinds {
+		c.kindName[k.ID] = k.Name
+	}
+	return c, nil
+}
+
+// summaryFacts is one metric-month's company standing.
+type summaryFacts struct {
+	metric   domain.Metric
+	period   period.Period
+	in       rca.SummaryInput
+	req      rca.Requirement
+	standing MetricSummaryStanding
+	// subjects are the "subject:{id}" evidence keys of the reporting
+	// subjects short of perfect, sorted.
+	subjects []string
+	// reportedMinutes is the company cell's reported downtime, for a
+	// downtime metric with a company value.
+	reportedMinutes *int
+	// rowSubjects are the subjects the metric has rows for.
+	rowSubjects map[string]bool
+}
+
+// basis is the summary basis the facts give, with incident evidence keys
+// (sorted "source:externalId") after the subjects.
+func (f summaryFacts) basis(incidents []string) domain.RCABasis {
+	return domain.RCABasis{Display: f.standing.Display, Status: f.standing.Status,
+		Evidence: capEvidence(f.subjects, incidents), ReportedMinutes: f.reportedMinutes}
+}
+
+// facts judges metric m at company scope from the rows of a view (column
+// col holds the metric's period per). coarse and closes are as in
+// rca.SummaryInput.
+func (c *summaryContext) facts(v domain.MethodologyVersion, m domain.Metric, per period.Period, rows []engine.Row, col int, coarse, closes bool) summaryFacts {
+	in := rca.SummaryInput{Metric: m, CompanyRule: m.Rule, Scale: c.scale, Coarse: coarse, ClosesInMonth: closes, Noun: c.noun(m),
+		ComparedLabel: comparedLabel(c.in.Cal, m.Rule, per)}
+	var company *engine.Cell
+	rowSubjects := map[string]bool{}
+	for i := range rows {
+		r := &rows[i]
+		if r.MetricKey != m.Key || col >= len(r.Cells) {
+			continue
+		}
+		rowSubjects[r.SubjectID] = true
+		cell := r.Cells[col]
+		rule := m.Rule
+		if cell.Rule.Type != "" {
+			rule = cell.Rule
+		}
+		facts := rca.CellFacts{Display: cell.Display, Status: cell.Status, Value: cell.Value, Components: cell.Components, Change: cell.Change}
+		isItem := r.SubjectKind == engine.SubjectItem
+		if !isItem && r.SubjectID == c.root {
+			company = &r.Cells[col]
+			in.Company, in.CompanyRule = &facts, rule
+		}
+		d := -1
+		if u, ok := c.in.Tree.Unit(r.SubjectID); ok && !isItem {
+			if ld, ok := c.depth[u.LevelID]; ok {
+				d = ld
+			}
+		}
+		if rca.IsReportingSubject(m, c.levels, d, isItem) {
+			in.Reporting = append(in.Reporting, rca.SubjectFacts{ID: r.SubjectID, Name: r.SubjectName, Cell: facts, Rule: rule})
 		}
 	}
-	if cell == nil {
-		return domain.RCABasis{}, notFound(metric + " is not shown for " + subject + " in " + per.String())
+	f := summaryFacts{metric: m, period: per, in: in, req: rca.SummaryRequired(in), rowSubjects: rowSubjects}
+	f.standing.Display, f.standing.Status = rca.CompanyStanding(in)
+	f.standing.Headline = rca.CompanyHeadline(in)
+	f.subjects = []string{}
+	for _, id := range rca.SubjectsShort(in) {
+		f.subjects = append(f.subjects, "subject:"+id)
 	}
-	basis := domain.RCABasis{Display: cell.Display, Status: cell.Status, Evidence: []string{}}
+	slices.Sort(f.subjects)
+	if linked, downMeasure := c.links.downtime(m.Key); company != nil && company.Value != nil && (linked || engine.ChartKind(m) == "uptime") {
+		w := rca.PeriodWindow(c.in.Cal, per, time.UTC)
+		if mins, ok := reportedMinutes(v, m, *company, downMeasure, w.Minutes()); ok {
+			f.reportedMinutes = &mins
+		}
+	}
+	return f
+}
 
-	byMetric, links, err := s.incidentsFor(ctx, p.Tenant.ID, sc, []string{metric}, in)
-	if err != nil {
-		return domain.RCABasis{}, err
+// comparedLabel names what a change rule compares period per with: the
+// month before (Sep), the period before, last year's average or the
+// baseline. Empty for other rules.
+func comparedLabel(cal period.Calendar, rule domain.StatusRule, per period.Period) string {
+	if rule.Type != domain.RuleChange {
+		return ""
 	}
-	linked, downMeasure := links.downtime(metric)
+	switch rule.Compare {
+	case domain.ComparePriorPeriod:
+		prev := cal.Prev(per)
+		if per.Grain == period.Month {
+			return cal.Start(prev).Format("Jan")
+		}
+		return prev.String()
+	case domain.ComparePriorYearAverage:
+		return "last year's average"
+	case domain.CompareBaseline:
+		return "the baseline"
+	}
+	return ""
+}
+
+// noun is the noun of metric m's reporting subjects: its item kind's name,
+// or its deepest reported level's.
+func (c *summaryContext) noun(m domain.Metric) rca.NounForms {
+	depth, level := -1, ""
+	for _, s := range m.ReportedAt {
+		if s.Kind == domain.SubjectItemKind {
+			return rca.Nouns(c.kindName[s.ID], "item")
+		}
+		for _, l := range c.levels {
+			if l.ID == s.ID && l.Depth > depth {
+				depth, level = l.Depth, l.ID
+			}
+		}
+	}
+	return rca.Nouns(c.levelName[level], "unit")
+}
+
+// incidentEvidence is the sorted "source:externalId" of the incidents that
+// count in the facts' metric and period on the subjects the metric has rows
+// for: with a downtime link those with counted minutes, with list links
+// every one listed.
+func (s *Server) incidentEvidence(ctx context.Context, tenantID, sc string, in *engine.Input, f summaryFacts) ([]string, error) {
+	m, per := f.metric, f.period
+	byMetric, links, err := s.incidentsFor(ctx, tenantID, sc, []string{m.Key}, in)
+	if err != nil {
+		return nil, err
+	}
+	incs := byMetric[m.Key]
+	out := []string{}
+	if len(incs) == 0 {
+		return out, nil
+	}
+	linked, _ := links.downtime(m.Key)
 	w := rca.PeriodWindow(in.Cal, per, time.UTC)
-	if (linked || engine.ChartKind(m) == "uptime") && cell.Value != nil {
-		if mins, ok := reportedMinutes(v, m, *cell, downMeasure, w.Minutes()); ok {
-			basis.ReportedMinutes = &mins
-		}
-	}
-
-	if incs := byMetric[metric]; len(incs) > 0 {
-		acc := newAccess(p, in)
-		month, _ := lastMonth(in.Cal, per)
-		seen := map[string]bool{}
-		for _, id := range cellSubjects(in, subject, month, true) {
-			if len(incs[id]) == 0 || !acc.canRead(id, []string{metric}, month) {
+	seen := map[string]bool{}
+	for id := range f.rowSubjects {
+		for _, c := range rca.CountDowntime(w, w.Minutes(), 0, incs[id]).Items {
+			if linked && c.Minutes <= 0 {
 				continue
 			}
-			for _, c := range rca.CountDowntime(w, w.Minutes(), 0, incs[id]).Items {
-				if linked && c.Minutes <= 0 {
-					continue // a downtime link counts minutes; a list link lists
-				}
-				seen[c.Incident.Source+":"+c.Incident.ExternalID] = true
+			seen[c.Incident.Source+":"+c.Incident.ExternalID] = true
+		}
+	}
+	for k := range seen {
+		out = append(out, k)
+	}
+	slices.Sort(out)
+	return out, nil
+}
+
+// capEvidence joins subject and incident evidence keys, subjects first, and
+// keeps at most domain.MaxRCAEvidence of them. It never returns nil.
+func capEvidence(subjects, incidents []string) []string {
+	out := make([]string, 0, min(len(subjects)+len(incidents), domain.MaxRCAEvidence))
+	out = append(out, subjects[:min(len(subjects), domain.MaxRCAEvidence)]...)
+	return append(out, incidents[:min(len(incidents), domain.MaxRCAEvidence-len(out))]...)
+}
+
+// subjectEvidence keeps the "subject:" keys of evidence.
+func subjectEvidence(evidence []string) []string {
+	out := []string{}
+	for _, k := range evidence {
+		if strings.HasPrefix(k, "subject:") {
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
+// staleReasons compares a summary's stored basis with the current one: the
+// value, status, incident and downtime sentences of rca.StaleReasons, and a
+// change in which subjects are short of perfect.
+func staleReasons(stored, current domain.RCABasis, label func(string) string) []string {
+	withoutSubjects := func(b domain.RCABasis) domain.RCABasis {
+		ev := []string{}
+		for _, k := range b.Evidence {
+			if !strings.HasPrefix(k, "subject:") {
+				ev = append(ev, k)
 			}
 		}
-		for k := range seen {
-			basis.Evidence = append(basis.Evidence, k)
-		}
-		slices.Sort(basis.Evidence)
+		b.Evidence = ev
+		return b
 	}
-	return basis, nil
+	out := rca.StaleReasons(withoutSubjects(stored), withoutSubjects(current), label)
+	const changed = "The attribution changed since it was written."
+	if !slices.Equal(subjectEvidence(stored.Evidence), subjectEvidence(current.Evidence)) && !slices.Contains(out, changed) {
+		out = append(out, changed)
+	}
+	if out == nil {
+		out = []string{}
+	}
+	return out
 }
 
 // reportedMinutes is a downtime cell's reported downtime in whole minutes:

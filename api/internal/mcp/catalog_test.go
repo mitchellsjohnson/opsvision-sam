@@ -19,9 +19,9 @@ var secretOps = []string{
 	"getMyAssistantCredential", "putMyAssistantCredential", "deleteMyAssistantCredential",
 }
 
-// rcaOps are the RCA operations MCP leaves out: the hard delete and SAM's
-// drafts.
-var rcaOps = []string{"deleteCellRca", "draftCellRca", "getCellRcaDraft"}
+// summaryOps are the exec summary operations MCP leaves out: the hard
+// delete and SAM's drafts.
+var summaryOps = []string{"deleteMetricSummary", "draftMetricSummary", "getMetricSummaryDraft"}
 
 func apiSpec(t *testing.T) *openapi3.T {
 	t.Helper()
@@ -57,7 +57,7 @@ func TestCatalogHasOneToolPerOperation(t *testing.T) {
 		for _, op := range spec.Paths.Value(path).Operations() {
 			name := mcp.SnakeCase(op.OperationID)
 			excluded := func(t string) bool { return mcp.SnakeCase(t) == name }
-			if !slices.ContainsFunc(secretOps, excluded) && !slices.ContainsFunc(rcaOps, excluded) {
+			if !slices.ContainsFunc(secretOps, excluded) && !slices.ContainsFunc(summaryOps, excluded) {
 				want = append(want, name)
 			}
 		}

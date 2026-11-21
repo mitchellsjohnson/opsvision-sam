@@ -5,8 +5,9 @@
 // Layout: server.go holds construction, routing and shared helpers; errors.go
 // the error envelope; validate.go shared validators; mapping.go the
 // domain-to-API conversions; one file per resource group holds its handlers
-// (operator.go, members.go, org.go, imports.go, audit.go, rca.go, ...), and
-// rca_stubs_*.go the RCA operations not built yet. Server implements every
+// (operator.go, members.go, org.go, imports.go, audit.go, rca.go, ...),
+// summary_gate.go the publish gate's data, and rca_stubs_*.go the exec
+// summary and attribution operations not built yet. Server implements every
 // operation of the spec.
 package httpapi
 

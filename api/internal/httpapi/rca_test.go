@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -16,48 +16,78 @@ import (
 	"opsvision/internal/store"
 )
 
-const demoRCA = "/scorecards/" + demo.ScorecardID + "/rca"
+const demoSummaries = "/scorecards/" + demo.ScorecardID + "/metric-summaries"
 
 var oct2026 = period.Period{Grain: period.Month, FY: 2026, Index: 10}
 
-type rcaNoteJSON struct {
-	Text       string `json:"text"`
-	Links      []struct{ Title, URL string }
-	AuthorID   string    `json:"authorId"`
-	AuthorName string    `json:"authorName"`
-	Channel    string    `json:"channel"`
-	UpdatedAt  time.Time `json:"updatedAt"`
-	Revision   int       `json:"revision"`
+const onlyAdmins = "Only admins can write exec summaries."
+
+type metricSummaryJSON struct {
+	MetricKey         string `json:"metricKey"`
+	MetricName        string `json:"metricName"`
+	CategoryID        string `json:"categoryId"`
+	Period            string `json:"period"`
+	Requirement       string `json:"requirement"`
+	RequirementReason string `json:"requirementReason"`
+	State             string `json:"state"`
+	Standing          struct {
+		Display  string `json:"display"`
+		Status   string `json:"status"`
+		Headline string `json:"headline"`
+	} `json:"standing"`
+	Text         string    `json:"text"`
+	Links        []rcaLink `json:"links"`
+	LinksTotal   int       `json:"linksTotal"`
+	AuthorName   string    `json:"authorName"`
+	Channel      string    `json:"channel"`
+	UpdatedAt    time.Time `json:"updatedAt"`
+	Revision     int       `json:"revision"`
+	Stale        bool      `json:"stale"`
+	StaleReasons []string  `json:"staleReasons"`
+	CanEdit      bool      `json:"canEdit"`
 }
 
-type rcaConflictJSON struct {
+type summaryConflictJSON struct {
 	Error struct {
 		Code    string `json:"code"`
 		Message string `json:"message"`
 	} `json:"error"`
-	Current *rcaNoteJSON `json:"current"`
+	Current *metricSummaryJSON `json:"current"`
 }
 
 type rcaLink = map[string]string
 
-func rcaBody(metric, subject, text string, links []rcaLink, rev int) map[string]any {
+func summaryPath(metric string, p string) string { return demoSummaries + "/" + metric + "/" + p }
+
+func summaryBody(text string, links []rcaLink, rev int) map[string]any {
 	if links == nil {
 		links = []rcaLink{}
 	}
-	return map[string]any{"metric": metric, "subject": subject, "period": "2026-M10", "text": text, "links": links, "expectedRevision": rev}
+	return map[string]any{"text": text, "links": links, "expectedRevision": rev}
 }
 
-func rcaQuery(metric, subject string, rev int) string {
-	q := url.Values{"metric": {metric}, "subject": {subject}, "period": {"2026-M10"}}
-	if rev >= 0 {
-		q.Set("expectedRevision", fmt.Sprint(rev))
-	}
-	return demoRCA + "?" + q.Encode()
-}
-
-func storedRCA(t *testing.T, e *testEnv, metric, subject string) (domain.CellRCA, bool) {
+// demoRootID is the demo's company: the org tree's single root in 2026-M10.
+func demoRootID(t *testing.T, e *testEnv) string {
 	t.Helper()
-	r, err := e.store.GetRCA(context.Background(), demo.TenantID, demo.ScorecardID, metric, subject, oct2026)
+	tenant, err := e.store.GetTenant(context.Background(), demo.TenantID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	in, err := e.api.loadInput(context.Background(), tenant, demo.ScorecardID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := reportRoot(in, oct2026)
+	if root == "" {
+		t.Fatal("the demo has no single root")
+	}
+	return root
+}
+
+// storedSummary is the metric's summary of p, stored on the company.
+func storedSummary(t *testing.T, e *testEnv, metric string, p period.Period) (domain.CellRCA, bool) {
+	t.Helper()
+	r, err := e.store.GetRCA(context.Background(), demo.TenantID, demo.ScorecardID, metric, demoRootID(t, e), p)
 	if errors.Is(err, store.ErrNotFound) {
 		return r, false
 	}
@@ -67,12 +97,18 @@ func storedRCA(t *testing.T, e *testEnv, metric, subject string) (domain.CellRCA
 	return r, true
 }
 
-// clearDemoRCAs deletes the notes the demo seeds, for tests that write those
-// cells from scratch.
-func clearDemoRCAs(t *testing.T, e *testEnv) {
+// clearSummaries deletes every summary and note the demo seeds for fiscal
+// 2026, for tests that write from scratch.
+func clearSummaries(t *testing.T, e *testEnv) {
 	t.Helper()
-	for _, c := range demo.RCAExamples {
-		if err := e.store.DeleteRCA(context.Background(), demo.TenantID, demo.ScorecardID, c.MetricKey, c.SubjectID, c.Period, 1); err != nil {
+	ctx := context.Background()
+	all, err := e.store.ListRCAsRange(ctx, demo.TenantID, demo.ScorecardID,
+		period.Period{Grain: period.Month, FY: 2026, Index: 1}, period.Period{Grain: period.Month, FY: 2026, Index: 12})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range all {
+		if err := e.store.DeleteRCA(ctx, demo.TenantID, demo.ScorecardID, r.MetricKey, r.SubjectID, r.Period, r.Revision); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -88,90 +124,121 @@ func demoAudits(t *testing.T, e *testEnv) []domain.AuditEntry {
 	return out
 }
 
-func TestPutCellRcaPermissions(t *testing.T) {
+func TestPutMetricSummaryAdminOnly(t *testing.T) {
 	e := newDemoEnv(t)
-	clearDemoRCAs(t, e)
-	ctx := context.Background()
-	if err := e.store.PutTrackedItem(ctx, demo.TenantID, domain.TrackedItem{ID: "orphan-svc", KindID: "services", Name: "Orphan service"}); err != nil {
-		t.Fatal(err)
-	}
-	contributor, viewer := e.tokens["contributor"], e.tokens["viewer"]
+	clearSummaries(t, e)
+	admin, contributor, viewer := e.tokens["admin"], e.tokens["contributor"], e.tokens["viewer"]
+	root := demoRootID(t, e)
 
-	// The Payments contributor writes a Payments product, a service of
-	// Payments at 100% (nothing to explain), and the Payments roll-up.
-	var note rcaNoteJSON
-	for _, c := range [][2]string{{"epics_on_time", "checkout"}, {"uptime", "checkout-api"}, {"epics_on_time", "payments"}} {
-		e.expect(t, 200, contributor, "PUT", demoRCA, rcaBody(c[0], c[1], "Two epics slipped behind the gateway migration.", nil, 0), &note)
-		if note.Revision != 1 || note.AuthorID != "dev|contributor" || note.AuthorName != "Casey Contributor" || note.Channel != "web" {
-			t.Fatalf("%v: note = %+v", c, note)
-		}
+	// The admin's browser session.
+	var got metricSummaryJSON
+	e.expect(t, 200, admin, "PUT", summaryPath("uptime", "2026-M10"), summaryBody("Webhooks lost 7h to a queue saturation (INC-2041).", nil, 0), &got)
+	if got.MetricKey != "uptime" || got.MetricName != "Uptime" || got.Period != "2026-M10" || got.Revision != 1 || got.Channel != "web" ||
+		got.AuthorName != "Avery Admin" || got.State != "written" || got.Stale || got.StaleReasons == nil || !got.CanEdit || got.LinksTotal != 0 {
+		t.Fatalf("admin put = %+v", got)
 	}
-	audited := len(demoAudits(t, e))
-	if audited != 3 {
-		t.Fatalf("%d audit entries after three writes", audited)
+	// 21 of the demo's 24 services report in October; 13 are below 100%.
+	if got.Requirement != "required" || got.RequirementReason != "13 of 21 services below 100%" {
+		t.Errorf("requirement = %q %q", got.Requirement, got.RequirementReason)
 	}
-
-	// Outside the contributor's units: another segment's service, the
-	// company roll-up, and an item attached to no unit.
-	const msg = "You can write RCAs only for your own units."
-	for _, c := range [][2]string{{"uptime", "webhooks"}, {"epics_on_time", "acme"}, {"uptime", "orphan-svc"}} {
-		got := e.expectError(t, 403, "forbidden", contributor, "PUT", demoRCA, rcaBody(c[0], c[1], "Not mine.", nil, 0))
-		if got.Error.Message != msg {
-			t.Errorf("%v: message %q, want %q", c, got.Error.Message, msg)
-		}
-		e.expectError(t, 403, "forbidden", contributor, "DELETE", rcaQuery(c[0], c[1], 1), nil)
-		if _, ok := storedRCA(t, e, c[0], c[1]); ok {
-			t.Errorf("%v: a refused write was stored", c)
-		}
+	if got.Standing.Display != "99.06%" || got.Standing.Status != "R" || got.Standing.Headline != "13 of 21 services below 100% · worst Webhooks 99.06%" {
+		t.Errorf("standing = %+v", got.Standing)
 	}
-	// The viewer writes nothing, not even inside its scope.
-	for _, c := range [][2]string{{"epics_on_time", "checkout"}, {"uptime", "webhooks"}, {"epics_on_time", "acme"}} {
-		got := e.expectError(t, 403, "forbidden", viewer, "PUT", demoRCA, rcaBody(c[0], c[1], "Viewer note.", nil, 1))
-		if got.Error.Message != msg {
-			t.Errorf("viewer %v: message %q", c, got.Error.Message)
-		}
-		e.expectError(t, 403, "forbidden", viewer, "DELETE", rcaQuery(c[0], c[1], 1), nil)
-	}
-	if r, _ := storedRCA(t, e, "epics_on_time", "checkout"); r.Revision != 1 {
-		t.Errorf("checkout note = %+v after the viewer's refused writes", r)
+	r, ok := storedSummary(t, e, "uptime", oct2026)
+	if !ok || r.SubjectID != root || r.Revision != 1 || r.Channel != "web" || r.AuthorID != "dev|admin" {
+		t.Fatalf("stored = %+v", r)
 	}
 
-	// A stale expectedRevision is 409 carrying the note as stored.
-	for _, rev := range []int{0, 2} {
-		status, raw := e.call(t, contributor, "PUT", demoRCA, rcaBody("epics_on_time", "checkout", "Mine is newer.", nil, rev))
-		var c rcaConflictJSON
-		if err := json.Unmarshal(raw, &c); err != nil || status != 409 || c.Error.Code != "conflict" {
-			t.Fatalf("stale put %d: %d %s", rev, status, raw)
+	// The admin's access token is api; the admin through MCP is mcp.
+	tok := e.createToken(t, admin, "Script")
+	e.expect(t, 200, tok.Token, "PUT", summaryPath("deployment_uptime", "2026-M10"), summaryBody("Two regional deployments lost their checks.", nil, 0), &got)
+	if got.Channel != "api" {
+		t.Errorf("token channel = %q", got.Channel)
+	}
+	out := mcpToolCall(t, e, admin, "put_metric_summary", map[string]any{
+		"sc": demo.ScorecardID, "metric": "security_training", "period": "2026-M10", "body": summaryBody("Six new starters are still in training.", nil, 0),
+	})
+	if out.IsError {
+		t.Fatalf("put_metric_summary: %s", out.Text)
+	}
+	if r, ok := storedSummary(t, e, "security_training", oct2026); !ok || r.Channel != "mcp" || r.SubjectID != root {
+		t.Fatalf("MCP summary = %+v", r)
+	}
+	var channels []string
+	for _, a := range demoAudits(t, e) {
+		if a.TargetType == "metric_summary" {
+			channels = append(channels, a.Channel)
 		}
-		if c.Current == nil || c.Current.Revision != 1 || c.Current.Text != "Two epics slipped behind the gateway migration." {
-			t.Fatalf("stale put %d: current = %+v", rev, c.Current)
+	}
+	if strings.Join(channels, ",") != "ui,token,mcp" {
+		t.Fatalf("audit channels after three writes = %v", channels)
+	}
+
+	// Everyone else gets 403 on every channel, and nothing is stored or audited.
+	ctok := e.createToken(t, contributor, "Contributor script")
+	vtok := e.createToken(t, viewer, "Viewer script")
+	audited := demoAudits(t, e)
+	for name, caller := range map[string]string{"contributor session": contributor, "contributor token": ctok.Token, "viewer session": viewer, "viewer token": vtok.Token} {
+		for _, metric := range []string{"epics_on_time", "uptime"} {
+			got := e.expectError(t, 403, "forbidden", caller, "PUT", summaryPath(metric, "2026-M10"), summaryBody("Not mine to write.", nil, 0))
+			if got.Error.Message != onlyAdmins {
+				t.Errorf("%s put %s: message %q", name, metric, got.Error.Message)
+			}
+			got = e.expectError(t, 403, "forbidden", caller, "DELETE", summaryPath(metric, "2026-M10")+"?expectedRevision=1", nil)
+			if got.Error.Message != onlyAdmins {
+				t.Errorf("%s delete %s: message %q", name, metric, got.Error.Message)
+			}
 		}
 	}
-	status, raw := e.call(t, contributor, "DELETE", rcaQuery("epics_on_time", "checkout", 4), nil)
-	var c rcaConflictJSON
-	if err := json.Unmarshal(raw, &c); err != nil || status != 409 || c.Current == nil || c.Current.Revision != 1 {
-		t.Fatalf("stale delete: %d %s", status, raw)
+	for _, caller := range []string{contributor, viewer} {
+		out := mcpToolCall(t, e, caller, "put_metric_summary", map[string]any{
+			"sc": demo.ScorecardID, "metric": "epics_on_time", "period": "2026-M10", "body": summaryBody("Through MCP.", nil, 0),
+		})
+		if !out.IsError || !strings.Contains(out.Text, onlyAdmins) {
+			t.Errorf("MCP put by a non-admin: %+v", out)
+		}
 	}
-	e.expectError(t, 404, "not_found", contributor, "DELETE", rcaQuery("epics_on_time", "billing", 1), nil)
-
-	if n := len(demoAudits(t, e)); n != audited {
-		t.Fatalf("rejected writes added %d audit entries", n-audited)
+	// A malformed body from a non-admin is still 403, not a validation answer.
+	e.expectError(t, 403, "forbidden", contributor, "PUT", summaryPath("uptime", "2026-M10"), summaryBody("", []rcaLink{{"title": "x", "url": "javascript:x"}}, -1))
+	if _, ok := storedSummary(t, e, "epics_on_time", oct2026); ok {
+		t.Fatal("a refused write was stored")
 	}
-
-	// The admin writes anywhere, the company cell included.
-	e.expect(t, 200, e.tokens["admin"], "PUT", demoRCA, rcaBody("epics_on_time", "acme", "Company roll-up note.", nil, 0), nil)
-	e.expect(t, 200, e.tokens["admin"], "PUT", demoRCA, rcaBody("uptime", "orphan-svc", "Unattached.", nil, 0), nil)
+	if r, _ := storedSummary(t, e, "uptime", oct2026); r.Revision != 1 {
+		t.Fatalf("uptime summary = %+v after refused writes", r)
+	}
+	if n := len(demoAudits(t, e)); n != len(audited) {
+		t.Fatalf("refused writes added %d audit entries", n-len(audited))
+	}
 }
 
-func TestPutCellRcaValidation(t *testing.T) {
+func TestPutMetricSummaryLinks(t *testing.T) {
 	e := newDemoEnv(t)
-	clearDemoRCAs(t, e)
+	clearSummaries(t, e)
 	admin := e.tokens["admin"]
-	ok := rcaLink{"title": "Postmortem", "url": "https://docs.example/pm/2041"}
-	long := "https://docs.example/" + strings.Repeat("a", 2049-len("https://docs.example/"))
-	big := func(i int) rcaLink {
-		return rcaLink{"title": fmt.Sprintf("Link %d", i), "url": fmt.Sprintf("https://docs.example/%d/", i) + strings.Repeat("b", 900)}
+	path := summaryPath("uptime", "2026-M10")
+	ticket := func(i int) rcaLink {
+		return rcaLink{"title": fmt.Sprintf("INC-%d", 2000+i), "url": fmt.Sprintf("https://tracker.example/browse/INC-%d", 2000+i)}
 	}
+	var links []rcaLink
+	for i := range 25 {
+		links = append(links, ticket(i))
+	}
+	var got metricSummaryJSON
+	e.expect(t, 200, admin, "PUT", path, summaryBody("Twenty-five tickets.", links, 0), &got)
+	if len(got.Links) != 25 || got.LinksTotal != 25 || got.Links[24]["url"] != "https://tracker.example/browse/INC-2024" {
+		t.Fatalf("25 links: %d stored, total %d", len(got.Links), got.LinksTotal)
+	}
+
+	ok := rcaLink{"title": "Postmortem", "url": "https://docs.example/pm/2041"}
+	long := func(i int) rcaLink {
+		u := fmt.Sprintf("https://docs.example/%02d/", i)
+		return rcaLink{"title": "T", "url": u + strings.Repeat("x", 700)}
+	}
+	var tooLong []rcaLink
+	for i := range 25 {
+		tooLong = append(tooLong, long(i))
+	}
+	const https = "Use a link that starts with https://"
 	cases := []struct {
 		name  string
 		text  string
@@ -179,20 +246,19 @@ func TestPutCellRcaValidation(t *testing.T) {
 		path  string
 		msg   string
 	}{
-		{"javascript URL", "Gap.", []rcaLink{ok, {"title": "Click", "url": "javascript:alert(1)"}}, "links[1].url", "Use a link that starts with https://"},
-		{"http URL", "Gap.", []rcaLink{ok, {"title": "Plain", "url": "http://docs.example/a"}}, "links[1].url", "Use a link that starts with https://"},
-		{"user and password", "Gap.", []rcaLink{ok, {"title": "Creds", "url": "https://user:secret@docs.example/a"}}, "links[1].url", "Use a link that starts with https://"},
-		{"space", "Gap.", []rcaLink{ok, {"title": "Space", "url": "https://docs.example/a b"}}, "links[1].url", "Use a link that starts with https://"},
-		{"2049-byte URL", "Gap.", []rcaLink{ok, {"title": "Long", "url": long}}, "links[1].url", "This link is too long; use one up to 2,048 characters"},
-		{"over 4 KB together", "Gap.", []rcaLink{big(1), big(2), big(3), big(4), big(5)}, "links", "These links are too long together; shorten or remove one"},
-		{"six links", "Gap.", []rcaLink{big(1), ok, {"title": "c", "url": "https://docs.example/c"}, {"title": "d", "url": "https://docs.example/d"}, {"title": "e", "url": "https://docs.example/e"}, {"title": "f", "url": "https://docs.example/f"}}, "links", "Up to 5 links"},
+		{"26 links", "Gap.", append(slices.Clone(links), ticket(25)), "links", "Up to 25 links"},
+		{"25 links over 16 KB", "Gap.", tooLong, "links", "These links are too long together; shorten or remove some"},
+		{"javascript URL", "Gap.", []rcaLink{ok, {"title": "Click", "url": "javascript:alert(1)"}}, "links[1].url", https},
+		{"http URL", "Gap.", []rcaLink{ok, {"title": "Plain", "url": "http://docs.example/a"}}, "links[1].url", https},
+		{"user and password", "Gap.", []rcaLink{ok, {"title": "Creds", "url": "https://user:secret@docs.example/a"}}, "links[1].url", https},
+		{"whitespace", "Gap.", []rcaLink{ok, {"title": "Space", "url": "https://docs.example/a b"}}, "links[1].url", https},
 		{"duplicate", "Gap.", []rcaLink{ok, {"title": "Again", "url": "HTTPS://docs.example/pm/2041"}}, "links[1].url", "This link is already listed"},
 		{"no title", "Gap.", []rcaLink{ok, {"title": "  ", "url": "https://docs.example/x"}}, "links[1].title", "Add a title for this link"},
 		{"281 code points", strings.Repeat("é", 281), nil, "text", "Write up to 280 characters"},
-		{"only newlines", "\n\n\n", nil, "text", "Write what caused the gap"},
+		{"only newlines", "\n\n\n", nil, "text", "Write what drove this metric this month"},
 	}
 	for _, c := range cases {
-		got := e.expectError(t, 400, "invalid", admin, "PUT", demoRCA, rcaBody("uptime", "webhooks", c.text, c.links, 0))
+		got := e.expectError(t, 400, "invalid", admin, "PUT", path, summaryBody(c.text, c.links, 1))
 		found := false
 		for _, d := range got.Error.Details {
 			if d.Path == c.path && d.Message == c.msg {
@@ -203,62 +269,80 @@ func TestPutCellRcaValidation(t *testing.T) {
 			t.Errorf("%s: details %+v, want %s %q", c.name, got.Error.Details, c.path, c.msg)
 		}
 	}
-	// The request itself: keys, ids, periods and the cell.
-	for _, b := range []map[string]any{
-		{"metric": "Uptime", "subject": "webhooks", "period": "2026-M10", "text": "x", "links": []any{}, "expectedRevision": 0},
-		{"metric": "uptime", "subject": "web hooks", "period": "2026-M10", "text": "x", "links": []any{}, "expectedRevision": 0},
-		{"metric": "uptime", "subject": "webhooks", "period": "2026-10", "text": "x", "links": []any{}, "expectedRevision": 0},
-		{"metric": "uptime", "subject": "webhooks", "period": "2026-M10", "text": "x", "links": []any{}, "expectedRevision": -1},
-		{"metric": "no_such_metric", "subject": "webhooks", "period": "2026-M10", "text": "x", "links": []any{}, "expectedRevision": 0},
-		{"metric": "uptime", "subject": "no-such-subject", "period": "2026-M10", "text": "x", "links": []any{}, "expectedRevision": 0},
-		{"metric": "uptime", "subject": "webhooks", "period": "2026-Q4", "text": "x", "links": []any{}, "expectedRevision": 0},
+
+	// The request itself: the metric, the period, its grain and the revision.
+	for _, c := range []struct{ metric, period string }{
+		{"Uptime", "2026-M10"}, {"uptime", "2026-10"}, {"no_such_metric", "2026-M10"}, {"uptime", "2026-Q4"},
 	} {
-		e.expectError(t, 400, "invalid", admin, "PUT", demoRCA, b)
+		e.expectError(t, 400, "invalid", admin, "PUT", summaryPath(c.metric, c.period), summaryBody("x", nil, 0))
 	}
-	if len(demoAudits(t, e)) != 0 {
-		t.Fatal("a rejected write was audited")
-	}
+	e.expectError(t, 400, "invalid", admin, "PUT", path, summaryBody("x", nil, -1))
+	e.expectError(t, 404, "not_found", admin, "PUT", "/scorecards/no-such-scorecard/metric-summaries/uptime/2026-M10", summaryBody("x", nil, 0))
 
 	// Plain text passes as written; the scheme is stored lowercased and
 	// whitespace collapsed.
 	img := `<img src=x onerror="alert(1)">`
-	var note rcaNoteJSON
-	e.expect(t, 200, admin, "PUT", demoRCA, rcaBody("uptime", "webhooks", "  Queue saturated\n\nafter  a deploy "+img, []rcaLink{
+	e.expect(t, 200, admin, "PUT", path, summaryBody("  Queue saturated\n\nafter  a deploy "+img, []rcaLink{
 		{"title": " " + img + " ", "url": "HTTPS://docs.example/a"},
-	}, 0), &note)
-	if note.Text != "Queue saturated after a deploy "+img || len(note.Links) != 1 || note.Links[0].URL != "https://docs.example/a" || note.Links[0].Title != img {
-		t.Fatalf("note = %+v", note)
+	}, 1), &got)
+	if got.Text != "Queue saturated after a deploy "+img || len(got.Links) != 1 || got.Links[0]["url"] != "https://docs.example/a" || got.Links[0]["title"] != img {
+		t.Fatalf("summary = %+v", got)
 	}
-	stored, _ := storedRCA(t, e, "uptime", "webhooks")
-	if stored.Links[0].URL != "https://docs.example/a" || stored.Text != note.Text {
+	stored, _ := storedSummary(t, e, "uptime", oct2026)
+	if stored.Links[0].URL != "https://docs.example/a" || stored.Text != got.Text || stored.Revision != 2 {
 		t.Fatalf("stored = %+v", stored)
 	}
 }
 
-func TestPutCellRcaAudit(t *testing.T) {
+func TestMetricSummaryRevisionsAndAudit(t *testing.T) {
 	e := newDemoEnv(t)
-	clearDemoRCAs(t, e)
+	clearSummaries(t, e)
 	admin := e.tokens["admin"]
+	path := summaryPath("uptime", "2026-M10")
 	links := []rcaLink{{"title": "Postmortem", "url": "https://docs.example/pm/2041"}}
-	e.expect(t, 200, admin, "PUT", demoRCA, rcaBody("uptime", "webhooks", "Queue saturated.", links, 0), nil)
-	e.expect(t, 200, admin, "PUT", demoRCA, rcaBody("uptime", "webhooks", "Queue saturated after a deploy.", links, 1), nil)
-	var note rcaNoteJSON
-	e.expect(t, 200, admin, "PUT", demoRCA, rcaBody("uptime", "webhooks", " Queue saturated after a deploy. ", links, 2), &note)
-	if note.Revision != 3 {
-		t.Fatalf("confirm = %+v", note)
+	e.expect(t, 200, admin, "PUT", path, summaryBody("Queue saturated.", links, 0), nil)
+	e.expect(t, 200, admin, "PUT", path, summaryBody("Queue saturated after a deploy.", links, 1), nil)
+	var got metricSummaryJSON
+	e.expect(t, 200, admin, "PUT", path, summaryBody(" Queue saturated after a deploy. ", links, 2), &got)
+	if got.Revision != 3 {
+		t.Fatalf("confirm = %+v", got)
 	}
-	status, raw := e.call(t, admin, "DELETE", rcaQuery("uptime", "webhooks", 3), nil)
+
+	// A stale expectedRevision is 409 with the summary as stored now.
+	for _, rev := range []int{0, 2, 4} {
+		status, raw := e.call(t, admin, "PUT", path, summaryBody("Mine is newer.", nil, rev))
+		var c summaryConflictJSON
+		if err := json.Unmarshal(raw, &c); err != nil || status != 409 || c.Error.Code != "conflict" {
+			t.Fatalf("stale put %d: %d %s", rev, status, raw)
+		}
+		if c.Error.Message != "Someone else changed this exec summary while you were editing." {
+			t.Errorf("conflict message %q", c.Error.Message)
+		}
+		if c.Current == nil || c.Current.Revision != 3 || c.Current.Text != "Queue saturated after a deploy." || c.Current.MetricKey != "uptime" ||
+			c.Current.State != "written" || len(c.Current.Links) != 1 {
+			t.Fatalf("stale put %d: current = %+v", rev, c.Current)
+		}
+	}
+	status, raw := e.call(t, admin, "DELETE", path+"?expectedRevision=2", nil)
+	var c summaryConflictJSON
+	if err := json.Unmarshal(raw, &c); err != nil || status != 409 || c.Current == nil || c.Current.Revision != 3 {
+		t.Fatalf("stale delete: %d %s", status, raw)
+	}
+
+	status, raw = e.call(t, admin, "DELETE", path+"?expectedRevision=3", nil)
 	if status != 204 || len(raw) != 0 {
 		t.Fatalf("delete: %d %s", status, raw)
 	}
-	if _, ok := storedRCA(t, e, "uptime", "webhooks"); ok {
-		t.Fatal("deleted note still stored")
+	if _, ok := storedSummary(t, e, "uptime", oct2026); ok {
+		t.Fatal("deleted summary still stored")
 	}
+	e.expectError(t, 404, "not_found", admin, "DELETE", path+"?expectedRevision=1", nil)
+	e.expectError(t, 400, "invalid", admin, "DELETE", path+"?expectedRevision=0", nil)
 
 	entries := demoAudits(t, e)
 	var actions []string
 	for _, a := range entries {
-		if a.TargetType != "rca" || a.TargetID != "uptime|webhooks|2026-M10" || a.ActorID != "dev|admin" {
+		if a.TargetType != "metric_summary" || a.TargetID != "uptime|2026-M10" || a.ActorID != "dev|admin" {
 			t.Errorf("entry = %+v", a)
 		}
 		actions = append(actions, a.Action)
@@ -275,63 +359,85 @@ func TestPutCellRcaAudit(t *testing.T) {
 	if err := json.Unmarshal(entries[3].Before, &deleted); err != nil || deleted.Text != "Queue saturated after a deploy." {
 		t.Errorf("delete keeps %s", entries[3].Before)
 	}
-
-	// The note records the channel: an access token is api, MCP is mcp.
-	tok := e.createToken(t, admin, "Script")
-	e.expect(t, 200, tok.Token, "PUT", demoRCA, rcaBody("uptime", "search", "Regional DNS failures.", nil, 0), &note)
-	if note.Channel != "api" {
-		t.Errorf("token channel = %q", note.Channel)
-	}
-	out := mcpToolCall(t, e, admin, "put_cell_rca", map[string]any{
-		"sc": demo.ScorecardID, "body": rcaBody("uptime", "analytics-ingest", "Ingest lag from a partition rebalance.", nil, 0),
-	})
-	if out.IsError {
-		t.Fatalf("put_cell_rca: %s", out.Text)
-	}
-	r, ok := storedRCA(t, e, "uptime", "analytics-ingest")
-	if !ok || r.Channel != "mcp" {
-		t.Fatalf("MCP note = %+v", r)
-	}
-	last := demoAudits(t, e)
-	if a := last[len(last)-1]; a.Channel != "mcp" || a.Action != "create" {
-		t.Errorf("MCP audit = %+v", a)
-	}
 }
 
-func TestPutCellRcaBasis(t *testing.T) {
+func TestMetricSummaryBasis(t *testing.T) {
 	e := newDemoEnv(t)
-	clearDemoRCAs(t, e)
+	clearSummaries(t, e)
 	admin := e.tokens["admin"]
 
-	// The demo's linked incidents are counted: a cancelled incident and
-	// September's never count, and INC-2049 counts here and for Search.
-	e.expect(t, 200, admin, "PUT", demoRCA, rcaBody("uptime", "webhooks", "Queue saturated.", nil, 0), nil)
-	r, _ := storedRCA(t, e, "uptime", "webhooks")
-	if r.Basis.Display != "99.06%" || r.Basis.Status != "R" || r.Basis.ReportedMinutes == nil || *r.Basis.ReportedMinutes != 420 {
-		t.Fatalf("basis = %+v (minutes %v)", r.Basis, r.Basis.ReportedMinutes)
+	// Uptime has no company value: its standing is the worst service, its
+	// evidence the services below 100% and the incidents counted on them.
+	e.expect(t, 200, admin, "PUT", summaryPath("uptime", "2026-M10"), summaryBody("Queue saturated.", nil, 0), nil)
+	r, _ := storedSummary(t, e, "uptime", oct2026)
+	if r.Basis.Display != "99.06%" || r.Basis.Status != "R" {
+		t.Fatalf("basis = %+v", r.Basis)
 	}
-	// The tracker template fans every row out per component, so the keys
-	// may carry the component.
-	if ev := r.Basis.Evidence; len(ev) != 3 || !strings.HasPrefix(ev[0], "incident-tracker:INC-2041") ||
-		!strings.HasPrefix(ev[1], "incident-tracker:INC-2047") || !strings.HasPrefix(ev[2], "incident-tracker:INC-2049") {
-		t.Fatalf("evidence = %v", ev)
+	ev := r.Basis.Evidence
+	var subjects, incidents []string
+	for _, k := range ev {
+		switch {
+		case strings.HasPrefix(k, "subject:"):
+			if len(incidents) > 0 {
+				t.Errorf("subject %s after incidents: %v", k, ev)
+			}
+			subjects = append(subjects, strings.TrimPrefix(k, "subject:"))
+		default:
+			incidents = append(incidents, k)
+		}
+	}
+	for _, want := range []string{"webhooks", "search", "analytics-ingest"} {
+		if !slices.Contains(subjects, want) {
+			t.Errorf("subject evidence %v lacks %s", subjects, want)
+		}
+	}
+	if !slices.IsSorted(subjects) || !slices.IsSorted(incidents) {
+		t.Errorf("evidence not sorted: %v", ev)
+	}
+	// The tracker template fans rows out per component; cancelled and
+	// planned-maintenance incidents never count.
+	for _, want := range []string{"incident-tracker:INC-2041@Webhooks", "incident-tracker:INC-2047@Webhooks", "incident-tracker:INC-2049@Webhooks", "incident-tracker:INC-2049@Search"} {
+		if !slices.Contains(incidents, want) {
+			t.Errorf("incident evidence %v lacks %s", incidents, want)
+		}
+	}
+	// Only incidents on services count for uptime: the deployment incidents
+	// explain deployment uptime.
+	for _, k := range incidents {
+		if strings.Contains(k, "INC-2058") || strings.Contains(k, "INC-2055") || strings.Contains(k, "Notification Relay") {
+			t.Errorf("incident evidence counts %s", k)
+		}
 	}
 	if !r.CreatedAt.Equal(demoNow) || !r.UpdatedAt.Equal(demoNow) {
 		t.Errorf("times = %v %v", r.CreatedAt, r.UpdatedAt)
 	}
 
-	// Planned maintenance is filtered by the link.
-	e.expect(t, 200, admin, "PUT", demoRCA, rcaBody("uptime", "search", "DNS failures.", nil, 0), nil)
-	r, _ = storedRCA(t, e, "uptime", "search")
-	if len(r.Basis.Evidence) != 1 || !strings.HasPrefix(r.Basis.Evidence[0], "incident-tracker:INC-2049") || *r.Basis.ReportedMinutes != 60 {
-		t.Fatalf("search basis = %+v", r.Basis)
+	// A metric with a company value is judged on it.
+	var got metricSummaryJSON
+	e.expect(t, 200, admin, "PUT", summaryPath("epics_on_time", "2026-M10"), summaryBody("Two epics slipped.", nil, 0), &got)
+	r, _ = storedSummary(t, e, "epics_on_time", oct2026)
+	if r.Basis.ReportedMinutes != nil || r.Basis.Display == "" || r.Basis.Display != got.Standing.Display || r.Basis.Status != got.Standing.Status {
+		t.Fatalf("epics basis = %+v, standing %+v", r.Basis, got.Standing)
 	}
+	for _, k := range r.Basis.Evidence {
+		if !strings.HasPrefix(k, "subject:") {
+			t.Errorf("epics evidence has %s", k)
+		}
+	}
+}
 
-	// A metric with no downtime has no reported minutes.
-	e.expect(t, 200, admin, "PUT", demoRCA, rcaBody("epics_on_time", "checkout", "Two epics slipped.", nil, 0), nil)
-	r, _ = storedRCA(t, e, "epics_on_time", "checkout")
-	if r.Basis.ReportedMinutes != nil || r.Basis.Display == "" || len(r.Basis.Evidence) != 0 {
-		t.Fatalf("epics basis = %+v", r.Basis)
+func TestCapEvidence(t *testing.T) {
+	var subjects, incidents []string
+	for i := range 150 {
+		subjects = append(subjects, fmt.Sprintf("subject:s%03d", i))
+		incidents = append(incidents, fmt.Sprintf("src:INC-%03d", i))
+	}
+	got := capEvidence(subjects, incidents)
+	if len(got) != domain.MaxRCAEvidence || got[0] != "subject:s000" || got[149] != "subject:s149" || got[150] != "src:INC-000" || got[199] != "src:INC-049" {
+		t.Fatalf("capEvidence = %d entries, %v … %v", len(got), got[:2], got[len(got)-2:])
+	}
+	if got := capEvidence(nil, nil); got == nil || len(got) != 0 {
+		t.Fatalf("capEvidence(nil, nil) = %#v", got)
 	}
 }
 
@@ -370,11 +476,13 @@ func TestLoadIncidents(t *testing.T) {
 	}
 }
 
-func TestRcaStubs(t *testing.T) {
+func TestStubs(t *testing.T) {
 	e := newDemoEnv(t)
 	admin := e.tokens["admin"]
-	e.expectError(t, 501, "not_implemented", admin, "GET", rcaQuery("uptime", "webhooks", -1), nil)
-	e.expectError(t, 501, "not_implemented", admin, "GET", "/scorecards/"+demo.ScorecardID+"/rcas?period=2026-M10", nil)
-	e.expectError(t, 501, "not_implemented", admin, "POST", demoRCA+"/draft", map[string]any{"metric": "uptime", "subject": "webhooks", "period": "2026-M10"})
-	e.expectError(t, 501, "not_implemented", admin, "GET", demoRCA+"/draft/id-1", nil)
+	sc := "/scorecards/" + demo.ScorecardID
+	e.expectError(t, 501, "not_implemented", admin, "GET", sc+"/attribution?metric=uptime&subject=webhooks&period=2026-M10", nil)
+	e.expectError(t, 501, "not_implemented", admin, "GET", summaryPath("uptime", "2026-M10"), nil)
+	e.expectError(t, 501, "not_implemented", admin, "GET", demoSummaries+"?period=2026-M10", nil)
+	e.expectError(t, 501, "not_implemented", admin, "POST", summaryPath("uptime", "2026-M10")+"/draft", nil)
+	e.expectError(t, 501, "not_implemented", admin, "GET", summaryPath("uptime", "2026-M10")+"/draft/id-1", nil)
 }

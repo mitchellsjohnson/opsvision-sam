@@ -18,6 +18,7 @@ func TestKeys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	rcaLo, rcaHi := rcaRangeBounds(period.Period{Grain: period.Month, FY: 2025, Index: 11}, period.Period{Grain: period.Month, FY: 2026, Index: 10})
 
 	cases := []struct {
 		name string
@@ -85,6 +86,15 @@ func TestKeys(t *testing.T) {
 		{"record SK escapes hash", recordSK("tracker-a", "CHK#12", asOf), "R#tracker-a#CHK%2312#2026-10-05"},
 		{"record SK escapes source", recordSK("a#b", "1", asOf), "R#a%23b#1#2026-10-05"},
 		{"record SK escapes slash and space", recordSK("my src", "a/b", asOf), "R#my%20src#a%2Fb#2026-10-05"},
+
+		{"RCA PK", rcaPK("acme", "sc1"), "T#acme#SC#sc1#RCA"},
+		{"RCA SK month", rcaSK(period.Period{Grain: period.Month, FY: 2026, Index: 10}, "uptime", "root"), "RCA#2026-10#2026-M10#uptime#root"},
+		{"RCA SK quarter", rcaSK(period.Period{Grain: period.Quarter, FY: 2026, Index: 3}, "design", "root"), "RCA#2026-09#2026-Q3#design#root"},
+		{"RCA SK half", rcaSK(period.Period{Grain: period.Half, FY: 2026, Index: 1}, "design", "root"), "RCA#2026-06#2026-H1#design#root"},
+		{"RCA SK year", rcaSK(fy, "design", "root"), "RCA#2027-12#2027-FY#design#root"},
+		{"RCA SK period prefix", rcaPeriodPrefix(m), "RCA#2026-03#2026-M03#"},
+		{"RCA range low", rcaLo, "RCA#2025-11#"},
+		{"RCA range high", rcaHi, "RCA#2026-10#~"},
 	}
 	for _, c := range cases {
 		if c.got != c.want {
