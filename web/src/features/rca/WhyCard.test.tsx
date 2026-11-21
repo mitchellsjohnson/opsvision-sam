@@ -3,8 +3,8 @@ import userEvent from '@testing-library/user-event'
 import { delay, http, HttpResponse } from 'msw'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { axe } from 'vitest-axe'
-import type { PutMetricSummaryRequest, RcaCellRef } from '../../api/queries'
-import { COMPANY, spendStale, uptimeCardSummary, uptimeText, webhooksAttribution } from '../../test/rcaFixtures'
+import type { MetricSummary, PutMetricSummaryRequest, RcaCellRef } from '../../api/queries'
+import { COMPANY, spendStale, uptimeCardSummary, uptimeLinks, uptimeSummary, uptimeText, webhooksAttribution } from '../../test/rcaFixtures'
 import { API, companyUnitsHandler, server, state } from '../../test/server'
 import { renderApp } from '../../test/utils'
 import { useWhyCard, WhyCardProvider, type WhyCardOpenOptions } from './WhyCardProvider'
@@ -376,5 +376,144 @@ describe('WhyCard: states and focus', () => {
     await user.click(within(dialog).getByRole('button', { name: 'Close' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
     expect(document.activeElement).toBe(trigger)
+  })
+})
+
+describe('WhyCard: edits and confirmations use the whole summary (Important 1, 3)', () => {
+  const SUMMARY = `${API}/v1/scorecards/sc-main/metric-summaries/uptime/2026-M10`
+  const staleUptime: MetricSummary = {
+    ...uptimeSummary,
+    state: 'stale',
+    stale: true,
+    staleReasons: ['The value changed from 99.12% to 99.06%.'],
+    revision: 2,
+  }
+  // A card copy cut without the `…` marker and claiming all its links: it must never be saved.
+  const cut = (s: MetricSummary): MetricSummary => ({ ...s, text: 'Webhooks lost 7h to a queue saturation', links: uptimeLinks.slice(0, 3), linksTotal: 3 })
+
+  const served: { card?: MetricSummary } = {}
+  function serve(card: MetricSummary, whole: () => Response | Promise<Response>) {
+    served.card = card
+    server.use(
+      http.get(`${API}/v1/scorecards/sc-main/attribution`, () => HttpResponse.json({ ...webhooksAttribution, summary: served.card })),
+      http.get(SUMMARY, whole),
+    )
+  }
+
+  function capturePuts(respond: (body: PutMetricSummaryRequest) => Response) {
+    const bodies: PutMetricSummaryRequest[] = []
+    server.use(
+      http.put(SUMMARY, async ({ request }) => {
+        const body = (await request.json()) as PutMetricSummaryRequest
+        bodies.push(body)
+        return respond(body)
+      }),
+    )
+    return bodies
+  }
+
+  const savedFrom = (body: PutMetricSummaryRequest) =>
+    HttpResponse.json({ ...uptimeSummary, text: body.text, links: body.links, linksTotal: body.links.length, revision: body.expectedRevision + 1 })
+
+  it('opens Edit on the whole summary from getMetricSummary, never the card’s copy', async () => {
+    serve(cut(uptimeSummary), () => HttpResponse.json(uptimeSummary))
+    const bodies = capturePuts(savedFrom)
+    const { user, dialog } = await openCard(WEBHOOKS)
+    await user.click(await within(dialog).findByRole('button', { name: 'Edit exec summary' }))
+    const box = await within(dialog).findByRole('textbox', { name: 'Exec summary for Uptime, Oct 2026' })
+    expect((box as HTMLTextAreaElement).value).toBe(uptimeText)
+    expect(within(dialog).getByText('12 / 25 links')).toBeTruthy()
+    await user.click(within(dialog).getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(bodies).toHaveLength(1))
+    expect(bodies[0]).toEqual({ text: uptimeText, links: uptimeLinks, expectedRevision: 1 })
+  })
+
+  it('waits for the whole summary before Still accurate, and sends its text and every link', async () => {
+    let release: () => void = () => {}
+    const loaded = new Promise<void>((r) => (release = r))
+    serve(cut(staleUptime), async () => {
+      await loaded
+      return HttpResponse.json(staleUptime)
+    })
+    const bodies = capturePuts(savedFrom)
+    const { user, dialog } = await openCard(WEBHOOKS)
+    const confirm = await within(dialog).findByRole('button', { name: 'Still accurate' })
+    expect((confirm as HTMLButtonElement).disabled).toBe(true)
+    release()
+    await waitFor(() => expect((confirm as HTMLButtonElement).disabled).toBe(false))
+    await user.click(confirm)
+    await waitFor(() => expect(bodies).toHaveLength(1))
+    expect(bodies[0]).toEqual({ text: uptimeText, links: uptimeLinks, expectedRevision: 2 })
+  })
+
+  it('moves focus to the summary text after Still accurate, and announces the save', async () => {
+    serve(cut(staleUptime), () => HttpResponse.json(staleUptime))
+    capturePuts((body) => {
+      // As the server would: once confirmed, the card's copy is no longer stale.
+      served.card = cut(uptimeSummary)
+      return savedFrom(body)
+    })
+    const { user, dialog } = await openCard(WEBHOOKS)
+    const confirm = await within(dialog).findByRole('button', { name: 'Still accurate' })
+    await waitFor(() => expect((confirm as HTMLButtonElement).disabled).toBe(false))
+    await user.click(confirm)
+    expect(await screen.findByText('Exec summary saved')).toBeTruthy()
+    await waitFor(() => expect(within(dialog).queryByRole('button', { name: 'Still accurate' })).toBeNull())
+    const text = dialog.querySelector('[data-summary-text]')
+    expect(text).not.toBeNull()
+    expect(document.activeElement).toBe(text)
+  })
+
+  it('shows their version after a 409 on Still accurate and lets the admin choose again', async () => {
+    const theirs: MetricSummary = { ...staleUptime, text: 'Theirs: the deploy, then DNS.', links: [], linksTotal: 0, revision: 3 }
+    serve(cut(staleUptime), () => HttpResponse.json(staleUptime))
+    const bodies = capturePuts((body) =>
+      body.expectedRevision === 2
+        ? HttpResponse.json(
+            { error: { code: 'conflict', message: 'Someone else changed this exec summary while you were editing.' }, current: theirs },
+            { status: 409 },
+          )
+        : savedFrom(body),
+    )
+    const { user, dialog } = await openCard(WEBHOOKS)
+    const confirm = await within(dialog).findByRole('button', { name: 'Still accurate' })
+    await waitFor(() => expect((confirm as HTMLButtonElement).disabled).toBe(false))
+    await user.click(confirm)
+    const alert = await within(dialog).findByRole('alert')
+    expect(alert.textContent).toContain('Someone else changed this exec summary while you were editing.')
+    expect(alert.textContent).toContain('Their version is shown; check it before confirming.')
+    const section = within(dialog).getByRole('region', { name: /^Exec summary/ })
+    expect(await within(section).findByText('Theirs: the deploy, then DNS.')).toBeTruthy()
+    await user.click(within(section).getByRole('button', { name: 'Still accurate' }))
+    await waitFor(() => expect(bodies).toHaveLength(2))
+    expect(bodies[1]).toEqual({ text: 'Theirs: the deploy, then DNS.', links: [], expectedRevision: 3 })
+  })
+
+  it('says why Still accurate is unavailable when the whole summary fails to load, with Try again', async () => {
+    let fail = true
+    serve(cut(staleUptime), () =>
+      fail ? HttpResponse.json({ error: { code: 'internal', message: 'Boom' } }, { status: 500 }) : HttpResponse.json(staleUptime),
+    )
+    const { user, dialog } = await openCard(WEBHOOKS)
+    const section = await within(dialog).findByRole('region', { name: /^Exec summary/ })
+    expect(await within(section).findByText("Couldn't load the exec summary.")).toBeTruthy()
+    fail = false
+    await user.click(within(section).getByRole('button', { name: 'Try again' }))
+    await waitFor(() => expect((within(section).getByRole('button', { name: 'Still accurate' }) as HTMLButtonElement).disabled).toBe(false))
+    expect(within(section).queryByText("Couldn't load the exec summary.")).toBeNull()
+  })
+})
+
+describe('WhyCard: the phone sheet (Minor 3)', () => {
+  it('keeps the header and Close fixed; the body is the only scroll area', async () => {
+    setPhone(true)
+    const { dialog } = await openCard(WEBHOOKS)
+    await loaded(dialog, '0.94 pts short of 100% · 7h 00m down')
+    const body = within(dialog).getByTestId('why-body')
+    expect(body.className).toContain('overflow-y-auto')
+    expect(dialog.className).not.toContain('overflow-y-auto')
+    expect(body.contains(within(dialog).getByRole('heading', { level: 2 }))).toBe(false)
+    expect(body.contains(within(dialog).getByRole('button', { name: 'Close' }))).toBe(false)
+    expect(body.contains(within(dialog).getByRole('region', { name: 'Attribution' }))).toBe(true)
   })
 })

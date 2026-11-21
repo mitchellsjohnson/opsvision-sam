@@ -1,5 +1,5 @@
 import clsx from 'clsx'
-import { useEffect, useId, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { useFiscalYearStartMonth, useMetricSummary, type MetricSummary } from '../../api/queries'
 import { parsePeriod, periodLabel as labelOf } from '../../lib/period'
 import { Sam } from '../../ui/Sam'
@@ -60,6 +60,9 @@ export interface SummarySectionProps {
   /** A `Still accurate` save is running, and its failure. */
   confirming?: boolean
   confirmError?: string | null
+  /** The whole summary that `Still accurate` sends could not be loaded; `onRetry` asks again. */
+  loadError?: boolean
+  onRetry?: () => void
   /** `Write exec summary`, `Edit` or `Add one`: opens the editor (admins). */
   onWrite: () => void
   onDraft: () => void
@@ -80,6 +83,8 @@ export function SummarySection({
   samEnabled,
   confirming = false,
   confirmError = null,
+  loadError = false,
+  onRetry,
   onWrite,
   onDraft,
   onConfirm,
@@ -97,6 +102,13 @@ export function SummarySection({
   const links = allLinks ? (haveAllLinks ? s.links : (whole.data?.links ?? s.links)) : s.links.slice(0, RCA_LINKS_SHOWN)
   const text = wholeText && whole.data?.text ? whole.data.text : s.text
   const linksReady = allLinks && (haveAllLinks || whole.data !== undefined)
+  const textRef = useRef<HTMLParagraphElement>(null)
+  const showingWhole = moreClicked && whole.data?.text !== undefined
+
+  // `More` removes itself once the whole text is in: focus the text it revealed.
+  useEffect(() => {
+    if (showingWhole) textRef.current?.focus()
+  }, [showingWhole])
 
   useEffect(() => {
     if (linksReady) announce(`Showing ${links.length} links`)
@@ -113,7 +125,14 @@ export function SummarySection({
   if (s.state === 'missing') {
     const because = requiredBecause(s)
     return (
-      <section aria-labelledby={labelId} className="mt-3 rounded-md border border-status-r/40 bg-status-r-bg px-2 py-2">
+      <section
+        aria-labelledby={labelId}
+        className={clsx(
+          'mt-3 rounded-md px-2 py-2',
+          // One company task: the red block on the company's card, a quieter one on every child's (mockup 2).
+          context ? 'bg-ink/[0.035]' : 'border border-status-r/40 bg-status-r-bg',
+        )}
+      >
         {label}
         <p className="mt-1 text-sm font-medium leading-5">
           No exec summary yet for {s.metricName}, {period}.
@@ -154,6 +173,11 @@ export function SummarySection({
   return (
     <section aria-labelledby={labelId} className="mt-3 rounded-md bg-ink/[0.035] p-3">
       {label}
+      {confirmError && (
+        <p role="alert" className="mt-1.5 rounded-md border border-status-r bg-status-r-bg px-2 py-1.5 text-xs font-medium leading-4 text-ink">
+          {confirmError}
+        </p>
+      )}
       {s.stale && (
         <div className="mt-1.5 rounded-md border border-status-y bg-status-y-bg px-2 py-1.5 text-xs leading-4 text-ink">
           <p className="font-semibold">This exec summary may be out of date.</p>
@@ -170,14 +194,17 @@ export function SummarySection({
               </button>
             </div>
           )}
-          {confirmError && (
-            <p role="alert" className="mt-1 font-medium text-status-r">
-              {confirmError}
+          {s.canEdit && loadError && (
+            <p role="alert" className="mt-1.5 flex flex-wrap items-center gap-2 font-medium text-status-r">
+              Couldn&apos;t load the exec summary.
+              <button type="button" className={SMALL_BUTTON} onClick={onRetry}>
+                Try again
+              </button>
             </p>
           )}
         </div>
       )}
-      <p dir="auto" className="mt-1 break-words text-sm leading-5">
+      <p ref={textRef} tabIndex={-1} data-summary-text="" dir="auto" className="mt-1 break-words rounded-sm text-sm leading-5">
         {text}
         {truncated && !(wholeText && whole.data?.text) && (
           <>

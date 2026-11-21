@@ -33,6 +33,8 @@ const MSG = {
 
 let rowSeq = 0
 
+type FocusTarget = 'text' | 'paste' | 'delete' | 'draft' | 'add' | { row: number }
+
 interface LinkRow {
   id: number
   title: string
@@ -181,6 +183,12 @@ function EditForm({ scorecardId, summary, attribution, samEnabled, startDraft = 
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const keepRef = useRef<HTMLButtonElement>(null)
   const formRef = useRef<HTMLFormElement>(null)
+  const pasteRef = useRef<HTMLButtonElement>(null)
+  const deleteRef = useRef<HTMLButtonElement>(null)
+  const draftRef = useRef<HTMLButtonElement>(null)
+  const addRef = useRef<HTMLButtonElement>(null)
+  // When a control removes itself (Done, Keep, Undo, Remove link…), focus goes here after the render instead of to the dialog.
+  const focusAfter = useRef<FocusTarget | null>(null)
 
   const count = codePoints(text)
   const over = count - RCA_MAX
@@ -195,6 +203,25 @@ function EditForm({ scorecardId, summary, attribution, samEnabled, startDraft = 
   useEffect(() => {
     if (confirmDelete) keepRef.current?.focus()
   }, [confirmDelete])
+  useEffect(() => {
+    const target = focusAfter.current
+    if (!target) return
+    focusAfter.current = null
+    const form = formRef.current
+    const el =
+      target === 'text'
+        ? textareaRef.current
+        : target === 'paste'
+          ? pasteRef.current
+          : target === 'delete'
+            ? deleteRef.current
+            : target === 'draft'
+              ? draftRef.current
+              : target === 'add'
+                ? (addRef.current ?? pasteRef.current)
+                : (form?.querySelector<HTMLElement>(`[data-row="${target.row}"] input`) ?? addRef.current ?? pasteRef.current)
+    el?.focus()
+  })
 
   const draftWithSam = () => {
     abortDraft.current?.abort()
@@ -215,6 +242,7 @@ function EditForm({ scorecardId, summary, attribution, samEnabled, startDraft = 
   const cancelDraft = () => {
     abortDraft.current?.abort()
     drafting.reset()
+    focusAfter.current = 'draft'
   }
   const startedDraft = useRef(false)
   useEffect(() => {
@@ -280,6 +308,7 @@ function EditForm({ scorecardId, summary, attribution, samEnabled, startDraft = 
         onSuccess: () => onDone('deleted', null),
         onError: (e) => {
           setConfirmDelete(false)
+          focusAfter.current = 'text'
           fail(e, [])
         },
       },
@@ -294,6 +323,7 @@ function EditForm({ scorecardId, summary, attribution, samEnabled, startDraft = 
     setBase(theirs)
     setConflict(null)
     setUndo(null)
+    focusAfter.current = 'text'
   }
 
   const textError = server.text ?? (submitted ? problems.text : undefined)
@@ -327,6 +357,7 @@ function EditForm({ scorecardId, summary, attribution, samEnabled, startDraft = 
         {samEnabled && (
           <span className="flex items-center gap-1">
             <button
+              ref={draftRef}
               type="button"
               className={clsx(secondaryButton, 'inline-flex h-7 items-center gap-1.5 px-2 py-0 text-xs')}
               disabled={drafting.isPending}
@@ -371,7 +402,10 @@ function EditForm({ scorecardId, summary, attribution, samEnabled, startDraft = 
             setSuggestion(null)
             textareaRef.current?.focus()
           }}
-          onDiscard={() => setSuggestion(null)}
+          onDiscard={() => {
+            setSuggestion(null)
+            focusAfter.current = 'text'
+          }}
         />
       )}
 
@@ -400,6 +434,7 @@ function EditForm({ scorecardId, summary, attribution, samEnabled, startDraft = 
               onClick={() => {
                 setText(undo)
                 setUndo(null)
+                focusAfter.current = 'text'
               }}
             >
               Undo
@@ -421,7 +456,7 @@ function EditForm({ scorecardId, summary, attribution, samEnabled, startDraft = 
             Links <span className="font-normal text-ink/70">(optional)</span>
           </legend>
           <p className="shrink-0 text-xs leading-4 tabular-nums text-ink/70">
-            {rows.length} / {RCA_LINKS_MAX} links
+            {filled(rows).length} / {RCA_LINKS_MAX} links
           </p>
         </div>
         <ul className="mt-1 space-y-2">
@@ -432,7 +467,7 @@ function EditForm({ scorecardId, summary, attribution, samEnabled, startDraft = 
             const urlErrId = `${id}-l${row.id}-url-err`
             const update = (patch: Partial<LinkRow>) => setRows((rs) => rs.map((r) => (r.id === row.id ? { ...r, ...patch } : r)))
             return (
-              <li key={row.id} className="flex items-start gap-1">
+              <li key={row.id} data-row={row.id} className="flex items-start gap-1">
                 <div className="grid min-w-0 flex-1 gap-1 min-[480px]:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
                   <div className="min-w-0">
                     <input
@@ -470,7 +505,11 @@ function EditForm({ scorecardId, summary, attribution, samEnabled, startDraft = 
                   type="button"
                   aria-label={`Remove link ${n + 1}`}
                   className="flex size-8 shrink-0 items-center justify-center rounded-md text-ink/70 hover:bg-ink/[0.06] hover:text-ink"
-                  onClick={() => setRows((rs) => rs.filter((r) => r.id !== row.id))}
+                  onClick={() => {
+                    const next = rows[n + 1]
+                    focusAfter.current = next ? { row: next.id } : 'add'
+                    setRows((rs) => rs.filter((r) => r.id !== row.id))
+                  }}
                 >
                   <X aria-hidden="true" className="size-4" />
                 </button>
@@ -482,6 +521,7 @@ function EditForm({ scorecardId, summary, attribution, samEnabled, startDraft = 
         <div className="mt-1 flex flex-wrap items-center gap-2">
           {rows.length < RCA_LINKS_MAX && (
             <button
+              ref={addRef}
               type="button"
               className="inline-flex h-7 items-center gap-1 rounded-md px-1 text-xs font-medium text-accent-deep hover:bg-accent/[0.06]"
               onClick={() => setRows((rs) => [...rs, { id: rowSeq++, title: '', url: '' }])}
@@ -491,7 +531,7 @@ function EditForm({ scorecardId, summary, attribution, samEnabled, startDraft = 
             </button>
           )}
           {!pasting && (
-            <button type="button" className={clsx(secondaryButton, 'h-7 px-2.5 py-0 text-xs')} onClick={() => setPasting(true)}>
+            <button ref={pasteRef} type="button" className={clsx(secondaryButton, 'h-7 px-2.5 py-0 text-xs')} onClick={() => setPasting(true)}>
               Paste links
             </button>
           )}
@@ -500,7 +540,10 @@ function EditForm({ scorecardId, summary, attribution, samEnabled, startDraft = 
           <PasteLinks
             existing={toLinks(rows)}
             onAdd={(links) => setRows((rs) => [...filled(rs), ...toRows(links)])}
-            onClose={() => setPasting(false)}
+            onClose={() => {
+              setPasting(false)
+              focusAfter.current = 'paste'
+            }}
           />
         )}
       </fieldset>
@@ -541,7 +584,7 @@ function EditForm({ scorecardId, summary, attribution, samEnabled, startDraft = 
         </p>
       )}
 
-      <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-ink/10 pt-3">
+      <div className="sticky bottom-0 z-10 mt-3 flex flex-wrap items-center gap-2 border-t border-ink/10 bg-white pb-1 pt-3">
         {confirmDelete ? (
           <div className="flex w-full flex-wrap items-center gap-2">
             <p className="w-full text-sm leading-5">
@@ -557,7 +600,15 @@ function EditForm({ scorecardId, summary, attribution, samEnabled, startDraft = 
             >
               Delete
             </button>
-            <button ref={keepRef} type="button" className={clsx(secondaryButton, 'h-8')} onClick={() => setConfirmDelete(false)}>
+            <button
+              ref={keepRef}
+              type="button"
+              className={clsx(secondaryButton, 'h-8')}
+              onClick={() => {
+                setConfirmDelete(false)
+                focusAfter.current = 'delete'
+              }}
+            >
               Keep
             </button>
           </div>
@@ -565,6 +616,7 @@ function EditForm({ scorecardId, summary, attribution, samEnabled, startDraft = 
           <>
             {base.revision > 0 && (
               <button
+                ref={deleteRef}
                 type="button"
                 className="mr-auto h-8 rounded-md px-2 text-sm font-medium text-status-r hover:bg-status-r-bg"
                 onClick={() => setConfirmDelete(true)}

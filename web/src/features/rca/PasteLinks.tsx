@@ -9,10 +9,27 @@ const LIMIT_MESSAGE = {
   bytes: 'These links are too long together; shorten or remove some',
 } as const
 
-/** `3 lines are not https links: http://x, …`; a repeat of a listed link says so. */
-function rejectedSentence(lines: string[]): string {
-  const shown = lines.map((l) => (safeHref(l) ? `${l} (already listed)` : l)).join(', ')
-  return lines.length === 1 ? `1 line is not an https link: ${shown}` : `${lines.length} lines are not https links: ${shown}`
+/** `x and y`, `x, y and z`. */
+function list(items: string[]): string {
+  return items.length <= 1 ? (items[0] ?? '') : `${items.slice(0, -1).join(', ')} and ${items.at(-1)}`
+}
+
+/** `2 links added (INC-2049, 88412).` (mockup 3). */
+function addedSentence(added: RcaLink[]): string {
+  const titles = added.map((l) => l.title).join(', ')
+  return `${added.length === 1 ? '1 link' : `${added.length} links`} added (${titles}).`
+}
+
+/** `2 lines not added: http://x is not an https link; INC-2041 is already listed.` (mockup 3). */
+function notAddedSentence(r: PastedLinks): string {
+  const parts: string[] = []
+  if (r.notHttps.length > 0) parts.push(`${list(r.notHttps)} ${r.notHttps.length === 1 ? 'is not an https link' : 'are not https links'}`)
+  if (r.duplicates.length > 0) {
+    const titles = r.duplicates.map((d) => d.title)
+    parts.push(`${list(titles)} ${titles.length === 1 ? 'is already listed' : 'are already listed'}`)
+  }
+  const n = r.rejected.length
+  return `${n === 1 ? '1 line' : `${n} lines`} not added: ${parts.join('; ')}.`
 }
 
 /** The lines of `text` that did not become rows, so they can be fixed in place. */
@@ -88,8 +105,8 @@ export function PasteLinks({ existing, onAdd, onClose }: PasteLinksProps) {
       <div id={resultId} role="status" className="text-xs leading-4">
         {result && (
           <>
-            {added > 0 && <p className="mt-1 text-ink/80">{added === 1 ? '1 link added.' : `${added} links added.`}</p>}
-            {result.rejected.length > 0 && <p className="mt-1 font-medium text-status-r">{rejectedSentence(result.rejected)}</p>}
+            {added > 0 && <p className="mt-1 text-ink/80">{addedSentence(result.added)}</p>}
+            {result.rejected.length > 0 && <p className="mt-1 font-medium text-status-r">{notAddedSentence(result)}</p>}
             {result.limit && <p className="mt-1 font-medium text-status-r">{LIMIT_MESSAGE[result.limit]}</p>}
           </>
         )}

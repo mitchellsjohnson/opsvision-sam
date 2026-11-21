@@ -29,6 +29,7 @@ import {
   usePublishVersion,
   usePutMetricSummary,
   useReportDocument,
+  useSetMetricSummary,
   useSaveData,
   useVersions,
   useView,
@@ -227,6 +228,21 @@ describe('queries', () => {
       const card = client.getQueryData<{ pages: { summary: { state: string; text?: string; links: unknown[] } }[] }>(['attribution', 'sc', ref])
       expect(card?.pages[0]?.summary).toMatchObject({ state: 'missing', links: [], linksTotal: 0 })
       expect(card?.pages[0]?.summary.text).toBeUndefined()
+    })
+
+    it('useSetMetricSummary puts the stored summary (from a 409) on the summary and the cards, or the slot when it is gone', async () => {
+      const { client, wrapper } = setup()
+      const theirs = { ...uptimeSummary, text: 'Theirs.', revision: 3 }
+      client.setQueryData(['metric-summary', 'sc', 'uptime', '2026-M10', 'live'], uptimeSummary)
+      client.setQueryData(['attribution', 'sc', ref], { pages: [{ ...webhooksAttribution, summary: uptimeCardSummary }], pageParams: [{}] })
+      const { result } = renderHook(() => useSetMetricSummary('sc'), { wrapper })
+      result.current('uptime', '2026-M10', theirs)
+      expect(client.getQueryData<{ revision: number }>(['metric-summary', 'sc', 'uptime', '2026-M10', 'live'])?.revision).toBe(3)
+      const card = () => client.getQueryData<{ pages: { summary: { text?: string; state: string } }[] }>(['attribution', 'sc', ref])?.pages[0]?.summary
+      expect(card()?.text).toBe('Theirs.')
+      result.current('uptime', '2026-M10', null)
+      expect(card()).toMatchObject({ state: 'missing' })
+      expect(client.getQueryData(['metric-summary', 'sc', 'uptime', '2026-M10', 'live'])).toBeUndefined()
     })
 
     it('useMetricSummary reads one summary, live or of a published revision, and idles without a metric', async () => {

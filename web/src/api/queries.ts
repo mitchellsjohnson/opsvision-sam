@@ -1322,6 +1322,32 @@ export function useDeleteMetricSummary(sc: string) {
   })
 }
 
+/**
+ * Puts a summary as it is stored now (a 409's `current`) on the summary and
+ * every loaded card of the metric and period, so the next action is taken
+ * against it; null (deleted meanwhile) leaves the unwritten slot.
+ */
+export function useSetMetricSummary(sc: string) {
+  const queryClient = useQueryClient()
+  return useCallback(
+    (metric: string, period: string, summary: MetricSummary | null) => {
+      const periods = summaryPeriods(period)
+      if (summary) {
+        queryClient.setQueryData(keys.metricSummary(sc, metric, period), summary)
+        setCardSummaries(queryClient, sc, metric, periods, summary)
+        return
+      }
+      queryClient.removeQueries({ queryKey: ['metric-summary', sc, metric, period, 'live'] })
+      queryClient.setQueriesData<AttributionData>({ predicate: (q) => isAttributionOf(q.queryKey, sc, metric, periods) }, (prev) =>
+        prev
+          ? { ...prev, pages: prev.pages.map((p, i) => (i === 0 && p.summary ? { ...p, summary: unwrittenSlot(p.summary) } : p)) }
+          : prev,
+      )
+    },
+    [queryClient, sc],
+  )
+}
+
 /** A month's exec summaries, one row per metric (sorted by the server), paged by cursor; `state` defaults to `missing`. */
 export function useMetricSummaries(sc: string, q: MetricSummaryListQuery) {
   const api = useApi()

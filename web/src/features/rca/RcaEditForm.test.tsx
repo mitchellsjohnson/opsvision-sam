@@ -150,16 +150,25 @@ describe('RcaEditForm: links', () => {
     expect((screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled).toBe(true)
   })
 
-  it('hides Add link at 25 links and removes a link with its 32px button', async () => {
+  it('hides Add link at 25 rows and removes a link with its 32px button', async () => {
     const { user } = renderForm(uptimeSummary)
     for (let i = 0; i < 13; i++) await user.click(await screen.findByRole('button', { name: 'Add link' }))
-    expect(screen.getByText('25 / 25 links')).toBeTruthy()
+    // The counter counts links that will be saved, not blank rows (Minor 2).
+    expect(screen.getByText('12 / 25 links')).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Add link' })).toBeNull()
     const remove = screen.getByRole('button', { name: 'Remove link 25' })
     expect(remove.className).toContain('size-8')
     await user.click(remove)
-    expect(screen.getByText('24 / 25 links')).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Add link' })).toBeTruthy()
+    fireEvent.change(screen.getByRole('textbox', { name: 'Link 13 title' }), { target: { value: 'Runbook' } })
+    fireEvent.change(screen.getByRole('textbox', { name: 'Link 13 URL' }), { target: { value: 'https://docs.example/runbook' } })
+    expect(screen.getByText('13 / 25 links')).toBeTruthy()
+  })
+
+  it('counts a blank new row as no link', async () => {
+    const { user } = renderForm(missing)
+    await user.click(await screen.findByRole('button', { name: 'Add link' }))
+    expect(screen.getByText('0 / 25 links')).toBeTruthy()
   })
 
   it('flags a link listed twice', async () => {
@@ -181,7 +190,7 @@ describe('RcaEditForm: links', () => {
     expect((screen.getByRole('textbox', { name: 'Link 1 title' }) as HTMLInputElement).value).toBe('INC-2041')
     expect((screen.getByRole('textbox', { name: 'Link 2 title' }) as HTMLInputElement).value).toBe('88412')
     expect(screen.getByText('2 / 25 links')).toBeTruthy()
-    expect(screen.getByText('1 line is not an https link: http://x')).toBeTruthy()
+    expect(screen.getByText('1 line not added: http://x is not an https link.')).toBeTruthy()
     fireEvent.change(textbox(), { target: { value: 'Webhooks lost 7h (INC-2041).' } })
     await user.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(onDone).toHaveBeenCalled())
@@ -326,6 +335,79 @@ describe('RcaEditForm: races, deletes and drafts (Review Focus 2, 3)', () => {
   })
 })
 
+describe('RcaEditForm: focus never drops to the dialog (Important 2)', () => {
+  it('returns focus to Paste links when the paste box closes', async () => {
+    const { user } = renderForm(missing)
+    await user.click(await screen.findByRole('button', { name: 'Paste links' }))
+    await user.click(screen.getByRole('button', { name: 'Done' }))
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Paste links' }))
+  })
+
+  it('returns focus to Delete exec summary after Keep', async () => {
+    const { user } = renderForm(uptimeSummary)
+    await user.click(await screen.findByRole('button', { name: 'Delete exec summary' }))
+    await user.click(screen.getByRole('button', { name: 'Keep' }))
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Delete exec summary' }))
+  })
+
+  it('moves focus to the next link after Remove link, or to Add link after the last', async () => {
+    const { user } = renderForm(uptimeSummary)
+    await user.click(await screen.findByRole('button', { name: 'Remove link 1' }))
+    expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Link 1 title' }))
+    expect((document.activeElement as HTMLInputElement).value).toBe('INC-2041')
+    await user.click(screen.getByRole('button', { name: 'Remove link 11' }))
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Add link' }))
+  })
+
+  it('moves focus to the text after Show theirs, Undo and Discard', async () => {
+    const theirs = { ...uptimeSummary, text: 'Theirs.', links: [], linksTotal: 0, revision: 2 }
+    capturePut(() =>
+      HttpResponse.json(
+        { error: { code: 'conflict', message: 'Someone else changed this exec summary while you were editing.' }, current: theirs },
+        { status: 409 },
+      ),
+    )
+    server.use(
+      http.post(`${PUT_PATH}/draft`, () =>
+        HttpResponse.json({ id: 'd1', pending: false, text: 'Drafted.', createdAt: '2026-11-20T12:00:00Z', warnings: [] }, { status: 202 }),
+      ),
+    )
+    const { user } = renderForm(uptimeSummary, { samEnabled: true })
+    fireEvent.change(await screen.findByRole('textbox', { name: LABEL }), { target: { value: 'Mine.' } })
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+    await user.click(await screen.findByRole('button', { name: 'Show theirs' }))
+    expect(document.activeElement).toBe(textbox())
+
+    await user.click(screen.getByRole('button', { name: 'Draft with SAM' }))
+    await user.click(await screen.findByRole('button', { name: 'Use this draft' }))
+    await user.click(screen.getByRole('button', { name: 'Undo' }))
+    expect(document.activeElement).toBe(textbox())
+
+    await user.click(screen.getByRole('button', { name: 'Draft with SAM' }))
+    await user.click(await screen.findByRole('button', { name: 'Discard' }))
+    expect(document.activeElement).toBe(textbox())
+  })
+
+  it('returns focus to Draft with SAM after Cancel draft', async () => {
+    server.use(
+      http.get(`${PUT_PATH}/draft/draft-1`, async () => {
+        await delay('infinite')
+        return HttpResponse.json({})
+      }),
+    )
+    const { user } = renderForm(uptimeSummary, { samEnabled: true })
+    await user.click(await screen.findByRole('button', { name: 'Draft with SAM' }))
+    await user.click(await screen.findByRole('button', { name: 'Cancel draft' }))
+    expect(document.activeElement).toBe(await screen.findByRole('button', { name: 'Draft with SAM' }))
+  })
+
+  it('keeps Save and Cancel in view at the bottom of a long form', async () => {
+    renderForm(uptimeSummary)
+    const save = await screen.findByRole('button', { name: 'Save' })
+    expect(save.parentElement?.className).toContain('sticky')
+  })
+})
+
 describe('RcaEditForm in the card', () => {
   beforeEach(() => server.use(companyUnitsHandler))
 
@@ -367,6 +449,7 @@ describe('RcaEditForm in the card', () => {
     expect(within(dialog).getByText('Discard your changes?')).toBeTruthy()
     await user.click(within(dialog).getByRole('button', { name: 'Keep editing' }))
     expect((within(dialog).getByRole('textbox', { name: LABEL }) as HTMLTextAreaElement).value).toBe('Changed my mind.')
+    expect(document.activeElement).toBe(within(dialog).getByRole('textbox', { name: LABEL }))
     await user.click(within(dialog).getByRole('button', { name: 'Close' }))
     await user.click(within(dialog).getByRole('button', { name: 'Discard' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())

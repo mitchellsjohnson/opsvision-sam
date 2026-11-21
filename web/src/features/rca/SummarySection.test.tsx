@@ -92,8 +92,11 @@ describe('SummarySection: written', () => {
     const more = within(section).getByRole('button', { name: 'More' })
     expect(more.getAttribute('aria-expanded')).toBe('false')
     await user.click(more)
-    expect(await within(section).findByText(uptimeText)).toBeTruthy()
+    const whole = await within(section).findByText(uptimeText)
     expect(within(section).queryByRole('button', { name: 'More' })).toBeNull()
+    // More is gone, so focus moves to the text it revealed rather than dropping to the dialog.
+    await waitFor(() => expect(document.activeElement).toBe(whole))
+    expect(whole.getAttribute('tabindex')).toBe('-1')
   })
 
   it('labels the section with the metric and period on a child cell’s card', async () => {
@@ -183,6 +186,21 @@ describe('SummarySection: missing (required)', () => {
     expect(
       await screen.findByText("It is required because it is below 100% (94%). The month can't be published until it is written."),
     ).toBeTruthy()
+  })
+
+  it('uses a quieter block on a child cell’s card, with the same copy and actions', async () => {
+    renderSection(unwritten(uptimeSummary), { context: true })
+    const section = await screen.findByRole('region', { name: 'Exec summary · Uptime · Oct 2026' })
+    expect(section.className).not.toContain('bg-status-r-bg')
+    expect(section.className).toContain('bg-ink/[0.035]')
+    expect(within(section).getByText('No exec summary yet for Uptime, Oct 2026.')).toBeTruthy()
+    expect(within(section).getByRole('button', { name: 'Write exec summary' })).toBeTruthy()
+  })
+
+  it('keeps the red block on the company card', async () => {
+    renderSection(unwritten(uptimeSummary))
+    const section = await screen.findByRole('region', { name: 'Exec summary' })
+    expect(section.className).toContain('bg-status-r-bg')
   })
 
   it('has no axe violations', async () => {

@@ -101,8 +101,12 @@ export function linksBytes(links: readonly { title: string; url: string }[]): nu
 export interface PastedLinks {
   /** One row per valid, new https line, titled from its URL. */
   added: { title: string; url: string }[]
-  /** Lines that are not https links, or are already listed, as pasted (trimmed). */
+  /** Every line not added (not https, or already listed), as pasted (trimmed), in order. */
   rejected: string[]
+  /** Lines that are not https links. */
+  notHttps: string[]
+  /** Lines repeating a listed (or just-added) link, with that link's title. */
+  duplicates: { line: string; title: string }[]
   /** Which limit stopped the rest from being added: 25 links, or the 16 KB budget. */
   limit: 'count' | 'bytes' | null
 }
@@ -127,17 +131,26 @@ function pastedTitle(href: string): string {
  * budget; everything else is reported.
  */
 export function parsePastedLinks(text: string, existing: readonly { title: string; url: string }[]): PastedLinks {
-  const seen = new Set(existing.map((l) => safeHref(l.url.trim()) ?? l.url.trim()))
+  const seen = new Map(existing.map((l) => [safeHref(l.url.trim()) ?? l.url.trim(), l.title] as const))
   const added: PastedLinks['added'] = []
   const rejected: string[] = []
+  const notHttps: string[] = []
+  const duplicates: PastedLinks['duplicates'] = []
   let limit: PastedLinks['limit'] = null
   let bytes = linksBytes(existing)
   for (const raw of text.split(/\r?\n/)) {
     const line = raw.trim()
     if (line === '') continue
     const href = safeHref(line)
-    if (!href || seen.has(href)) {
+    if (!href) {
       rejected.push(line)
+      notHttps.push(line)
+      continue
+    }
+    const listed = seen.get(href)
+    if (listed !== undefined) {
+      rejected.push(line)
+      duplicates.push({ line, title: listed })
       continue
     }
     if (limit) continue
@@ -152,10 +165,10 @@ export function parsePastedLinks(text: string, existing: readonly { title: strin
       continue
     }
     bytes += size
-    seen.add(href)
+    seen.set(href, link.title)
     added.push(link)
   }
-  return { added, rejected, limit }
+  return { added, rejected, notHttps, duplicates, limit }
 }
 
 export interface WhyNameInput {

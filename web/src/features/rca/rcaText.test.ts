@@ -35,13 +35,15 @@ describe('parsePastedLinks', () => {
       'https://tracker.example/browse/INC-2041',
       'HTTPS://status.example',
     ].join('\n')
-    const { added, rejected, limit } = parsePastedLinks(pasted, [])
+    const { added, rejected, notHttps, duplicates, limit } = parsePastedLinks(pasted, [])
     expect(added).toEqual([
       { title: 'INC-2041', url: 'https://tracker.example/browse/INC-2041' },
       { title: '88412', url: 'https://oncall.example/incidents/88412' },
       { title: 'status.example', url: 'https://status.example' },
     ])
     expect(rejected).toEqual(['http://x', 'javascript:alert(1)', 'https://tracker.example/browse/INC-2041'])
+    expect(notHttps).toEqual(['http://x', 'javascript:alert(1)'])
+    expect(duplicates).toEqual([{ line: 'https://tracker.example/browse/INC-2041', title: 'INC-2041' }])
     expect(limit).toBeNull()
   })
 
@@ -51,6 +53,10 @@ describe('parsePastedLinks', () => {
     ])
     expect(added).toEqual([])
     expect(rejected).toEqual(['https://docs.example/a', 'https://user:pw@docs.example/b'])
+    // A repeat of a listed link is named by the title it already has.
+    expect(parsePastedLinks('https://docs.example/a', [{ title: 'A', url: 'https://docs.example/a' }]).duplicates).toEqual([
+      { line: 'https://docs.example/a', title: 'A' },
+    ])
   })
 
   it('decodes the title, drops a trailing slash and cuts it to 80 characters', () => {

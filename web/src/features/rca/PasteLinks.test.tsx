@@ -33,11 +33,10 @@ describe('PasteLinks (Review Focus 4)', () => {
       { title: 'INC-2041', url: 'https://tracker.example/browse/INC-2041' },
       { title: '88412', url: 'https://oncall.example/incidents/88412' },
     ])
-    expect(screen.getByText('2 links added.')).toBeTruthy()
+    expect(screen.getByText('2 links added (INC-2041, 88412).')).toBeTruthy()
+    // Duplicates are not called "not https" (Minor 1): the mockup's wording.
     expect(
-      screen.getByText(
-        '3 lines are not https links: http://x, javascript:alert(1), https://tracker.example/browse/INC-2041 (already listed)',
-      ),
+      screen.getByText('3 lines not added: http://x and javascript:alert(1) are not https links; INC-2041 is already listed.'),
     ).toBeTruthy()
     // What was not added stays in the box to fix.
     expect((box as HTMLTextAreaElement).value).toBe('http://x\njavascript:alert(1)\nhttps://tracker.example/browse/INC-2041')
@@ -48,7 +47,15 @@ describe('PasteLinks (Review Focus 4)', () => {
     await user.click(box)
     await user.paste('https://tracker.example/browse/INC-2041')
     expect(onAdd).not.toHaveBeenCalled()
-    expect(screen.getByText('1 line is not an https link: https://tracker.example/browse/INC-2041 (already listed)')).toBeTruthy()
+    expect(screen.getByText('1 line not added: INC-2041 is already listed.')).toBeTruthy()
+  })
+
+  it('words one https problem and one added link in the singular', async () => {
+    const { user, box } = renderPaste()
+    await user.click(box)
+    await user.paste('https://tracker.example/browse/INC-2049\nhttp://wiki.example/runbook')
+    expect(screen.getByText('1 link added (INC-2049).')).toBeTruthy()
+    expect(screen.getByText('1 line not added: http://wiki.example/runbook is not an https link.')).toBeTruthy()
   })
 
   it('adds up to 25 links and says so', async () => {

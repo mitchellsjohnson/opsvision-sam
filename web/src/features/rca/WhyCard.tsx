@@ -12,10 +12,13 @@ import {
   useMetricSummary,
   useOrgUnits,
   usePutMetricSummary,
+  useSetMetricSummary,
   type CellAttribution,
   type MetricSummary,
+  type MetricSummaryConflict,
   type RcaCellRef,
 } from '../../api/queries'
+import { ApiError } from '../../api/errors'
 import { parsePeriod, periodLabel as labelOf } from '../../lib/period'
 import { StatusChip, type StatusLevel } from '../../ui/status'
 import { primaryButton, secondaryButton } from '../admin/formUi'
@@ -81,10 +84,9 @@ function ValueRow({ attribution: a, scale }: { attribution: CellAttribution; sca
   )
 }
 
-/** Whether the summary in hand carries its whole text and every link, so it can be edited or re-saved as is. */
-function isWhole(s: MetricSummary): boolean {
-  if (s.state === 'missing' || s.state === 'optional') return true
-  return s.links.length >= s.linksTotal && s.text?.endsWith('…') !== true
+/** A written or stale summary: edits and `Still accurate` must start from its stored copy, never the card's excerpt. */
+function isWritten(s: MetricSummary): boolean {
+  return s.state === 'written' || s.state === 'stale'
 }
 
 /**
@@ -99,6 +101,9 @@ export function WhyCard({ scorecardId, cell, anchor, opts, onClosed }: WhyCardPr
   const headingId = useId()
   const headingRef = useRef<HTMLHeadingElement>(null)
   const keepRef = useRef<HTMLButtonElement>(null)
+  const bodyRef = useRef<HTMLDivElement>(null)
+  // Set when the focused control is about to disappear; applied after the next render.
+  const focusAfter = useRef<'heading' | 'summary' | 'text' | null>(null)
   const anchorRef = useMemo(() => ({ current: anchor }), [anchor])
 
   const [stack, setStack] = useState<Frame[]>([{ ref: cell }])
@@ -118,10 +123,12 @@ export function WhyCard({ scorecardId, cell, anchor, opts, onClosed }: WhyCardPr
   const units = useOrgUnits()
   const settings = useAssistantSettings(summary?.canEdit === true)
   const confirm = usePutMetricSummary(scorecardId)
-  // Editing and `Still accurate` need the whole summary; cards carry an excerpt and 3 links.
-  const needWhole = summary !== null && summary.canEdit && !isWhole(summary) && (editing || summary.stale)
+  const setStored = useSetMetricSummary(scorecardId)
+  // Editing and `Still accurate` always start from getMetricSummary: a card carries an excerpt and 3 links,
+  // and nothing in the excerpt reliably says it was cut. The query is shared with the section's.
+  const needWhole = summary !== null && summary.canEdit && isWritten(summary) && (editing || summary.stale)
   const whole = useMetricSummary(scorecardId, needWhole ? summary.metricKey : null, summary?.period ?? '')
-  const editable = summary === null ? null : isWhole(summary) ? summary : (whole.data ?? null)
+  const editable = summary === null ? null : isWritten(summary) ? (whole.data ?? null) : summary
   const company = units.data?.units.some((u) => u.id === frame.ref.subject && u.parentId === '') === true
   const scale = me.data?.tenant?.statusScale?.length ? me.data.tenant.statusScale : defaultStatusScale()
   const parsed = parsePeriod(frame.ref.period)
@@ -140,6 +147,18 @@ export function WhyCard({ scorecardId, cell, anchor, opts, onClosed }: WhyCardPr
   useEffect(() => {
     if (confirmDiscard) keepRef.current?.focus()
   }, [confirmDiscard])
+  useEffect(() => {
+    const target = focusAfter.current
+    if (!target) return
+    focusAfter.current = null
+    const el =
+      target === 'heading'
+        ? headingRef.current
+        : target === 'text'
+          ? bodyRef.current?.querySelector<HTMLElement>('textarea')
+          : bodyRef.current?.querySelector<HTMLElement>('[data-summary-text]')
+    ;(el ?? headingRef.current)?.focus()
+  })
 
   const requestClose = () => {
     if (editing && dirty) setConfirmDiscard(true)
@@ -164,8 +183,21 @@ export function WhyCard({ scorecardId, cell, anchor, opts, onClosed }: WhyCardPr
         expectedRevision: editable.revision ?? 0,
       },
       {
-        onSuccess: (saved) => changed('saved', saved),
-        onError: (e) => setConfirmError(e.message),
+        onSuccess: (saved) => {
+          // `Still accurate` goes away once the summary is no longer stale.
+          focusAfter.current = 'summary'
+          changed('saved', saved)
+        },
+        onError: (e) => {
+          if (e instanceof ApiError && e.status === 409) {
+            // Show their version, so the next Still accurate or Edit goes against the stored revision.
+            setStored(editable.metricKey, editable.period, (e.body as MetricSummaryConflict | undefined)?.current ?? null)
+            setConfirmError(`${e.message} Their version is shown; check it before confirming.`)
+            focusAfter.current = 'summary'
+            return
+          }
+          setConfirmError(e.message)
+        },
       },
     )
   }
@@ -229,6 +261,8 @@ export function WhyCard({ scorecardId, cell, anchor, opts, onClosed }: WhyCardPr
         samEnabled={samEnabled}
         confirming={confirm.isPending || (summary.stale && summary.canEdit && editable === null)}
         confirmError={confirmError}
+        loadError={summary.stale && whole.isError}
+        onRetry={() => void whole.refetch()}
         onWrite={() => startEditing(false)}
         onDraft={() => startEditing(true)}
         onConfirm={stillAccurate}
@@ -244,7 +278,15 @@ export function WhyCard({ scorecardId, cell, anchor, opts, onClosed }: WhyCardPr
     body = (
       <div role="alert" className="mt-3 text-sm leading-5">
         <p>{display ? `Couldn't load why this cell is ${display}.` : "Couldn't load why for this cell."}</p>
-        <button type="button" className={clsx(secondaryButton, 'mt-2 h-8')} onClick={() => void query.refetch()}>
+        <button
+          type="button"
+          className={clsx(secondaryButton, 'mt-2 h-8')}
+          onClick={() =>
+            void query.refetch().then(() => {
+              focusAfter.current = 'heading'
+            })
+          }
+        >
           Try again
         </button>
       </div>
@@ -280,7 +322,7 @@ export function WhyCard({ scorecardId, cell, anchor, opts, onClosed }: WhyCardPr
     )
   }
 
-  const card = (
+  const header = (
     <>
       <div className="flex items-start gap-2">
         <div className="min-w-0 flex-1">
@@ -288,7 +330,10 @@ export function WhyCard({ scorecardId, cell, anchor, opts, onClosed }: WhyCardPr
             <button
               type="button"
               className="-mx-1 mb-0.5 min-h-6 rounded-md px-1 text-xs font-medium text-accent-deep hover:bg-accent/[0.06]"
-              onClick={() => setStack((s) => s.slice(0, -1))}
+              onClick={() => {
+                setConfirmError(null)
+                setStack((s) => s.slice(0, -1))
+              }}
             >
               <span aria-hidden="true">‹</span> <span className="sr-only">Back to</span> {frame.parentName}
             </button>
@@ -326,14 +371,16 @@ export function WhyCard({ scorecardId, cell, anchor, opts, onClosed }: WhyCardPr
               ref={keepRef}
               type="button"
               className={clsx(secondaryButton, 'h-7 py-0 text-xs')}
-              onClick={() => setConfirmDiscard(false)}
+              onClick={() => {
+                focusAfter.current = 'text'
+                setConfirmDiscard(false)
+              }}
             >
               Keep editing
             </button>
           </div>
         </div>
       )}
-      {body}
     </>
   )
 
@@ -355,9 +402,17 @@ export function WhyCard({ scorecardId, cell, anchor, opts, onClosed }: WhyCardPr
             aria-describedby={undefined}
             onOpenAutoFocus={onOpenAutoFocus}
             onCloseAutoFocus={onCloseAutoFocus}
-            className="fixed inset-x-0 bottom-0 z-50 max-h-[85vh] overflow-y-auto rounded-t-xl bg-white p-4 pb-[max(16px,env(safe-area-inset-bottom))] text-ink shadow-lg"
+            className="fixed inset-x-0 bottom-0 z-50 flex max-h-[85vh] flex-col rounded-t-xl bg-white text-ink shadow-lg"
           >
-            {card}
+            {/* The header and Close stay put; the body is the sheet's only scroll area (spec §10.2). */}
+            <div className="shrink-0 px-4 pt-4">{header}</div>
+            <div
+              ref={bodyRef}
+              data-testid="why-body"
+              className="min-h-0 flex-1 overflow-y-auto px-4 pb-[max(16px,env(safe-area-inset-bottom))]"
+            >
+              {body}
+            </div>
           </Dialog.Content>
         </Dialog.Portal>
       </Dialog.Root>
@@ -378,7 +433,10 @@ export function WhyCard({ scorecardId, cell, anchor, opts, onClosed }: WhyCardPr
           onCloseAutoFocus={onCloseAutoFocus}
           className="z-50 max-h-[min(640px,calc(100vh-32px))] w-[400px] max-w-[calc(100vw-32px)] overflow-y-auto rounded-lg border border-ink/20 bg-white p-4 text-ink shadow-lg"
         >
-          {card}
+          {header}
+          <div ref={bodyRef} data-testid="why-body">
+            {body}
+          </div>
         </Popover.Content>
       </Popover.Portal>
     </Popover.Root>
