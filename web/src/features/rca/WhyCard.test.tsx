@@ -186,6 +186,14 @@ describe('WhyCard: uptime attribution', () => {
     expect(within(dialog).getByText('Webhook delivery queue saturated after config deploy').className).toContain('line-clamp-2')
   })
 
+  it('caps the desktop popover at the space Radix leaves on its side, so it never runs off the top', async () => {
+    setPhone(false)
+    const { dialog } = await openCard(WEBHOOKS)
+    const cap = dialog.className.split(/\s+/).find((c) => c.startsWith('max-h-'))
+    expect(cap).toBe('max-h-[min(640px,var(--radix-popover-content-available-height,calc(100vh-32px)))]')
+    expect(dialog.className).toContain('overflow-y-auto')
+  })
+
   it('uses an h3 in the desktop popover', async () => {
     setPhone(false)
     const { dialog } = await openCard(WEBHOOKS, { title: 'Webhooks · Uptime' })

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net/url"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -58,8 +59,19 @@ func (s *Server) AssistantRunner() (*assistant.Runner, error) {
 		Dispatcher: mcp.NewHTTPDispatcher(DispatchHandler(s), auth.ChannelAssistant),
 		Reports:    s,
 		Summaries:  s,
+		AppHosts:   s.appHosts,
 		Now:        s.now,
 	}, nil
+}
+
+// originHosts is the host of an http(s) origin, lowercase and without
+// port, as the one app host; none for "" or anything else.
+func originHosts(origin string) []string {
+	u, err := url.Parse(strings.TrimSpace(origin))
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Hostname() == "" {
+		return nil
+	}
+	return []string{strings.ToLower(u.Hostname())}
 }
 
 func apiAssistantContext(c *domain.AssistantContext) *AssistantContext {
@@ -128,6 +140,10 @@ func apiAssistantMessage(m domain.AssistantMessage, now time.Time) AssistantMess
 	}
 	if u := m.Usage; u != nil {
 		out.Usage = &AssistantUsage{Model: u.Model, InputTokens: u.InputTokens, OutputTokens: u.OutputTokens, ToolCalls: u.ToolCalls}
+	}
+	if m.Role == domain.AssistantRoleAssistant && m.Status == domain.AssistantStatusDone {
+		hosts := append([]string{}, m.AllowedHosts...)
+		out.AllowedHosts = &hosts
 	}
 	return out
 }

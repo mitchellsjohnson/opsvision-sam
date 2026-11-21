@@ -36,7 +36,7 @@ The variables group into modes:
 | `AUTH0_DOMAIN` | yes | none | Identity provider domain, for example `example.us.auth0.com`. Tokens must be issued by `https://<AUTH0_DOMAIN>/`, and their keys come from its JWKS. |
 | `AUTH0_AUDIENCE` | yes | none | API audience the access tokens are issued for, for example `https://api.ops.example.test`. |
 | `CLAIM_NAMESPACE` | no | `https://opsvision/` | Prefix of the email, name and email-verified claims in the token. |
-| `ALLOWED_ORIGIN` | no | none | The one browser origin allowed by CORS, for example `https://ops.example.test`. Not needed when the web app is served from the same origin. Unset without the web app logs a warning. |
+| `ALLOWED_ORIGIN` | no | none | The one browser origin allowed by CORS, for example `https://ops.example.test`. Not needed when the web app is served from the same origin. Unset without the web app logs a warning. Its host is also the app host Ask SAM's answers may link to (set it on the turn worker too); unset, only paths in the app stay links in answers. |
 | `AWS_REGION` | no | set by Lambda | Used for the default `OPSVISION_UPLOADS_ORIGIN`. The AWS SDK also reads it and the usual AWS credential variables. |
 
 ### Single organization

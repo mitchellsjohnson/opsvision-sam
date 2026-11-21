@@ -2477,6 +2477,13 @@ components:
           description: Why SAM could not answer, as a sentence to show the user; present only with status `error`.
         createdAt: { type: string, format: date-time }
         usage: { $ref: '#/components/schemas/AssistantUsage' }
+        allowedHosts:
+          type: array
+          items: { type: string }
+          description: |
+            On SAM's answers only: the hosts (lowercase, without port) its links may go to, the app's and
+            those of the URL fields of the turn's tool results. Clients show a link to any other host, or
+            with another scheme, as plain text. Empty for an answer stored before hosts were kept.
     AssistantThread:
       type: object
       required: [id, title, createdAt, updatedAt, messages]
@@ -4230,7 +4237,7 @@ components:
         - type: object
           required: [warnings]
           properties:
-            warnings: { type: array, items: { type: string }, description: 'Keys the draft names that were not in the data it was given.' }
+            warnings: { type: array, items: { type: string }, description: 'Keys the draft names that were not in the data it was given, then any URL it contains.' }
 
     # ---- Audit ------------------------------------------------------------
     AuditEntry:

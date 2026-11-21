@@ -2489,12 +2489,17 @@ func assistantThreadLifecycle(t *testing.T, s store.Store) {
 	answer := pending
 	answer.Text, answer.Status = "Because.", domain.AssistantStatusDone
 	answer.Usage = &domain.AssistantUsage{Model: "m", InputTokens: 10, OutputTokens: 5, ToolCalls: 2}
+	answer.AllowedHosts = []string{"app.example", "tracker.example"}
 	must(t, s.PutThread(ctx, tn, th, []domain.AssistantMessage{answer}, 2))
 	got, err = s.GetThread(ctx, tn, "user-a", "th-1")
 	must(t, err)
 	want.Revision = 3
 	want.Messages = []domain.AssistantMessage{q, answer}
 	wantEq(t, "answer updated", got, want)
+	got.Messages[1].AllowedHosts[0] = "evil.example"
+	reread, err := s.GetThread(ctx, tn, "user-a", "th-1")
+	must(t, err)
+	wantEq(t, "allowed hosts unchanged through a returned value", reread.Messages[1].AllowedHosts[0], "app.example")
 
 	// A thread without context round-trips with nil context.
 	bare := domain.AssistantThread{ID: "th-2", UserID: "user-a", Title: "New chat", CreatedAt: at(4), UpdatedAt: at(4)}

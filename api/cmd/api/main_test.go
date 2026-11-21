@@ -648,3 +648,16 @@ func TestNewSealer(t *testing.T) {
 		t.Fatalf("KMS sealer did not call KMS: %v", err)
 	}
 }
+
+// SAM's answers may link to the web app's host: ALLOWED_ORIGIN's.
+func TestServerAppHostsFromAllowedOrigin(t *testing.T) {
+	for origin, want := range map[string]string{"https://App.OpsVision.test": "app.opsvision.test", "": ""} {
+		r, err := newServer(appConfig{AllowedOrigin: origin}, memstore.New(), nil, nil, nil).AssistantRunner()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Join(r.AppHosts, ","); got != want {
+			t.Errorf("ALLOWED_ORIGIN %q: app hosts %q, want %q", origin, got, want)
+		}
+	}
+}

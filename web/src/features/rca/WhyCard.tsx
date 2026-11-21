@@ -431,7 +431,7 @@ export function WhyCard({ scorecardId, cell, anchor, opts, onClosed }: WhyCardPr
           aria-labelledby={headingId}
           onOpenAutoFocus={onOpenAutoFocus}
           onCloseAutoFocus={onCloseAutoFocus}
-          className="z-50 max-h-[min(640px,calc(100vh-32px))] w-[400px] max-w-[calc(100vw-32px)] overflow-y-auto rounded-lg border border-ink/20 bg-white p-4 text-ink shadow-lg"
+          className="z-50 max-h-[min(640px,var(--radix-popover-content-available-height,calc(100vh-32px)))] w-[400px] max-w-[calc(100vw-32px)] overflow-y-auto rounded-lg border border-ink/20 bg-white p-4 text-ink shadow-lg"
         >
           {header}
           <div ref={bodyRef} data-testid="why-body">

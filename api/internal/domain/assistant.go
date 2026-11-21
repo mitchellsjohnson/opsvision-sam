@@ -73,6 +73,10 @@ type AssistantMessage struct {
 	Error     string          `json:"error,omitempty"`
 	CreatedAt time.Time       `json:"createdAt"`
 	Usage     *AssistantUsage `json:"usage,omitempty"`
+	// AllowedHosts are the hosts an answer's links may go to: the app's and
+	// those of the URL fields of the turn's tool results. The web shows a
+	// link to any other host as text.
+	AllowedHosts []string `json:"allowedHosts,omitempty"`
 }
 
 // AssistantUsage is what one answer cost: the provider's token counts summed

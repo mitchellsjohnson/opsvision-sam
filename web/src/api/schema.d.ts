@@ -1586,6 +1586,12 @@ export interface components {
             /** Format: date-time */
             createdAt: string;
             usage?: components["schemas"]["AssistantUsage"];
+            /**
+             * @description On SAM's answers only: the hosts (lowercase, without port) its links may go to, the app's and
+             *     those of the URL fields of the turn's tool results. Clients show a link to any other host, or
+             *     with another scheme, as plain text. Empty for an answer stored before hosts were kept.
+             */
+            allowedHosts?: string[];
         };
         AssistantThread: {
             id: components["schemas"]["ServerId"];
@@ -2890,7 +2896,7 @@ export interface components {
         };
         /** @description A summary draft's shape, plus the keys the draft names that were not in the data it was given. */
         MetricSummaryDraft: components["schemas"]["ReportSummaryDraft"] & {
-            /** @description Keys the draft names that were not in the data it was given. */
+            /** @description Keys the draft names that were not in the data it was given, then any URL it contains. */
             warnings: string[];
         };
         AuditEntry: {

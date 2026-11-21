@@ -1177,6 +1177,20 @@ func TestFrozenSummaries(t *testing.T) {
 		t.Errorf("scoped viewer = %+v", s)
 	}
 	e.expectError(t, 403, "forbidden", scoped, "GET", summaryPath("uptime", "2026-M10")+"?revision=1", nil)
+	// A metric with no frozen summary reads the same to them, so the answer
+	// never tells which metrics were not perfect at company level.
+	unfrozen := ""
+	for _, it := range listMetricSummariesAs(t, e, admin, "period=2026-M10&state=all").Items {
+		if it.Period == "2026-M10" && !slices.ContainsFunc(doc.Summaries, func(x report.SummarySnapshot) bool { return x.MetricKey == it.MetricKey }) {
+			unfrozen = it.MetricKey
+			break
+		}
+	}
+	if unfrozen == "" {
+		t.Fatal("every metric has a frozen summary")
+	}
+	e.expectError(t, 403, "forbidden", scoped, "GET", summaryPath(unfrozen, "2026-M10")+"?revision=1", nil)
+	e.expectError(t, 404, "not_found", admin, "GET", summaryPath(unfrozen, "2026-M10")+"?revision=1", nil)
 
 	e.expectError(t, 404, "not_found", admin, "GET", demoSummaries+"?period=2026-M10&revision=2", nil)
 	e.expectError(t, 404, "not_found", admin, "GET", summaryPath("uptime", "2026-M10")+"?revision=2", nil)

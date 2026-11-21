@@ -58,6 +58,10 @@ type Deps struct {
 	// without Sealer or Provider) asking SAM answers 503
 	// assistant_unavailable.
 	Queue assistant.Queue
+	// AppOrigin is the web app's origin (https://app.example), when known.
+	// SAM's answers may link to its host; without it only paths in the app
+	// stay links.
+	AppOrigin string
 }
 
 // Server implements StrictServerInterface.
@@ -70,6 +74,7 @@ type Server struct {
 	sealer   assistant.Sealer
 	provider assistant.Provider
 	queue    assistant.Queue
+	appHosts []string
 }
 
 var _ StrictServerInterface = (*Server)(nil)
@@ -89,6 +94,7 @@ func NewServer(d Deps) *Server {
 		sealer:   d.Sealer,
 		provider: d.Provider,
 		queue:    d.Queue,
+		appHosts: originHosts(d.AppOrigin),
 	}
 	if s.calendar == nil {
 		s.calendar = func(t domain.Tenant) period.Calendar {

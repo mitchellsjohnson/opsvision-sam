@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -610,14 +611,41 @@ func TestRunAnswerLinksOnlyToToolResultHosts(t *testing.T) {
 	if strings.Contains(got.Text, "](https://evil.example") || strings.Contains(got.Text, "<https://evil.example") {
 		t.Fatalf("answer links evil.example: %q", got.Text)
 	}
+	// The web checks every link again against the hosts stored with the answer.
+	if !slices.Equal(got.AllowedHosts, []string{"tracker.example"}) {
+		t.Fatalf("allowed hosts = %q", got.AllowedHosts)
+	}
+}
+
+// Link syntax the rewriter cannot match leaves no link at all in the answer,
+// and the turn's hosts are stored once each, the app's first.
+func TestRunAnswerLinkBypassIsNeutralized(t *testing.T) {
+	e := newRunnerEnv(t,
+		toolReply("tu-1", "get_scorecard_view", `{"sc":"delivery","periods":["2026-M10"]}`, 10, 5),
+		toolReply("tu-2", "get_scorecard_view", `{"sc":"delivery","periods":["2026-M09"]}`, 10, 5),
+		textReply("See [INC-2041](https://tracker.example/browse/INC-2041) and [the [fix]](https://evil.example/x).", 10, 5),
+	)
+	e.runner.AppHosts = []string{"app.example"}
+	e.disp.body = []byte(`{"incidents":[{"key":"INC-2041","url":"https://tracker.example/browse/INC-2041"}]}`)
+	got := e.run(t)
+	if want := `See \[INC-2041\](https://tracker.example/browse/INC-2041) and \[the \[fix\]\](https://evil.example/x).`; got.Text != want {
+		t.Fatalf("answer = %q\nwant %q", got.Text, want)
+	}
+	if !slices.Equal(got.AllowedHosts, []string{"app.example", "tracker.example"}) {
+		t.Fatalf("allowed hosts = %q", got.AllowedHosts)
+	}
 }
 
 // With no tool call there are no hosts to link to.
 func TestRunAnswerWithoutToolsLinksNowhere(t *testing.T) {
 	e := newRunnerEnv(t, textReply("See [docs](https://docs.example/a) and [the board](/scorecards/delivery/view).", 1, 1))
 	e.runner.AppHosts = []string{"app.example"}
-	if got := e.run(t); got.Text != "See docs (docs.example) and [the board](/scorecards/delivery/view)." {
+	got := e.run(t)
+	if got.Text != "See docs (docs.example) and [the board](/scorecards/delivery/view)." {
 		t.Fatalf("answer = %q", got.Text)
+	}
+	if !slices.Equal(got.AllowedHosts, []string{"app.example"}) {
+		t.Fatalf("allowed hosts = %q", got.AllowedHosts)
 	}
 	e2 := newRunnerEnv(t, textReply("Open [the scorecard](https://app.example/scorecards/delivery).", 1, 1))
 	e2.runner.AppHosts = []string{"app.example"}

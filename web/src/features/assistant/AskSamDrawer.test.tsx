@@ -333,13 +333,22 @@ describe('Ask SAM drawer', () => {
     expect((within(drawer).getByRole('button', { name: 'Send' }) as HTMLButtonElement).disabled).toBe(true)
   })
 
-  it('links replies safely', async () => {
-    renderWithSam(OVERVIEW, { replies: [{ text: 'Read [statuses and bands](https://example.test/help).' }] })
+  it('links replies safely, only to the hosts of the turn', async () => {
+    renderWithSam(OVERVIEW, {
+      replies: [
+        {
+          text: 'Read [statuses and bands](https://example.test/help), not [a [b] c](https://evil.example/x).',
+          allowedHosts: ['example.test'],
+        },
+      ],
+    })
     const { user, drawer } = await openFromControlBar()
     await user.type(await composer(drawer), 'Help{Enter}')
     const link = await within(drawer).findByRole('link', { name: /statuses and bands/ }, POLL)
     expect(link.getAttribute('rel')).toBe('noopener noreferrer')
     expect(link.getAttribute('target')).toBe('_blank')
+    expect(within(drawer).queryByRole('link', { name: /a \[b\] c/ })).toBeNull()
+    expect(within(drawer).getByText(/a \[b\] c \(evil\.example\)/)).toBeTruthy()
   })
 
   it('without a key, shows the setup card with the privacy line', async () => {

@@ -366,11 +366,12 @@ func build(ctx context.Context, o options) (*app, error) {
 		}
 	})
 	srv := httpapi.NewServer(httpapi.Deps{
-		Store:    st,
-		Objects:  objs,
-		Sealer:   sealer,
-		Provider: assistant.NewHTTPProvider(o.assistantBaseURL, nil),
-		Queue:    turns,
+		Store:     st,
+		Objects:   objs,
+		Sealer:    sealer,
+		Provider:  assistant.NewHTTPProvider(o.assistantBaseURL, nil),
+		Queue:     turns,
+		AppOrigin: o.allowedOrigin,
 	})
 	if runner, err = srv.AssistantRunner(); err != nil {
 		return nil, err

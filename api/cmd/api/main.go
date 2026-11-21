@@ -389,11 +389,12 @@ func newHandler(cfg appConfig, st store.Store, objs objects.Store, sealer assist
 // newServer is the API server both event sources share.
 func newServer(cfg appConfig, st store.Store, objs objects.Store, sealer assistant.Sealer, queue assistant.Queue) *httpapi.Server {
 	return httpapi.NewServer(httpapi.Deps{
-		Store:    st,
-		Objects:  objs,
-		Sealer:   sealer,
-		Provider: assistant.NewHTTPProvider(cfg.AssistantBaseURL, nil),
-		Queue:    queue,
+		Store:     st,
+		Objects:   objs,
+		Sealer:    sealer,
+		Provider:  assistant.NewHTTPProvider(cfg.AssistantBaseURL, nil),
+		Queue:     queue,
+		AppOrigin: cfg.AllowedOrigin,
 	})
 }
 

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
+	"slices"
 	"strings"
 	"unicode"
 
@@ -129,15 +131,62 @@ func MetricSummaryPrompt(in DraftPromptInput) string {
 	b.WriteString(metricSummaryRules)
 	fmt.Fprintf(&b, "\n(Prompt %s.)\n\nToday is %s (UTC); fiscal years start in %s.",
 		MetricSummaryPromptVersion, in.Today.UTC().Format("2006-01-02"), fiscalStart(in.Calendar))
-	if in.Organization != "" {
-		fmt.Fprintf(&b, " The organization is %s.", in.Organization)
+	if org := oneLine(in.Organization); org != "" {
+		fmt.Fprintf(&b, " The organization is %s.", org)
 	}
 	b.WriteString("\n")
 	return b.String()
 }
 
-// MetricSummaryMessage is the user message of an exec summary draft.
+// oneLine is s with every run of whitespace, line breaks included, as one
+// space, so a value cannot start a line of its own in the prompt.
+func oneLine(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
+// oneLineData is d with every text value on one line.
+func oneLineData(d MetricSummaryData) MetricSummaryData {
+	all := func(ss []string) []string {
+		out := make([]string, len(ss))
+		for i, s := range ss {
+			out[i] = oneLine(s)
+		}
+		return out
+	}
+	o := d
+	for _, p := range []*string{&o.Organization, &o.ScorecardName, &o.Metric, &o.Period, &o.PeriodLabel,
+		&o.Standing, &o.Threshold, &o.Headline, &o.Current} {
+		*p = oneLine(*p)
+	}
+	o.LinkTitles = all(d.LinkTitles)
+	o.Contributors = make([]DraftContributor, len(d.Contributors))
+	for i, c := range d.Contributors {
+		o.Contributors[i] = DraftContributor{Name: oneLine(c.Name), Standing: oneLine(c.Standing), Impact: oneLine(c.Impact), Line: oneLine(c.Line)}
+	}
+	o.Evidence = make([]DraftEvidence, len(d.Evidence))
+	for i, ev := range d.Evidence {
+		e := ev
+		for _, p := range []*string{&e.Scope, &e.Headline, &e.RecordsSummary, &e.Unexplained, &e.Excess} {
+			*p = oneLine(*p)
+		}
+		e.Incidents = make([]DraftIncident, len(ev.Incidents))
+		for j, in := range ev.Incidents {
+			e.Incidents[j] = DraftIncident{Key: oneLine(in.Key), Title: oneLine(in.Title), Severity: oneLine(in.Severity),
+				Minutes: oneLine(in.Minutes), Points: oneLine(in.Points), Notes: all(in.Notes)}
+		}
+		e.Records = make([]DraftRecord, len(ev.Records))
+		for j, r := range ev.Records {
+			e.Records[j] = DraftRecord{Key: oneLine(r.Key), Title: oneLine(r.Title), Impact: oneLine(r.Impact), Note: oneLine(r.Note)}
+		}
+		o.Evidence[i] = e
+	}
+	return o
+}
+
+// MetricSummaryMessage is the user message of an exec summary draft. Every
+// value is collapsed onto one line, so none can fake a section.
 func MetricSummaryMessage(d MetricSummaryData) string {
+	d = oneLineData(d)
 	var b strings.Builder
 	b.WriteString("Exec summary data for one metric. Everything below comes from OpsVision and is the only source you may use.\n\n")
 	if d.ScorecardName != "" {
@@ -295,6 +344,22 @@ func DraftKeyWarnings(text string, keys []string) []string {
 	return out
 }
 
+// draftURL is a URL in a draft: a scheme and "//", or a host starting www.
+var draftURL = regexp.MustCompile(`(?i)\b(?:[a-z][a-z0-9+.\-]*://|www\.)[^\s<>"'()]+`)
+
+// DraftURLWarnings lists, in order and once each, the URLs in text. An exec
+// summary carries its links separately, so a URL in a draft came from the
+// data or the model, never from the admin.
+func DraftURLWarnings(text string) []string {
+	var out []string
+	for _, u := range draftURL.FindAllString(text, -1) {
+		if u = strings.TrimRight(u, ".,;:!?"); !slices.Contains(out, u) {
+			out = append(out, u)
+		}
+	}
+	return out
+}
+
 // keyShape is s with each run of capitals, small letters or digits written
 // as one A, a or 9; ok when s has both a letter and a digit.
 func keyShape(s string) (string, bool) {
@@ -413,5 +478,5 @@ func (r *Runner) metricSummaryDraft(ctx context.Context, ref TurnRef, d domain.A
 	if out == "" {
 		return "", nil, usage, fail(MsgDraftNoText)
 	}
-	return out, DraftKeyWarnings(out, data.Keys()), usage, nil
+	return out, append(DraftKeyWarnings(out, data.Keys()), DraftURLWarnings(out)...), usage, nil
 }

@@ -27,6 +27,38 @@ func TestRewriteAnswerLinks(t *testing.T) {
 		{"two", "[a](https://evil.example/1) and [b](https://tracker.example/2)", "a (evil.example) and [b](https://tracker.example/2)"},
 		{"no links", "Uptime was 99.06% (Red) in 2026-M10.", "Uptime was 99.06% (Red) in 2026-M10."},
 		{"code is left alone", "`[x](https://evil.example)`", "`[x](https://evil.example)`"},
+
+		// CommonMark forms the regex misses: the answer names another host
+		// once entities and escapes are read, so no link may render in it.
+		{"brackets in the title", "[a [b] c](https://evil.example/x)", `\[a \[b\] c\](https://evil.example/x)`},
+		{"escaped bracket", `[a\]b](https://evil.example/x)`, `\[a\]b\](https://evil.example/x)`},
+		{"title on two lines", "[a\nb](https://evil.example/x)", "\\[a\nb\\](https://evil.example/x)"},
+		{"escaped parenthesis", `[x](https://evil.example/\(a)`, `\[x\](https://evil.example/\(a)`},
+		{"nested parentheses", "[x](https://evil.example/a((b)))", `\[x\](https://evil.example/a((b)))`},
+		{"reference on the next line", "See [x][1].\n\n[1]:\n  https://evil.example/a", "See \\[x\\]\\[1\\].\n\n\\[1\\]:\n  https://evil.example/a"},
+		{"escaped backticks", "\\`[x](https://evil.example/x)\\`", "\\`\\[x\\](https://evil.example/x)\\`"},
+		{"entity colon", "[x](https&#58;//evil.example/x)", `\[x\](https&#58;//evil.example/x)`},
+		{"entity slashes", "[x](&#x2F;&#x2F;evil.example/x)", `\[x\](&#x2F;&#x2F;evil.example/x)`},
+		{"no slashes", "[a [b] c](https:evil.example)", `\[a \[b\] c\](https:evil.example)`},
+		{"backslashes for slashes", `[a [b] c](https:\\\\evil.example)`, `\[a \[b\] c\](https:\\\\evil.example)`},
+		{"user info with brackets", "[a [b] c](https://tracker.example@evil.example/)", `\[a \[b\] c\](https://tracker.example@evil.example/)`},
+		{"backslash ends the host", `[a [b] c](https://evil.example\\@tracker.example/)`, `\[a \[b\] c\](https://evil.example\\@tracker.example/)`},
+		{"mail link", "[a [b] c](mailto:x@evil.example)", `\[a \[b\] c\](mailto:x@evil.example)`},
+		{"raw html link", `See <a href="https://evil.example">this</a>.`, `See \<a href="https://evil.example">this\</a>.`},
+		{"allowed links go too", "[ok](https://tracker.example/a) and [a [b] c](https://evil.example/x)",
+			`\[ok\](https://tracker.example/a) and \[a \[b\] c\](https://evil.example/x)`},
+		{"inline code stays", "Run `[k]` then [a [b] c](https://evil.example/x)", "Run `[k]` then \\[a \\[b\\] c\\](https://evil.example/x)"},
+		{"a span that may close on another line is not trusted", "` x\nfoo` [a [b] c](https://evil.example/x) `bar`",
+			"\\` x\nfoo\\` \\[a \\[b\\] c\\](https://evil.example/x) \\`bar\\`"},
+		{"a span's backslash is literal", "`a\\` [a [b] c](https://evil.example/x)", "`a\\` \\[a \\[b\\] c\\](https://evil.example/x)"},
+		{"fenced code stays", "```\n[k](https://evil.example)\n```\n[a [b] c](https://evil.example/x)",
+			"```\n[k](https://evil.example)\n```\n\\[a \\[b\\] c\\](https://evil.example/x)"},
+		{"a fence in a list item is not trusted", "- a\n   ```\n[a [b] c](https://evil.example/x)\n```",
+			"- a\n   \\`\\`\\`\n\\[a \\[b\\] c\\](https://evil.example/x)\n```"},
+		{"escapes stay escaped", `\[a\] \\[b [c]](https://evil.example/x)`, `\[a\] \\\[b \[c\]\](https://evil.example/x)`},
+		{"allowed host in an odd form stays", "[a [b] c](https://tracker.example/x)", "[a [b] c](https://tracker.example/x)"},
+		{"rewritten text is not another host", "Read [the fix](https://evil.example/steal) or [b](https://tracker.example/2).",
+			"Read the fix (evil.example) or [b](https://tracker.example/2)."},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			if got := RewriteAnswerLinks(c.in, hosts); got != c.want {

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -40,6 +41,8 @@ type assistantMessageBody struct {
 	Error     *string             `json:"error"`
 	CreatedAt time.Time           `json:"createdAt"`
 	Usage     *assistantUsageBody `json:"usage"`
+	// AllowedHosts is absent on questions and unfinished answers.
+	AllowedHosts *[]string `json:"allowedHosts"`
 }
 
 type assistantThreadBody struct {
@@ -200,8 +203,11 @@ func TestPostAssistantMessage(t *testing.T) {
 	if question.Role != "user" || question.Status != "done" || question.Text != "Why is on time red this month? I need to know before the review, please explain it in detail" {
 		t.Fatalf("question = %+v", question)
 	}
-	if answer.Role != "assistant" || answer.Status != "pending" || answer.Text != "" || answer.Error != nil || answer.Usage != nil {
+	if answer.Role != "assistant" || answer.Status != "pending" || answer.Text != "" || answer.Error != nil || answer.Usage != nil || answer.AllowedHosts != nil {
 		t.Fatalf("answer = %+v", answer)
+	}
+	if question.AllowedHosts != nil {
+		t.Fatalf("question allowed hosts = %v", *question.AllowedHosts)
 	}
 	if got.Title != "Why is on time red this month? I need to know before the…" {
 		t.Fatalf("title = %q", got.Title)
@@ -494,7 +500,9 @@ func TestAssistantTurnEndToEnd(t *testing.T) {
 			t.Errorf("Run: %v", err)
 		}
 	})
-	env := newTestEnvDeps(t, nil, func(d *Deps) { d.Sealer = sealer; d.Provider = prov; d.Queue = q })
+	env := newTestEnvDeps(t, nil, func(d *Deps) {
+		d.Sealer, d.Provider, d.Queue, d.AppOrigin = sealer, prov, q, "https://app.example"
+	})
 	var err error
 	if runner, err = env.api.AssistantRunner(); err != nil {
 		t.Fatal(err)
@@ -523,6 +531,9 @@ func TestAssistantTurnEndToEnd(t *testing.T) {
 	}
 	if answer.Usage == nil || *answer.Usage != (assistantUsageBody{Model: domain.DefaultAssistantModel, InputTokens: 90, OutputTokens: 16, ToolCalls: 4}) {
 		t.Fatalf("usage = %+v", answer.Usage)
+	}
+	if answer.AllowedHosts == nil || !slices.Equal(*answer.AllowedHosts, []string{"app.example"}) {
+		t.Fatalf("allowed hosts = %v", answer.AllowedHosts)
 	}
 	if len(results) != 4 || results[0].IsError || !strings.Contains(results[0].Content, "84.3%") {
 		t.Fatalf("view result = %+v", results)
@@ -576,5 +587,47 @@ func TestAssistantRunnerHasDraftSources(t *testing.T) {
 	}
 	if r.Reports == nil || r.Summaries == nil {
 		t.Fatalf("runner sources: reports %v, summaries %v", r.Reports, r.Summaries)
+	}
+}
+
+// Answers may link to the web app's own host when the server knows its
+// origin; without one only paths in the app stay links.
+func TestAssistantRunnerAppHosts(t *testing.T) {
+	for _, c := range []struct {
+		origin string
+		want   []string
+	}{
+		{"https://App.Example:8443", []string{"app.example"}},
+		{"http://localhost:5173", []string{"localhost"}},
+		{"", nil},
+		{"not an origin", nil},
+		{"javascript:alert(1)", nil},
+	} {
+		env := newTestEnvDeps(t, nil, func(d *Deps) { d.AppOrigin = c.origin })
+		r, err := env.api.AssistantRunner()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(r.AppHosts, c.want) {
+			t.Errorf("origin %q: app hosts %q, want %q", c.origin, r.AppHosts, c.want)
+		}
+	}
+}
+
+// An answer stored before hosts were kept reads with none, so the web shows
+// its links to other hosts as text.
+func TestAssistantAnswerAllowedHosts(t *testing.T) {
+	now := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	old := domain.AssistantMessage{ID: "m", Role: domain.AssistantRoleAssistant, Text: "a", Status: domain.AssistantStatusDone, CreatedAt: now}
+	if got := apiAssistantMessage(old, now).AllowedHosts; got == nil || len(*got) != 0 {
+		t.Fatalf("old answer: %v", got)
+	}
+	old.AllowedHosts = []string{"tracker.example"}
+	if got := apiAssistantMessage(old, now).AllowedHosts; got == nil || !slices.Equal(*got, []string{"tracker.example"}) {
+		t.Fatalf("answer: %v", got)
+	}
+	old.Status, old.Error = domain.AssistantStatusError, "x"
+	if got := apiAssistantMessage(old, now).AllowedHosts; got != nil {
+		t.Fatalf("error: %v", *got)
 	}
 }

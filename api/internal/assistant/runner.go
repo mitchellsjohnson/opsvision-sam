@@ -146,14 +146,14 @@ func (r *Runner) Run(ctx context.Context, ref TurnRef) error {
 	}
 	tctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
-	text, usage, err := r.answer(tctx, ref, th, idx)
+	text, hosts, usage, err := r.answer(tctx, ref, th, idx)
 	var tf *turnFailure
 	switch {
 	case r.readsStale(created):
 		return r.finish(ctx, ref, func(m *domain.AssistantMessage) { stale(m); m.Usage = usage })
 	case err == nil:
 		return r.finish(ctx, ref, func(m *domain.AssistantMessage) {
-			m.Status, m.Text, m.Usage = domain.AssistantStatusDone, text, usage
+			m.Status, m.Text, m.Usage, m.AllowedHosts = domain.AssistantStatusDone, text, usage, hosts
 		})
 	case errors.As(err, &tf):
 		return r.finish(ctx, ref, func(m *domain.AssistantMessage) {
@@ -194,12 +194,13 @@ func messageIndex(ms []domain.AssistantMessage, id string) int {
 	return -1
 }
 
-// answer runs the model and tool loop for the message at idx. A *turnFailure
-// is a reason to show the user; any other error is to retry.
-func (r *Runner) answer(ctx context.Context, ref TurnRef, th domain.AssistantThread, idx int) (string, *domain.AssistantUsage, error) {
+// answer runs the model and tool loop for the message at idx, and returns
+// the answer and the hosts its links may go to. A *turnFailure is a reason
+// to show the user; any other error is to retry.
+func (r *Runner) answer(ctx context.Context, ref TurnRef, th domain.AssistantThread, idx int) (string, []string, *domain.AssistantUsage, error) {
 	js, err := r.start(ctx, ref, MsgNoKey, nil)
 	if err != nil {
-		return "", nil, err
+		return "", nil, nil, err
 	}
 	tenant, m, settings, key, p := js.tenant, js.membership, js.settings, js.key, js.principal
 	tools := ToolSet(r.Catalog)
@@ -219,11 +220,11 @@ func (r *Runner) answer(ctx context.Context, ref TurnRef, th domain.AssistantThr
 	}
 	usage := &domain.AssistantUsage{Model: settings.Model}
 	pctx := auth.WithPrincipal(ctx, p)
-	hosts := slices.Clone(r.AppHosts)
+	hosts := addHosts(nil, r.AppHosts...)
 	for round := 1; ; round++ {
 		resp, err := r.Provider.Messages(ctx, key, req)
 		if err != nil {
-			return "", usage, fail(providerFailure(ctx, err, settings.Model))
+			return "", nil, usage, fail(providerFailure(ctx, err, settings.Model))
 		}
 		usage.InputTokens += resp.Usage.InputTokens
 		usage.OutputTokens += resp.Usage.OutputTokens
@@ -242,15 +243,15 @@ func (r *Runner) answer(ctx context.Context, ref TurnRef, th domain.AssistantThr
 		answer := RewriteAnswerLinks(strings.Join(text, "\n\n"), hosts)
 		if len(uses) == 0 {
 			if answer == "" {
-				return "", usage, fail(MsgNoAnswer)
+				return "", nil, usage, fail(MsgNoAnswer)
 			}
-			return cut(answer), usage, nil
+			return cut(answer), hosts, usage, nil
 		}
 		if round > MaxToolRounds {
 			if answer == "" {
-				return RoundsNote, usage, nil
+				return RoundsNote, hosts, usage, nil
 			}
-			return cut(answer) + "\n\n" + RoundsNote, usage, nil
+			return cut(answer) + "\n\n" + RoundsNote, hosts, usage, nil
 		}
 		assistantTurn := replayable(resp.Content)
 		results := make([]Block, 0, len(uses))
@@ -258,12 +259,22 @@ func (r *Runner) answer(ctx context.Context, ref TurnRef, th domain.AssistantThr
 			usage.ToolCalls++
 			res, named := r.callTool(pctx, allowed, u)
 			results = append(results, res)
-			hosts = append(hosts, named...)
+			hosts = addHosts(hosts, named...)
 		}
 		req.Messages = append(req.Messages,
 			Message{Role: "assistant", Content: assistantTurn},
 			Message{Role: "user", Content: results})
 	}
+}
+
+// addHosts appends the hosts in more that hosts lacks, lowercase.
+func addHosts(hosts []string, more ...string) []string {
+	for _, h := range more {
+		if h = strings.ToLower(h); h != "" && !slices.Contains(hosts, h) {
+			hosts = append(hosts, h)
+		}
+	}
+	return hosts
 }
 
 // replayable is the model's reply as it is sent back on the next round:

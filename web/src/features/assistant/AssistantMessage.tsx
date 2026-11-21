@@ -1,5 +1,5 @@
 import { AlertCircle, RotateCcw } from 'lucide-react'
-import type { ReactNode } from 'react'
+import { useMemo, type ReactNode } from 'react'
 import Markdown, { type Components } from 'react-markdown'
 import type { AssistantMessage } from '../../api/queries'
 import { Sam } from '../../ui/Sam'
@@ -10,17 +10,33 @@ function Heading({ children }: { children?: ReactNode }) {
   return <p className="mb-1 mt-3 font-semibold first:mt-0">{children}</p>
 }
 
-const COMPONENTS: Components = {
-  // An unsafe URL arrives as an empty href; the link text stays, without the link.
-  a: ({ href, children }) =>
-    href ? (
-      <a href={href} target="_blank" rel="noopener noreferrer" className="font-medium text-accent-deep underline">
-        {children}
-        <span className="sr-only"> (opens in a new tab)</span>
-      </a>
-    ) : (
-      <>{children}</>
-    ),
+/** A host as the browser's URL parser writes it (lowercase, IDN as punycode, IPv6 in brackets); '' when it is not one. */
+function normalHost(host: string): string {
+  try {
+    return new URL(`https://${host.includes(':') ? `[${host}]` : host}/`).hostname
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * Whether a link may stay, read the way the browser will follow it: a link
+ * in the app, or an http(s) link to one of the allowed hosts. host is what
+ * to name when it may not ('' for another scheme).
+ */
+function linkTarget(href: string, allowed: ReadonlySet<string>): { keep: boolean; host: string } {
+  let url: URL
+  try {
+    url = new URL(href, window.location.href)
+  } catch {
+    return { keep: false, host: '' }
+  }
+  if (url.origin === window.location.origin) return { keep: true, host: '' }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') return { keep: false, host: '' }
+  return { keep: allowed.has(url.hostname), host: url.hostname }
+}
+
+const BASE_COMPONENTS: Components = {
   p: ({ children }) => <p className="my-2 first:mt-0 last:mb-0">{children}</p>,
   ul: ({ children }) => <ul className="my-2 list-disc space-y-1 pl-5 first:mt-0 last:mb-0">{children}</ul>,
   ol: ({ children }) => <ol className="my-2 list-decimal space-y-1 pl-5 first:mt-0 last:mb-0">{children}</ol>,
@@ -44,11 +60,34 @@ const COMPONENTS: Components = {
 /**
  * SAM's Markdown, rendered safely: raw HTML is dropped, images are not
  * loaded (a model-written image URL could carry data to another host), and
- * links open in a new tab without access to this one.
+ * links open in a new tab without access to this one. A link stays only
+ * when it goes to the app or to one of allowedHosts, the hosts of the
+ * turn's tool results (spec §9.4); any other shows as `title (host)`. This
+ * runs on the parser's own link, whatever Markdown form made it, which a
+ * check on the text cannot promise. An answer without allowedHosts (stored
+ * before they were kept) links only into the app.
  */
-export function AssistantMarkdown({ text }: { text: string }) {
+export function AssistantMarkdown({ text, allowedHosts = [] }: { text: string; allowedHosts?: readonly string[] }) {
+  const hostsKey = allowedHosts.join(' ')
+  const components = useMemo<Components>(() => {
+    const allowed = new Set(hostsKey.split(' ').map(normalHost).filter(Boolean))
+    return {
+      ...BASE_COMPONENTS,
+      // An unsafe URL arrives as an empty href; the link text stays, without the link.
+      a: ({ href, children }) => {
+        const { keep, host } = href ? linkTarget(href, allowed) : { keep: false, host: '' }
+        if (!keep) return host ? <>{children} ({host})</> : <>{children}</>
+        return (
+          <a href={href} target="_blank" rel="noopener noreferrer" className="font-medium text-accent-deep underline">
+            {children}
+            <span className="sr-only"> (opens in a new tab)</span>
+          </a>
+        )
+      },
+    }
+  }, [hostsKey])
   return (
-    <Markdown skipHtml disallowedElements={['img']} unwrapDisallowed components={COMPONENTS}>
+    <Markdown skipHtml disallowedElements={['img']} unwrapDisallowed components={components}>
       {text}
     </Markdown>
   )
@@ -119,7 +158,7 @@ export function AssistantMessageItem({ message, onRetry }: { message: AssistantM
       <div className="min-w-0 max-w-[90%]">
         <div className="break-words rounded-2xl rounded-tl-md border border-ink/10 bg-white px-3.5 py-2.5 text-sm leading-relaxed shadow-sm">
           <span className="sr-only">SAM: </span>
-          <AssistantMarkdown text={message.text} />
+          <AssistantMarkdown text={message.text} allowedHosts={message.allowedHosts} />
         </div>
         {message.usage && <UsageLine usage={message.usage} />}
       </div>

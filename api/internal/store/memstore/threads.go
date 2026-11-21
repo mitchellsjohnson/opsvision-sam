@@ -2,6 +2,7 @@ package memstore
 
 import (
 	"context"
+	"slices"
 
 	"opsvision/internal/domain"
 	"opsvision/internal/store"
@@ -29,6 +30,7 @@ func cloneMessage(m domain.AssistantMessage) domain.AssistantMessage {
 		u := *m.Usage
 		m.Usage = &u
 	}
+	m.AllowedHosts = slices.Clone(m.AllowedHosts)
 	return m
 }
 

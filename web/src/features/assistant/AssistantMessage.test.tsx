@@ -40,7 +40,10 @@ describe('AssistantMarkdown', () => {
 
   it('opens links in a new tab without access to this one, and drops script URLs', () => {
     const { container } = render(
-      <AssistantMarkdown text={'See [the guide](https://example.test/guide) or [this](javascript:alert(1)).'} />,
+      <AssistantMarkdown
+        text={'See [the guide](https://example.test/guide) or [this](javascript:alert(1)).'}
+        allowedHosts={['example.test']}
+      />,
     )
     const link = screen.getByRole('link', { name: /the guide/ })
     expect(link.getAttribute('href')).toBe('https://example.test/guide')
@@ -60,6 +63,66 @@ describe('AssistantMarkdown', () => {
     expect(container.textContent).toBe('Open this page now.')
   })
 
+  describe('links only to the hosts of the turn (spec §9.4)', () => {
+    const allowed = ['tracker.example', 'Docs.Example']
+
+    it('keeps links to allowed hosts, in any case, and paths in the app', () => {
+      render(
+        <AssistantMarkdown
+          text={`[INC-2041](https://tracker.example/browse/INC-2041), [pm](https://DOCS.example/pm), [the board](/scorecards/delivery/view), [here](${window.location.origin}/x) and [odd [title]](https://tracker.example/y).`}
+          allowedHosts={allowed}
+        />,
+      )
+      const hrefs = screen.getAllByRole('link').map((a) => a.getAttribute('href'))
+      expect(hrefs).toEqual([
+        'https://tracker.example/browse/INC-2041',
+        'https://DOCS.example/pm',
+        '/scorecards/delivery/view',
+        `${window.location.origin}/x`,
+        'https://tracker.example/y',
+      ])
+    })
+
+    it('shows a link to another host as its title and the host, not a link', () => {
+      const { container } = render(
+        <AssistantMarkdown text={'Read [the fix](https://evil.example/steal?x=1) now.'} allowedHosts={allowed} />,
+      )
+      expect(container.querySelector('a')).toBeNull()
+      expect(container.textContent).toBe('Read the fix (evil.example) now.')
+    })
+
+    it('treats an answer stored without hosts as having none', () => {
+      const { container } = render(<AssistantMarkdown text={'See [docs](https://docs.example/a) and [the board](/x).'} />)
+      expect(container.textContent).toBe('See docs (docs.example) and the board (opens in a new tab).')
+      expect(screen.getByRole('link', { name: /the board/ }).getAttribute('href')).toBe('/x')
+    })
+
+    // Every CommonMark form the server's regex missed, as the review found them.
+    it.each([
+      ['brackets in the title', '[a [b] c](https://evil.example/x)', 'a [b] c (evil.example)'],
+      ['an escaped bracket', '[a\\]b](https://evil.example/x)', 'a]b (evil.example)'],
+      ['a title on two lines', '[a\nb](https://evil.example/x)', 'a\nb (evil.example)'],
+      ['an escaped parenthesis', '[x](https://evil.example/\\(a)', 'x (evil.example)'],
+      ['nested parentheses', '[x](https://evil.example/a((b)))', 'x (evil.example)'],
+      ['a reference with the URL on the next line', 'See [x][1].\n\n[1]:\n  https://evil.example/a', 'See x (evil.example).'],
+      ['escaped backticks', '\\`[x](https://evil.example/x)\\`', '`x (evil.example)`'],
+      ['an entity colon', '[x](https&#58;//evil.example/x)', 'x (evil.example)'],
+      ['entity slashes', '[x](&#x2F;&#x2F;evil.example/x)', 'x (evil.example)'],
+      ['no slashes', '[x](https:evil.example)', 'x (evil.example)'],
+      // The renderer percent-encodes the backslashes, so this one names no host at all.
+      ['backslashes for slashes', '[x](https:\\\\\\\\evil.example)', 'x'],
+      ['a protocol-relative URL', '[x](//evil.example/a)', 'x (evil.example)'],
+      ['user info', '[x](https://tracker.example@evil.example/a)', 'x (evil.example)'],
+      ['a subdomain', '[x](https://a.tracker.example/y)', 'x (a.tracker.example)'],
+      ['an autolink', '<https://evil.example/a>', 'https://evil.example/a (evil.example)'],
+      ['a mail link', '[x](mailto:x@evil.example)', 'x'],
+    ])('shows %s as text', (_, text, shown) => {
+      const { container } = render(<AssistantMarkdown text={text} allowedHosts={allowed} />)
+      expect(container.querySelector('a')).toBeNull()
+      expect(container.textContent).toBe(shown)
+    })
+  })
+
   it('renders headings as bold text, keeping the page outline', () => {
     render(<AssistantMarkdown text={'# Big\n\n## Smaller'} />)
     expect(screen.queryByRole('heading')).toBeNull()
@@ -72,6 +135,18 @@ describe('AssistantMessageItem', () => {
     renderItem({ message: message({ text: 'Why is it red?\nAnd since when?' }) })
     const item = screen.getByRole('listitem')
     expect(item.textContent).toBe('You: Why is it red?\nAnd since when?')
+  })
+
+  it('links an answer only to the hosts stored with it', () => {
+    renderItem({
+      message: message({
+        role: 'assistant',
+        text: '[INC-2041](https://tracker.example/a) and [the fix](https://evil.example/b)',
+        allowedHosts: ['tracker.example'],
+      }),
+    })
+    expect(screen.getAllByRole('link').map((a) => a.getAttribute('href'))).toEqual(['https://tracker.example/a'])
+    expect(screen.getByText(/the fix \(evil\.example\)/)).toBeTruthy()
   })
 
   it('shows an answer with its model and tokens', async () => {

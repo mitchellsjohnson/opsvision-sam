@@ -10,8 +10,8 @@ type Draft = components['schemas']['ReportSummaryDraft']
 
 export const USAGE: Usage = { model: 'claude-haiku-5-5', inputTokens: 1234, outputTokens: 56, toolCalls: 2 }
 
-/** How the fake SAM answers a question: Markdown text, or an error sentence. */
-export type Reply = { text: string } | { error: string }
+/** How the fake SAM answers a question: Markdown text (and the hosts its links may go to), or an error sentence. */
+export type Reply = { text: string; allowedHosts?: string[] } | { error: string }
 
 export interface AssistantSeen {
   posts: { threadId: string; body: unknown }[]
@@ -89,7 +89,8 @@ export function assistantHandlers(options: AssistantFakeOptions = {}) {
     reads += 1
     if (reads <= (options.pendingReads ?? 0)) return
     const reply = replies[Math.min(asked - 1, replies.length - 1)]!
-    if ('text' in reply) Object.assign(pending, { status: 'done', text: reply.text, usage: USAGE })
+    if ('text' in reply)
+      Object.assign(pending, { status: 'done', text: reply.text, usage: USAGE, allowedHosts: reply.allowedHosts ?? [] })
     else Object.assign(pending, { status: 'error', error: reply.error, usage: USAGE })
   }
 

@@ -52,14 +52,16 @@ func (s *Server) GetMetricSummary(ctx context.Context, req GetMetricSummaryReque
 		if err != nil {
 			return nil, err
 		}
+		// Access first: whether a metric has a frozen summary tells which
+		// metrics were not perfect at company level.
+		if !f.readable(report.SummarySnapshot{MetricKey: req.Metric}) {
+			return nil, forbidden("you may not read this exec summary")
+		}
 		i := slices.IndexFunc(f.doc.Summaries, func(x report.SummarySnapshot) bool {
 			return x.MetricKey == req.Metric && x.Period == per.String()
 		})
 		if i < 0 {
 			return nil, notFound("this revision has no exec summary for " + req.Metric + " in " + per.String())
-		}
-		if !f.readable(f.doc.Summaries[i]) {
-			return nil, forbidden("you may not read this exec summary")
 		}
 		return GetMetricSummary200JSONResponse(f.summary(f.doc.Summaries[i], true)), nil
 	}
