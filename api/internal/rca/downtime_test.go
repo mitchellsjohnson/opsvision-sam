@@ -1,7 +1,9 @@
 package rca_test
 
 import (
+	"encoding/json"
 	"math"
+	"slices"
 	"testing"
 	"time"
 
@@ -281,6 +283,20 @@ func TestCountDowntimeMixed(t *testing.T) {
 			t.Fatalf("%s: rounded minutes sum to %d, want %v", display, got, d.ReportedMinutes)
 		}
 	}
+	// The exact October parts, in evidence order with the remainder last:
+	// floors 56+26+25+11+11+5+3+3 = 140; the three spare hundredths go to the
+	// largest remainders (INC-2049 .92, the ongoing incident .88, B .60).
+	var octKeys []string
+	for _, c := range oct.Items {
+		octKeys = append(octKeys, c.Incident.Key)
+	}
+	if want := []string{"INC-2041", "88533", "INC-2047", "INC-1203", "A", "B", "INC-2049"}; !slices.Equal(octKeys, want) {
+		t.Fatalf("Oct evidence order = %v, want %v", octKeys, want)
+	}
+	if got, want := rca.RoundParts(pointsAndRemainder(oct), 1.43, 2), []float64{0.56, 0.27, 0.25, 0.11, 0.11, 0.06, 0.04, 0.03}; !slices.Equal(got, want) {
+		t.Fatalf("Oct rounded points = %v, want %v", got, want)
+	}
+
 	// The tie in Oct: INC-2047 (112.5) and INC-2049 (17.5) both have .5; the
 	// one with more counted minutes takes the unit.
 	mins := []float64{}
@@ -299,6 +315,59 @@ func TestCountDowntimeMixed(t *testing.T) {
 				t.Errorf("INC-2049 rounds to %v, want 17", rounded[i])
 			}
 		}
+	}
+}
+
+func TestOverlapAcrossMonthBoundary(t *testing.T) {
+	x := inc("X", "2026-09-30T23:30", "2026-10-01T00:30", 1)
+	y := inc("Y", "2026-09-30T23:45", "2026-10-01T00:15", 1)
+	// Each month splits only its own overlap: 15 minutes on each side of midnight.
+	for _, m := range []int{9, 10} {
+		w := rca.PeriodWindow(cal, month(2026, m), time.UTC)
+		d := rca.CountDowntime(w, w.Minutes(), 30, []rca.Incident{x, y})
+		a, b := item(t, d, "X"), item(t, d, "Y")
+		if !near(a.Minutes, 22.5) || !near(b.Minutes, 7.5) || !near(d.Explained, 30) {
+			t.Fatalf("month %d: X %v, Y %v, explained %v; want 22.5, 7.5, 30", m, a.Minutes, b.Minutes, d.Explained)
+		}
+		if a.Overlaps["Y"] != 15 || b.Overlaps["X"] != 15 {
+			t.Fatalf("month %d: overlaps %v / %v, want 15 within the month", m, a.Overlaps, b.Overlaps)
+		}
+		if a.TotalMinutes != 60 || b.TotalMinutes != 30 {
+			t.Fatalf("month %d: totals %v / %v", m, a.TotalMinutes, b.TotalMinutes)
+		}
+	}
+}
+
+func TestNegativeMinutesNeverReduceTheExplained(t *testing.T) {
+	oct := rca.PeriodWindow(cal, month(2026, 10), time.UTC)
+	neg := rca.Incident{Source: "tracker", ExternalID: "D-1", Key: "D-1", State: domain.StateDone,
+		Minutes: fp(-30), CreatedAt: date("2026-10-09"), Cutoff: farCutoff}
+	d := rca.CountDowntime(oct, 44640, 60, []rca.Incident{neg, inc("INC-1", "2026-10-05T00:00", "2026-10-05T00:45", 1)})
+	if c := item(t, d, "D-1"); c.Minutes != 0 || c.TotalMinutes != 0 || !c.DurationOnly {
+		t.Fatalf("negative duration = %+v, want 0 counted", c)
+	}
+	if d.Explained != 45 || d.Unexplained != 15 {
+		t.Fatalf("explained %v, unexplained %v; want 45, 15", d.Explained, d.Unexplained)
+	}
+}
+
+func TestLongOngoingIncidentTotal(t *testing.T) {
+	old := rca.Incident{Source: "oncall", ExternalID: "O-1", Key: "O-1", State: domain.StateOpen,
+		Start: tp("2025-01-01T00:00"), CreatedAt: date("2025-01-01"), Cutoff: rca.Cutoff(date("2026-11-14"))}
+	d := rca.CountDowntime(rca.PeriodWindow(cal, month(2026, 1), time.UTC), 44640, 44640, []rca.Incident{old})
+	c := item(t, d, "O-1")
+	if want := ts("2026-11-15T00:00").Sub(ts("2025-01-01T00:00")).Minutes(); c.TotalMinutes != want || c.Minutes != 44640 || !c.Ongoing {
+		t.Fatalf("open since 2025: %+v, want total %v (to the cutoff)", c, want)
+	}
+	// Seen from a month long before its cutoff, its total still runs to the cutoff.
+	early := item(t, rca.CountDowntime(rca.PeriodWindow(cal, month(2025, 1), time.UTC), 44640, 44640, []rca.Incident{old}), "O-1")
+	if want := ts("2026-11-15T00:00").Sub(ts("2025-01-01T00:00")).Minutes(); early.TotalMinutes != want || early.Minutes != 44640 || !early.EndedAfter {
+		t.Fatalf("Jan 2025 view: %+v, want total %v", early, want)
+	}
+	// With no cutoff, an ongoing incident runs to the window end.
+	old.Cutoff = time.Time{}
+	if c := rca.CountDowntime(rca.PeriodWindow(cal, month(2026, 1), time.UTC), 44640, 0, []rca.Incident{old}).Items[0]; c.EndedAfter || c.Minutes != 44640 {
+		t.Fatalf("no cutoff: %+v", c)
 	}
 }
 
@@ -452,5 +521,18 @@ func TestFromRecord(t *testing.T) {
 	}
 	if _, err := rca.FromRecord("x", "y", domain.RecordFields{Attributes: map[string]any{"startedAt": 5}}, cut); err == nil {
 		t.Fatal("a wrong-typed startedAt did not fail")
+	}
+
+	// Numbers in any form the records engine accepts.
+	other, err := rca.FromRecord("x", "y", domain.RecordFields{State: domain.StateDone,
+		Attributes: map[string]any{"minutesDown": 30, "impactPct": json.Number("50")}}, cut)
+	if err != nil || other.Minutes == nil || *other.Minutes != 30 || other.Impact != 0.5 {
+		t.Fatalf("int and json.Number attributes = %+v, %v", other, err)
+	}
+	if _, err := rca.FromRecord("x", "y", domain.RecordFields{Attributes: map[string]any{"impactPct": "half"}}, cut); err == nil {
+		t.Fatal("a wrong-typed impactPct did not fail")
+	}
+	if _, err := rca.FromRecord("x", "y", domain.RecordFields{Attributes: map[string]any{"minutesDown": true}}, cut); err == nil {
+		t.Fatal("a wrong-typed minutesDown did not fail")
 	}
 }

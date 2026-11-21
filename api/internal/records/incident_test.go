@@ -220,6 +220,24 @@ func TestIncidentRowErrors(t *testing.T) {
 	}
 }
 
+func TestIncidentNegativeMinutesDown(t *testing.T) {
+	rt := IncidentPreset()
+	tpl := incidentTemplates(t)["tracker"]
+	tpl.Attributes["minutesDown"] = FieldMap{Column: "Down", Unit: "s"}
+	headers := []string{"Issue key", "Issue Type", "Summary", "Priority", "Status", "Components", "Incident start", "Incident end", "Customer impact", "Created", "Resolved", "Down"}
+	row := func(id, down string) []string {
+		return []string{id, "Incident", "x", "SEV-2", "Resolved", "Webhooks", "2026-10-03 14:05", "2026-10-03 15:00", "100%", "2026-10-03 14:09", "2026-10-04 10:00", down}
+	}
+	rows, _, problems := Normalize(tpl, rt, csvTable(headers, row("INC-1", "-1800"), row("INC-2", "0"), row("INC-3", "1800")))
+	if len(rows) != 2 || rows[0].ExternalID != "INC-2@Webhooks" || rows[1].Fields.Attributes["minutesDown"] != float64(30) {
+		t.Fatalf("rows = %+v, problems = %+v", rows, problems)
+	}
+	if len(problems) != 1 || problems[0].RowNum != 2 || problems[0].Field != "minutesDown" || problems[0].Value != "-1800" ||
+		problems[0].Message != "Minutes down must be 0 or more" || problems[0].Column != "Down" {
+		t.Fatalf("problems = %+v", problems)
+	}
+}
+
 func TestValidateExplainWhere(t *testing.T) {
 	rt := IncidentPreset()
 	rt.Explains = []domain.ExplainLink{

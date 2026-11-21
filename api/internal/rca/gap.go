@@ -59,8 +59,11 @@ type RecordSummary struct {
 // key (nil, or an empty answer, shows the key). Threshold is the sentence
 // that decides the status (the web's thresholdText at the focus surface).
 // Downtime, when set, gives the reported minutes; FromValue says they were
-// derived from the displayed value rather than read from a measure.
-// ComparedLabel names a change rule's comparison period (Sep).
+// derived from the displayed value rather than read from a measure. It is
+// ignored unless the metric is a DowntimeMetric. ComparedLabel names a change
+// rule's comparison period (Sep). BestStatus is the cell's best status
+// (BestStatus of its rule and the tenant's scale); empty means the band at
+// the good extreme.
 type GapInput struct {
 	Metric        domain.Metric
 	Cell          CellFacts
@@ -70,15 +73,18 @@ type GapInput struct {
 	FromValue     bool
 	Records       *RecordSummary
 	ComparedLabel string
+	BestStatus    string
 }
 
 // GapOf returns the cell's gap, measured from its displayed value: points
 // short of 100% for downtime, ratio and higher-is-better percent metrics;
-// percent over plan for money plans (only when over); the distance past the
-// best band's edge for the rest, the best step's minimum for scale rules,
-// and the change that set the status for change rules. A cell at its best
-// status but short of 100% says no RCA is needed. A cell with no gap, or no
-// readable value, is KindNone with an empty headline.
+// percent over plan for money plans (only when over); the best step's
+// minimum for scale rules; the change that set the status for change rules;
+// and the distance past the best band's edge for the rest. A cell whose
+// exact value is past the best edge while its displayed value sits on it
+// is 1 unit "just" past it. A cell at its best status but short of 100% says
+// no RCA is needed. A cell with no gap, or no readable value, is KindNone
+// with an empty headline.
 func GapOf(in GapInput) Gap {
 	m := in.Metric
 	d := Decimals(m.Format)
@@ -101,21 +107,33 @@ func GapOf(in GapInput) Gap {
 	higher := m.Direction != domain.DirectionLowerBetter
 
 	switch {
-	case m.ChartKind == "uptime" || in.Downtime != nil:
+	case DowntimeMetric(m) && (m.ChartKind == "uptime" || in.Downtime != nil):
 		return idealGap(g, in, KindDowntime, label)
 	case m.Rule.Type == domain.RuleChange:
 		return changeGap(g, in, label)
 	case m.ChartKind == "money_plan":
 		return planGap(g, in)
+	case m.Rule.Type == domain.RuleScale:
+		return scaleGap(g, in, label)
 	case strings.HasPrefix(m.Format, "percent") && higher:
 		if _, _, ok := RatioParts(m.Formula); ok {
 			return idealGap(g, in, KindRatio, label)
 		}
 		return idealGap(g, in, KindPercent, label)
-	case m.Rule.Type == domain.RuleScale:
-		return scaleGap(g, in, label)
 	}
 	return bandGap(g, in, higher, label)
+}
+
+// pastBest reports whether the cell is judged past its best status: by the
+// engine on its exact value when it has one, else by its status. A cell
+// whose status was overridden while its value sits in the best band is not
+// past it.
+func pastBest(in GapInput, rule domain.StatusRule, best string) bool {
+	if in.Cell.Value != nil {
+		s, _ := engine.EvalStatus(rule, in.Metric.Direction, "", *in.Cell.Value, nil)
+		return s != "" && s != best
+	}
+	return in.Cell.Status != "" && in.Cell.Status != best
 }
 
 // idealGap is the gap to 100% for downtime, ratio and percent metrics.
@@ -128,8 +146,11 @@ func idealGap(g Gap, in GapInput, kind string, label func(string) string) Gap {
 	g.Kind, g.Ideal, g.Units = kind, &ideal, &units
 	head := unitsText(units, g.Decimals) + " pts short of 100%"
 	m := in.Metric
-	best, _, _, hasBest := bestBand(m.Rule.Bands, true)
-	if m.Rule.Type == domain.RuleBands && hasBest && in.Cell.Status == best {
+	best := in.BestStatus
+	if best == "" && m.Rule.Type == domain.RuleBands {
+		best, _, _, _ = bestBand(m.Rule.Bands, true)
+	}
+	if best != "" && in.Cell.Status == best {
 		g.Headline = head + " · no RCA needed"
 		return g
 	}
@@ -180,7 +201,8 @@ func planGap(g Gap, in GapInput) Gap {
 	return g
 }
 
-// bandGap is the distance past the best band's edge.
+// bandGap is the distance past the best band's edge; 1 unit, "just" past
+// it, when the displayed value sits on the edge but the cell is past it.
 func bandGap(g Gap, in GapInput, higher bool, label func(string) string) Gap {
 	m := in.Metric
 	best, edge, inclusive, ok := bestBand(m.Rule.Bands, higher)
@@ -194,12 +216,15 @@ func bandGap(g Gap, in GapInput, higher bool, label func(string) string) Gap {
 	if higher {
 		dist = edgeUnits - du
 	}
+	distText := distanceText(m.Format, dist, g.Decimals)
 	if dist <= 0 {
-		return g
+		if !pastBest(in, domain.StatusRule{Type: domain.RuleBands, Bands: m.Rule.Bands}, best) {
+			return g
+		}
+		dist, distText = 1, "Just"
 	}
 	g.Units = &dist
 	edgeText := engine.Format(m.Format, edge)
-	distText := distanceText(m.Format, dist, g.Decimals)
 	switch {
 	case m.Format == domain.FormatMoneyK:
 		g.Kind = KindMoney
@@ -219,7 +244,9 @@ func bandGap(g Gap, in GapInput, higher bool, label func(string) string) Gap {
 	return g
 }
 
-// scaleGap is the distance to the best step's minimum (the highest step).
+// scaleGap is the distance to the best step's minimum (the highest step);
+// 1 unit, "just" below it, when the displayed value sits on the minimum but
+// the cell is below it.
 func scaleGap(g Gap, in GapInput, label func(string) string) Gap {
 	m := in.Metric
 	if len(m.Rule.Scale) == 0 {
@@ -231,11 +258,15 @@ func scaleGap(g Gap, in GapInput, label func(string) string) Gap {
 		return g
 	}
 	dist := int64(math.Round(best.Min*math.Pow10(g.Decimals))) - du
+	distText := distanceText(m.Format, dist, g.Decimals)
 	if dist <= 0 {
-		return g
+		if !pastBest(in, m.Rule, best.Status) {
+			return g
+		}
+		dist, distText = 1, "Just"
 	}
 	g.Kind, g.Units = KindScale, &dist
-	g.Headline = fmt.Sprintf("%s below the %s step (%s or more)", distanceText(m.Format, dist, g.Decimals), label(best.Status), engine.Format(m.Format, best.Min))
+	g.Headline = fmt.Sprintf("%s below the %s step (%s or more)", distText, label(best.Status), engine.Format(m.Format, best.Min))
 	return g
 }
 

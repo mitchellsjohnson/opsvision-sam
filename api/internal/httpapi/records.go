@@ -22,6 +22,7 @@ import (
 	"opsvision/internal/formula"
 	"opsvision/internal/objects"
 	"opsvision/internal/period"
+	"opsvision/internal/rca"
 	"opsvision/internal/recordimport"
 	"opsvision/internal/records"
 	"opsvision/internal/store"
@@ -79,9 +80,11 @@ func domainExplains(in []ExplainLink) []domain.ExplainLink {
 }
 
 // checkExplainTargets records a problem for each explain link whose
-// scorecard does not exist, and for each down measure that no version of
-// the scorecard's metric references. A metric no version has is inert, so
-// its down measure is not checked.
+// scorecard does not exist, for each downtime link to a metric that no
+// version defines as a percentage where higher is better (rca.DowntimeMetric),
+// and for each down measure that no version of the scorecard's metric
+// references. A metric no version has is inert, so neither its shape nor
+// its down measure is checked.
 func (s *Server) checkExplainTargets(ctx context.Context, pr *problems, tenantID string, links []domain.ExplainLink) error {
 	versions := map[string][]domain.MethodologyVersion{}
 	for i, l := range links {
@@ -104,21 +107,26 @@ func (s *Server) checkExplainTargets(ctx context.Context, pr *problems, tenantID
 			}
 			versions[l.ScorecardID] = vs
 		}
-		if l.DownMeasure == "" {
+		if l.Mode != domain.ExplainDowntime {
 			continue
 		}
-		known, uses := false, false
+		known, shaped, uses := false, false, false
 		for _, v := range vs {
 			for _, m := range v.Content.Metrics {
 				if m.Key != l.MetricKey {
 					continue
 				}
 				known = true
+				shaped = shaped || rca.DowntimeMetric(m)
 				ids, err := formula.Identifiers(m.Formula)
 				uses = uses || (err == nil && slices.Contains(ids, l.DownMeasure))
 			}
 		}
-		if known && !uses {
+		if known && !shaped {
+			pr.add(path+".metricKey", "%s is not a percentage where higher is better, so it cannot take a downtime link; use mode list", l.MetricKey)
+			continue
+		}
+		if known && l.DownMeasure != "" && !uses {
 			pr.add(path+".downMeasure", "%s's formula does not use %s", l.MetricKey, l.DownMeasure)
 		}
 	}

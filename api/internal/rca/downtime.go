@@ -97,11 +97,8 @@ func CountDowntime(w Window, periodMinutes, reportedMinutes float64, incs []Inci
 		switch kind {
 		case extentInterval:
 			whole := end
-			switch {
-			case !in.Cutoff.IsZero() && in.Cutoff.Before(whole):
+			if !in.Cutoff.IsZero() && in.Cutoff.Before(whole) {
 				whole = in.Cutoff
-			case in.Cutoff.IsZero() && ongoing:
-				whole = earlier(whole, w.End)
 			}
 			lo, hi := later(start, w.Start), earlier(whole, w.End)
 			zeroInside := start.Equal(end) && !start.Before(w.Start) && start.Before(w.End)
@@ -119,8 +116,9 @@ func CountDowntime(w Window, periodMinutes, reportedMinutes float64, incs []Inci
 			if !dayIn(w, start) {
 				continue
 			}
-			c.Minutes = *in.Minutes * weight
-			c.TotalMinutes = *in.Minutes
+			total := math.Max(0, *in.Minutes)
+			c.Minutes = total * weight
+			c.TotalMinutes = total
 			c.DurationOnly = true
 		case extentUnknown:
 			if !dayIn(w, start) {
@@ -148,8 +146,8 @@ func CountDowntime(w Window, periodMinutes, reportedMinutes float64, incs []Inci
 }
 
 // placement says how in's minutes are placed in w. For an interval it
-// returns its start and end (far past w for an ongoing one, which the
-// source's cutoff then clips); for the others, start is the UTC day that
+// returns its start and end (for an ongoing one, its source's cutoff, or the
+// window end when there is none); for the others, start is the UTC day that
 // places it.
 func placement(in Incident, w Window) (start, end time.Time, ongoing bool, kind extent) {
 	if in.Start != nil {
@@ -162,7 +160,7 @@ func placement(in Incident, w Window) (start, end time.Time, ongoing bool, kind 
 			}
 			return s, e, false, extentInterval
 		case in.State == domain.StateOpen:
-			e := w.End.AddDate(1, 0, 0)
+			e := cmp.Or(in.Cutoff, w.End)
 			if e.Before(s) {
 				e = s
 			}
@@ -314,7 +312,8 @@ func clean(x float64) float64 { return math.Round(x*1e9) / 1e9 }
 // force) for the arithmetic: Key is the group key when set, else the
 // external ID; Start and End from startedAt and endedAt; Minutes from
 // minutesDown; Impact from impactPct (a percentage). SubjectID is the
-// caller's to set. It fails when a date-time attribute holds another type.
+// caller's to set. It fails when a date-time or number attribute holds
+// another type.
 func FromRecord(source, externalID string, f domain.RecordFields, cutoff time.Time) (Incident, error) {
 	in := Incident{
 		Source: source, ExternalID: externalID, Key: cmp.Or(f.GroupKey, externalID),
@@ -330,11 +329,19 @@ func FromRecord(source, externalID string, f domain.RecordFields, cutoff time.Ti
 			*dst = &t
 		}
 	}
-	if v, ok := f.Attributes[records.AttrMinutesDown].(float64); ok {
-		in.Minutes = &v
+	mins, ok, err := records.FieldNumber(f, records.AttrMinutesDown)
+	if err != nil {
+		return Incident{}, err
 	}
-	if v, ok := f.Attributes[records.AttrImpactPct].(float64); ok {
-		in.Impact = v / 100
+	if ok {
+		in.Minutes = &mins
+	}
+	impact, ok, err := records.FieldNumber(f, records.AttrImpactPct)
+	if err != nil {
+		return Incident{}, err
+	}
+	if ok {
+		in.Impact = impact / 100
 	}
 	return in, nil
 }

@@ -1,6 +1,7 @@
 package records
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -288,6 +289,23 @@ func TestFieldDateTimeAndText(t *testing.T) {
 	}
 	if !mustMatch(t, mustCompileFor(t, "groupKey == 'INC-2049'", IncidentPreset()), f) {
 		t.Error("groupKey should be usable in conditions")
+	}
+}
+
+func TestFieldNumber(t *testing.T) {
+	f := domain.RecordFields{Planned: num(12), Attributes: map[string]any{"a": 30, "b": json.Number("50"), "c": float64(1.5), "d": "half"}}
+	for name, want := range map[string]float64{"a": 30, "b": 50, "c": 1.5, "planned": 12} {
+		if got, ok, err := FieldNumber(f, name); err != nil || !ok || got != want {
+			t.Errorf("FieldNumber(%s) = %v, %v, %v; want %v", name, got, ok, err, want)
+		}
+	}
+	for _, name := range []string{"missing", "actual"} {
+		if _, ok, err := FieldNumber(f, name); ok || err != nil {
+			t.Errorf("FieldNumber(%s) = %v, %v; want absent", name, ok, err)
+		}
+	}
+	if _, _, err := FieldNumber(f, "d"); err == nil {
+		t.Error("a string attribute read as a number did not fail")
 	}
 }
 

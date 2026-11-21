@@ -66,6 +66,28 @@ func TestCellRCAValidateText(t *testing.T) {
 	if errs := r.Validate(); errs != nil {
 		t.Fatalf("HTML-looking text is plain text and should be accepted: %v", errs)
 	}
+	// Emoji sequences (with a zero-width joiner) are text; bidi overrides are not.
+	r.Text = "Deploy went badly \U0001F9D1\u200D\U0001F4BB"
+	if errs := r.Validate(); errs != nil {
+		t.Fatalf("emoji with a joiner rejected: %v", errs)
+	}
+	for _, bidi := range []string{"\u202E", "\u2066", "\u200F", "\u061C"} {
+		r := validRCA()
+		r.Text = "fixed by " + bidi + "INC-2041"
+		if got := messageAt(r.Validate(), "text"); got != "Use plain text without control characters" {
+			t.Errorf("text with %U: message %q", []rune(bidi)[0], got)
+		}
+		r = validRCA()
+		r.Links[0].Title = "Post" + bidi + "mortem"
+		if got := messageAt(r.Validate(), "links[0].title"); got != "Use plain text without control characters" {
+			t.Errorf("title with %U: message %q", []rune(bidi)[0], got)
+		}
+		r = validRCA()
+		r.Links[0].URL = "https://docs.example/" + bidi + "a"
+		if got := messageAt(r.Validate(), "links[0].url"); got != "Use a link that starts with https://" {
+			t.Errorf("url with %U: message %q", []rune(bidi)[0], got)
+		}
+	}
 }
 
 func TestCellRCAValidateLinks(t *testing.T) {

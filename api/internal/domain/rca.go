@@ -114,7 +114,7 @@ func (r CellRCA) Validate() []ValidationError {
 		v.add("text", "Write what caused the gap")
 	case utf8.RuneCountInString(text) > MaxRCATextRunes:
 		v.add("text", "Write up to 280 characters")
-	case strings.ContainsFunc(text, unicode.IsControl):
+	case strings.ContainsFunc(text, isControl):
 		v.add("text", "Use plain text without control characters")
 	}
 
@@ -132,7 +132,7 @@ func (r CellRCA) Validate() []ValidationError {
 			v.add(path+".title", "Add a title for this link")
 		case utf8.RuneCountInString(title) > MaxRCATitleRunes:
 			v.add(path+".title", "Write up to 80 characters")
-		case strings.ContainsFunc(title, unicode.IsControl):
+		case strings.ContainsFunc(title, isControl):
 			v.add(path+".title", "Use plain text without control characters")
 		}
 		switch u := lowerScheme(l.URL); {
@@ -155,6 +155,21 @@ func (r CellRCA) Validate() []ValidationError {
 	return v.errs
 }
 
+// isControl reports control characters and the bidirectional formatting
+// characters, which can make text or a link read differently from what it
+// is. Other format characters, such as the joiner in emoji sequences, are
+// text.
+func isControl(r rune) bool {
+	switch {
+	case unicode.IsControl(r),
+		r == '\u061C', r == '\u200E', r == '\u200F',
+		r >= '\u202A' && r <= '\u202E',
+		r >= '\u2066' && r <= '\u2069':
+		return true
+	}
+	return false
+}
+
 // validHTTPS reports whether u (scheme already lowercased) is an absolute
 // https URL with a host, no user info, and no whitespace or control
 // characters.
@@ -162,7 +177,7 @@ func validHTTPS(u string) bool {
 	if !strings.HasPrefix(u, rcaHTTPSScheme+"://") {
 		return false
 	}
-	if strings.ContainsFunc(u, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) {
+	if strings.ContainsFunc(u, func(r rune) bool { return unicode.IsSpace(r) || isControl(r) }) {
 		return false
 	}
 	p, err := url.Parse(u)

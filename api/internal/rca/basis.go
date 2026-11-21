@@ -43,39 +43,69 @@ func StaleReasons(stored, current domain.RCABasis, statusLabel func(string) stri
 	default:
 		out = append(out, fmt.Sprintf("%s no longer count.", listKeys(removed)))
 	}
+	if len(added) == 0 && len(removed) == 0 && !sameSet(stored.Evidence, current.Evidence) {
+		out = append(out, "The attribution changed since it was written.")
+	}
 	if s, c := stored.ReportedMinutes, current.ReportedMinutes; s != nil && c != nil && *s != *c {
 		out = append(out, fmt.Sprintf("The reported downtime changed from %s to %s.", Duration(float64(*s)), Duration(float64(*c))))
 	}
 	return out
 }
 
-// evidenceDiff returns the keys of the evidence entries ("source:externalId")
-// only in current (added) and only in stored (removed), each in the order
-// given, without the source.
+// evidenceDiff returns the keys (evidenceKey) only in current (added) and
+// only in stored (removed), each once, in the order given. An incident that
+// fanned out counts as one key, so one that moved between services is in
+// neither.
 func evidenceDiff(stored, current []string) (added, removed []string) {
-	inStored := make(map[string]bool, len(stored))
-	for _, e := range stored {
-		inStored[e] = true
-	}
-	inCurrent := make(map[string]bool, len(current))
-	for _, e := range current {
-		inCurrent[e] = true
-		if !inStored[e] {
-			added = append(added, evidenceKey(e))
-		}
-	}
-	for _, e := range stored {
-		if !inCurrent[e] {
-			removed = append(removed, evidenceKey(e))
-		}
-	}
-	return added, removed
+	return keysOnlyIn(current, stored), keysOnlyIn(stored, current)
 }
 
-// evidenceKey is the external ID of a "source:externalId" entry.
-func evidenceKey(e string) string {
-	if _, id, ok := strings.Cut(e, ":"); ok {
-		return id
+// keysOnlyIn returns the keys of a's entries that no entry of b has.
+func keysOnlyIn(a, b []string) []string {
+	inB := make(map[string]bool, len(b))
+	for _, e := range b {
+		inB[evidenceKey(e)] = true
 	}
-	return e
+	var out []string
+	for _, e := range a {
+		if k := evidenceKey(e); !inB[k] {
+			inB[k] = true
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
+// evidenceKey is the key a "source:externalId" entry is shown by: the
+// external ID without the source, and without the "@{service}" a fan-out
+// adds ("{key}@{service}"), so INC-2049@Search reads as INC-2049.
+func evidenceKey(e string) string {
+	id := e
+	if _, rest, ok := strings.Cut(e, ":"); ok {
+		id = rest
+	}
+	if i := strings.LastIndex(id, "@"); i > 0 {
+		id = id[:i]
+	}
+	return id
+}
+
+func sameSet(a, b []string) bool {
+	set := func(xs []string) map[string]bool {
+		m := make(map[string]bool, len(xs))
+		for _, x := range xs {
+			m[x] = true
+		}
+		return m
+	}
+	sa, sb := set(a), set(b)
+	if len(sa) != len(sb) {
+		return false
+	}
+	for x := range sa {
+		if !sb[x] {
+			return false
+		}
+	}
+	return true
 }

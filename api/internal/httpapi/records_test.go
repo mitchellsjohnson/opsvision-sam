@@ -1575,7 +1575,16 @@ func TestRecordTypeExplainsAndDateTime(t *testing.T) {
 	e := newTestEnv(t)
 	seedRecords(t, e)
 	admin := e.tokens["t1-admin"]
-	link := map[string]string{"scorecardId": "sc", "metricKey": "defect_score", "mode": "downtime", "downMeasure": "defect_days", "where": "category != 'maintenance' && startedAt >= '2026-10-01T00:00:00Z'"}
+	// A draft version adds an availability metric for downtime links.
+	draft := defectMethodology(defectWeights)
+	draft.Metrics = append(draft.Metrics, domain.Metric{Key: "availability", Name: "Availability", CategoryID: draft.Metrics[0].CategoryID,
+		Formula: "(1 - defect_days / 31) * 100", Format: domain.FormatPercent2, Direction: domain.DirectionHigherBetter, Frequency: domain.FrequencyMonthly,
+		Rule: domain.StatusRule{Type: domain.RuleBands, Bands: []domain.Band{{Status: "G", Op: ">=", Value: 99.9}, {Status: "R"}}}})
+	if err := e.store.PutVersion(context.Background(), "t1", domain.MethodologyVersion{ID: "v2", ScorecardID: "sc", Name: "2027", Status: domain.VersionDraft,
+		EffectiveFrom: period.Period{Grain: period.Month, FY: 2027, Index: 1}, Content: draft}, 0); err != nil {
+		t.Fatal(err)
+	}
+	link := map[string]string{"scorecardId": "sc", "metricKey": "availability", "mode": "downtime", "downMeasure": "defect_days", "where": "category != 'maintenance' && startedAt >= '2026-10-01T00:00:00Z'"}
 	var got incidentTypeJSON
 	e.expect(t, 200, admin, "PUT", "/record-types/incident", incidentTypeBody(0, []any{link}), &got)
 	if got.Revision != 1 || got.Attributes[0]["type"] != "datetime" || len(got.Explains) != 1 || got.Explains[0]["downMeasure"] != "defect_days" || got.Explains[0]["where"] != link["where"] {
@@ -1614,7 +1623,8 @@ func TestRecordTypeExplainsAndDateTime(t *testing.T) {
 		path string
 	}{
 		{map[string]string{"scorecardId": "sc", "metricKey": "defect_score", "mode": "downtime", "where": "startedAt >= '2026-10-01'"}, "explains[0].where"},
-		{map[string]string{"scorecardId": "sc", "metricKey": "defect_score", "mode": "downtime", "downMeasure": "seconds_down"}, "explains[0].downMeasure"},
+		{map[string]string{"scorecardId": "sc", "metricKey": "availability", "mode": "downtime", "downMeasure": "seconds_down"}, "explains[0].downMeasure"},
+		{map[string]string{"scorecardId": "sc", "metricKey": "defect_score", "mode": "downtime"}, "explains[0].metricKey"},
 		{map[string]string{"scorecardId": "sc", "metricKey": "defect_score", "mode": "sum"}, "explains[0].mode"},
 		{map[string]string{"scorecardId": "nope", "metricKey": "defect_score", "mode": "list"}, "explains[0].scorecardId"},
 		{map[string]string{"scorecardId": "sc", "metricKey": "Defect", "mode": "list"}, "explains[0].metricKey"},
@@ -1624,8 +1634,12 @@ func TestRecordTypeExplainsAndDateTime(t *testing.T) {
 			t.Errorf("%v: details = %+v, want %s", c.link, bad.Error.Details, c.path)
 		}
 	}
-	// A link to a metric no version has is inert, so its down measure is not checked.
+	// A list link is fine on any metric.
 	e.expect(t, 200, admin, "PUT", "/record-types/incident", incidentTypeBody(3, []any{
+		map[string]string{"scorecardId": "sc", "metricKey": "defect_score", "mode": "list"},
+	}), nil)
+	// A link to a metric no version has is inert, so neither its shape nor its down measure is checked.
+	e.expect(t, 200, admin, "PUT", "/record-types/incident", incidentTypeBody(4, []any{
 		map[string]string{"scorecardId": "sc", "metricKey": "uptime", "mode": "downtime", "downMeasure": "seconds_down"},
 	}), nil)
 }

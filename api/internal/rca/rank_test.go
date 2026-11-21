@@ -34,7 +34,7 @@ func TestRankRatio(t *testing.T) {
 		miss("E-6", "P1", records.ReasonMissed, "2026-10-01", map[string]string{"completedAt": "2026-10-04"}, domain.StateDone),
 		miss("E-2", "P1", records.ReasonMissed, "2026-10-10", map[string]string{"completedAt": "2026-10-13"}, domain.StateDone),
 		miss("E-1", "P1", records.ReasonSlipped, "2026-10-15", map[string]string{"nextDueAt": "2026-11-12"}, domain.StateOpen),
-	})
+	}, []string{"P1", "P2", "P3", "P4", "none"})
 	if want := []string{"E-1", "E-2", "E-6", "E-4", "E-3", "E-5"}; !reflect.DeepEqual(keys(got), want) {
 		t.Fatalf("order = %v, want %v (priority, then days late, then key)", keys(got), want)
 	}
@@ -57,8 +57,31 @@ func TestRankRatio(t *testing.T) {
 		}
 	}
 	// A slip with nothing after it still names the date it slipped from.
-	if r := rca.RankRatio([]records.Contribution{miss("E-7", "P1", records.ReasonSlipped, "2026-10-15", nil, domain.StateOpen)}); r[0].Note != "Slipped Oct 15" {
+	if r := rca.RankRatio([]records.Contribution{miss("E-7", "P1", records.ReasonSlipped, "2026-10-15", nil, domain.StateOpen)}, nil); r[0].Note != "Slipped Oct 15" {
 		t.Errorf("bare slip note = %q", r[0].Note)
+	}
+}
+
+func TestRankRatioPriorityOrder(t *testing.T) {
+	m := func(id, pri string) records.Contribution {
+		return miss(id, pri, records.ReasonMissed, "2026-10-28", nil, domain.StateOpen)
+	}
+	// The record type's order wins over spelling: High, Medium, Low.
+	got := rca.RankRatio([]records.Contribution{m("A", "Low"), m("B", "High"), m("C", "Medium"), m("D", "")}, []string{"High", "Medium", "Low", "none"})
+	if want := []string{"B", "C", "A", "D"}; !reflect.DeepEqual(keys(got), want) {
+		t.Fatalf("named priorities = %v, want %v", keys(got), want)
+	}
+	// P2 before P10, by the type's order and, with no order given, by number.
+	for _, order := range [][]string{{"P1", "P2", "P10", "none"}, nil} {
+		got = rca.RankRatio([]records.Contribution{m("A", "P10"), m("B", "P2"), m("C", "none"), m("D", "P1")}, order)
+		if want := []string{"D", "B", "A", "C"}; !reflect.DeepEqual(keys(got), want) {
+			t.Fatalf("order %v: %v, want %v", order, keys(got), want)
+		}
+	}
+	// A priority the type no longer lists comes after the listed ones, before none.
+	got = rca.RankRatio([]records.Contribution{m("A", "P9"), m("B", ""), m("C", "P2")}, []string{"P1", "P2", "none"})
+	if want := []string{"C", "A", "B"}; !reflect.DeepEqual(keys(got), want) {
+		t.Fatalf("unlisted priority: %v, want %v", keys(got), want)
 	}
 }
 

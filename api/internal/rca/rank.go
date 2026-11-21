@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"math"
 	"slices"
+	"strings"
 
 	"opsvision/internal/domain"
 	"opsvision/internal/engine"
@@ -21,11 +22,13 @@ type Ranked struct {
 }
 
 // RankRatio orders a ratio's misses (denominator contributions not in the
-// numerator): priority first (none last), then days late (most first), then
-// key. Days late run from the commitment's due date to its completion, else
-// to its next due date (Dates["nextDueAt"], which callers may set). Notes:
-// "Slipped Oct 15 → Nov 12", "Late by 3 days", "Missed Oct 28 · still open".
-func RankRatio(misses []records.Contribution) []Ranked {
+// numerator): priority first, in priorities' order (the record type's
+// AllPriorities; one it does not list comes after those it does, and none
+// last), then days late (most first), then key. Days late run from the
+// commitment's due date to its completion, else to its next due date
+// (Dates["nextDueAt"], which callers may set). Notes: "Slipped Oct 15 →
+// Nov 12", "Late by 3 days", "Missed Oct 28 · still open".
+func RankRatio(misses []records.Contribution, priorities []string) []Ranked {
 	out := make([]Ranked, len(misses))
 	late := make(map[int]int, len(misses))
 	for i, c := range misses {
@@ -38,7 +41,7 @@ func RankRatio(misses []records.Contribution) []Ranked {
 	}
 	slices.SortStableFunc(idx, func(a, b int) int {
 		return cmp.Or(
-			comparePriority(out[a].C.Priority, out[b].C.Priority),
+			comparePriority(priorities, out[a].C.Priority, out[b].C.Priority),
 			cmp.Compare(late[b], late[a]),
 			cmp.Compare(out[a].C.ExternalID, out[b].C.ExternalID),
 			cmp.Compare(out[a].C.Source, out[b].C.Source),
@@ -51,9 +54,10 @@ func RankRatio(misses []records.Contribution) []Ranked {
 	return sorted
 }
 
-// comparePriority orders priorities as written (P1 before P2, SEV1 before
-// SEV2), with none or no priority last.
-func comparePriority(a, b string) int {
+// comparePriority orders priorities by their position in order, those order
+// does not list after those it does, then by naturalCompare (P2 before P10);
+// none or no priority is last.
+func comparePriority(order []string, a, b string) int {
 	an, bn := a == "" || a == domain.PriorityNone, b == "" || b == domain.PriorityNone
 	switch {
 	case an && bn:
@@ -63,8 +67,48 @@ func comparePriority(a, b string) int {
 	case bn:
 		return -1
 	}
-	return cmp.Compare(a, b)
+	pos := func(p string) int {
+		if i := slices.Index(order, p); i >= 0 {
+			return i
+		}
+		return len(order)
+	}
+	return cmp.Or(cmp.Compare(pos(a), pos(b)), naturalCompare(a, b))
 }
+
+// naturalCompare compares strings with runs of digits compared as numbers:
+// P2 before P10, SEV1 before SEV2.
+func naturalCompare(a, b string) int {
+	for a != "" && b != "" {
+		da, db := isDigit(a[0]), isDigit(b[0])
+		if da != db {
+			return cmp.Compare(a, b)
+		}
+		ra, rb := leadingRun(a, da), leadingRun(b, db)
+		if da {
+			na, nb := strings.TrimLeft(ra, "0"), strings.TrimLeft(rb, "0")
+			if c := cmp.Or(cmp.Compare(len(na), len(nb)), cmp.Compare(na, nb)); c != 0 {
+				return c
+			}
+		} else if c := cmp.Compare(ra, rb); c != 0 {
+			return c
+		}
+		a, b = a[len(ra):], b[len(rb):]
+	}
+	return cmp.Compare(len(a), len(b))
+}
+
+// leadingRun is the longest prefix of s whose bytes are all digits (digits
+// true) or all not.
+func leadingRun(s string, digits bool) string {
+	i := 0
+	for i < len(s) && isDigit(s[i]) == digits {
+		i++
+	}
+	return s[:i]
+}
+
+func isDigit(c byte) bool { return '0' <= c && c <= '9' }
 
 // lateEnd is when a missed or slipped commitment was done, else its next due
 // date.

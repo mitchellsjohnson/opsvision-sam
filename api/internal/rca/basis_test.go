@@ -46,6 +46,23 @@ func TestStaleReasons(t *testing.T) {
 		t.Fatalf("plural reasons = %q, want %q", got, want)
 	}
 
+	// Fan-out records read by their group key, as the card shows them.
+	fan := rca.StaleReasons(domain.RCABasis{Evidence: []string{"incident-tracker:INC-2041@Webhooks"}},
+		domain.RCABasis{Evidence: []string{"incident-tracker:INC-2049@Webhooks", "status-page:sp-7h1q@Webhooks"}}, label)
+	if want := []string{"2 new incidents since it was written: INC-2049, sp-7h1q.", "INC-2041 no longer counts."}; !reflect.DeepEqual(fan, want) {
+		t.Fatalf("fan-out reasons = %q, want %q", fan, want)
+	}
+	// One incident is named once, however many services it hit; one that only
+	// moved between services is neither new nor gone.
+	both := rca.StaleReasons(domain.RCABasis{}, domain.RCABasis{Evidence: []string{"t:INC-2049@Search", "t:INC-2049@Webhooks"}}, label)
+	if want := []string{"1 new incident since it was written: INC-2049."}; !reflect.DeepEqual(both, want) {
+		t.Fatalf("two services, one incident = %q, want %q", both, want)
+	}
+	moved := rca.StaleReasons(domain.RCABasis{Evidence: []string{"t:INC-2049@Search"}}, domain.RCABasis{Evidence: []string{"t:INC-2049@Webhooks"}}, label)
+	if want := []string{"The attribution changed since it was written."}; !reflect.DeepEqual(moved, want) {
+		t.Fatalf("moved between services = %q, want %q", moved, want)
+	}
+
 	// Reported minutes appearing or disappearing is not a reason by itself.
 	noMinutes := stored
 	noMinutes.ReportedMinutes = nil

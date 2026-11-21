@@ -45,14 +45,18 @@ func isIncidentType(rt domain.RecordType) bool {
 	return ok && k == domain.AttrDateTime
 }
 
-// incidentChecks adds the incident row errors: an end before the start, and
-// an impact outside (0, 100].
+// incidentChecks adds the incident row errors: an end before the start, a
+// negative duration, and an impact outside (0, 100].
 func (b *rowBuilder) incidentChecks(f domain.RecordFields) {
 	start, okS, errS := FieldDateTime(f, AttrStartedAt)
 	end, okE, errE := FieldDateTime(f, AttrEndedAt)
 	if errS == nil && errE == nil && okS && okE && end.Before(start) {
 		fm := b.n.t.Attributes[AttrEndedAt]
 		b.problem(ProblemError, fm, AttrEndedAt, b.n.raw(fm, b.cells), "Ended before it started")
+	}
+	if v, ok := f.Attributes[AttrMinutesDown].(float64); ok && v < 0 {
+		fm := b.n.t.Attributes[AttrMinutesDown]
+		b.problem(ProblemError, fm, AttrMinutesDown, b.n.raw(fm, b.cells), "Minutes down must be 0 or more")
 	}
 	if v, ok := f.Attributes[AttrImpactPct].(float64); ok && (v <= 0 || v > 100) {
 		fm := b.n.t.Attributes[AttrImpactPct]

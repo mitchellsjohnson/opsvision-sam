@@ -122,16 +122,23 @@ func IsReportingSubject(m domain.Metric, levels []domain.Level, subjectDepth int
 }
 
 // Ideal returns the metric's ideal value: 100 for percent metrics where
-// higher is better (uptime, ratios) and for money plans (100% of plan);
-// none for the rest, whose gap is measured from the best band's edge.
+// higher is better judged by bands (uptime, ratios) and for money plans (100%
+// of plan); none for the rest, whose gap is measured from the best band's
+// edge, the best scale step, or the change that set the status.
 func Ideal(m domain.Metric) (float64, bool) {
-	if m.ChartKind == "money_plan" {
-		return 100, true
-	}
-	if m.ChartKind == "uptime" || (strings.HasPrefix(m.Format, "percent") && m.Direction != domain.DirectionLowerBetter) {
+	if m.ChartKind == "money_plan" || DowntimeMetric(m) {
 		return 100, true
 	}
 	return 0, false
+}
+
+// DowntimeMetric reports whether m is shaped like availability: a percent
+// where higher is better, judged by bands, so its gap is the distance to
+// 100% that downtime minutes explain. Only such metrics take a downtime gap
+// or a downtime incident link, whatever their chart kind.
+func DowntimeMetric(m domain.Metric) bool {
+	return strings.HasPrefix(m.Format, "percent") && m.Direction != domain.DirectionLowerBetter &&
+		m.Rule.Type != domain.RuleChange && m.Rule.Type != domain.RuleScale
 }
 
 // Decimals is the number of decimals a metric format displays (2 for an

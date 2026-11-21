@@ -35,6 +35,85 @@ var (
 			{Status: "G", Op: ">", Value: 0}, {Status: "Y", Op: ">=", Value: -10}, {Status: "R"}}}}
 )
 
+// TestGapAtTheDisplayBoundary: the engine judges the exact value, so a cell
+// can be past its best edge while its displayed value sits on it. Its card
+// must still explain a gap.
+func TestGapAtTheDisplayBoundary(t *testing.T) {
+	churn := domain.Metric{Formula: "churn", Format: domain.FormatPercent0, Direction: domain.DirectionLowerBetter,
+		Rule: bands(domain.Band{Status: "G", Op: "<=", Value: 10}, domain.Band{Status: "Y", Op: "<=", Value: 20}, domain.Band{Status: "R"})}
+	under500 := domain.Metric{Formula: "open_tickets", Format: domain.FormatNumber0, Direction: domain.DirectionLowerBetter,
+		Rule: bands(domain.Band{Status: "G", Op: "<", Value: 500}, domain.Band{Status: "R"})}
+	releases := domain.Metric{Formula: "releases", Format: domain.FormatNumber0, Direction: domain.DirectionHigherBetter,
+		Rule: bands(domain.Band{Status: "G", Op: ">=", Value: 20}, domain.Band{Status: "Y", Op: ">=", Value: 10}, domain.Band{Status: "R"})}
+	age := domain.Metric{Formula: "age_days / ideas", Format: domain.FormatDays0, Direction: domain.DirectionLowerBetter, ChartKind: "days",
+		Rule: bands(domain.Band{Status: "G", Op: "<=", Value: 14}, domain.Band{Status: "R"})}
+	score := domain.Metric{Formula: "score", Format: domain.FormatNumber1, Direction: domain.DirectionHigherBetter,
+		Rule: domain.StatusRule{Type: domain.RuleScale, Scale: []domain.ScaleStep{{Status: "G", Min: 4}, {Status: "Y", Min: 0}}}}
+	cases := []struct {
+		name     string
+		m        domain.Metric
+		cell     rca.CellFacts
+		kind     string
+		headline string
+	}{
+		{"10.4% churn shows 10% but is Yellow", churn, rca.CellFacts{Display: "10%", Status: "Y", Value: fp(10.4)}, "band", "Just above the Green line (10% or less)"},
+		{"exclusive edge", under500, rca.CellFacts{Display: "500", Status: "R", Value: fp(500)}, "band", "Just above the Green line (less than 500)"},
+		{"higher is better", releases, rca.CellFacts{Display: "20", Status: "Y", Value: fp(19.6)}, "band", "Just below the Green line (20 or more)"},
+		{"days", age, rca.CellFacts{Display: "14 days", Status: "R", Value: fp(14.3)}, "days", "Just past the Green line (14 days or fewer)"},
+		{"scale step", score, rca.CellFacts{Display: "4.0", Status: "Y", Value: fp(3.96)}, "scale", "Just below the Green step (4.0 or more)"},
+		{"no status, judged on the exact value", churn, rca.CellFacts{Display: "10%", Value: fp(10.4)}, "band", "Just above the Green line (10% or less)"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := rca.GapOf(rca.GapInput{Metric: tc.m, Cell: tc.cell, StatusLabel: label})
+			if g.Kind != tc.kind || g.Headline != tc.headline || g.Units == nil || *g.Units != 1 {
+				t.Fatalf("GapOf = %+v (units %v), want %s %q with 1 unit", g, g.Units, tc.kind, tc.headline)
+			}
+		})
+	}
+	// At the best status there is nothing to explain, whatever the display.
+	for _, c := range []rca.CellFacts{{Display: "10%", Status: "G", Value: fp(10)}, {Display: "10%", Value: fp(9.6)}} {
+		if g := rca.GapOf(rca.GapInput{Metric: churn, Cell: c, StatusLabel: label}); g.Kind != "none" || g.Headline != "" {
+			t.Fatalf("best cell %+v = %+v", c, g)
+		}
+	}
+	if g := rca.GapOf(rca.GapInput{Metric: score, Cell: rca.CellFacts{Display: "4.0", Status: "G", Value: fp(4)}, StatusLabel: label}); g.Kind != "none" {
+		t.Fatalf("best scale cell = %+v", g)
+	}
+}
+
+func TestDowntimeNeedsAnAvailabilityMetric(t *testing.T) {
+	errorRate := domain.Metric{Key: "error_rate", Formula: "errors / requests * 100", Format: domain.FormatPercent2, Direction: domain.DirectionLowerBetter,
+		Rule: bands(domain.Band{Status: "G", Op: "<=", Value: 0.5}, domain.Band{Status: "R"})}
+	g := rca.GapOf(rca.GapInput{Metric: errorRate, Cell: rca.CellFacts{Display: "0.94%", Status: "R"}, StatusLabel: label,
+		Downtime: &rca.Downtime{PeriodMinutes: 44640, ReportedMinutes: 420}})
+	if g.Kind != "band" || g.Headline != "0.44 pts above the Green line (0.50% or less)" {
+		t.Fatalf("lower-is-better percent with incidents = %+v", g)
+	}
+	count := domain.Metric{Key: "outages", Formula: "outages", Format: domain.FormatNumber0, Direction: domain.DirectionLowerBetter, ChartKind: "uptime",
+		Rule: bands(domain.Band{Status: "G", Op: "<=", Value: 2}, domain.Band{Status: "R"})}
+	if g := rca.GapOf(rca.GapInput{Metric: count, Cell: rca.CellFacts{Display: "5", Status: "R"}, StatusLabel: label}); g.Kind != "band" || g.Headline != "3 above the Green line (2 or less)" {
+		t.Fatalf("uptime chart on a count = %+v", g)
+	}
+	if _, ok := rca.Ideal(count); ok {
+		t.Error("an uptime chart on a count has an ideal")
+	}
+	for m, want := range map[*domain.Metric]bool{&uptimeMetric: true, &epicsMetric: true, &errorRate: false, &count: false, &backlogMetric: false} {
+		if got := rca.DowntimeMetric(*m); got != want {
+			t.Errorf("DowntimeMetric(%s) = %v, want %v", m.Key, got, want)
+		}
+	}
+}
+
+func TestPercentScaleRuleIsAScaleGap(t *testing.T) {
+	m := domain.Metric{Formula: "score_pct", Format: domain.FormatPercent0, Direction: domain.DirectionHigherBetter,
+		Rule: domain.StatusRule{Type: domain.RuleScale, Scale: []domain.ScaleStep{{Status: "G", Min: 90}, {Status: "Y", Min: 80}, {Status: "R", Min: 0}}}}
+	g := rca.GapOf(rca.GapInput{Metric: m, Cell: rca.CellFacts{Display: "85%", Status: "Y"}, StatusLabel: label})
+	if g.Kind != "scale" || g.Headline != "5 pts below the Green step (90% or more)" || g.Ideal != nil {
+		t.Fatalf("percent scale rule = %+v", g)
+	}
+}
+
 func TestGapUnitsFromTheDisplayedValue(t *testing.T) {
 	display := engine.Format(domain.FormatPercent2, 99.865)
 	if display != "99.87%" {
@@ -66,7 +145,11 @@ func TestIdealAndDecimals(t *testing.T) {
 	}
 	for _, m := range []domain.Metric{backlogMetric, defectMetric,
 		{Format: domain.FormatPercent0, Direction: domain.DirectionLowerBetter, Formula: "churn"},
-		{Format: domain.FormatMoneyK, Direction: domain.DirectionLowerBetter, Formula: "cost"}} {
+		{Format: domain.FormatMoneyK, Direction: domain.DirectionLowerBetter, Formula: "cost"},
+		{Key: "pct_change", Format: domain.FormatPercent1, Direction: domain.DirectionHigherBetter, Formula: "a / b * 100",
+			Rule: domain.StatusRule{Type: domain.RuleChange, Compare: domain.ComparePriorPeriod, Bands: []domain.Band{{Status: "G", Op: ">", Value: 0}, {Status: "R"}}}},
+		{Key: "pct_scale", Format: domain.FormatPercent0, Direction: domain.DirectionHigherBetter, Formula: "score_pct",
+			Rule: domain.StatusRule{Type: domain.RuleScale, Scale: []domain.ScaleStep{{Status: "G", Min: 90}, {Status: "R", Min: 0}}}}} {
 		if _, ok := rca.Ideal(m); ok {
 			t.Errorf("Ideal(%s %s) has an ideal", m.Format, m.Direction)
 		}
@@ -221,6 +304,11 @@ func TestGapOf(t *testing.T) {
 	if d := rca.GapOf(rca.GapInput{Metric: backlogMetric, Cell: rca.CellFacts{Display: "588", Status: "Y"}}); d.Detail != "Y" ||
 		d.Headline != "138 above the G line (450 or less)" {
 		t.Fatalf("no labels = %+v", d)
+	}
+	// An explicit best status (from BestStatus) decides "no RCA needed".
+	if d := rca.GapOf(rca.GapInput{Metric: uptimeMetric, Cell: rca.CellFacts{Display: "99.97%", Status: "G"}, StatusLabel: label,
+		BestStatus: "B", Downtime: &rca.Downtime{PeriodMinutes: 44640, ReportedMinutes: 13.4}}); d.Headline != "0.03 pts short of 100% · 13m down" {
+		t.Fatalf("G under a best of B = %q", d.Headline)
 	}
 	// Per-subject bands are the caller's: pass them as the metric's bands.
 	own := backlogMetric

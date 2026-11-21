@@ -567,6 +567,28 @@ func FieldDate(f domain.RecordFields, name string) (domain.Date, bool, error) {
 	return domain.Date{Time: t}, true, nil
 }
 
+// FieldNumber returns the number field or number attribute name of f, and
+// false when it is missing (an attribute the record does not carry, or an
+// empty built-in). Attributes may be any number type the store hands back.
+// It fails when an attribute holds a value that is not a number.
+func FieldNumber(f domain.RecordFields, name string) (float64, bool, error) {
+	if p, ok := numberField(f, name); ok {
+		if p == nil {
+			return 0, false, nil
+		}
+		return *p, true, nil
+	}
+	if f.Attributes[name] == nil {
+		return 0, false, nil
+	}
+	v, err := attrValue(name, domain.AttrNumber, f.Attributes[name])
+	if err != nil {
+		return 0, false, err
+	}
+	n, ok := v.(float64)
+	return n, ok, nil
+}
+
 // FieldDateTime returns the date-time attribute name of f as a UTC instant,
 // and false when it is missing. It fails when the attribute holds a value
 // that is not an RFC 3339 date-time.
