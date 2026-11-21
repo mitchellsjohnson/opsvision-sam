@@ -1,12 +1,11 @@
-import { screen, waitFor, within } from '@testing-library/react'
+import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { delay, http, HttpResponse } from 'msw'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { axe } from 'vitest-axe'
-import type { RcaCellRef } from '../../api/queries'
-import type { components } from '../../api/schema'
-import { webhooksRca } from '../../test/rcaFixtures'
-import { API, server, state } from '../../test/server'
+import type { PutMetricSummaryRequest, RcaCellRef } from '../../api/queries'
+import { COMPANY, spendStale, uptimeCardSummary, uptimeText, webhooksAttribution } from '../../test/rcaFixtures'
+import { API, companyUnitsHandler, server, state } from '../../test/server'
 import { renderApp } from '../../test/utils'
 import { useWhyCard, WhyCardProvider, type WhyCardOpenOptions } from './WhyCardProvider'
 
@@ -39,9 +38,12 @@ function setPhone(phone: boolean) {
   })
 }
 
+beforeEach(() => server.use(companyUnitsHandler))
+
 afterEach(() => {
   // @ts-expect-error matchMedia is absent in jsdom unless a test defines it.
   delete window.matchMedia
+  vi.unstubAllGlobals()
 })
 
 async function openCard(cell: RcaCellRef, opts?: WhyCardOpenOptions) {
@@ -61,7 +63,76 @@ async function loaded(dialog: HTMLElement, headline: string) {
   await within(dialog).findByText(headline)
 }
 
-describe('WhyCard: uptime', () => {
+describe('WhyCard: the exec summary above the attribution', () => {
+  it('puts the company exec summary first, labelled for a child cell, then the attribution', async () => {
+    const { dialog } = await openCard(WEBHOOKS)
+    await loaded(dialog, '0.94 pts short of 100% · 7h 00m down')
+    const summary = within(dialog).getByRole('region', { name: 'Exec summary · Uptime · Oct 2026' })
+    const attribution = within(dialog).getByRole('region', { name: 'Attribution' })
+    expect(summary.compareDocumentPosition(attribution) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(within(attribution).getByText('Attribution · Webhooks')).toBeTruthy()
+    expect(within(summary).getByRole('button', { name: 'Show all 12 links' })).toBeTruthy()
+  })
+
+  it('names no metric in the label on the company card', async () => {
+    const { dialog } = await openCard(cellOf('uptime', COMPANY))
+    await loaded(dialog, '13 of 21 services below 100% · worst Webhooks 99.06%')
+    const section = within(dialog).getByRole('region', { name: 'Exec summary' })
+    // The company's own card shows the whole text; a child card shows the excerpt with More.
+    expect(await within(section).findByText(uptimeText)).toBeTruthy()
+    expect(within(section).queryByRole('button', { name: 'More' })).toBeNull()
+  })
+
+  it('shows a child card the excerpt with More', async () => {
+    const { dialog } = await openCard(WEBHOOKS)
+    const section = await within(dialog).findByRole('region', { name: 'Exec summary · Uptime · Oct 2026' })
+    expect(within(section).getByText(uptimeCardSummary.text!)).toBeTruthy()
+    expect(within(section).getByRole('button', { name: 'More' })).toBeTruthy()
+  })
+
+  it('has no summary section for a viewer who cannot read the company cell', async () => {
+    state.role = 'viewer'
+    const { dialog } = await openCard(cellOf('epics_on_time', 'mobile'))
+    await loaded(dialog, '27 pts short of 100% · 3 of 11 epics missed')
+    expect(within(dialog).queryByRole('region', { name: /^Exec summary/ })).toBeNull()
+    expect(within(dialog).getByRole('region', { name: 'Attribution' })).toBeTruthy()
+  })
+
+  it('gives admins Edit exec summary in the footer, and nobody else', async () => {
+    const admin = await openCard(WEBHOOKS)
+    await loaded(admin.dialog, '0.94 pts short of 100% · 7h 00m down')
+    expect(within(admin.dialog).getByRole('button', { name: 'Edit exec summary' })).toBeTruthy()
+  })
+
+  it('gives contributors no editor, Edit or Draft with SAM', async () => {
+    state.role = 'contributor'
+    const { dialog } = await openCard(cellOf('epics_on_time', COMPANY))
+    await loaded(dialog, '16 pts short of 100% · 14 of 88 epics missed')
+    expect(within(dialog).getByText('Product ops writes this summary.')).toBeTruthy()
+    expect(within(dialog).queryByRole('button', { name: /Edit|Write exec summary|Draft with SAM/ })).toBeNull()
+  })
+
+  it('re-saves a stale summary unchanged on Still accurate, with every link', async () => {
+    let body: PutMetricSummaryRequest | undefined
+    let path = ''
+    server.use(
+      http.put(`${API}/v1/scorecards/sc-main/metric-summaries/:metric/:period`, async ({ request }) => {
+        path = new URL(request.url).pathname
+        body = (await request.json()) as PutMetricSummaryRequest
+        return HttpResponse.json({ ...spendStale, state: 'written', stale: false, staleReasons: [], revision: 3 })
+      }),
+    )
+    const { user, dialog } = await openCard(cellOf('spend_vs_plan', COMPANY))
+    const section = await within(dialog).findByRole('region', { name: 'Exec summary' })
+    await user.click(await within(section).findByRole('button', { name: 'Still accurate' }))
+    await waitFor(() => expect(body).toBeDefined())
+    expect(path).toBe('/v1/scorecards/sc-main/metric-summaries/spend_vs_plan/2026-M10')
+    expect(body).toEqual({ text: spendStale.text, links: [], expectedRevision: 2 })
+    expect(await screen.findByText('Exec summary saved')).toBeTruthy()
+  })
+})
+
+describe('WhyCard: uptime attribution', () => {
   it('explains the gap with the bar sentence, incidents in evidence order and the remainder', async () => {
     const { dialog } = await openCard(WEBHOOKS)
     await loaded(dialog, '0.94 pts short of 100% · 7h 00m down')
@@ -79,34 +150,27 @@ describe('WhyCard: uptime', () => {
     expect(within(rows[0]!).getByText('SEV2 · Oct 3, 14:05–18:15 UTC · 4h 10m')).toBeTruthy()
     expect(within(rows[3]!).getByText('Not explained by any incident')).toBeTruthy()
     expect(within(rows[3]!).getByText('40m of the 7h 00m reported')).toBeTruthy()
+    expect(within(incidents).queryByRole('button', { name: /^Show all/ })).toBeNull()
 
-    const link = within(dialog).getByRole('link', { name: 'INC-2041 (opens in a new tab)' })
+    const link = within(incidents).getByRole('link', { name: 'INC-2041 (opens in a new tab)' })
     expect(link.getAttribute('href')).toBe('https://tracker.example/browse/INC-2041')
-    for (const a of within(dialog).getAllByRole('link').filter((l) => l.getAttribute('target'))) {
+    const external = within(dialog).getAllByRole('link').filter((l) => l.getAttribute('target'))
+    for (const a of external) {
       expect(a.getAttribute('target')).toBe('_blank')
       expect(a.getAttribute('rel')).toBe('noopener noreferrer')
     }
-    expect(within(dialog).getAllByRole('link').filter((l) => l.getAttribute('target') === '_blank')).toHaveLength(4)
+    // Three summary links and three incident keys.
+    expect(external).toHaveLength(6)
   })
 
-  it('shows the write-up with its byline and links, the host beside each', async () => {
-    const { dialog } = await openCard(WEBHOOKS)
-    const rca = await within(dialog).findByRole('region', { name: 'RCA' })
-    expect(within(rca).getByText(webhooksRca.note!.text).getAttribute('dir')).toBe('auto')
-    expect(within(rca).getByText('Avery Admin · Nov 3')).toBeTruthy()
-    expect(within(rca).getByRole('link', { name: 'Postmortem (opens in a new tab)' })).toBeTruthy()
-    expect(within(rca).getByText('docs.example')).toBeTruthy()
-    expect(within(dialog).getByRole('button', { name: 'Edit' })).toBeTruthy()
-  })
-
-  it('anchored popover has no value row', async () => {
+  it('anchored popover has no value row and one-line titles', async () => {
     const { dialog } = await openCard(WEBHOOKS)
     await loaded(dialog, '0.94 pts short of 100% · 7h 00m down')
     expect(within(dialog).queryByTestId('why-value')).toBeNull()
     expect(within(dialog).getByText('Webhook delivery queue saturated after config deploy').className).toContain('truncate')
   })
 
-  it('shows the value row when asked, as from the RCAs view', async () => {
+  it('shows the value row when asked, as from the Exec summaries view', async () => {
     const { dialog } = await openCard(WEBHOOKS, { showValue: true })
     await loaded(dialog, '0.94 pts short of 100% · 7h 00m down')
     expect(within(within(dialog).getByTestId('why-value')).getByText('99.06%')).toBeTruthy()
@@ -128,15 +192,73 @@ describe('WhyCard: uptime', () => {
     expect(within(dialog).getByRole('heading', { level: 3, name: 'Webhooks · Uptime' })).toBeTruthy()
   })
 
-  it('notes the same outage from another source', async () => {
-    const { dialog } = await openCard(WEBHOOKS)
-    expect(await within(dialog).findByText('Same window as sp-7h1q (Status page)')).toBeTruthy()
-  })
-
   it('has no axe violations', async () => {
     const { dialog } = await openCard(WEBHOOKS)
     await loaded(dialog, '0.94 pts short of 100% · 7h 00m down')
     expect((await axe(dialog)).violations).toEqual([])
+  })
+})
+
+describe('WhyCard: 37 incidents (Review Focus 5)', () => {
+  const observers: { cb: IntersectionObserverCallback; el?: Element }[] = []
+  beforeEach(() => {
+    observers.length = 0
+    vi.stubGlobal(
+      'IntersectionObserver',
+      class {
+        cb: IntersectionObserverCallback
+        el?: Element
+        constructor(cb: IntersectionObserverCallback) {
+          this.cb = cb
+          observers.push(this)
+        }
+        observe(el: Element) {
+          this.el = el
+        }
+        unobserve() {}
+        disconnect() {}
+      },
+    )
+  })
+
+  it('shows 5, Show all 37 incidents, and loads the next page of 50 at the end', async () => {
+    const cursors: (string | null)[] = []
+    server.use(
+      http.get(`${API}/v1/scorecards/sc-main/attribution`, ({ request }) => {
+        cursors.push(new URL(request.url).searchParams.get('incidentsCursor'))
+        return undefined
+      }),
+    )
+    const { user, dialog } = await openCard(cellOf('uptime', 'event-bus'))
+    await loaded(dialog, '0.90 pts short of 100% · 6h 40m down')
+    const incidents = within(dialog).getByRole('region', { name: 'Incidents' })
+    expect(within(incidents).getByText('Incidents · 37')).toBeTruthy()
+    expect(incidents.querySelectorAll('[data-key]')).toHaveLength(5)
+    // The arithmetic covers all 37, not only the 5 loaded.
+    expect(
+      within(dialog).getByText(
+        '6h 40m down: INC-3001 10m, INC-3002 10m, INC-3003 10m, INC-3004 10m, INC-3005 10m, 32 more incidents 5h 20m, 30m not explained',
+      ),
+    ).toBeTruthy()
+
+    const showAll = within(incidents).getByRole('button', { name: 'Show all 37 incidents' })
+    expect(showAll.getAttribute('aria-expanded')).toBe('false')
+    await user.click(showAll)
+    expect(showAll.getAttribute('aria-expanded')).toBe('true')
+    expect(document.activeElement).toBe(showAll)
+    expect(await screen.findByText('Showing 37 incidents')).toBeTruthy()
+
+    const sentinel = observers.at(-1)
+    expect(sentinel?.el).toBeTruthy()
+    act(() => sentinel!.cb([{ isIntersecting: true, target: sentinel!.el! } as IntersectionObserverEntry], {} as IntersectionObserver))
+    await waitFor(() => expect(incidents.querySelectorAll('[data-key]')).toHaveLength(37))
+    expect(cursors).toEqual([null, 'bus-p2'])
+    expect(await screen.findByText('Loaded 32 more incidents')).toBeTruthy()
+    expect(within(incidents).getByText('Event bus partition stall 37')).toBeTruthy()
+    expect(within(incidents).getByText('Not explained by any incident')).toBeTruthy()
+
+    await user.click(within(incidents).getByRole('button', { name: 'Show fewer' }))
+    expect(incidents.querySelectorAll('[data-key]')).toHaveLength(5)
   })
 })
 
@@ -155,46 +277,29 @@ describe('WhyCard: records and roll-ups', () => {
     expect(within(dialog).getByRole('link', { name: 'Open in table' })).toBeTruthy()
   })
 
-  it('offers an editor Add RCA and Draft with SAM on an empty note', async () => {
-    const { dialog } = await openCard(cellOf('epics_on_time', 'checkout'))
-    const rca = await within(dialog).findByRole('region', { name: 'RCA' })
-    expect(within(rca).getByText('No RCA yet.')).toBeTruthy()
-    expect(within(rca).getByRole('button', { name: 'Add RCA' })).toBeTruthy()
-    expect(await within(rca).findByRole('button', { name: 'Draft with SAM' })).toBeTruthy()
-  })
-
-  it('tells a reader who has not written one yet', async () => {
-    state.role = 'viewer'
-    const { dialog } = await openCard(cellOf('epics_on_time', 'billing'))
-    const rca = await within(dialog).findByRole('region', { name: 'RCA' })
-    expect(within(rca).getByText("Billing hasn't written one yet.")).toBeTruthy()
-    expect(within(dialog).queryByRole('button', { name: 'Add RCA' })).toBeNull()
-    expect(within(dialog).queryByRole('button', { name: 'Draft with SAM' })).toBeNull()
-  })
-
-  it('lists the worst contributors; a row opens the child and the back button returns', async () => {
-    const { user, dialog } = await openCard(cellOf('epics_on_time', 'acme'))
+  it('lists the worst contributors with their attribution lines; a row opens the child and back returns', async () => {
+    const { user, dialog } = await openCard(cellOf('epics_on_time', COMPANY))
     await loaded(dialog, '16 pts short of 100% · 14 of 88 epics missed')
     const list = within(dialog).getByRole('region', { name: 'Worst contributors' })
-    expect(within(list).getByText('3 missed · No RCA yet · CHK-226')).toBeTruthy()
-    expect(within(list).getByText('2 missed · Why: Ledger freeze moved two epics into November…')).toBeTruthy()
+    expect(within(list).getByText('3 of 11 epics missed · CHK-226 + 2 more')).toBeTruthy()
+    expect(within(list).getByText('2 of 11 epics missed · BIL-231 + 1 more')).toBeTruthy()
+    expect(within(list).getByText('Nothing linked')).toBeTruthy()
     expect(within(dialog).getByRole('link', { name: 'and 5 more' })).toBeTruthy()
-    // An available roll-up chases nobody: no empty state, Add RCA in the footer.
-    expect(within(dialog).queryByRole('region', { name: 'RCA' })).toBeNull()
-    expect(within(dialog).getByRole('button', { name: 'Add RCA' })).toBeTruthy()
+    expect(within(dialog).getByRole('region', { name: 'Exec summary' })).toBeTruthy()
+
     await user.click(within(list).getByRole('button', { name: /^Checkout/ }))
     await loaded(dialog, '27 pts short of 100% · 3 of 11 epics missed')
     expect(within(dialog).getByRole('heading', { name: 'Checkout' })).toBeTruthy()
+    expect(within(dialog).getByRole('region', { name: 'Exec summary · Epics delivered on time · Oct 2026' })).toBeTruthy()
     const back = within(dialog).getByRole('button', { name: 'Back to Acme Demo' })
     expect(back.textContent).toBe('‹ Back to Acme Demo')
-    expect(back.querySelector('.sr-only')?.textContent).toBe('Back to')
     await user.click(back)
     await loaded(dialog, '16 pts short of 100% · 14 of 88 epics missed')
     expect(within(dialog).getByRole('heading', { name: 'Acme Demo' })).toBeTruthy()
   })
 })
 
-describe('WhyCard: remainders, excess and stale notes', () => {
+describe('WhyCard: remainders and excess', () => {
   it('keeps a remainder within tolerance, saying so', async () => {
     const { dialog } = await openCard(cellOf('deployment_uptime', 'notification-relay'))
     expect(await within(dialog).findByText('5m of the 10h 00m reported (within 1% of the reported downtime)')).toBeTruthy()
@@ -210,61 +315,17 @@ describe('WhyCard: remainders, excess and stale notes', () => {
     )
     expect(within(dialog).queryByText('Not explained by any incident')).toBeNull()
   })
-
-  it('shows why a note may be out of date; Still accurate re-saves it unchanged', async () => {
-    let body: components['schemas']['PutCellRcaRequest'] | undefined
-    server.use(
-      http.put(`${API}/v1/scorecards/sc-main/rca`, async ({ request }) => {
-        body = (await request.json()) as typeof body
-        return HttpResponse.json({ ...searchNote(), revision: 3 })
-      }),
-    )
-    const { user, dialog } = await openCard(cellOf('uptime', 'search'))
-    const rca = await within(dialog).findByRole('region', { name: 'RCA' })
-    expect(within(rca).getByText('This RCA may be out of date.')).toBeTruthy()
-    expect(within(rca).getByText('The value changed from 99.90% to 99.87%.')).toBeTruthy()
-    expect(within(rca).getByText('1 new incident since it was written: INC-2049.')).toBeTruthy()
-    expect(within(rca).getByText('Casey Contributor · Oct 28 · via MCP')).toBeTruthy()
-    await user.click(within(rca).getByRole('button', { name: 'Still accurate' }))
-    await waitFor(() => expect(body).toBeDefined())
-    expect(body).toEqual({
-      metric: 'uptime',
-      subject: 'search',
-      period: '2026-M10',
-      text: searchNote().text,
-      links: searchNote().links,
-      expectedRevision: 2,
-    })
-    expect(await screen.findByText('RCA saved')).toBeTruthy()
-  })
 })
 
-function searchNote() {
-  return {
-    text: 'Index rebuild during the planned failover; slow queries for about 30 minutes, no failed requests.',
-    links: [],
-    authorId: 'dev|contributor',
-    authorName: 'Casey Contributor',
-    channel: 'mcp' as const,
-    updatedAt: '2026-10-28T09:00:00Z',
-    revision: 2,
-  }
-}
-
-describe('WhyCard: hostile text (Review Focus 3)', () => {
-  it('renders script URLs as text, HTML as text, and hosts as punycode', async () => {
+describe('WhyCard: hostile text (Review Focus 4)', () => {
+  it('renders a script URL’s key as text and an HTML title as text', async () => {
     const { dialog } = await openCard(cellOf('uptime', 'push-gateway'))
     const key = await within(dialog).findByText('INC-6666')
     expect(key.closest('a')).toBeNull()
     expect(within(dialog).queryByRole('link', { name: /INC-6666/ })).toBeNull()
     expect(within(dialog).getByText('<img src=x onerror="alert(1)">')).toBeTruthy()
-    expect(dialog.querySelector('img[src="x"]')).toBeNull()
-    expect(within(dialog).getByText('<b>bold</b> and **not markdown**')).toBeTruthy()
+    expect(dialog.querySelector('img')).toBeNull()
     expect(dialog.querySelector('b')).toBeNull()
-    expect(within(dialog).getByText('xn--bcher-kva.example')).toBeTruthy()
-    expect(within(dialog).getByRole('link', { name: 'Runbook (opens in a new tab)' })).toBeTruthy()
-    expect(within(dialog).queryByRole('link', { name: /Old wiki/ })).toBeNull()
-    expect(within(dialog).getByText('Old wiki')).toBeTruthy()
   })
 })
 
@@ -276,7 +337,7 @@ describe('WhyCard: states and focus', () => {
 
   it('shows a busy skeleton while loading', async () => {
     server.use(
-      http.get(`${API}/v1/scorecards/sc-main/rca`, async () => {
+      http.get(`${API}/v1/scorecards/sc-main/attribution`, async () => {
         await delay('infinite')
         return HttpResponse.json({})
       }),
@@ -290,8 +351,8 @@ describe('WhyCard: states and focus', () => {
   it('says what failed and tries again', async () => {
     let fail = true
     server.use(
-      http.get(`${API}/v1/scorecards/sc-main/rca`, () =>
-        fail ? HttpResponse.json({ error: { code: 'internal', message: 'Boom' } }, { status: 500 }) : HttpResponse.json(webhooksRca),
+      http.get(`${API}/v1/scorecards/sc-main/attribution`, () =>
+        fail ? HttpResponse.json({ error: { code: 'internal', message: 'Boom' } }, { status: 500 }) : HttpResponse.json(webhooksAttribution),
       ),
     )
     const { user, dialog } = await openCard(WEBHOOKS, { display: '99.06%' })

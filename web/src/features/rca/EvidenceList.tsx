@@ -1,11 +1,13 @@
 import * as Tooltip from '@radix-ui/react-tooltip'
 import clsx from 'clsx'
 import { ExternalLink } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router'
-import type { CellRca } from '../../api/queries'
+import type { CellAttribution } from '../../api/queries'
 import type { components } from '../../api/schema'
-import { INCIDENTS_SHOWN, RECORDS_SHOWN, REMAINDER_CLASS, REMAINDER_STYLE, segmentClass } from './GapBar'
+import { explainedMinutes, INCIDENTS_SHOWN, RECORDS_SHOWN, REMAINDER_CLASS, REMAINDER_STYLE, segmentClass } from './GapBar'
 import { durationText, safeHref, sourceLabel, timeRange } from './rcaText'
+import { useWhyCardAnnounce } from './WhyCardProvider'
 
 type RcaIncident = components['schemas']['RcaIncident']
 type RcaRecord = components['schemas']['RcaRecord']
@@ -132,40 +134,114 @@ function splitRemainder(display: string): { points: string; rest: string } {
   return at < 0 ? { points: '', rest: display } : { points: display.slice(0, at), rest: display.slice(at + 3) }
 }
 
-/** `Incidents add up to 0.20 pts (1h 30m), 15m more than the 1h 15m reported. …` (spec §5.6). */
-export function excessSentence(rca: CellRca): string {
-  const explained = rca.incidents.reduce((n, i) => n + i.countedMinutes, 0)
-  const reported = rca.gap.reportedMinutes ?? Math.max(0, explained - (rca.excess?.minutes ?? 0))
-  const points = rca.incidents.map((i) => Number.parseFloat(i.pointsDisplay))
-  const sum =
-    points.length > 0 && points.every((p) => Number.isFinite(p))
-      ? `${points.reduce((a, b) => a + b, 0).toFixed(rca.gap.decimals ?? 2)} pts (${durationText(explained)})`
-      : durationText(explained)
-  return `Incidents add up to ${sum}, ${durationText(rca.excess?.minutes ?? 0)} more than the ${durationText(reported)} reported. The value is shown as reported; check the incident times or the reported downtime.`
+/** `Incidents add up to 0.20 pts (1h 30m), 15m more than the 1h 15m reported. …` (spec §5.6), over every incident. */
+export function excessSentence(a: CellAttribution): string {
+  const excess = a.excess?.minutes ?? 0
+  const explained = explainedMinutes(a) ?? a.incidents.reduce((n, i) => n + i.countedMinutes, 0)
+  const reported = a.gap.reportedMinutes ?? Math.max(0, explained - excess)
+  const points = a.excess ? splitRemainder(a.excess.display).points : ''
+  const sum = points ? `${points} (${durationText(explained)})` : durationText(explained)
+  return `Incidents add up to ${sum}, ${durationText(excess)} more than the ${durationText(reported)} reported. The value is shown as reported; check the incident times or the reported downtime.`
 }
 
-/** `3 of 11 epics missed` → `Epics · 3 of 11 missed`. */
-function recordsLabel(rca: CellRca): string {
-  const m = /^(\d+) of (\d+) (.+) missed$/.exec(rca.recordsSummary ?? '')
-  if (m) return `${m[3]![0]!.toUpperCase()}${m[3]!.slice(1)} · ${m[1]} of ${m[2]} missed`
-  return rca.recordsSummary ? `Records · ${rca.recordsSummary}` : `Records · ${rca.recordsTotal}`
+/** `3 of 11 epics missed` → the label `Epics · 3 of 11 missed` and the noun `epics`. */
+function recordsNoun(a: CellAttribution): { label: string; noun: string } {
+  const m = /^(\d+) of (\d+) (.+) missed$/.exec(a.recordsSummary ?? '')
+  if (m) return { label: `${m[3]![0]!.toUpperCase()}${m[3]!.slice(1)} · ${m[1]} of ${m[2]} missed`, noun: m[3]! }
+  return { label: a.recordsSummary ? `Records · ${a.recordsSummary}` : `Records · ${a.recordsTotal}`, noun: 'records' }
 }
 
-function More({ n }: { n: number }) {
-  if (n <= 0) return null
-  return <p className={clsx(META, 'pt-1')}>and {n} more</p>
+/** Calls `onVisible` when it scrolls into view: the end of what is loaded. */
+function EndOfList({ onVisible }: { onVisible: () => void }) {
+  const ref = useRef<HTMLDivElement>(null)
+  const latest = useRef(onVisible)
+  useEffect(() => {
+    latest.current = onVisible
+  }, [onVisible])
+  useEffect(() => {
+    const el = ref.current
+    if (!el || typeof IntersectionObserver === 'undefined') return
+    const io = new IntersectionObserver((entries) => {
+      if (entries.some((e) => e.isIntersecting)) latest.current()
+    })
+    io.observe(el)
+    return () => io.disconnect()
+  }, [])
+  return <div ref={ref} aria-hidden="true" data-testid="end-of-list" className="h-px" />
+}
+
+interface ShowAllProps {
+  total: number
+  loaded: number
+  noun: string
+  /** More of this list can be loaded from the server. */
+  more: boolean
+  loading: boolean
+  onLoadMore: () => void
 }
 
 /**
- * The evidence behind a gap (spec §10.2 item 5): incidents with the
- * remainder and any excess, or contributing records; plain text throughout.
+ * `Show all {n} incidents` / `Show fewer` (spec §6.6, §10.7): expands the
+ * list in place and keeps focus; once expanded, reaching the end of what
+ * is loaded loads the next page, announced as `Loaded {n} more incidents`.
  */
-export function EvidenceList({ rca, sheet, isAdmin }: { rca: CellRca; sheet: boolean; isAdmin: boolean }) {
-  const incidents = rca.incidents.slice(0, INCIDENTS_SHOWN)
-  const records = rca.records.slice(0, RECORDS_SHOWN)
+function useShowAll({ total, loaded, noun, more, loading, onLoadMore }: ShowAllProps, shown: number) {
+  const announce = useWhyCardAnnounce()
+  const [open, setOpen] = useState(false)
+  const seen = useRef(loaded)
+  useEffect(() => {
+    if (open && loaded > seen.current) announce(`Loaded ${loaded - seen.current} more ${noun}`)
+    seen.current = loaded
+  }, [open, loaded, noun, announce])
+  const button =
+    total > shown ? (
+      <button
+        type="button"
+        aria-expanded={open}
+        className="mt-1 h-6 rounded-md px-1 text-xs font-medium text-accent-deep hover:bg-accent/[0.06]"
+        onClick={() => {
+          setOpen(!open)
+          if (!open) announce(`Showing ${total} ${noun}`)
+        }}
+      >
+        {open ? 'Show fewer' : `Show all ${total} ${noun}`}
+      </button>
+    ) : null
+  const end = open && more && !loading ? <EndOfList onVisible={onLoadMore} /> : null
+  return { open, button, end }
+}
+
+export interface EvidenceListProps {
+  /** Every loaded page joined (`mergeAttribution`). */
+  attribution: CellAttribution
+  sheet: boolean
+  isAdmin: boolean
+  /** Which list the next page holds, if any. */
+  next: 'incidents' | 'records' | null
+  loadingMore: boolean
+  onLoadMore: () => void
+}
+
+/**
+ * The evidence behind a gap (spec §10.2): incidents with the remainder and
+ * any excess, or contributing records; the first 5 incidents or 10 records,
+ * then `Show all`. Plain text throughout.
+ */
+export function EvidenceList({ attribution: a, sheet, isAdmin, next, loadingMore, onLoadMore }: EvidenceListProps) {
+  const records = recordsNoun(a)
+  const incidentsAll = useShowAll(
+    { total: a.incidentsTotal, loaded: a.incidents.length, noun: 'incidents', more: next === 'incidents', loading: loadingMore, onLoadMore },
+    Math.min(a.incidents.length, INCIDENTS_SHOWN),
+  )
+  const recordsAll = useShowAll(
+    { total: a.recordsTotal, loaded: a.records.length, noun: records.noun, more: next === 'records', loading: loadingMore, onLoadMore },
+    Math.min(a.records.length, RECORDS_SHOWN),
+  )
+  const incidents = incidentsAll.open ? a.incidents : a.incidents.slice(0, INCIDENTS_SHOWN)
+  const shownRecords = recordsAll.open ? a.records : a.records.slice(0, RECORDS_SHOWN)
   const multiSource = new Set(incidents.map((i) => i.source)).size > 1
-  const remainder = rca.unexplained ? splitRemainder(rca.unexplained.display) : null
-  const nothingLinked = rca.gap.kind !== 'none' && rca.incidents.length === 0 && rca.records.length === 0 && rca.children.length === 0
+  const remainder = a.unexplained ? splitRemainder(a.unexplained.display) : null
+  const nothingLinked = a.gap.kind !== 'none' && a.incidentsTotal === 0 && a.recordsTotal === 0 && a.children.length === 0
   return (
     <>
       {nothingLinked && (
@@ -179,13 +255,13 @@ export function EvidenceList({ rca, sheet, isAdmin }: { rca: CellRca; sheet: boo
         </div>
       )}
       {(incidents.length > 0 || remainder) && (
-        <section aria-label="Incidents" className="mt-3">
-          <p className={LABEL}>Incidents · {rca.incidentsTotal}</p>
+        <section aria-label="Incidents" aria-busy={loadingMore && next === 'incidents'} className="mt-3">
+          <p className={LABEL}>Incidents · {a.incidentsTotal}</p>
           <ul className="mt-1">
             {incidents.map((i, n) => (
               <IncidentRow key={`${i.source}:${i.externalId}`} incident={i} index={n} sheet={sheet} showSource={multiSource} />
             ))}
-            {remainder && rca.unexplained && (
+            {remainder && a.unexplained && (
               <li className={ROW}>
                 <Swatch index={0} remainder />
                 <div className="min-w-0 flex-1">
@@ -199,26 +275,28 @@ export function EvidenceList({ rca, sheet, isAdmin }: { rca: CellRca; sheet: boo
                   </div>
                   <p className={META}>
                     {remainder.rest}
-                    {rca.unexplained.withinTolerance && ' (within 1% of the reported downtime)'}
+                    {a.unexplained.withinTolerance && ' (within 1% of the reported downtime)'}
                   </p>
                 </div>
               </li>
             )}
           </ul>
-          <More n={rca.incidentsTotal - incidents.length} />
-          {rca.excess && <p className="mt-1 border-l-2 border-ink/30 pl-2 text-xs leading-4 text-ink/80">{excessSentence(rca)}</p>}
+          {incidentsAll.end}
+          {incidentsAll.button}
+          {a.excess && <p className="mt-1 border-l-2 border-ink/30 pl-2 text-xs leading-4 text-ink/80">{excessSentence(a)}</p>}
         </section>
       )}
-      {records.length > 0 && (
-        <section aria-label="Records" className="mt-3">
-          <p className={LABEL}>{recordsLabel(rca)}</p>
-          {rca.typed && <p className={clsx(META, 'mt-1')}>This value was entered; the records below explain it but did not set it.</p>}
+      {shownRecords.length > 0 && (
+        <section aria-label="Records" aria-busy={loadingMore && next === 'records'} className="mt-3">
+          <p className={LABEL}>{records.label}</p>
+          {a.typed && <p className={clsx(META, 'mt-1')}>This value was entered; the records below explain it but did not set it.</p>}
           <ul className="mt-1">
-            {records.map((r, n) => (
+            {shownRecords.map((r, n) => (
               <RecordRow key={`${r.contribution.source}:${r.contribution.externalId}`} record={r} index={n} sheet={sheet} />
             ))}
           </ul>
-          <More n={rca.recordsTotal - records.length} />
+          {recordsAll.end}
+          {recordsAll.button}
         </section>
       )}
     </>

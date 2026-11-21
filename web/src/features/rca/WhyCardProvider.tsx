@@ -1,16 +1,16 @@
 import { createContext, useCallback, useContext, useMemo, useRef, useState, type ReactNode } from 'react'
-import type { RcaCellRef, RcaNote } from '../../api/queries'
+import type { MetricSummary, RcaCellRef } from '../../api/queries'
 import { WhyCard } from './WhyCard'
 
 export interface WhyCardOpenOptions {
   /** The card's title; the subject's name by default. Append ` · {metric}` where the surface does not name the metric. */
   title?: string
-  /** Show the value row, as from the RCAs view or the Report; phones always show it. */
+  /** Show the value row, as from the Exec summaries view or the Report; phones always show it. */
   showValue?: boolean
   /** The cell's displayed value, for the error sentence when the card cannot load. */
   display?: string
-  /** After a save (the stored note) or a delete (null) from this card. */
-  onChange?: (note: RcaNote | null) => void
+  /** After the metric's exec summary is saved (the stored summary) or deleted (null) from this card. */
+  onChange?: (summary: MetricSummary | null) => void
 }
 
 export interface WhyCardApi {
@@ -41,7 +41,7 @@ export function useWhyCardAnchor(): HTMLElement | null {
   return useContext(AnchorContext)
 }
 
-/** Announces a short status (`RCA saved`) in the card's polite live region. */
+/** Announces a short status (`Exec summary saved`) in the card's polite live region. */
 export function useWhyCardAnnounce(): (message: string) => void {
   return useContext(AnnounceContext)
 }

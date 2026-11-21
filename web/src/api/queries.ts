@@ -1,4 +1,5 @@
 import {
+  type InfiniteData,
   keepPreviousData,
   useInfiniteQuery,
   useMutation,
@@ -8,7 +9,7 @@ import {
 } from '@tanstack/react-query'
 import { useCallback, useRef } from 'react'
 import { endMonth, type ViewRequest } from '../lib/period'
-import { apiErrorFromResponse } from './errors'
+import { ApiError, apiErrorFromResponse } from './errors'
 import type { components } from './schema'
 import { useApi } from './useApi'
 
@@ -56,21 +57,31 @@ export type AssistantUsage = Schemas['AssistantUsage']
 export type AssistantSettings = Schemas['AssistantSettings']
 export type AssistantCredentialStatus = Schemas['AssistantCredentialStatus']
 export type ReportSummaryDraft = Schemas['ReportSummaryDraft']
-export type CellRca = Schemas['CellRca']
-export type RcaNote = Schemas['RcaNote']
+export type CellAttribution = Schemas['CellAttribution']
+export type MetricSummary = Schemas['MetricSummary']
+export type MetricSummaryList = Schemas['MetricSummaryList']
+export type MetricSummaryState = Schemas['MetricSummaryState']
+export type MetricSummaryDraft = Schemas['MetricSummaryDraft']
+export type MetricSummaryConflict = Schemas['MetricSummaryConflict']
+export type PutMetricSummaryRequest = Schemas['PutMetricSummaryRequest']
+export type PublishBlocked = Schemas['PublishBlocked']
 export type RcaLink = Schemas['RcaLink']
-export type CellRcaList = Schemas['CellRcaList']
-export type CellRcaDraft = Schemas['CellRcaDraft']
-export type CellRcaConflict = Schemas['CellRcaConflict']
-export type PutCellRcaRequest = Schemas['PutCellRcaRequest']
-/** One metric cell an RCA belongs to. */
+/** One metric cell whose attribution a card shows. */
 export type RcaCellRef = { metric: string; subject: string; period: string }
-export type RcaListState = 'needed' | 'stale' | 'written' | 'available' | 'all'
-export interface RcaListQuery {
+export type SummaryListState = 'missing' | 'stale' | 'written' | 'optional' | 'all'
+export interface MetricSummaryListQuery {
   period: string
-  scope?: string
-  state?: RcaListState
-  mine?: boolean
+  /** Default `missing`. */
+  state?: SummaryListState
+  /** Whole texts and every link, 16 rows a page. */
+  full?: boolean
+  /** A published revision's frozen summaries instead of the live ones. */
+  revision?: number
+}
+/** Which next page of a cell's attribution to load: incidents first, then records. */
+export interface AttributionPageParam {
+  incidentsCursor?: string
+  recordsCursor?: string
 }
 export interface OverrideCell {
   metricKey: string
@@ -105,10 +116,12 @@ export const keys = {
   reportMonths: (sc: string) => ['reportMonths', sc] as const,
   report: (sc: string, period: string, revision: string) => ['report', sc, period, revision] as const,
   reportSummary: (sc: string, period: string) => ['reportSummary', sc, period] as const,
-  rca: (sc: string, ref: RcaCellRef) => ['rca', sc, ref] as const,
-  rcas: (sc: string, q: RcaListQuery) =>
-    ['rcas', sc, q.period, { scope: q.scope ?? '', state: q.state ?? 'needed', mine: q.mine ?? false }] as const,
-  rcaCounts: (sc: string, period: string) => ['rca-counts', sc, period] as const,
+  attribution: (sc: string, ref: RcaCellRef) => ['attribution', sc, ref] as const,
+  metricSummary: (sc: string, metric: string, period: string, revision?: number) =>
+    ['metric-summary', sc, metric, period, revision ?? 'live'] as const,
+  metricSummaries: (sc: string, q: MetricSummaryListQuery) =>
+    ['metric-summaries', sc, q.period, { state: q.state ?? 'missing', full: q.full ?? false, revision: q.revision ?? 0 }] as const,
+  metricSummaryCounts: (sc: string, period: string) => ['metric-summary-counts', sc, period] as const,
   myTokens: ['myTokens'] as const,
   assistantCredential: ['assistantCredential'] as const,
   assistantSettings: ['assistantSettings'] as const,
@@ -854,11 +867,11 @@ export function useReportDocument(sc: string | undefined, period: string, revisi
     queryFn: () =>
       unwrap(
         api.GET('/scorecards/{sc}/reports/{period}', {
-          // Published revisions also return what the Overview counted (`standing`); live and
-          // published documents return the month's RCAs (`rcas`).
+          // Published revisions also return what the Overview counted (`standing`). Exec summaries
+          // are not in the document: read them with `useMetricSummaries`.
           params: {
             path: { sc: sc ?? '', period },
-            query: revision === '' ? { standing: true, rcas: true } : { revision, standing: true, rcas: true },
+            query: revision === '' ? { standing: true } : { revision, standing: true },
           },
         }),
       ),
@@ -890,13 +903,57 @@ export function usePutReportSummary(sc: string, period: string) {
   })
 }
 
-/** Publishes the month's company-scope report (admin), then refreshes the report and the month list. */
+/**
+ * A publish the server refused because required exec summaries are missing
+ * (409 `summaries_missing`; the `PublishBlocked` body is top level, not in
+ * the error envelope). `missing` lists them; `stale` counts the stale ones,
+ * which do not block.
+ */
+export class PublishBlockedError extends ApiError {
+  readonly missing: MetricSummary[]
+  readonly stale: number
+
+  constructor(body: PublishBlocked) {
+    super({ status: 409, code: body.code, message: body.message, body })
+    this.name = 'PublishBlockedError'
+    this.missing = body.missing
+    this.stale = body.stale ?? 0
+  }
+}
+
+function isPublishBlocked(body: unknown): body is PublishBlocked {
+  return (
+    typeof body === 'object' &&
+    body !== null &&
+    (body as { code?: unknown }).code === 'summaries_missing' &&
+    Array.isArray((body as { missing?: unknown }).missing)
+  )
+}
+
+/**
+ * Publishes the month's company-scope report (admin), then refreshes the
+ * report and the month list. Rejects with `PublishBlockedError` while
+ * required exec summaries are missing, and refreshes the month's summaries.
+ */
 export function usePublishReport(sc: string, period: string) {
   const api = useApi()
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: () =>
-      unwrap(api.POST('/scorecards/{sc}/reports/{period}/publish', { params: { path: { sc, period } } })),
+    mutationFn: async () => {
+      try {
+        return await unwrap(api.POST('/scorecards/{sc}/reports/{period}/publish', { params: { path: { sc, period } } }))
+      } catch (e) {
+        if (e instanceof ApiError && e.status === 409 && isPublishBlocked(e.body)) throw new PublishBlockedError(e.body)
+        throw e
+      }
+    },
+    onError: async (e) => {
+      if (!(e instanceof PublishBlockedError)) return
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['metric-summaries', sc, period] }),
+        queryClient.invalidateQueries({ queryKey: keys.metricSummaryCounts(sc, period) }),
+      ])
+    },
     onSuccess: async () => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['report', sc, period] }),
@@ -1078,9 +1135,10 @@ export function useDraftReportSummary(sc: string, period: string) {
   })
 }
 
-// ---- RCAs ---------------------------------------------------------------------
+// ---- Attribution and exec summaries -------------------------------------------
 
 type QueryClient = ReturnType<typeof useQueryClient>
+type AttributionData = InfiniteData<CellAttribution, AttributionPageParam>
 
 /** Whether a view query shows `period` (or, for a coarse period, the month that closes it). */
 function isViewOf(queryKey: readonly unknown[], sc: string, periods: readonly string[]): boolean {
@@ -1089,97 +1147,204 @@ function isViewOf(queryKey: readonly unknown[], sc: string, periods: readonly st
   return req?.periods === undefined || req.periods.some((p) => periods.includes(p))
 }
 
-/**
- * After a note changes: every card of that period (a roll-up lists its
- * children's notes), the RCAs list and counts, the views that show the
- * period, and the month's report.
- */
-async function refreshRca(queryClient: QueryClient, sc: string, ref: RcaCellRef) {
-  const month = endMonth(ref.period)
-  const periods = [...new Set([ref.period, month])]
-  await Promise.all([
-    queryClient.invalidateQueries({
-      predicate: (q) =>
-        q.queryKey[0] === 'rca' && q.queryKey[1] === sc && (q.queryKey[2] as RcaCellRef | undefined)?.period === ref.period,
-    }),
-    ...periods.flatMap((p) => [
-      queryClient.invalidateQueries({ queryKey: ['rcas', sc, p] }),
-      queryClient.invalidateQueries({ queryKey: keys.rcaCounts(sc, p) }),
-    ]),
-    queryClient.invalidateQueries({ predicate: (q) => isViewOf(q.queryKey, sc, periods) }),
-    queryClient.invalidateQueries({ queryKey: ['report', sc, month] }),
-  ])
+/** A summary's period and the month that closes it (the same for a month). */
+function summaryPeriods(period: string): string[] {
+  return [...new Set([period, endMonth(period)])]
 }
 
-/** One cell's explanation and note; idle while `ref` is null. */
-export function useCellRca(sc: string, ref: RcaCellRef | null) {
+/** Whether an attribution query is for a cell of `metric` in one of `periods`: every card that shows its summary. */
+function isAttributionOf(queryKey: readonly unknown[], sc: string, metric: string, periods: readonly string[]): boolean {
+  if (queryKey[0] !== 'attribution' || queryKey[1] !== sc) return false
+  const ref = queryKey[2] as RcaCellRef | undefined
+  return ref?.metric === metric && periods.includes(ref.period)
+}
+
+/**
+ * The cell's attribution with every loaded page joined: page 1, then the
+ * incidents of pages asked for by `incidentsCursor` and the records of pages
+ * asked for by `recordsCursor`. The cursors are those of the latest page of
+ * each list (absent once it is all loaded).
+ */
+export function mergeAttribution(data: InfiniteData<CellAttribution, unknown> | undefined): CellAttribution | undefined {
+  const first = data?.pages[0]
+  if (!data || !first) return undefined
+  let incidents = first.incidents
+  let records = first.records
+  let incidentsCursor = first.incidentsCursor
+  let recordsCursor = first.recordsCursor
+  data.pages.forEach((page, i) => {
+    if (i === 0) return
+    const param = data.pageParams[i] as AttributionPageParam | undefined
+    if (param?.incidentsCursor) {
+      incidents = [...incidents, ...page.incidents]
+      incidentsCursor = page.incidentsCursor
+    }
+    if (param?.recordsCursor) {
+      records = [...records, ...page.records]
+      recordsCursor = page.recordsCursor
+    }
+  })
+  return { ...first, incidents, records, incidentsCursor, recordsCursor }
+}
+
+function nextAttributionPage(pages: CellAttribution[], params: AttributionPageParam[]): AttributionPageParam | undefined {
+  const merged = mergeAttribution({ pages, pageParams: params })
+  if (merged?.incidentsCursor) return { incidentsCursor: merged.incidentsCursor }
+  if (merged?.recordsCursor) return { recordsCursor: merged.recordsCursor }
+  return undefined
+}
+
+/**
+ * One cell's attribution (5 incidents and 10 records first, then pages of
+ * 50: incidents until they are all loaded, then records) with its metric's
+ * exec summary as context. Idle while `ref` is null. Read the joined cell
+ * with `mergeAttribution(query.data)`.
+ */
+export function useCellAttribution(sc: string, ref: RcaCellRef | null) {
   const api = useApi()
-  return useQuery({
-    queryKey: keys.rca(sc, ref ?? { metric: '', subject: '', period: '' }),
+  return useInfiniteQuery({
+    queryKey: keys.attribution(sc, ref ?? { metric: '', subject: '', period: '' }),
     enabled: ref !== null,
-    queryFn: () =>
+    initialPageParam: {} as AttributionPageParam,
+    getNextPageParam: (_last: CellAttribution, pages: CellAttribution[], _param: AttributionPageParam, params: AttributionPageParam[]) =>
+      nextAttributionPage(pages, params),
+    queryFn: ({ pageParam }) =>
       unwrap(
-        api.GET('/scorecards/{sc}/rca', {
-          params: { path: { sc }, query: { metric: ref?.metric ?? '', subject: ref?.subject ?? '', period: ref?.period ?? '' } },
+        api.GET('/scorecards/{sc}/attribution', {
+          params: {
+            path: { sc },
+            query: { metric: ref?.metric ?? '', subject: ref?.subject ?? '', period: ref?.period ?? '', ...pageParam },
+          },
         }),
       ),
   })
 }
 
+/** One metric's exec summary for a period, with every link; `revision` reads a published copy. Idle while `metric` is null. */
+export function useMetricSummary(sc: string, metric: string | null, period: string, revision?: number) {
+  const api = useApi()
+  return useQuery({
+    queryKey: keys.metricSummary(sc, metric ?? '', period, revision),
+    enabled: metric !== null && metric !== '' && period !== '',
+    queryFn: () =>
+      unwrap(
+        api.GET('/scorecards/{sc}/metric-summaries/{metric}/{period}', {
+          params: { path: { sc, metric: metric ?? '', period }, query: revision === undefined ? {} : { revision } },
+        }),
+      ),
+  })
+}
+
+/** Puts `summary` on every loaded card of the metric and period, so they show it before the refetch. */
+function setCardSummaries(queryClient: QueryClient, sc: string, metric: string, periods: string[], summary: MetricSummary) {
+  queryClient.setQueriesData<AttributionData>({ predicate: (q) => isAttributionOf(q.queryKey, sc, metric, periods) }, (prev) =>
+    prev ? { ...prev, pages: prev.pages.map((p, i) => (i === 0 && p.summary ? { ...p, summary } : p)) } : prev,
+  )
+}
+
 /**
- * Saves a cell's note against the revision loaded (0 creates). A stale
- * revision rejects with an ApiError of status 409 whose `body` is a
- * `CellRcaConflict` carrying the note as stored now.
+ * After a summary changes: the summary, the month's lists and counts, every
+ * card of the metric in that period, the views that show it, and the
+ * month's report.
  */
-export function usePutCellRca(sc: string) {
+async function refreshSummary(queryClient: QueryClient, sc: string, metric: string, period: string) {
+  const periods = summaryPeriods(period)
+  await Promise.all([
+    queryClient.invalidateQueries({ queryKey: ['metric-summary', sc, metric, period] }),
+    ...periods.flatMap((p) => [
+      queryClient.invalidateQueries({ queryKey: ['metric-summaries', sc, p] }),
+      queryClient.invalidateQueries({ queryKey: keys.metricSummaryCounts(sc, p) }),
+    ]),
+    queryClient.invalidateQueries({ predicate: (q) => isAttributionOf(q.queryKey, sc, metric, periods) }),
+    queryClient.invalidateQueries({ predicate: (q) => isViewOf(q.queryKey, sc, periods) }),
+    queryClient.invalidateQueries({ queryKey: ['report', sc, endMonth(period)] }),
+  ])
+}
+
+export type PutMetricSummaryVars = { metric: string; period: string } & PutMetricSummaryRequest
+
+/**
+ * Saves a metric's exec summary against the revision loaded (0 creates);
+ * admins only (403 otherwise). A stale revision rejects with an ApiError of
+ * status 409 whose `body` is a `MetricSummaryConflict` carrying the summary
+ * as stored now.
+ */
+export function usePutMetricSummary(sc: string) {
   const api = useApi()
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (body: PutCellRcaRequest) => unwrap(api.PUT('/scorecards/{sc}/rca', { params: { path: { sc } }, body })),
-    onSuccess: async (note, body) => {
-      const ref = { metric: body.metric, subject: body.subject, period: body.period }
-      queryClient.setQueryData<CellRca>(keys.rca(sc, ref), (prev) =>
-        prev ? { ...prev, note, stale: false, staleReasons: [] } : prev,
-      )
-      await refreshRca(queryClient, sc, ref)
+    mutationFn: ({ metric, period, ...body }: PutMetricSummaryVars) =>
+      unwrap(api.PUT('/scorecards/{sc}/metric-summaries/{metric}/{period}', { params: { path: { sc, metric, period } }, body })),
+    onSuccess: async (saved, { metric, period }) => {
+      queryClient.setQueryData(keys.metricSummary(sc, metric, period), saved)
+      setCardSummaries(queryClient, sc, metric, summaryPeriods(period), saved)
+      await refreshSummary(queryClient, sc, metric, period)
     },
   })
 }
 
-/** Deletes a cell's note (hard delete; the audit keeps it). 409 as for saving. */
-export function useDeleteCellRca(sc: string) {
+/** The slot a deleted summary leaves: missing when the period requires one, else optional. */
+function unwrittenSlot(s: MetricSummary): MetricSummary {
+  const required = s.requirement === 'required'
+  return {
+    metricKey: s.metricKey,
+    metricName: s.metricName,
+    categoryId: s.categoryId,
+    period: s.period,
+    requirement: s.requirement,
+    requirementReason: s.requirementReason,
+    state: required ? 'missing' : 'optional',
+    standing: s.standing,
+    links: [],
+    linksTotal: 0,
+    stale: false,
+    staleReasons: [],
+    canEdit: s.canEdit,
+  }
+}
+
+/** Deletes a metric's exec summary (admins; hard delete, the audit keeps it). 409 as for saving. */
+export function useDeleteMetricSummary(sc: string) {
   const api = useApi()
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: ({ expectedRevision, ...ref }: RcaCellRef & { expectedRevision: number }) =>
-      unwrap(api.DELETE('/scorecards/{sc}/rca', { params: { path: { sc }, query: { ...ref, expectedRevision } } })),
-    onSuccess: async (_data, vars) => {
-      const ref = { metric: vars.metric, subject: vars.subject, period: vars.period }
-      queryClient.setQueryData<CellRca>(keys.rca(sc, ref), (prev) =>
-        prev ? { ...prev, note: null, stale: false, staleReasons: [] } : prev,
+    mutationFn: ({ metric, period, expectedRevision }: { metric: string; period: string; expectedRevision: number }) =>
+      unwrap(
+        api.DELETE('/scorecards/{sc}/metric-summaries/{metric}/{period}', {
+          params: { path: { sc, metric, period }, query: { expectedRevision } },
+        }),
+      ),
+    onSuccess: async (_data, { metric, period }) => {
+      const periods = summaryPeriods(period)
+      queryClient.setQueriesData<AttributionData>({ predicate: (q) => isAttributionOf(q.queryKey, sc, metric, periods) }, (prev) =>
+        prev
+          ? { ...prev, pages: prev.pages.map((p, i) => (i === 0 && p.summary ? { ...p, summary: unwrittenSlot(p.summary) } : p)) }
+          : prev,
       )
-      await refreshRca(queryClient, sc, ref)
+      queryClient.removeQueries({ queryKey: ['metric-summary', sc, metric, period, 'live'] })
+      await refreshSummary(queryClient, sc, metric, period)
     },
   })
 }
 
-/** A period's RCAs, 200 rows a page (sorted by the server); `state` defaults to `needed`. */
-export function useCellRcas(sc: string, q: RcaListQuery) {
+/** A month's exec summaries, one row per metric (sorted by the server), paged by cursor; `state` defaults to `missing`. */
+export function useMetricSummaries(sc: string, q: MetricSummaryListQuery) {
   const api = useApi()
   return useInfiniteQuery({
-    queryKey: keys.rcas(sc, q),
+    queryKey: keys.metricSummaries(sc, q),
+    enabled: q.period !== '',
     initialPageParam: undefined as string | undefined,
-    getNextPageParam: (last: CellRcaList) => last.nextCursor,
+    getNextPageParam: (last: MetricSummaryList) => last.nextCursor,
     queryFn: ({ pageParam }) =>
       unwrap(
-        api.GET('/scorecards/{sc}/rcas', {
+        api.GET('/scorecards/{sc}/metric-summaries', {
           params: {
             path: { sc },
             query: {
               period: q.period,
-              ...(q.scope ? { scope: q.scope } : {}),
               ...(q.state ? { state: q.state } : {}),
-              ...(q.mine ? { mine: true } : {}),
+              ...(q.full ? { full: true } : {}),
+              ...(q.revision === undefined ? {} : { revision: q.revision }),
               ...(pageParam === undefined ? {} : { cursor: pageParam }),
             },
           },
@@ -1188,33 +1353,39 @@ export function useCellRcas(sc: string, q: RcaListQuery) {
   })
 }
 
-/** A period's RCA counts only (the RCAs tab pill); kept fresh for a minute. */
-export function useCellRcaCounts(sc: string | undefined, period: string) {
+/** A month's exec summary counts only (the tab pill, the publish line); kept fresh for a minute. */
+export function useMetricSummaryCounts(sc: string | undefined, period: string) {
   const api = useApi()
   return useQuery({
-    queryKey: keys.rcaCounts(sc ?? '', period),
+    queryKey: keys.metricSummaryCounts(sc ?? '', period),
     enabled: sc !== undefined && period !== '',
     staleTime: 60_000,
     queryFn: () =>
-      unwrap(api.GET('/scorecards/{sc}/rcas', { params: { path: { sc: sc ?? '' }, query: { period, countsOnly: true } } })),
+      unwrap(
+        api.GET('/scorecards/{sc}/metric-summaries', { params: { path: { sc: sc ?? '' }, query: { period, countsOnly: true } } }),
+      ),
   })
 }
 
 /**
- * Asks SAM to draft a cell's note and polls until it is written or fails.
- * Nothing is saved: the editor shows the draft as a suggestion.
+ * Asks SAM to draft a metric's exec summary (admins) and polls until it is
+ * written or fails. Nothing is saved: the editor shows the draft as a
+ * suggestion and nowhere else.
  */
-export function useCellRcaDraft(sc: string) {
+export function useMetricSummaryDraft(sc: string) {
   const api = useApi()
   return useMutation({
-    mutationFn: async ({ ref, signal }: { ref: RcaCellRef; signal?: AbortSignal }) => {
+    mutationFn: async ({ metric, period, signal }: { metric: string; period: string; signal?: AbortSignal }) => {
       let draft = await unwrap(
-        api.POST('/scorecards/{sc}/rca/draft', { params: { path: { sc } }, body: { ...ref }, signal }),
+        api.POST('/scorecards/{sc}/metric-summaries/{metric}/{period}/draft', { params: { path: { sc, metric, period } }, signal }),
       )
       while (draft.pending) {
         await wait(ASSISTANT_POLL_MS, signal)
         draft = await unwrap(
-          api.GET('/scorecards/{sc}/rca/draft/{id}', { params: { path: { sc, id: draft.id } }, signal }),
+          api.GET('/scorecards/{sc}/metric-summaries/{metric}/{period}/draft/{id}', {
+            params: { path: { sc, metric, period, id: draft.id } },
+            signal,
+          }),
         )
       }
       return draft

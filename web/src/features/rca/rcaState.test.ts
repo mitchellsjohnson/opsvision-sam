@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { components } from '../../api/schema'
-import { bestStatus, displayState } from './rcaState'
+import { attributionAvailable, bestStatus, summaryDisplay } from './rcaState'
 
 type Cell = components['schemas']['Cell']
 type ViewRow = components['schemas']['ViewRow']
@@ -76,77 +76,71 @@ describe('bestStatus', () => {
   })
 })
 
-describe('displayState', () => {
-  it('derives available for a best-status cell below its ideal, on single surfaces only', () => {
-    expect(displayState(row(), cell(), scale, 'single')).toEqual({ state: 'available' })
-    expect(displayState(row(), cell(), scale, 'dense')).toBeNull()
+describe('summaryDisplay', () => {
+  const company = (summary: Cell['summary']) => cell({ subjectId: 'acme', summary })
+
+  it('maps a written summary, with the call to act only for admins', () => {
+    const c = company({ state: 'written', excerpt: 'Webhooks lost 7h…', author: 'Avery Admin' })
+    expect(summaryDisplay(c, 'admin')).toEqual({ state: 'written', excerpt: 'Webhooks lost 7h…', author: 'Avery Admin', canEdit: true })
+    expect(summaryDisplay(c, 'viewer')).toEqual({ state: 'written', excerpt: 'Webhooks lost 7h…', author: 'Avery Admin', canEdit: false })
   })
 
-  it('has nothing for a cell at its ideal', () => {
-    expect(displayState(row(), cell({ value: 100, display: '100.00%' }), scale, 'single')).toBeNull()
+  it('maps a stale summary; contributors cannot edit', () => {
+    const c = company({ state: 'stale', excerpt: 'Checkout pulled…', author: 'Avery Admin' })
+    expect(summaryDisplay(c, 'contributor')).toEqual({ state: 'stale', excerpt: 'Checkout pulled…', author: 'Avery Admin', canEdit: false })
+    expect(summaryDisplay(c, 'admin')?.canEdit).toBe(true)
   })
 
-  it('uses the displayed value: 99.999 shows 100.00% and has no gap', () => {
-    expect(displayState(row(), cell({ value: 99.999, display: '100.00%' }), scale, 'single')).toBeNull()
+  it('shows a missing summary to everyone; admins can write it', () => {
+    const c = company({ state: 'missing' })
+    expect(summaryDisplay(c, 'admin')).toEqual({ state: 'missing', canEdit: true })
+    expect(summaryDisplay(c, 'contributor')).toEqual({ state: 'missing', canEdit: false })
+    expect(summaryDisplay(c, 'viewer')).toEqual({ state: 'missing', canEdit: false })
   })
 
-  it('makes a cell not at its best and without Cell.rca (a roll-up) available', () => {
-    expect(displayState(row(), cell({ value: 99.2, display: '99.20%', status: 'R' }), scale, 'single')).toEqual({
-      state: 'available',
-    })
+  it('draws nothing for an optional slot, a cell without summary state, or YTD', () => {
+    expect(summaryDisplay(company({ state: 'optional' }), 'admin')).toBeNull()
+    expect(summaryDisplay(cell(), 'admin')).toBeNull()
+    expect(summaryDisplay(cell({ ytd: true, summary: { state: 'missing' } }), 'admin')).toBeNull()
+  })
+
+  it('reads an absent author and excerpt as empty', () => {
+    expect(summaryDisplay(company({ state: 'written' }), 'viewer')).toEqual({ state: 'written', excerpt: '', author: '', canEdit: false })
+  })
+})
+
+describe('attributionAvailable', () => {
+  it('is true for Green 99.97%: best status, below the ideal', () => {
+    expect(attributionAvailable(row(), cell(), scale)).toBe(true)
+  })
+
+  it('is false at 100%, and when the display rounds to 100.00%', () => {
+    expect(attributionAvailable(row(), cell({ value: 100, display: '100.00%' }), scale)).toBe(false)
+    expect(attributionAvailable(row(), cell({ value: 99.999, display: '100.00%' }), scale)).toBe(false)
+  })
+
+  it('is true for a Red roll-up', () => {
+    expect(attributionAvailable(row({ subjectId: 'acme', subjectKind: 'unit', depth: 0 }), cell({ subjectId: 'acme', value: 99.2, display: '99.20%', status: 'R' }), scale)).toBe(true)
   })
 
   it('treats Green as best on a custom scale with a level above it', () => {
     const custom: StatusLevel[] = [{ key: 'B', label: 'Blue', color: '#1D4ED8', rank: 0 }, ...scale]
-    expect(displayState(row({ rcaIdeal: undefined }), cell(), custom, 'single')).toBeNull()
+    expect(attributionAvailable(row({ rcaIdeal: undefined }), cell(), custom)).toBe(false)
+    expect(attributionAvailable(row({ rcaIdeal: undefined }), cell({ status: 'Y', value: 99.6, display: '99.60%' }), custom)).toBe(true)
   })
 
-  it('has nothing for YTD, not applicable, unrated or rule-less cells', () => {
+  it('is false for YTD, not applicable, unrated or rule-less cells', () => {
     const r = row()
-    expect(displayState(r, cell({ ytd: true, rca: { state: 'needed', canEdit: true } }), scale, 'single')).toBeNull()
-    expect(displayState(r, cell({ status: '', naReason: 'Not tracked yet', value: null }), scale, 'single')).toBeNull()
-    expect(displayState(r, cell({ status: '' }), scale, 'single')).toBeNull()
-    expect(displayState(r, cell({ rule: undefined, status: 'R' }), scale, 'single')).toBeNull()
-  })
-
-  it('maps Cell.rca states, tags only for editors', () => {
-    const r = row()
-    expect(displayState(r, cell({ status: 'R', rca: { state: 'needed', canEdit: true } }), scale, 'dense')).toEqual({
-      state: 'needed',
-      canEdit: true,
-    })
-    expect(displayState(r, cell({ status: 'R', rca: { state: 'needed' } }), scale, 'dense')).toEqual({
-      state: 'needed',
-      canEdit: false,
-    })
-    expect(
-      displayState(r, cell({ rca: { state: 'written', excerpt: 'Config deploy…', author: 'Avery Admin', canEdit: false } }), scale, 'dense'),
-    ).toEqual({ state: 'written', excerpt: 'Config deploy…', author: 'Avery Admin', canEdit: false })
-    expect(
-      displayState(r, cell({ rca: { state: 'stale', excerpt: 'Index rebuild…', author: 'Casey', canEdit: true } }), scale, 'single'),
-    ).toEqual({ state: 'stale', excerpt: 'Index rebuild…', author: 'Casey', canEdit: true })
-  })
-
-  it('shows roll-up counts to admins and contributors, and a plain Why? to viewers', () => {
-    const c = cell({ subjectId: 'acme', value: null, display: '', status: '', rca: { neededBelow: 1, staleBelow: 1 } })
-    expect(displayState(row(), c, scale, 'dense', 'contributor')).toEqual({
-      state: 'rollup',
-      neededBelow: 1,
-      staleBelow: 1,
-      showCounts: true,
-    })
-    expect(displayState(row(), c, scale, 'dense', 'viewer')).toEqual({
-      state: 'rollup',
-      neededBelow: 1,
-      staleBelow: 1,
-      showCounts: false,
-    })
+    expect(attributionAvailable(r, cell({ ytd: true, status: 'R' }), scale)).toBe(false)
+    expect(attributionAvailable(r, cell({ status: '', naReason: 'Not tracked yet', value: null }), scale)).toBe(false)
+    expect(attributionAvailable(r, cell({ status: '' }), scale)).toBe(false)
+    expect(attributionAvailable(r, cell({ rule: undefined, status: 'R' }), scale)).toBe(false)
   })
 
   it('measures lower-is-better ideals from above', () => {
     const plan = row({ metricKey: 'spend', format: 'percent0', direction: 'lower_better', chartKind: 'money_plan', rcaIdeal: 100 })
     const rule: StatusRule = { type: 'bands', bands: [{ status: 'G', op: '<=', value: 105 }, { status: 'R', op: '>', value: 105 }] }
-    expect(displayState(plan, cell({ value: 103, display: '103%', rule }), scale, 'single')).toEqual({ state: 'available' })
-    expect(displayState(plan, cell({ value: 97, display: '97%', rule }), scale, 'single')).toBeNull()
+    expect(attributionAvailable(plan, cell({ value: 103, display: '103%', rule }), scale)).toBe(true)
+    expect(attributionAvailable(plan, cell({ value: 97, display: '97%', rule }), scale)).toBe(false)
   })
 })

@@ -7,18 +7,10 @@ type StatusRule = components['schemas']['StatusRule']
 type StatusLevel = components['schemas']['StatusLevel']
 type Role = components['schemas']['Role']
 
-/** What a Why trigger shows for one cell (spec §10.1). */
-export type WhyDisplay =
-  | { state: 'available' }
-  | { state: 'needed'; canEdit: boolean }
+/** A company-standing cell's exec summary state, as its Why trigger shows it (spec §10.1). */
+export type SummaryDisplay =
+  | { state: 'missing'; canEdit: boolean }
   | { state: 'written' | 'stale'; excerpt: string; author: string; canEdit: boolean }
-  | { state: 'rollup'; neededBelow: number; staleBelow: number; showCounts: boolean }
-
-/**
- * Single-cell surfaces (tile why line, value rows) draw every state; dense
- * surfaces (board, grids, monthly values) never draw `available` (§4.3).
- */
-export type WhySurface = 'single' | 'dense'
 
 /**
  * The best-ranked status the cell's own rule can produce: band statuses for
@@ -48,39 +40,30 @@ function belowIdeal(row: ViewRow, cell: Cell): boolean {
   return row.direction === 'lower_better' ? shown > ideal : shown < ideal
 }
 
-/** `available` per §9.2: derived on the client because views never carry it. */
-function isAvailable(row: ViewRow, cell: Cell, scale: StatusLevel[]): boolean {
-  if (cell.naReason !== '' || cell.status === '' || !cell.rule) return false
+/**
+ * Whether the cell has attribution (spec §4.2): it is not at its best status,
+ * or its displayed value is short of `row.rcaIdeal`. Derived here because
+ * views never carry it. A cell with no value but readable children (the
+ * Uptime company row) is left to its summary state.
+ */
+export function attributionAvailable(row: ViewRow, cell: Cell, scale: StatusLevel[]): boolean {
+  if (cell.ytd || cell.naReason !== '' || cell.status === '' || !cell.rule) return false
   const best = bestStatus(cell.rule, scale)
   if (best === '') return false
   return cell.status !== best || belowIdeal(row, cell)
 }
 
 /**
- * The Why state of one view cell: `Cell.rca` when the server sent it, else
- * `available` derived from `row.rcaIdeal`, the status and the rule. Tags are
- * shown only to people who can act: `canEdit` on the cell, or for roll-up
- * counts any admin or contributor (`role`). Null draws nothing.
+ * The exec summary state of a company-root cell, from `Cell.summary`: the
+ * missing tag for everyone, the call to act (`canEdit`) for admins only.
+ * Null where there is nothing to draw: no summary state, an optional slot,
+ * or a YTD cell.
  */
-export function displayState(
-  row: ViewRow,
-  cell: Cell,
-  scale: StatusLevel[],
-  surface: WhySurface,
-  role?: Role,
-): WhyDisplay | null {
-  if (cell.ytd) return null
-  const rca = cell.rca
-  const canEdit = rca?.canEdit === true
-  if (rca?.state === 'written' || rca?.state === 'stale') {
-    return { state: rca.state, excerpt: rca.excerpt ?? '', author: rca.author ?? '', canEdit }
-  }
-  if (rca?.state === 'needed') return { state: 'needed', canEdit }
-  const neededBelow = rca?.neededBelow ?? 0
-  const staleBelow = rca?.staleBelow ?? 0
-  if (neededBelow + staleBelow > 0) {
-    return { state: 'rollup', neededBelow, staleBelow, showCounts: canEdit || role === 'admin' || role === 'contributor' }
-  }
-  if (surface === 'dense') return null
-  return isAvailable(row, cell, scale) ? { state: 'available' } : null
+export function summaryDisplay(cell: Cell, role: Role): SummaryDisplay | null {
+  const s = cell.summary
+  if (cell.ytd || !s) return null
+  const canEdit = role === 'admin'
+  if (s.state === 'missing') return { state: 'missing', canEdit }
+  if (s.state === 'written' || s.state === 'stale') return { state: s.state, excerpt: s.excerpt ?? '', author: s.author ?? '', canEdit }
+  return null
 }

@@ -4,18 +4,30 @@ import { http, HttpResponse } from 'msw'
 import type { ReactNode } from 'react'
 import { describe, expect, it } from 'vitest'
 import { AuthContext } from '../auth/context'
+import {
+  deploymentMissing,
+  epicsMissing,
+  securityMissing,
+  uptimeCardSummary,
+  uptimeSummary,
+  webhooksAttribution,
+} from '../test/rcaFixtures'
 import { API, server } from '../test/server'
 import { newQueryClient, testAuth } from '../test/utils'
 import {
+  mergeAttribution,
+  PublishBlockedError,
   useApplyImport,
-  useCellRca,
-  useCellRcaCounts,
-  useCellRcaDraft,
-  useCellRcas,
-  useDeleteCellRca,
+  useCellAttribution,
+  useDeleteMetricSummary,
   useEntry,
+  useMetricSummaries,
+  useMetricSummary,
+  useMetricSummaryCounts,
+  useMetricSummaryDraft,
+  usePublishReport,
   usePublishVersion,
-  usePutCellRca,
+  usePutMetricSummary,
   useReportDocument,
   useSaveData,
   useVersions,
@@ -123,73 +135,137 @@ describe('queries', () => {
     await waitFor(() => expect(client.getQueryState(['entry', 'sc', '2026-M10'])?.dataUpdateCount).toBe(2))
   })
 
-  describe('RCAs', () => {
+  describe('Exec summaries and attribution', () => {
     const ref = { metric: 'uptime', subject: 'webhooks', period: '2026-M10' }
+    const SUMMARY = `${API}/v1/scorecards/sc/metric-summaries/uptime/2026-M10`
 
-    it('useCellRca reads one cell, and waits while there is no cell', async () => {
+    it('useCellAttribution reads the first page, idles without a cell, and pages incidents by cursor', async () => {
       const { wrapper } = setup()
-      const { result } = renderHook(() => ({ none: useCellRca('sc', null), cell: useCellRca('sc', ref) }), { wrapper })
+      const bus = { ...ref, subject: 'event-bus' }
+      const { result } = renderHook(() => ({ none: useCellAttribution('sc', null), cell: useCellAttribution('sc', bus) }), { wrapper })
       await waitFor(() => expect(result.current.cell.isSuccess).toBe(true))
-      expect(result.current.cell.data?.subjectName).toBe('Webhooks')
       expect(result.current.none.fetchStatus).toBe('idle')
+      expect(mergeAttribution(result.current.cell.data)?.incidents).toHaveLength(5)
+      expect(result.current.cell.hasNextPage).toBe(true)
+      await result.current.cell.fetchNextPage()
+      await waitFor(() => expect(result.current.cell.data?.pages).toHaveLength(2))
+      const merged = mergeAttribution(result.current.cell.data)!
+      expect(merged.incidents).toHaveLength(37)
+      expect(merged.incidents.at(-1)?.externalId).toBe('INC-3037')
+      expect(merged.incidentsCursor).toBeUndefined()
+      expect(merged.incidentsTotal).toBe(37)
+      expect(result.current.cell.hasNextPage).toBe(false)
     })
 
-    it('usePutCellRca invalidates the cell, the list, the counts and the views of that period', async () => {
+    it('usePutMetricSummary invalidates the summary, the list, the counts, the attribution and the views of the period', async () => {
       const { client, wrapper } = setup()
-      const other = { periods: ['2026-M09'] }
+      let path = ''
+      server.use(
+        http.put(SUMMARY, async ({ request }) => {
+          path = new URL(request.url).pathname
+          const body = (await request.json()) as { text: string; links: unknown[]; expectedRevision: number }
+          return HttpResponse.json({ ...uptimeSummary, text: body.text, revision: body.expectedRevision + 1 })
+        }),
+      )
       const board = { periods: ['2026-M09', '2026-M10'], ytd: ['2026-M10'] }
-      client.setQueryData(['rca', 'sc', ref], { note: null })
-      client.setQueryData(['rcas', 'sc', '2026-M10', { state: 'needed' }], { items: [] })
-      client.setQueryData(['rca-counts', 'sc', '2026-M10'], { counts: {} })
+      const other = { periods: ['2026-M09'] }
+      const company = { ...ref, subject: 'acme' }
+      const elsewhere = { metric: 'epics_on_time', subject: 'acme', period: '2026-M10' }
+      const september = { ...ref, period: '2026-M09' }
+      const page = (summary: unknown) => ({ pages: [{ ...webhooksAttribution, summary }], pageParams: [{}] })
+      client.setQueryData(['metric-summary', 'sc', 'uptime', '2026-M10', 'live'], uptimeSummary)
+      client.setQueryData(['metric-summaries', 'sc', '2026-M10', { state: 'missing', full: false, revision: 0 }], { pages: [] })
+      client.setQueryData(['metric-summary-counts', 'sc', '2026-M10'], { counts: {} })
+      client.setQueryData(['attribution', 'sc', ref], page(uptimeCardSummary))
+      client.setQueryData(['attribution', 'sc', company], page(uptimeCardSummary))
+      client.setQueryData(['attribution', 'sc', elsewhere], page(null))
+      client.setQueryData(['attribution', 'sc', september], page(null))
       client.setQueryData(['view', 'sc', req], {})
       client.setQueryData(['view', 'sc', board], {})
       client.setQueryData(['view', 'sc', other], {})
-      client.setQueryData(['rcas', 'sc', '2026-M09', { state: 'needed' }], { items: [] })
-      const { result } = renderHook(() => usePutCellRca('sc'), { wrapper })
-      result.current.mutate({ ...ref, text: 'Why', links: [], expectedRevision: 0 })
+      client.setQueryData(['report', 'sc', '2026-M10', ''], {})
+      client.setQueryData(['metric-summary-counts', 'sc', '2026-M09'], { counts: {} })
+
+      const { result } = renderHook(() => usePutMetricSummary('sc'), { wrapper })
+      result.current.mutate({ metric: 'uptime', period: '2026-M10', text: 'Saved.', links: [], expectedRevision: 1 })
       await waitFor(() => expect(result.current.isSuccess).toBe(true))
-      expect(client.getQueryState(['rca', 'sc', ref])?.isInvalidated).toBe(true)
-      expect(client.getQueryState(['rcas', 'sc', '2026-M10', { state: 'needed' }])?.isInvalidated).toBe(true)
-      expect(client.getQueryState(['rca-counts', 'sc', '2026-M10'])?.isInvalidated).toBe(true)
-      expect(client.getQueryState(['view', 'sc', req])?.isInvalidated).toBe(true)
-      expect(client.getQueryState(['view', 'sc', board])?.isInvalidated).toBe(true)
-      expect(client.getQueryState(['view', 'sc', other])?.isInvalidated).toBe(false)
-      expect(client.getQueryState(['rcas', 'sc', '2026-M09', { state: 'needed' }])?.isInvalidated).toBe(false)
-      // The card shows the saved note at once.
-      expect(client.getQueryData<{ note: { revision: number } }>(['rca', 'sc', ref])?.note.revision).toBe(1)
+      expect(path).toBe('/v1/scorecards/sc/metric-summaries/uptime/2026-M10')
+      const invalidated = (key: readonly unknown[]) => client.getQueryState(key)?.isInvalidated
+      expect(invalidated(['metric-summary', 'sc', 'uptime', '2026-M10', 'live'])).toBe(true)
+      expect(invalidated(['metric-summaries', 'sc', '2026-M10', { state: 'missing', full: false, revision: 0 }])).toBe(true)
+      expect(invalidated(['metric-summary-counts', 'sc', '2026-M10'])).toBe(true)
+      expect(invalidated(['attribution', 'sc', ref])).toBe(true)
+      expect(invalidated(['attribution', 'sc', company])).toBe(true)
+      expect(invalidated(['view', 'sc', req])).toBe(true)
+      expect(invalidated(['view', 'sc', board])).toBe(true)
+      expect(invalidated(['report', 'sc', '2026-M10', ''])).toBe(true)
+      expect(invalidated(['attribution', 'sc', elsewhere])).toBe(false)
+      expect(invalidated(['attribution', 'sc', september])).toBe(false)
+      expect(invalidated(['view', 'sc', other])).toBe(false)
+      expect(invalidated(['metric-summary-counts', 'sc', '2026-M09'])).toBe(false)
+      // Cards show the saved summary at once.
+      const card = client.getQueryData<{ pages: { summary: { text: string; revision: number } }[] }>(['attribution', 'sc', ref])
+      expect(card?.pages[0]?.summary).toMatchObject({ text: 'Saved.', revision: 2 })
     })
 
-    it('useDeleteCellRca sends the revision and invalidates the same queries', async () => {
+    it('useDeleteMetricSummary sends the revision and leaves a missing slot on the cards', async () => {
       const { client, wrapper } = setup()
-      let query = ''
+      let url = ''
       server.use(
-        http.delete(`${API}/v1/scorecards/sc/rca`, ({ request }) => {
-          query = new URL(request.url).search
+        http.delete(SUMMARY, ({ request }) => {
+          url = request.url
           return new HttpResponse(null, { status: 204 })
         }),
       )
-      client.setQueryData(['rca-counts', 'sc', '2026-M10'], { counts: {} })
-      const { result } = renderHook(() => useDeleteCellRca('sc'), { wrapper })
-      result.current.mutate({ ...ref, expectedRevision: 3 })
+      client.setQueryData(['metric-summary-counts', 'sc', '2026-M10'], { counts: {} })
+      client.setQueryData(['attribution', 'sc', ref], { pages: [{ ...webhooksAttribution, summary: uptimeCardSummary }], pageParams: [{}] })
+      const { result } = renderHook(() => useDeleteMetricSummary('sc'), { wrapper })
+      result.current.mutate({ metric: 'uptime', period: '2026-M10', expectedRevision: 3 })
       await waitFor(() => expect(result.current.isSuccess).toBe(true))
-      expect(new URLSearchParams(query).get('expectedRevision')).toBe('3')
-      expect(client.getQueryState(['rca-counts', 'sc', '2026-M10'])?.isInvalidated).toBe(true)
+      expect(new URL(url).searchParams.get('expectedRevision')).toBe('3')
+      expect(client.getQueryState(['metric-summary-counts', 'sc', '2026-M10'])?.isInvalidated).toBe(true)
+      const card = client.getQueryData<{ pages: { summary: { state: string; text?: string; links: unknown[] } }[] }>(['attribution', 'sc', ref])
+      expect(card?.pages[0]?.summary).toMatchObject({ state: 'missing', links: [], linksTotal: 0 })
+      expect(card?.pages[0]?.summary.text).toBeUndefined()
     })
 
-    it('useCellRcas and useCellRcaCounts ask for the period; counts only, kept for a minute', async () => {
-      const { client, wrapper } = setup()
-      const seen: URLSearchParams[] = []
+    it('useMetricSummary reads one summary, live or of a published revision, and idles without a metric', async () => {
+      const { wrapper } = setup()
+      const seen: string[] = []
       server.use(
-        http.get(`${API}/v1/scorecards/sc/rcas`, ({ request }) => {
-          const q = new URL(request.url).searchParams
-          seen.push(q)
-          return HttpResponse.json({ period: '2026-M10', counts: { needed: 3, stale: 1, written: 1, available: 4, neededMine: 2 }, items: [] })
+        http.get(SUMMARY, ({ request }) => {
+          seen.push(new URL(request.url).search)
+          return HttpResponse.json(uptimeSummary)
         }),
       )
       const { result } = renderHook(
         () => ({
-          list: useCellRcas('sc', { period: '2026-M10', state: 'all', mine: true }),
-          counts: useCellRcaCounts('sc', '2026-M10'),
+          live: useMetricSummary('sc', 'uptime', '2026-M10'),
+          published: useMetricSummary('sc', 'uptime', '2026-M10', 2),
+          none: useMetricSummary('sc', null, '2026-M10'),
+        }),
+        { wrapper },
+      )
+      await waitFor(() => expect(result.current.live.isSuccess && result.current.published.isSuccess).toBe(true))
+      expect(result.current.live.data?.links).toHaveLength(12)
+      expect(seen.sort()).toEqual(['', '?revision=2'])
+      expect(result.current.none.fetchStatus).toBe('idle')
+    })
+
+    it('useMetricSummaries pages a month; useMetricSummaryCounts asks for counts only and keeps them a minute', async () => {
+      const { client, wrapper } = setup()
+      const seen: URLSearchParams[] = []
+      server.use(
+        http.get(`${API}/v1/scorecards/sc/metric-summaries`, ({ request }) => {
+          const q = new URL(request.url).searchParams
+          seen.push(q)
+          return HttpResponse.json({ period: '2026-M10', counts: { required: 5, missing: 3, stale: 1, written: 1, optional: 1 }, items: [] })
+        }),
+      )
+      const { result } = renderHook(
+        () => ({
+          list: useMetricSummaries('sc', { period: '2026-M10', state: 'all', full: true, revision: 3 }),
+          counts: useMetricSummaryCounts('sc', '2026-M10'),
         }),
         { wrapper },
       )
@@ -198,29 +274,67 @@ describe('queries', () => {
       const list = seen.find((q) => q.get('countsOnly') === null)
       expect(counts?.get('period')).toBe('2026-M10')
       expect(list?.get('state')).toBe('all')
-      expect(list?.get('mine')).toBe('true')
-      expect(result.current.counts.data?.counts.neededMine).toBe(2)
-      expect(result.current.list.data?.pages[0]?.counts.needed).toBe(3)
-      expect(client.getQueryCache().find({ queryKey: ['rca-counts', 'sc', '2026-M10'] })?.isStale()).toBe(false)
+      expect(list?.get('full')).toBe('true')
+      expect(list?.get('revision')).toBe('3')
+      expect(result.current.counts.data?.counts.missing).toBe(3)
+      expect(result.current.list.data?.pages[0]?.counts.required).toBe(5)
+      expect(client.getQueryCache().find({ queryKey: ['metric-summary-counts', 'sc', '2026-M10'] })?.isStale()).toBe(false)
     })
 
-    it('useCellRcaDraft polls until SAM has written the draft', async () => {
+    it('useMetricSummaryDraft polls until SAM has written the draft', async () => {
       const { wrapper } = setup()
       let polls = 0
       server.use(
-        http.get(`${API}/v1/scorecards/sc/rca/draft/draft-1`, () => {
+        http.get(`${SUMMARY}/draft/draft-1`, () => {
           polls++
           return HttpResponse.json({ id: 'draft-1', pending: false, text: 'Drafted.', createdAt: '2026-11-20T12:00:00Z', warnings: ['INC-9999'] })
         }),
       )
-      const { result } = renderHook(() => useCellRcaDraft('sc'), { wrapper })
-      result.current.mutate({ ref })
+      const { result } = renderHook(() => useMetricSummaryDraft('sc'), { wrapper })
+      result.current.mutate({ metric: 'uptime', period: '2026-M10' })
       await waitFor(() => expect(result.current.isSuccess).toBe(true), { timeout: 4000 })
       expect(polls).toBe(1)
       expect(result.current.data?.warnings).toEqual(['INC-9999'])
     })
 
-    it('useReportDocument asks for the RCAs', async () => {
+    it('usePublishReport turns a 409 summaries_missing into PublishBlockedError with the list', async () => {
+      const { wrapper } = setup()
+      server.use(
+        http.post(`${API}/v1/scorecards/sc/reports/2026-M10/publish`, () =>
+          HttpResponse.json(
+            { code: 'summaries_missing', message: '3 exec summaries are missing for Oct 2026.', missing: [deploymentMissing, epicsMissing, securityMissing], stale: 1 },
+            { status: 409 },
+          ),
+        ),
+      )
+      const { result } = renderHook(() => usePublishReport('sc', '2026-M10'), { wrapper })
+      result.current.mutate()
+      await waitFor(() => expect(result.current.isError).toBe(true))
+      const err = result.current.error
+      expect(err).toBeInstanceOf(PublishBlockedError)
+      const blocked = err as PublishBlockedError
+      expect(blocked.status).toBe(409)
+      expect(blocked.code).toBe('summaries_missing')
+      expect(blocked.message).toBe('3 exec summaries are missing for Oct 2026.')
+      expect(blocked.missing.map((m) => m.metricKey)).toEqual(['deployment_uptime', 'epics_on_time', 'security_training'])
+      expect(blocked.stale).toBe(1)
+    })
+
+    it('usePublishReport leaves other 409s as they are', async () => {
+      const { wrapper } = setup()
+      server.use(
+        http.post(`${API}/v1/scorecards/sc/reports/2026-M10/publish`, () =>
+          HttpResponse.json({ error: { code: 'conflict', message: 'Already publishing.' } }, { status: 409 }),
+        ),
+      )
+      const { result } = renderHook(() => usePublishReport('sc', '2026-M10'), { wrapper })
+      result.current.mutate()
+      await waitFor(() => expect(result.current.isError).toBe(true))
+      expect(result.current.error).not.toBeInstanceOf(PublishBlockedError)
+      expect(result.current.error?.message).toBe('Already publishing.')
+    })
+
+    it('useReportDocument no longer asks for RCAs', async () => {
       const { wrapper } = setup()
       const seen: { query?: URLSearchParams } = {}
       server.use(
@@ -231,7 +345,7 @@ describe('queries', () => {
       )
       const { result } = renderHook(() => useReportDocument('sc', '2026-M10', ''), { wrapper })
       await waitFor(() => expect(result.current.isSuccess).toBe(true))
-      expect(seen.query?.get('rcas')).toBe('true')
+      expect(seen.query?.has('rcas')).toBe(false)
       expect(seen.query?.get('standing')).toBe('true')
     })
   })

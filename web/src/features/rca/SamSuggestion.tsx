@@ -3,7 +3,7 @@ import { primaryButton } from '../admin/formUi'
 
 export interface SamSuggestionProps {
   text: string
-  /** What the draft was written from: `from 2 incidents and the remainder`. */
+  /** What the draft was written from: `from 3 services' attribution and 4 incidents`. */
   sources: string
   /** Keys SAM named that were not in the data it was given. */
   warnings: string[]
@@ -11,7 +11,7 @@ export interface SamSuggestionProps {
   onDiscard: () => void
 }
 
-/** SAM's draft shown above the text box (spec §10.4); nothing changes until `Use this draft`. */
+/** SAM's draft, shown inside the editor only, above the text box (spec §10.4); nothing changes until `Use this draft`. */
 export function SamSuggestion({ text, sources, warnings, onUse, onDiscard }: SamSuggestionProps) {
   return (
     <section aria-label="Suggested by SAM" className="mt-2 rounded-md border border-accent/30 bg-accent/[0.05] p-2">
@@ -27,7 +27,7 @@ export function SamSuggestion({ text, sources, warnings, onUse, onDiscard }: Sam
       </p>
       {warnings.map((k) => (
         <p key={k} className="mt-1 text-xs leading-4 text-status-y">
-          SAM mentioned {k}, which is not linked to this cell. Check it before using this draft.
+          SAM mentioned {k}, which is not linked to this metric. Check it before using this draft.
         </p>
       ))}
       <div className="mt-2 flex flex-wrap gap-2">

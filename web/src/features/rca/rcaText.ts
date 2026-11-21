@@ -1,10 +1,14 @@
-import type { WhyDisplay } from './rcaState'
+import type { SummaryDisplay } from './rcaState'
 
-/** The note's limit, in code points of the NFC-normalized text. */
+/** An exec summary's limit, in code points of the NFC-normalized text. */
 export const RCA_MAX = 280
-export const RCA_LINKS_MAX = 5
+export const RCA_LINKS_MAX = 25
 /** Titles and URLs of all links together, in UTF-8 bytes. */
-export const RCA_LINKS_BYTES = 4096
+export const RCA_LINKS_BYTES = 16384
+/** A link title's limit, in code points. */
+export const RCA_TITLE_MAX = 80
+/** Links a card shows before `Show all`. */
+export const RCA_LINKS_SHOWN = 3
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
@@ -88,51 +92,86 @@ export function sourceLabel(source: string): string {
   return words ? words[0]!.toUpperCase() + words.slice(1) : source
 }
 
-/** UTF-8 bytes of every link's title and URL together (the 4 KB budget). */
+/** UTF-8 bytes of every link's title and URL together (the 16 KB budget). */
 export function linksBytes(links: readonly { title: string; url: string }[]): number {
   const enc = new TextEncoder()
   return links.reduce((n, l) => n + enc.encode(l.title).length + enc.encode(l.url).length, 0)
 }
 
+export interface PastedLinks {
+  /** One row per valid, new https line, titled from its URL. */
+  added: { title: string; url: string }[]
+  /** Lines that are not https links, or are already listed, as pasted (trimmed). */
+  rejected: string[]
+  /** Which limit stopped the rest from being added: 25 links, or the 16 KB budget. */
+  limit: 'count' | 'bytes' | null
+}
+
+/** A pasted link's title: its last path segment (`INC-2041`, `88412`), else its host. */
+function pastedTitle(href: string): string {
+  const u = new URL(href)
+  const last = u.pathname.split('/').filter(Boolean).at(-1) ?? ''
+  let title = last
+  try {
+    title = decodeURIComponent(last)
+  } catch {
+    // Keep the raw segment when it is not valid percent-encoding.
+  }
+  title = title.trim() || u.hostname
+  return [...title].slice(0, RCA_TITLE_MAX).join('')
+}
+
+/**
+ * `Paste links` (spec §10.3): one URL per line. Blank lines are ignored;
+ * https URLs not already listed become rows until 25 links or the 16 KB
+ * budget; everything else is reported.
+ */
+export function parsePastedLinks(text: string, existing: readonly { title: string; url: string }[]): PastedLinks {
+  const seen = new Set(existing.map((l) => safeHref(l.url.trim()) ?? l.url.trim()))
+  const added: PastedLinks['added'] = []
+  const rejected: string[] = []
+  let limit: PastedLinks['limit'] = null
+  let bytes = linksBytes(existing)
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim()
+    if (line === '') continue
+    const href = safeHref(line)
+    if (!href || seen.has(href)) {
+      rejected.push(line)
+      continue
+    }
+    if (limit) continue
+    if (existing.length + added.length >= RCA_LINKS_MAX) {
+      limit = 'count'
+      continue
+    }
+    const link = { title: pastedTitle(href), url: href }
+    const size = linksBytes([link])
+    if (bytes + size > RCA_LINKS_BYTES) {
+      limit = 'bytes'
+      continue
+    }
+    bytes += size
+    seen.add(href)
+    added.push(link)
+  }
+  return { added, rejected, limit }
+}
+
 export interface WhyNameInput {
-  display: WhyDisplay
-  /** Omit when the surface already names the subject. */
+  summary?: SummaryDisplay
+  /** Omit when the surface already names the subject (or, on company surfaces, the metric). */
   subjectName?: string
   valueDisplay: string
   periodLabel: string
 }
 
-function plural(n: number, one: string, many: string): string {
-  return `${n} ${n === 1 ? one : many}`
-}
-
 /** The Why trigger's accessible name (spec §10.1); hints belong in `aria-description`. */
-export function whyName({ display, subjectName, valueDisplay, periodLabel }: WhyNameInput): string {
+export function whyName({ summary, subjectName, valueDisplay, periodLabel }: WhyNameInput): string {
   const subject = subjectName ? `${subjectName} ` : ''
   const question = `Why is ${subject}${valueDisplay} in ${periodLabel}?`
-  switch (display.state) {
-    case 'available':
-      return question
-    case 'needed':
-      return display.canEdit ? `${question} RCA needed` : question
-    case 'written':
-    case 'stale': {
-      const written = `Why ${subject}is ${valueDisplay} in ${periodLabel}: RCA by ${display.author}`
-      return display.state === 'stale' && display.canEdit ? `${written}. RCA may be out of date` : written
-    }
-    case 'rollup': {
-      if (!display.showCounts) return question
-      const { neededBelow: n, staleBelow: s } = display
-      if (n > 0) return `${question} ${plural(n, 'RCA', 'RCAs')} needed below it${s > 0 ? `, ${s} to review` : ''}`
-      return `${question} ${plural(s, 'RCA', 'RCAs')} to review below it`
-    }
-  }
-}
-
-/** The roll-up tag: `2 needed`, `2 needed · 1 to review`, `1 to review`. */
-export function rollupTag(neededBelow: number, staleBelow: number): string {
-  const parts = []
-  if (neededBelow > 0) parts.push(`${neededBelow} needed`)
-  if (staleBelow > 0) parts.push(`${staleBelow} to review`)
-  return parts.join(' · ')
+  if (!summary) return question
+  if (summary.state === 'missing') return `${question} ${summary.canEdit ? 'Exec summary needed' : 'No exec summary yet'}`
+  const written = `Why ${subject}is ${valueDisplay} in ${periodLabel}: exec summary by ${summary.author}`
+  return summary.state === 'stale' && summary.canEdit ? `${written}. Exec summary may be out of date` : written
 }

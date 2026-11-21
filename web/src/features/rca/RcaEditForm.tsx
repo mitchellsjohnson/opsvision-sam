@@ -3,29 +3,32 @@ import { AlertCircle, Plus, X } from 'lucide-react'
 import { useEffect, useId, useRef, useState } from 'react'
 import { Link } from 'react-router'
 import {
-  useCellRcaDraft,
-  useDeleteCellRca,
-  usePutCellRca,
-  type CellRca,
-  type CellRcaConflict,
-  type CellRcaDraft,
+  useDeleteMetricSummary,
+  useMetricSummaryDraft,
+  usePutMetricSummary,
+  type CellAttribution,
+  type MetricSummary,
+  type MetricSummaryConflict,
+  type MetricSummaryDraft,
   type RcaLink,
-  type RcaNote,
 } from '../../api/queries'
 import { ApiError } from '../../api/errors'
 import { Sam } from '../../ui/Sam'
 import { inputClass, primaryButton, secondaryButton } from '../admin/formUi'
+import { PasteLinks } from './PasteLinks'
 import { codePoints, linksBytes, RCA_LINKS_BYTES, RCA_LINKS_MAX, RCA_MAX, safeHref } from './rcaText'
 import { SamSuggestion } from './SamSuggestion'
+import { useSummaryPeriodLabel } from './SummarySection'
 import { useWhyCardAnnounce } from './WhyCardProvider'
 
 const MSG = {
-  text: 'Write what caused the gap',
+  text: 'Write what drove this metric this month',
   tooLong: 'Write up to 280 characters',
   https: 'Use a link that starts with https://',
   title: 'Add a title for this link',
   duplicate: 'This link is already listed',
-  budget: 'These links are too long together; shorten or remove one',
+  count: `Up to ${RCA_LINKS_MAX} links`,
+  budget: 'These links are too long together; shorten or remove some',
 } as const
 
 let rowSeq = 0
@@ -78,19 +81,26 @@ function check(text: string, rows: LinkRow[]): Problems {
     if (r.title.trim() === '') e.title = MSG.title
     if (e.title || e.url) problems.rows[r.id] = e
   }
-  if (linksBytes(toLinks(rows)) > RCA_LINKS_BYTES) problems.links = MSG.budget
+  if (filled(rows).length > RCA_LINKS_MAX) problems.links = MSG.count
+  else if (linksBytes(toLinks(rows)) > RCA_LINKS_BYTES) problems.links = MSG.budget
   return problems
 }
 
-/** What SAM drafts from, in the suggestion's words. */
-function draftSources(rca: CellRca): string {
-  const n = rca.incidentsTotal
-  if (n > 0) return `from ${n} ${n === 1 ? 'incident' : 'incidents'}${rca.unexplained ? ' and the remainder' : ''}`
-  const missed = /^(\d+) of \d+ (.+) missed$/.exec(rca.recordsSummary ?? '')
-  if (missed) return `from ${missed[1]} missed ${missed[2]}`
-  if (rca.records.length > 0) return `from ${rca.recordsTotal} ${rca.recordsTotal === 1 ? 'record' : 'records'}`
-  if (rca.children.length > 0) return `from ${rca.children.length} ${rca.children.length === 1 ? 'contributor' : 'contributors'}`
-  return 'from the gap alone'
+/** What SAM drafts from, in the suggestion's words: `from 3 services' attribution and 4 incidents`. */
+function draftSources(a: CellAttribution | undefined, s: MetricSummary): string {
+  if (!a) return 'from the attribution'
+  const parts: string[] = []
+  if (a.children.length > 0) {
+    const noun = /^\d+ of \d+ (.+?) (below|over|not)\b/.exec(s.requirementReason ?? a.gap.headline)?.[1] ?? 'contributors'
+    parts.push(`${a.children.length} ${noun}' attribution`)
+  }
+  if (a.incidentsTotal > 0) parts.push(`${a.incidentsTotal} ${a.incidentsTotal === 1 ? 'incident' : 'incidents'}`)
+  else {
+    const missed = /^(\d+) of \d+ (.+) missed$/.exec(a.recordsSummary ?? '')
+    if (missed) parts.push(`${missed[1]} missed ${missed[2]}`)
+    else if (a.recordsTotal > 0) parts.push(`${a.recordsTotal} ${a.recordsTotal === 1 ? 'record' : 'records'}`)
+  }
+  return parts.length > 0 ? `from ${parts.join(' and ')}` : 'from the gap alone'
 }
 
 function isAbort(e: unknown): boolean {
@@ -112,39 +122,61 @@ function FieldError({ id, message }: { id: string; message?: string }) {
 
 export interface RcaEditFormProps {
   scorecardId: string
-  /** The cell being written: its note (if any) is the starting text and the revision saved against. */
-  rca: CellRca
+  /**
+   * The metric's exec summary with its whole text and every link
+   * (`getMetricSummary`), or its unwritten slot: the starting text and the
+   * revision saved against.
+   */
+  summary: MetricSummary
+  /** The card's attribution, for what SAM drafts from. */
+  attribution?: CellAttribution
   /** SAM is on for the organization: offer `Draft with SAM`. */
   samEnabled: boolean
   /** Start a SAM draft as the form opens (`Draft with SAM` from the card). */
   startDraft?: boolean
-  onDone: (result: 'saved' | 'deleted', note: RcaNote | null) => void
+  onDone: (result: 'saved' | 'deleted', summary: MetricSummary | null) => void
   onCancel: () => void
   onDirtyChange?: (dirty: boolean) => void
 }
 
-/** The RCA editor (spec §10.3–§10.4): plain text up to 280 code points and up to five https links. */
-export function RcaEditForm({ scorecardId, rca, samEnabled, startDraft = false, onDone, onCancel, onDirtyChange }: RcaEditFormProps) {
+/**
+ * The exec summary editor (spec §10.3–§10.4), for admins only
+ * (`summary.canEdit`; nothing renders for anyone else): plain text up to 280
+ * code points and up to 25 https links in 16 KB, with `Paste links`.
+ */
+export function RcaEditForm(props: RcaEditFormProps) {
+  if (!props.summary.canEdit) return null
+  return <EditForm {...props} />
+}
+
+function EditForm({ scorecardId, summary, attribution, samEnabled, startDraft = false, onDone, onCancel, onDirtyChange }: RcaEditFormProps) {
   const id = useId()
   const announce = useWhyCardAnnounce()
-  const ref = { metric: rca.metricKey, subject: rca.subjectId, period: rca.period }
+  const period = useSummaryPeriodLabel(summary.period)
+  const ref = { metric: summary.metricKey, period: summary.period }
+  const written = summary.state === 'written' || summary.state === 'stale'
 
-  const [text, setText] = useState(rca.note?.text ?? '')
-  const [rows, setRows] = useState<LinkRow[]>(() => toRows(rca.note?.links ?? []))
-  const [base, setBase] = useState({ text: rca.note?.text ?? '', links: rca.note?.links ?? [], revision: rca.note?.revision ?? 0 })
+  const [text, setText] = useState(written ? (summary.text ?? '') : '')
+  const [rows, setRows] = useState<LinkRow[]>(() => toRows(written ? summary.links : []))
+  const [base, setBase] = useState({
+    text: written ? (summary.text ?? '') : '',
+    links: written ? summary.links : [],
+    revision: written ? (summary.revision ?? 0) : 0,
+  })
+  const [pasting, setPasting] = useState(false)
   const [submitted, setSubmitted] = useState(false)
   const [touched, setTouched] = useState<Set<string>>(() => new Set())
   const [server, setServer] = useState<Problems>({ rows: {} })
   const [failure, setFailure] = useState<string | null>(null)
-  const [conflict, setConflict] = useState<{ current: RcaNote | null } | null>(null)
+  const [conflict, setConflict] = useState<{ current: MetricSummary | null } | null>(null)
   const [yourText, setYourText] = useState<string | null>(null)
-  const [suggestion, setSuggestion] = useState<CellRcaDraft | null>(null)
+  const [suggestion, setSuggestion] = useState<MetricSummaryDraft | null>(null)
   const [undo, setUndo] = useState<string | null>(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
 
-  const put = usePutCellRca(scorecardId)
-  const del = useDeleteCellRca(scorecardId)
-  const drafting = useCellRcaDraft(scorecardId)
+  const put = usePutMetricSummary(scorecardId)
+  const del = useDeleteMetricSummary(scorecardId)
+  const drafting = useMetricSummaryDraft(scorecardId)
   const abortDraft = useRef<AbortController | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const keepRef = useRef<HTMLButtonElement>(null)
@@ -170,7 +202,7 @@ export function RcaEditForm({ scorecardId, rca, samEnabled, startDraft = false, 
     abortDraft.current = controller
     setSuggestion(null)
     drafting.mutate(
-      { ref, signal: controller.signal },
+      { ...ref, signal: controller.signal },
       {
         onSuccess: (d) => {
           if (d.text === undefined) return
@@ -197,7 +229,7 @@ export function RcaEditForm({ scorecardId, rca, samEnabled, startDraft = false, 
 
   const fail = (e: unknown, rowsSent: LinkRow[]) => {
     if (e instanceof ApiError && e.status === 409) {
-      setConflict({ current: (e.body as CellRcaConflict | undefined)?.current ?? null })
+      setConflict({ current: (e.body as MetricSummaryConflict | undefined)?.current ?? null })
       setYourText(text)
       return
     }
@@ -215,7 +247,7 @@ export function RcaEditForm({ scorecardId, rca, samEnabled, startDraft = false, 
       return
     }
     const message = e instanceof Error ? e.message : String(e)
-    setFailure(e instanceof ApiError && e.status === 403 ? message : `Couldn't save the RCA: ${message}`)
+    setFailure(e instanceof ApiError && e.status === 403 ? message : `Couldn't save the exec summary: ${message}`)
   }
 
   const save = () => {
@@ -231,9 +263,9 @@ export function RcaEditForm({ scorecardId, rca, samEnabled, startDraft = false, 
     put.mutate(
       { ...ref, text: text.normalize('NFC').trim(), links: toLinks(rows), expectedRevision: base.revision },
       {
-        onSuccess: (note) => {
+        onSuccess: (saved) => {
           setConflict(null)
-          onDone('saved', note)
+          onDone('saved', saved)
         },
         onError: (e) => fail(e, sent),
       },
@@ -256,7 +288,7 @@ export function RcaEditForm({ scorecardId, rca, samEnabled, startDraft = false, 
 
   const showTheirs = () => {
     const current = conflict?.current ?? null
-    const theirs = { text: current?.text ?? '', links: current?.links ?? [], revision: current?.revision ?? 0 }
+    const theirs = { text: current?.text ?? '', links: current?.links ?? [], revision: current?.state === 'missing' || current?.state === 'optional' ? 0 : (current?.revision ?? 0) }
     setText(theirs.text)
     setRows(toRows(theirs.links))
     setBase(theirs)
@@ -280,7 +312,7 @@ export function RcaEditForm({ scorecardId, rca, samEnabled, startDraft = false, 
   return (
     <form
       ref={formRef}
-      aria-label="Edit RCA"
+      aria-label="Edit exec summary"
       className="mt-3"
       noValidate
       onSubmit={(e) => {
@@ -290,9 +322,9 @@ export function RcaEditForm({ scorecardId, rca, samEnabled, startDraft = false, 
     >
       <div className="flex flex-wrap items-start justify-between gap-2">
         <label htmlFor={`${id}-text`} className="text-sm font-semibold leading-5">
-          What caused the gap?
+          Exec summary for {summary.metricName}, {period}
         </label>
-        {samEnabled && rca.canEdit && (
+        {samEnabled && (
           <span className="flex items-center gap-1">
             <button
               type="button"
@@ -317,7 +349,7 @@ export function RcaEditForm({ scorecardId, rca, samEnabled, startDraft = false, 
         )}
       </div>
       <p id={hintId} className="text-xs leading-4 text-ink/70">
-        Plain text, up to 280 characters. Name the incidents or records; say what is not explained.
+        Plain text, up to 280 characters, for executives. Say what drove the month and what is not explained.
       </p>
 
       {draftError && (
@@ -331,7 +363,7 @@ export function RcaEditForm({ scorecardId, rca, samEnabled, startDraft = false, 
       {suggestion?.text !== undefined && suggestion.text !== '' && (
         <SamSuggestion
           text={suggestion.text}
-          sources={draftSources(rca)}
+          sources={draftSources(attribution, summary)}
           warnings={suggestion.warnings}
           onUse={() => {
             setUndo(text)
@@ -384,9 +416,14 @@ export function RcaEditForm({ scorecardId, rca, samEnabled, startDraft = false, 
       </div>
 
       <fieldset className="mt-3" aria-describedby={linksError ? linksErrId : undefined}>
-        <legend className="text-sm font-medium leading-5">
-          Links <span className="font-normal text-ink/70">(optional, up to 5)</span>
-        </legend>
+        <div className="flex items-baseline justify-between gap-2">
+          <legend className="text-sm font-medium leading-5">
+            Links <span className="font-normal text-ink/70">(optional)</span>
+          </legend>
+          <p className="shrink-0 text-xs leading-4 tabular-nums text-ink/70">
+            {rows.length} / {RCA_LINKS_MAX} links
+          </p>
+        </div>
         <ul className="mt-1 space-y-2">
           {rows.map((row, n) => {
             const titleErr = rowError(row, 'title')
@@ -442,22 +479,36 @@ export function RcaEditForm({ scorecardId, rca, samEnabled, startDraft = false, 
           })}
         </ul>
         <FieldError id={linksErrId} message={linksError} />
-        {rows.length < RCA_LINKS_MAX && (
-          <button
-            type="button"
-            className="mt-1 inline-flex h-7 items-center gap-1 rounded-md px-1 text-xs font-medium text-accent-deep hover:bg-accent/[0.06]"
-            onClick={() => setRows((rs) => [...rs, { id: rowSeq++, title: '', url: '' }])}
-          >
-            <Plus aria-hidden="true" className="size-3.5" />
-            Add link
-          </button>
+        <div className="mt-1 flex flex-wrap items-center gap-2">
+          {rows.length < RCA_LINKS_MAX && (
+            <button
+              type="button"
+              className="inline-flex h-7 items-center gap-1 rounded-md px-1 text-xs font-medium text-accent-deep hover:bg-accent/[0.06]"
+              onClick={() => setRows((rs) => [...rs, { id: rowSeq++, title: '', url: '' }])}
+            >
+              <Plus aria-hidden="true" className="size-3.5" />
+              Add link
+            </button>
+          )}
+          {!pasting && (
+            <button type="button" className={clsx(secondaryButton, 'h-7 px-2.5 py-0 text-xs')} onClick={() => setPasting(true)}>
+              Paste links
+            </button>
+          )}
+        </div>
+        {pasting && (
+          <PasteLinks
+            existing={toLinks(rows)}
+            onAdd={(links) => setRows((rs) => [...filled(rs), ...toRows(links)])}
+            onClose={() => setPasting(false)}
+          />
         )}
       </fieldset>
-      <p className="mt-2 text-xs leading-4 text-ink/70">Incidents and records come from imports; add anything else as a link.</p>
+      <p className="mt-2 text-xs leading-4 text-ink/70">Imported incidents and records appear under Attribution; add anything else as a link.</p>
 
       {conflict && (
         <div role="alert" className="mt-3 rounded-md border border-status-r bg-status-r-bg px-2 py-1.5 text-xs leading-4 text-ink">
-          <p className="font-medium">Someone else changed this RCA while you were editing.</p>
+          <p className="font-medium">Someone else changed this exec summary while you were editing.</p>
           <button
             type="button"
             className="mt-1.5 h-7 rounded-md border border-ink/40 bg-white px-2.5 text-xs font-medium hover:bg-cream"
@@ -493,7 +544,11 @@ export function RcaEditForm({ scorecardId, rca, samEnabled, startDraft = false, 
       <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-ink/10 pt-3">
         {confirmDelete ? (
           <div className="flex w-full flex-wrap items-center gap-2">
-            <p className="w-full text-sm leading-5">Delete this RCA? It is removed for everyone; the audit log keeps it.</p>
+            <p className="w-full text-sm leading-5">
+              {summary.requirement === 'required'
+                ? `Delete this exec summary? ${period} can't be published again until a new one is written. The audit log keeps it.`
+                : 'Delete this exec summary? The audit log keeps it.'}
+            </p>
             <button
               type="button"
               className="h-8 rounded-md bg-status-r px-3 text-sm font-medium text-white hover:opacity-90 disabled:opacity-60"
@@ -514,7 +569,7 @@ export function RcaEditForm({ scorecardId, rca, samEnabled, startDraft = false, 
                 className="mr-auto h-8 rounded-md px-2 text-sm font-medium text-status-r hover:bg-status-r-bg"
                 onClick={() => setConfirmDelete(true)}
               >
-                Delete RCA
+                Delete exec summary
               </button>
             )}
             <button type="submit" className={clsx(primaryButton, 'h-8')} disabled={busy || over > 0 || problems.links !== undefined}>

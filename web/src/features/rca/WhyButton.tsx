@@ -1,23 +1,28 @@
 import clsx from 'clsx'
 import { useState, type ReactNode } from 'react'
-import type { WhyDisplay } from './rcaState'
-import { rollupTag, whyName } from './rcaText'
+import type { SummaryDisplay } from './rcaState'
+import { whyName } from './rcaText'
 import { useWhyCardAnchor } from './WhyCardProvider'
 
 const TAG = 'shrink-0 rounded px-1.5 text-[11px] font-semibold leading-4'
-const NEEDED_TAG = clsx(TAG, 'border border-dashed border-ink/40 text-ink/70')
+const NEEDED_TAG = clsx(TAG, 'border border-status-r text-status-r')
+const NOT_YET_TAG = clsx(TAG, 'border border-dashed border-ink/40 text-ink/70')
 const REVIEW_TAG = clsx(TAG, 'border border-status-y text-status-y')
 
 export interface WhyButtonProps {
-  display: WhyDisplay
+  /** The exec summary state, on company-standing surfaces only (`summaryDisplay`); omit elsewhere. */
+  summary?: SummaryDisplay
+  /** Whether the cell has attribution (`attributionAvailable`). */
+  attribution: boolean
+  /** The subject, or on company-standing surfaces the metric. */
   subjectName: string
   valueDisplay: string
   periodLabel: string
   /** Whether the name says the subject; false where the surface already names it. */
   nameSubject: boolean
-  /** `rca` reads `RCA:` / `RCA needed` / `RCA · Review`, for places that already show a "why" line. */
-  prefix?: 'why' | 'rca'
-  /** One word (`Why`, `RCA`, `Review`), for status cells. */
+  /** `summary` reads `Summary:` / the missing tag alone, for attention cards. */
+  prefix?: 'why' | 'summary'
+  /** One word (`Why`, `Summary`, `Needed`, `Review`), for status cells. */
   compact?: boolean
   /** A hint such as `Press Enter for why`, read as the description, never in the name. */
   hint?: string
@@ -25,72 +30,57 @@ export interface WhyButtonProps {
   onOpen: (el: HTMLElement) => void
 }
 
-function Excerpt({ lead, text }: { lead: string; text: string }) {
+function Tag({ summary }: { summary: Extract<SummaryDisplay, { state: 'missing' }> }) {
+  return summary.canEdit ? (
+    <span data-tag="" className={NEEDED_TAG}>
+      Exec summary needed
+    </span>
+  ) : (
+    <span data-tag="" className={NOT_YET_TAG}>
+      No exec summary yet
+    </span>
+  )
+}
+
+function content(summary: SummaryDisplay | undefined, prefix: 'why' | 'summary', compact: boolean): ReactNode {
+  if (compact) {
+    if (!summary) return 'Why'
+    if (summary.state === 'missing') return 'Needed'
+    return summary.state === 'stale' && summary.canEdit ? 'Review' : 'Summary'
+  }
+  if (!summary) return 'Why?'
+  if (summary.state === 'missing') {
+    return prefix === 'summary' ? (
+      <Tag summary={summary} />
+    ) : (
+      <>
+        <span className="shrink-0">Why?</span>
+        <Tag summary={summary} />
+      </>
+    )
+  }
   return (
     <>
-      <span className="shrink-0">{lead}</span>
-      <span className="min-w-0 truncate text-ink/80">{text}</span>
+      <span className="shrink-0">{prefix === 'summary' ? 'Summary:' : 'Why:'}</span>
+      <span className="min-w-0 truncate text-ink/80">{summary.excerpt}</span>
+      {summary.state === 'stale' && summary.canEdit && (
+        <span data-tag="" className={REVIEW_TAG}>
+          Review
+        </span>
+      )}
     </>
   )
 }
 
-function content(display: WhyDisplay, prefix: 'why' | 'rca', compact: boolean): ReactNode {
-  const editorStale = display.state === 'stale' && display.canEdit
-  if (compact) {
-    if (display.state === 'written' || display.state === 'stale') return editorStale ? 'Review' : 'RCA'
-    return 'Why'
-  }
-  if (prefix === 'rca') {
-    switch (display.state) {
-      case 'available':
-        return 'RCA'
-      case 'needed':
-        return display.canEdit ? <span className={NEEDED_TAG}>RCA needed</span> : 'No RCA yet'
-      case 'written':
-      case 'stale':
-        return editorStale ? (
-          <>
-            <span className="shrink-0">RCA · </span>
-            <span className={REVIEW_TAG}>Review</span>
-          </>
-        ) : (
-          <Excerpt lead="RCA:" text={display.excerpt} />
-        )
-      case 'rollup':
-        return display.showCounts ? `RCAs: ${rollupTag(display.neededBelow, display.staleBelow)}` : 'RCA'
-    }
-  }
-  switch (display.state) {
-    case 'available':
-      return 'Why?'
-    case 'needed':
-      return (
-        <>
-          <span className="shrink-0">Why?</span>
-          {display.canEdit && <span className={NEEDED_TAG}>RCA needed</span>}
-        </>
-      )
-    case 'written':
-    case 'stale':
-      return (
-        <>
-          <Excerpt lead="Why:" text={display.excerpt} />
-          {editorStale && <span className={REVIEW_TAG}>Review</span>}
-        </>
-      )
-    case 'rollup':
-      return (
-        <>
-          <span className="shrink-0">Why?</span>
-          {display.showCounts && <span className={NEEDED_TAG}>{rollupTag(display.neededBelow, display.staleBelow)}</span>}
-        </>
-      )
-  }
-}
-
-/** The Why? affordance on a cell (spec §10.1): opens the Why card through `onOpen`. */
+/**
+ * The Why? affordance on a cell (spec §10.1): opens the Why card through
+ * `onOpen`. On company-standing surfaces it carries the exec summary state;
+ * elsewhere it reads `Why?` when the cell has attribution. Draws nothing
+ * when there is neither.
+ */
 export function WhyButton({
-  display,
+  summary,
+  attribution,
   subjectName,
   valueDisplay,
   periodLabel,
@@ -103,8 +93,9 @@ export function WhyButton({
 }: WhyButtonProps) {
   const [el, setEl] = useState<HTMLButtonElement | null>(null)
   const openAnchor = useWhyCardAnchor()
-  const name = whyName({ display, subjectName: nameSubject ? subjectName : undefined, valueDisplay, periodLabel })
-  const excerpt = display.state === 'written' || display.state === 'stale' ? display.excerpt : ''
+  if (!summary && !attribution) return null
+  const name = whyName({ summary, subjectName: nameSubject ? subjectName : undefined, valueDisplay, periodLabel })
+  const excerpt = summary && summary.state !== 'missing' ? summary.excerpt : ''
   const description = [excerpt, hint].filter(Boolean).join(' ')
   return (
     // aria-description (ARIA 1.3) is newer than jsx-a11y's role table.
@@ -122,7 +113,7 @@ export function WhyButton({
         className,
       )}
     >
-      {content(display, prefix, compact)}
+      {content(summary, prefix, compact)}
     </button>
   )
 }

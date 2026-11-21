@@ -4,20 +4,24 @@ import clsx from 'clsx'
 import { X } from 'lucide-react'
 import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import {
+  mergeAttribution,
   useAssistantSettings,
-  useCellRca,
+  useCellAttribution,
   useFiscalYearStartMonth,
   useMe,
-  usePutCellRca,
-  type CellRca,
+  useMetricSummary,
+  useOrgUnits,
+  usePutMetricSummary,
+  type CellAttribution,
+  type MetricSummary,
   type RcaCellRef,
-  type RcaNote,
 } from '../../api/queries'
 import { parsePeriod, periodLabel as labelOf } from '../../lib/period'
 import { StatusChip, type StatusLevel } from '../../ui/status'
 import { primaryButton, secondaryButton } from '../admin/formUi'
 import { chartTheme, defaultStatusScale } from '../scorecard/charts/chartTheme'
 import { RcaEditForm } from './RcaEditForm'
+import { SummarySection } from './SummarySection'
 import { WhyCardContent } from './WhyCardContent'
 import { useWhyCardAnnounce, type WhyCardOpenOptions } from './WhyCardProvider'
 
@@ -61,15 +65,15 @@ function Skeleton() {
   )
 }
 
-/** The value row: only in the phone sheet, from the RCAs view or Report, and on a contributor's card. */
-function ValueRow({ rca, scale }: { rca: CellRca; scale: StatusLevel[] }) {
-  const label = chartTheme(scale, rca.status).label
+/** The value row: only in the phone sheet, from the Exec summaries view or Report, and on a contributor's card. */
+function ValueRow({ attribution: a, scale }: { attribution: CellAttribution; scale: StatusLevel[] }) {
+  const label = chartTheme(scale, a.status).label
   return (
     <p data-testid="why-value" className="mt-1 flex items-center gap-2">
-      <span className="text-xl font-semibold leading-7 tabular-nums">{rca.display || '—'}</span>
-      {rca.status && (
+      <span className="text-xl font-semibold leading-7 tabular-nums">{a.display || '—'}</span>
+      {a.status && (
         <>
-          <StatusChip status={rca.status} scale={scale} size="lg" />
+          <StatusChip status={a.status} scale={scale} size="lg" />
           {label && <span className="sr-only">{label}</span>}
         </>
       )}
@@ -77,9 +81,16 @@ function ValueRow({ rca, scale }: { rca: CellRca; scale: StatusLevel[] }) {
   )
 }
 
+/** Whether the summary in hand carries its whole text and every link, so it can be edited or re-saved as is. */
+function isWhole(s: MetricSummary): boolean {
+  if (s.state === 'missing' || s.state === 'optional') return true
+  return s.links.length >= s.linksTotal && s.text?.endsWith('…') !== true
+}
+
 /**
  * One cell's Why card (spec §10.2): a modal popover anchored to the trigger
- * from 640px up, a bottom sheet below. Focus goes to the heading on open and
+ * from 640px up, a bottom sheet below. The metric's exec summary comes
+ * first, then the cell's attribution. Focus goes to the heading on open and
  * back to the trigger on close; unsaved edits ask before closing.
  */
 export function WhyCard({ scorecardId, cell, anchor, opts, onClosed }: WhyCardProps) {
@@ -99,12 +110,19 @@ export function WhyCard({ scorecardId, cell, anchor, opts, onClosed }: WhyCardPr
   const [confirmDiscard, setConfirmDiscard] = useState(false)
   const [confirmError, setConfirmError] = useState<string | null>(null)
 
-  const query = useCellRca(scorecardId, frame.ref)
-  const rca = query.data
+  const query = useCellAttribution(scorecardId, frame.ref)
+  const attribution = mergeAttribution(query.data)
+  const summary = attribution?.summary ?? null
   const me = useMe()
   const fy = useFiscalYearStartMonth()
-  const settings = useAssistantSettings(rca?.canEdit === true)
-  const confirm = usePutCellRca(scorecardId)
+  const units = useOrgUnits()
+  const settings = useAssistantSettings(summary?.canEdit === true)
+  const confirm = usePutMetricSummary(scorecardId)
+  // Editing and `Still accurate` need the whole summary; cards carry an excerpt and 3 links.
+  const needWhole = summary !== null && summary.canEdit && !isWhole(summary) && (editing || summary.stale)
+  const whole = useMetricSummary(scorecardId, needWhole ? summary.metricKey : null, summary?.period ?? '')
+  const editable = summary === null ? null : isWhole(summary) ? summary : (whole.data ?? null)
+  const company = units.data?.units.some((u) => u.id === frame.ref.subject && u.parentId === '') === true
   const scale = me.data?.tenant?.statusScale?.length ? me.data.tenant.statusScale : defaultStatusScale()
   const parsed = parsePeriod(frame.ref.period)
   const periodLabel = parsed ? labelOf(parsed, fy) : frame.ref.period
@@ -127,19 +145,24 @@ export function WhyCard({ scorecardId, cell, anchor, opts, onClosed }: WhyCardPr
     if (editing && dirty) setConfirmDiscard(true)
     else onClosed()
   }
-  const changed = (result: 'saved' | 'deleted', note: RcaNote | null) => {
+  const changed = (result: 'saved' | 'deleted', saved: MetricSummary | null) => {
     setEditing(false)
     setStartDraft(false)
     setDirty(false)
-    announce(result === 'saved' ? 'RCA saved' : 'RCA deleted')
-    if (top) opts.onChange?.(note)
+    announce(result === 'saved' ? 'Exec summary saved' : 'Exec summary deleted')
+    if (top) opts.onChange?.(saved)
   }
   const stillAccurate = () => {
-    const note = rca?.note
-    if (!note) return
+    if (!editable?.text) return
     setConfirmError(null)
     confirm.mutate(
-      { ...frame.ref, text: note.text, links: note.links, expectedRevision: note.revision },
+      {
+        metric: editable.metricKey,
+        period: editable.period,
+        text: editable.text,
+        links: editable.links,
+        expectedRevision: editable.revision ?? 0,
+      },
       {
         onSuccess: (saved) => changed('saved', saved),
         onError: (e) => setConfirmError(e.message),
@@ -147,7 +170,7 @@ export function WhyCard({ scorecardId, cell, anchor, opts, onClosed }: WhyCardPr
     )
   }
 
-  const title = (top ? opts.title : undefined) ?? rca?.subjectName ?? 'Loading…'
+  const title = (top ? opts.title : undefined) ?? attribution?.subjectName ?? 'Loading…'
   const showValue = phone || opts.showValue === true || !top
   const headingClass = 'break-words text-base font-semibold leading-6 text-ink'
   const heading = phone ? (
@@ -162,11 +185,62 @@ export function WhyCard({ scorecardId, cell, anchor, opts, onClosed }: WhyCardPr
     </h3>
   )
 
+  const startEditing = (draft: boolean) => {
+    setStartDraft(draft)
+    setEditing(true)
+  }
+  const stopEditing = () => {
+    setEditing(false)
+    setStartDraft(false)
+    setDirty(false)
+    setConfirmDiscard(false)
+  }
+
+  let summarySlot: ReactNode = null
+  if (summary && editing) {
+    summarySlot = editable ? (
+      <RcaEditForm
+        scorecardId={scorecardId}
+        summary={editable}
+        attribution={attribution}
+        samEnabled={samEnabled}
+        startDraft={startDraft}
+        onDone={changed}
+        onCancel={stopEditing}
+        onDirtyChange={setDirty}
+      />
+    ) : whole.isError ? (
+      <div role="alert" className="mt-3 text-sm leading-5">
+        <p>Couldn&apos;t load the exec summary.</p>
+        <button type="button" className={clsx(secondaryButton, 'mt-2 h-8')} onClick={() => void whole.refetch()}>
+          Try again
+        </button>
+      </div>
+    ) : (
+      <Skeleton />
+    )
+  } else if (summary) {
+    summarySlot = (
+      <SummarySection
+        scorecardId={scorecardId}
+        summary={summary}
+        context={!top || (units.data !== undefined && !company)}
+        whole={top && company}
+        samEnabled={samEnabled}
+        confirming={confirm.isPending || (summary.stale && summary.canEdit && editable === null)}
+        confirmError={confirmError}
+        onWrite={() => startEditing(false)}
+        onDraft={() => startEditing(true)}
+        onConfirm={stillAccurate}
+      />
+    )
+  }
+
   let body: ReactNode
   if (query.isPending) {
     body = <Skeleton />
-  } else if (query.isError || !rca) {
-    const display = rca?.display ?? (top ? opts.display : undefined)
+  } else if (query.isError || !attribution) {
+    const display = attribution?.display ?? (top ? opts.display : undefined)
     body = (
       <div role="alert" className="mt-3 text-sm leading-5">
         <p>{display ? `Couldn't load why this cell is ${display}.` : "Couldn't load why for this cell."}</p>
@@ -175,44 +249,32 @@ export function WhyCard({ scorecardId, cell, anchor, opts, onClosed }: WhyCardPr
         </button>
       </div>
     )
-  } else if (editing) {
-    body = (
-      <RcaEditForm
-        scorecardId={scorecardId}
-        rca={rca}
-        samEnabled={samEnabled}
-        startDraft={startDraft}
-        onDone={changed}
-        onCancel={() => {
-          setEditing(false)
-          setStartDraft(false)
-          setDirty(false)
-          setConfirmDiscard(false)
-        }}
-        onDirtyChange={setDirty}
-      />
-    )
   } else {
+    const next = attribution.incidentsCursor ? 'incidents' : attribution.recordsCursor ? 'records' : null
     body = (
       <WhyCardContent
         scorecardId={scorecardId}
-        rca={rca}
+        attribution={attribution}
         periodLabel={periodLabel}
         scale={scale}
         sheet={phone}
         isAdmin={me.data?.role === 'admin'}
-        samEnabled={samEnabled}
-        confirming={confirm.isPending}
-        confirmError={confirmError}
-        onEdit={() => setEditing(true)}
-        onDraft={() => {
-          setStartDraft(true)
-          setEditing(true)
+        summarySlot={summarySlot}
+        editing={editing}
+        next={next}
+        loadingMore={query.isFetchingNextPage}
+        onLoadMore={() => {
+          if (!query.isFetchingNextPage) void query.fetchNextPage()
         }}
-        onConfirm={stillAccurate}
-        onOpenChild={(child) =>
-          setStack((s) => [...s, { ref: { ...frame.ref, subject: child.subjectId }, parentName: rca.subjectName }])
-        }
+        onEdit={() => startEditing(false)}
+        onOpenChild={(child) => {
+          if (editing && dirty) {
+            setConfirmDiscard(true)
+            return
+          }
+          stopEditing()
+          setStack((s) => [...s, { ref: { ...frame.ref, subject: child.subjectId }, parentName: attribution.subjectName }])
+        }}
         onNavigate={onClosed}
       />
     )
@@ -236,13 +298,13 @@ export function WhyCard({ scorecardId, cell, anchor, opts, onClosed }: WhyCardPr
             {editing && ' · Editing'}
           </p>
           {heading}
-          {editing && rca && (
+          {editing && summary && (
             <p className="text-xs leading-4 text-ink/70">
-              {rca.display}
-              {rca.gap.headline && ` · ${rca.gap.headline}`}
+              {summary.standing.headline || summary.standing.display}
+              {summary.requirement === 'required' && ' · required'}
             </p>
           )}
-          {!editing && showValue && rca && <ValueRow rca={rca} scale={scale} />}
+          {!editing && showValue && attribution && <ValueRow attribution={attribution} scale={scale} />}
         </div>
         <button
           type="button"
