@@ -2,6 +2,8 @@ package domain
 
 import (
 	"encoding/json"
+	"os"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -462,5 +464,39 @@ func TestDataPointDeletedJSON(t *testing.T) {
 	b, _ = json.Marshal(DataPoint{MeasureKey: "a", Deleted: true})
 	if !strings.Contains(string(b), `"deleted":true`) {
 		t.Fatalf("tombstone missing deleted: %s", b)
+	}
+}
+
+// The web's Add standard types button sends the same definitions; its test
+// pins them to the same file.
+func TestStandardRecordTypes(t *testing.T) {
+	b, err := os.ReadFile("testdata/standard_record_types.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want, got any
+	if err := json.Unmarshal(b, &want); err != nil {
+		t.Fatal(err)
+	}
+	enc, err := json.Marshal(StandardRecordTypes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(enc, &got); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("StandardRecordTypes() = %s, want testdata/standard_record_types.json", enc)
+	}
+	for _, rt := range StandardRecordTypes() {
+		if errs := rt.Validate(); errs != nil {
+			t.Errorf("%s is invalid: %v", rt.ID, errs)
+		}
+	}
+	// Each call returns fresh slices, so a caller's edit does not leak.
+	a := StandardRecordTypes()
+	a[0].Priorities[0] = "changed"
+	if StandardRecordTypes()[0].Priorities[0] != "P1" {
+		t.Fatal("StandardRecordTypes shares its slices between calls")
 	}
 }

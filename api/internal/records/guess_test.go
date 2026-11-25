@@ -2,6 +2,7 @@ package records
 
 import (
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -607,11 +608,39 @@ func TestSuggestedType(t *testing.T) {
 	// With two matching types the first one given wins, so the answer is stable.
 	two := []domain.RecordType{
 		{ID: "bug", Name: "Bug", Priorities: []string{"P1"}},
-		{ID: "defect", Name: "Defect", Priorities: []string{"P1"}},
+		{ID: "issue", Name: "Issue", Priorities: []string{"P1"}},
 	}
 	in := Inspect(mk("Key", "Product", "Priority", "Resolved"), two, nil)
 	if in.SuggestedType != "bug" {
 		t.Errorf("SuggestedType = %q, want bug", in.SuggestedType)
+	}
+
+	// The standard defect and epic types win over earlier types of the same
+	// shape, such as concepts, which also have no priorities.
+	standard := append([]domain.RecordType{{ID: "bug", Name: "Bug", Priorities: []string{"P1"}}}, domain.StandardRecordTypes()...)
+	for _, c := range []struct {
+		headers []string
+		want    string
+	}{
+		{[]string{"Key", "Product", "Priority", "Resolved"}, "defect"},
+		{[]string{"Key", "Product", "Due date"}, "epic"},
+	} {
+		if in := Inspect(mk(c.headers...), standard, nil); in.SuggestedType != c.want {
+			t.Errorf("%v with standard types: SuggestedType = %q, want %q", c.headers, in.SuggestedType, c.want)
+		}
+	}
+}
+
+// A new tenant's defects and epics exports land on its standard types.
+func TestSuggestedStandardTypeForFixtures(t *testing.T) {
+	// Sorted by ID as the store lists them, so concept comes before epic.
+	types := append(domain.StandardRecordTypes(), IncidentPreset())
+	sort.Slice(types, func(i, j int) bool { return types[i].ID < types[j].ID })
+	for file, want := range map[string]string{"defects.csv": "defect", "epics.csv": "epic"} {
+		in := Inspect(readFixtureCSV(t, file), types, nil)
+		if in.SuggestedType != want || in.Draft.RecordType != want {
+			t.Errorf("%s: SuggestedType = %q, Draft.RecordType = %q; want %s", file, in.SuggestedType, in.Draft.RecordType, want)
+		}
 	}
 }
 

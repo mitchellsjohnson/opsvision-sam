@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"opsvision/internal/domain"
 	"opsvision/internal/period"
+	"opsvision/internal/store"
 	"opsvision/internal/store/memstore"
 )
 
@@ -260,6 +262,58 @@ func TestApplyCreatesEverything(t *testing.T) {
 	}
 	if tids, _ := st.TenantsForUser(ctx, "dev|admin"); len(tids) != 1 || tids[0] != "sample-co" {
 		t.Errorf("tenants for admin = %v", tids)
+	}
+	wantStandardRecordTypes(t, st, "sample-co")
+}
+
+// wantStandardRecordTypes fails unless the tenant has exactly the standard
+// record types.
+func wantStandardRecordTypes(t *testing.T, st store.Store, tenantID string) {
+	t.Helper()
+	types, err := st.ListRecordTypes(context.Background(), tenantID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, rt := range types {
+		got = append(got, rt.ID)
+	}
+	if want := []string{"concept", "defect", "epic"}; !slices.Equal(got, want) {
+		t.Errorf("record types = %v, want %v", got, want)
+	}
+}
+
+func TestSyncGivesANewTenantTheStandardRecordTypes(t *testing.T) {
+	ctx := context.Background()
+	f, err := Load(syntheticFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := memstore.New()
+	if _, err := Sync(ctx, st, f, time.Now(), SyncOptions{DryRun: true}); err != nil {
+		t.Fatal(err)
+	}
+	if types, _ := st.ListRecordTypes(ctx, f.Tenant.ID); len(types) != 0 {
+		t.Fatalf("a dry run wrote record types %+v", types)
+	}
+	if _, err := Sync(ctx, st, f, time.Now(), SyncOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	wantStandardRecordTypes(t, st, f.Tenant.ID)
+
+	// A re-run against the existing tenant leaves an edited type alone.
+	types, _ := st.ListRecordTypes(ctx, f.Tenant.ID)
+	epic := types[slices.IndexFunc(types, func(rt domain.RecordType) bool { return rt.ID == "epic" })]
+	epic.Name = "Initiative"
+	if err := st.PutRecordType(ctx, f.Tenant.ID, epic, epic.Revision); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Sync(ctx, st, f, time.Now(), SyncOptions{Overwrite: true}); err != nil {
+		t.Fatal(err)
+	}
+	types, _ = st.ListRecordTypes(ctx, f.Tenant.ID)
+	if i := slices.IndexFunc(types, func(rt domain.RecordType) bool { return rt.ID == "epic" }); types[i].Name != "Initiative" {
+		t.Errorf("epic = %+v, want the edit kept", types[i])
 	}
 }
 

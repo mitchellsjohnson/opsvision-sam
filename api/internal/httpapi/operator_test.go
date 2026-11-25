@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
@@ -62,8 +63,21 @@ func TestOperatorCreatesTenant(t *testing.T) {
 			t.Fatalf("audit entry = %+v", en)
 		}
 	}
-	if !actions["tenant.create"] || !actions["member.create"] {
+	if !actions["tenant.create"] || !actions["member.create"] || !actions["record_type.put"] {
 		t.Fatalf("audit actions = %v", actions)
+	}
+
+	// The tenant starts with the standard record types.
+	types, err := e.store.ListRecordTypes(ctx, got.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, rt := range types {
+		ids = append(ids, rt.ID)
+	}
+	if want := []string{"concept", "defect", "epic"}; !slices.Equal(ids, want) {
+		t.Fatalf("record types = %v, want %v", ids, want)
 	}
 
 	// The invited admin signs in with a verified email and is bound to the

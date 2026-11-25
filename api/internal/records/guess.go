@@ -552,19 +552,26 @@ func uniqueConfidence(ci *colInfo) float64 {
 
 // suggestType picks a record type from the guessed fields: a priority and a
 // completed date suggest a type that has priorities (defects); a due date
-// suggests one without (work units). The first matching type wins.
+// suggests one without (work units). The standard defect or epic type wins
+// when the tenant has it; otherwise the first matching type does.
 func suggestType(guesses map[string]ColumnGuess, types []domain.RecordType) string {
 	_, hasPriority := guesses["priority"]
 	_, hasCompleted := guesses["completedAt"]
 	_, hasDue := guesses["dueAt"]
 	var wantPriorities bool
+	var standard string
 	switch {
 	case hasPriority && hasCompleted:
-		wantPriorities = true
+		wantPriorities, standard = true, domain.RecordTypeDefect
 	case hasDue:
-		wantPriorities = false
+		wantPriorities, standard = false, domain.RecordTypeEpic
 	default:
 		return ""
+	}
+	for _, rt := range types {
+		if rt.ID == standard && (len(rt.Priorities) > 0) == wantPriorities {
+			return rt.ID
+		}
 	}
 	for _, rt := range types {
 		if (len(rt.Priorities) > 0) == wantPriorities {

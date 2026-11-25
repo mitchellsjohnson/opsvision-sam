@@ -8,7 +8,7 @@ import { newRulesFake, rulesHandlers, type RulesFake } from '../../test/rulesFix
 import { API, server } from '../../test/server'
 import { renderApp } from '../../test/utils'
 import { versions } from '../../test/viewFixtures'
-import { incidentPreset } from './adminModel'
+import { incidentPreset, standardRecordTypes } from './adminModel'
 import { RecordTypesPage } from './RecordTypesPage'
 
 let fake: RulesFake
@@ -205,6 +205,58 @@ describe('RecordTypesPage', () => {
     await user.click(within(editor).getByRole('button', { name: 'Save Epic' }))
     await waitFor(() => expect(puts('epic')).toHaveLength(1))
     expect((puts('epic')[0]?.body as RecordType).attributes).toEqual([{ key: 'started', name: 'Started', type: 'datetime' }])
+  })
+})
+
+describe('RecordTypesPage: standard types', () => {
+  const standard = (id: string) => standardRecordTypes().find((t) => t.id === id)!
+  const addButton = () => screen.getByRole('button', { name: 'Add standard types' }) as HTMLButtonElement
+
+  it('Add standard types creates only the missing ones, then is disabled', async () => {
+    const { user, container } = await setup()
+    expect(addButton().disabled).toBe(false)
+    await user.click(addButton())
+    await waitFor(() => expect(puts('concept')).toHaveLength(1))
+    expect(puts('concept')[0]?.body).toEqual(standard('concept'))
+    expect(puts('defect')).toHaveLength(0)
+    expect(puts('epic')).toHaveLength(0)
+    expect((await screen.findByText('Added Concept.')).getAttribute('role')).toBe('status')
+    await waitFor(() => expect(addButton().disabled).toBe(true))
+    const hint = screen.getByText('The standard types exist.')
+    expect(addButton().getAttribute('aria-describedby')).toBe(hint.id)
+    expect((await axe(container)).violations).toEqual([])
+  })
+
+  it('creates all three for a tenant with none', async () => {
+    fake.recordTypes = []
+    const user = userEvent.setup()
+    renderApp(<RecordTypesPage />, { route: '/admin/record-types' })
+    await user.click(await screen.findByRole('button', { name: 'Add standard types' }))
+    expect(await screen.findByText('Added Defect, Epic and Concept.')).toBeTruthy()
+    for (const id of ['defect', 'epic', 'concept']) expect(puts(id)[0]?.body).toEqual(standard(id))
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('treats a type that appeared meanwhile as added, not as an error', async () => {
+    fake.recordTypes = fake.recordTypes.filter((t) => t.id !== 'epic')
+    const { user } = await setup()
+    fake.recordTypes.push({ ...standard('epic'), revision: 1 })
+    await user.click(addButton())
+    expect(await screen.findByText('Added Concept.')).toBeTruthy()
+    expect(puts('epic')).toHaveLength(1)
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('reports a type it could not add', async () => {
+    server.use(
+      http.put(`${API}/v1/record-types/concept`, () =>
+        HttpResponse.json({ error: { code: 'internal', message: 'store unavailable' } }, { status: 500 }),
+      ),
+    )
+    const { user } = await setup()
+    await user.click(addButton())
+    expect((await screen.findByRole('alert')).textContent).toBe('Could not add every standard type. Concept: store unavailable')
+    expect(addButton().disabled).toBe(false)
   })
 })
 

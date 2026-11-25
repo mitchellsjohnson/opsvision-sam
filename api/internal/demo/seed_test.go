@@ -745,7 +745,7 @@ func TestSeedRecordTypesAndSnapshots(t *testing.T) {
 		if errs := rt.Validate(); len(errs) != 0 {
 			t.Errorf("record type %s invalid: %v", rt.ID, errs)
 		}
-		if rt.ID == "incident" {
+		if rt.ID == "incident" || rt.ID == "concept" {
 			continue
 		}
 		if got := rt.TrackedFrom["tracker"]; got != mustPeriod(t, "2026-M07") {
@@ -753,8 +753,8 @@ func TestSeedRecordTypesAndSnapshots(t *testing.T) {
 		}
 	}
 	defect, ok := byID["defect"]
-	if !ok || byID["epic"].ID == "" || byID["incident"].ID == "" || len(byID) != 3 {
-		t.Fatalf("record types = %+v, want defect, epic and incident", byID)
+	if !ok || byID["epic"].ID == "" || byID["incident"].ID == "" || byID["concept"].ID == "" || len(byID) != 4 {
+		t.Fatalf("record types = %+v, want defect, epic, incident and concept", byID)
 	}
 	if !reflect.DeepEqual(defect.Priorities, []string{"P1", "P2", "P3", "P4"}) {
 		t.Errorf("defect priorities = %v", defect.Priorities)

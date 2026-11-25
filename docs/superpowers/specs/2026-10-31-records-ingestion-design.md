@@ -44,6 +44,7 @@ This replaces the main spec's v1 non-goal "No item-level records". Connectors an
 ## 3. Concepts
 
 - **Record type** (tenant-level, not versioned, like item kinds): a name and key (`defect`, `epic`, `concept`, `capability`, `release`, `idea`), the tenant's normalized **priority values** (for example `P1, P2, P3, P4, none`), optional custom **attribute definitions** (name, type `string | number | bool | date`), and a **tracked-from month** per source (§8).
+- **Standard record types**: every new tenant starts with `defect` (Defect: priorities `P1, P2, P3, P4`, matching the weighted-open preset's default weights, and a `customerTicket` yes/no attribute), `epic` (Epic) and `concept` (Concept), the last two with no priorities or attributes: epics use the due-date fields, concepts the planned, actual and value fields. A tenant can edit them like any type. **Admin → Record types → `Add standard types`** creates the ones an existing tenant lacks and never changes one it has.
 - **Record**: one defect or work unit from a source system, identified by `(source, externalId)`. Belongs to one subject (org unit or tracked item).
 - **Record revision**: the state of a record as of one snapshot. A record changes only by gaining a revision.
 - **Snapshot**: one upload, with an **as-of date** (the date the export was taken; entered at upload, default today).

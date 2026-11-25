@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { ApiError } from '../../api/errors'
 import type { OrgTreeNode } from '../../api/queries'
+import standardTypesJSON from '../../../../api/internal/domain/testdata/standard_record_types.json'
 import {
   addMonths,
   errorsFrom,
@@ -10,14 +11,17 @@ import {
   incidentPreset,
   forField,
   isPending,
+  missingStandardTypes,
   monthOptions,
   parseSourceKeys,
   previewMove,
   scopeSummary,
   slugify,
+  standardRecordTypes,
   subtreeIds,
   unclaimed,
 } from './adminModel'
+import { defaultWeights } from './presets'
 
 const node = (id: string, children: OrgTreeNode[] = []): OrgTreeNode => ({
   id,
@@ -174,5 +178,23 @@ describe('incident record types', () => {
       mode: 'downtime',
       where: '',
     })
+  })
+})
+
+describe('standard record types', () => {
+  it('are the API’s, pinned to the file its test reads', () => {
+    expect(standardRecordTypes()).toEqual(standardTypesJSON)
+  })
+
+  it('give defects the priorities the weighted-open preset weighs 64 / 16 / 4 / 2 / 1', () => {
+    const defect = standardRecordTypes().find((t) => t.id === 'defect')!
+    expect(defaultWeights(defect.priorities)).toEqual({ P1: 64, P2: 16, P3: 4, P4: 2, none: 1 })
+  })
+
+  it('lists the ones a tenant lacks, by ID, whatever the stored type looks like', () => {
+    const edited = { ...standardRecordTypes()[0]!, name: 'Bug', priorities: ['High'], revision: 3 }
+    expect(missingStandardTypes([edited]).map((t) => t.id)).toEqual(['epic', 'concept'])
+    expect(missingStandardTypes(standardRecordTypes())).toEqual([])
+    expect(missingStandardTypes([]).map((t) => t.id)).toEqual(['defect', 'epic', 'concept'])
   })
 })

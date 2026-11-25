@@ -206,6 +206,34 @@ func (rt RecordType) AllPriorities() []string {
 	return out
 }
 
+// IDs of the standard record types. The derived-measure presets and the
+// import wizard's type suggestion refer to them.
+const (
+	RecordTypeDefect  = "defect"
+	RecordTypeEpic    = "epic"
+	RecordTypeConcept = "concept"
+)
+
+// StandardRecordTypes returns the record types every new tenant starts with:
+// defects with priorities P1 to P4 (the weighted-open preset's default
+// weights) and a customer-ticket flag; epics, judged on their due dates; and
+// concepts, judged on planned against actual spend and expected against
+// delivered value. Epics and concepts use only the core record fields. The
+// web's Add standard types button creates the same types.
+func StandardRecordTypes() []RecordType {
+	return []RecordType{
+		{
+			ID:          RecordTypeDefect,
+			Name:        "Defect",
+			Priorities:  []string{"P1", "P2", "P3", "P4"},
+			Attributes:  []AttributeDef{{Key: "customerTicket", Name: "Customer ticket", Type: AttrBool}},
+			TrackedFrom: map[string]period.Period{},
+		},
+		{ID: RecordTypeEpic, Name: "Epic", Priorities: []string{}, Attributes: []AttributeDef{}, TrackedFrom: map[string]period.Period{}},
+		{ID: RecordTypeConcept, Name: "Concept", Priorities: []string{}, Attributes: []AttributeDef{}, TrackedFrom: map[string]period.Period{}},
+	}
+}
+
 // attributeKeyPattern allows camelCase and snake_case attribute keys such as
 // customerTicket and within_budget.
 var attributeKeyPattern = regexp.MustCompile(`^[a-z][A-Za-z0-9_]*$`)

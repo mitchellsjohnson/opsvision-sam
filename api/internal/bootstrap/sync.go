@@ -83,6 +83,7 @@ func (c Counts) Kinds() []Kind {
 //   - The tenant record itself cannot be changed (the store has no update for
 //     it), with or without Overwrite. A stored tenant that differs from the
 //     file's is an error, reported before anything is written.
+//   - A tenant it creates also gets the standard record types (not counted).
 //
 // now stamps what the file leaves unstamped. It stops at the first store
 // error; running again completes the load.
@@ -107,6 +108,9 @@ func Sync(ctx context.Context, st store.Store, f File, now time.Time, opts SyncO
 		if !dryRun {
 			if err := st.CreateTenant(ctx, t); err != nil {
 				return c, fmt.Errorf("bootstrap: create tenant: %w", err)
+			}
+			if _, err := store.AddStandardRecordTypes(ctx, st, tid); err != nil {
+				return c, fmt.Errorf("bootstrap: standard record types: %w", err)
 			}
 		}
 		c.Tenant.Created++

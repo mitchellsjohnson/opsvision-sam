@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { acmeItems, acmeUnits, recordTypes, recordsTemplates } from '../../../test/recordsFixtures'
 import { defectsInspection, derivedEpicsVersions, epicsInspection, wizardVersions } from '../../../test/wizardFixtures'
+import { incidentPreset, standardRecordTypes } from '../../admin/adminModel'
 import {
   NEW_TYPE,
   answersFrom,
@@ -72,6 +73,29 @@ describe('initialState', () => {
     expect(s.recordType).toBe(NEW_TYPE)
     expect(s.newType).toEqual({ name: 'Defect', priorities: 'P1, P2, P3, P4' })
     expect(s.templateName).toBe('Defects export')
+  })
+})
+
+describe('standard record types', () => {
+  // As the API lists them: sorted by ID, so concept (no priorities) comes before epic.
+  const types = [...standardRecordTypes(), incidentPreset()].sort((a, b) => a.id.localeCompare(b.id))
+  const start = (result: ReturnType<typeof defectsInspection>) =>
+    initialState({ result, recordTypes: types, units: acmeUnits, items: acmeItems, templates: [] })
+
+  it('a defects or epics file lands on the existing standard type instead of a new one', () => {
+    const d = start(defectsInspection())
+    expect(d.recordType).toBe('defect')
+    expect(d.newType.name).toBe('')
+    expect(typePriorities(d, types)).toEqual(['P1', 'P2', 'P3', 'P4'])
+    expect(d.attributes).toEqual({ customerTicket: 'Customer ticket' })
+    const e = start(epicsInspection())
+    expect(e.recordType).toBe('epic')
+    expect(e.newType.name).toBe('')
+  })
+
+  it('offers the presets their fields support', () => {
+    expect(offeredPresets(start(defectsInspection()), types)).toEqual(['on_time', 'weighted_open', 'average_age', 'count'])
+    expect(offeredPresets(start(epicsInspection()), types)).toEqual(['on_time', 'average_age', 'count'])
   })
 })
 

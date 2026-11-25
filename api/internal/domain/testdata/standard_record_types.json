@@ -1,0 +1,26 @@
+[
+  {
+    "id": "defect",
+    "name": "Defect",
+    "priorities": ["P1", "P2", "P3", "P4"],
+    "attributes": [{ "key": "customerTicket", "name": "Customer ticket", "type": "bool" }],
+    "trackedFrom": {},
+    "revision": 0
+  },
+  {
+    "id": "epic",
+    "name": "Epic",
+    "priorities": [],
+    "attributes": [],
+    "trackedFrom": {},
+    "revision": 0
+  },
+  {
+    "id": "concept",
+    "name": "Concept",
+    "priorities": [],
+    "attributes": [],
+    "trackedFrom": {},
+    "revision": 0
+  }
+]

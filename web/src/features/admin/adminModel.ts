@@ -31,6 +31,34 @@ export function incidentPreset(): RecordType {
   }
 }
 
+// ---- Standard record types ----------------------------------------------------
+
+/**
+ * The record types new tenants start with, as the API's
+ * `StandardRecordTypes`: defects with priorities P1 to P4 and a customer
+ * ticket flag, and epics and concepts, which use only the core record fields.
+ * `Add standard types` creates the ones a tenant lacks.
+ */
+export function standardRecordTypes(): RecordType[] {
+  return [
+    {
+      id: 'defect',
+      name: 'Defect',
+      priorities: ['P1', 'P2', 'P3', 'P4'],
+      attributes: [{ key: 'customerTicket', name: 'Customer ticket', type: 'bool' }],
+      trackedFrom: {},
+      revision: 0,
+    },
+    { id: 'epic', name: 'Epic', priorities: [], attributes: [], trackedFrom: {}, revision: 0 },
+    { id: 'concept', name: 'Concept', priorities: [], attributes: [], trackedFrom: {}, revision: 0 },
+  ]
+}
+
+/** The standard record types `types` does not have, by ID. */
+export function missingStandardTypes(types: readonly RecordType[]): RecordType[] {
+  return standardRecordTypes().filter((s) => !types.some((t) => t.id === s.id))
+}
+
 /** `Uptime · Downtime · category != 'maintenance'`: one Explains row, named from `names` (`{scorecard}|{metric}`). */
 export function explainsText(link: ExplainLink, names: ReadonlyMap<string, string>): string {
   const metric = names.get(`${link.scorecardId}|${link.metricKey}`) ?? link.metricKey

@@ -536,6 +536,31 @@ func SortThreads(ts []domain.AssistantThread) {
 	})
 }
 
+// AddStandardRecordTypes creates the standard record types the tenant does
+// not have yet and returns the ones it created. A type that exists, or that
+// appears meanwhile, is left as it is.
+func AddStandardRecordTypes(ctx context.Context, s RecordStore, tenantID string) ([]domain.RecordType, error) {
+	have, err := s.ListRecordTypes(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	var added []domain.RecordType
+	for _, rt := range domain.StandardRecordTypes() {
+		if slices.ContainsFunc(have, func(h domain.RecordType) bool { return h.ID == rt.ID }) {
+			continue
+		}
+		switch err := s.PutRecordType(ctx, tenantID, rt, 0); {
+		case errors.Is(err, ErrConflict):
+			continue
+		case err != nil:
+			return added, err
+		}
+		rt.Revision = 1
+		added = append(added, rt)
+	}
+	return added, nil
+}
+
 // ComparePeriod orders periods by fiscal year, then grain, then index. It
 // returns a negative, zero, or positive number.
 func ComparePeriod(a, b period.Period) int {

@@ -13,6 +13,7 @@ import {
   forField,
   incidentPreset,
   labelOfMonth,
+  missingStandardTypes,
   monthOptions,
   slugify,
   unclaimed,
@@ -939,6 +940,10 @@ function RecordTypeEditor({
   )
 }
 
+function andList(names: readonly string[]): string {
+  return names.length <= 1 ? (names[0] ?? '') : `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`
+}
+
 /** Admin → Record types: the kinds of records uploads bring in. */
 export function RecordTypesPage() {
   const fiscal = useFiscalYearStartMonth()
@@ -952,6 +957,29 @@ export function RecordTypesPage() {
   const open = list.find((t) => t.id === selected)
   const hasIncident = list.some((t) => t.id === INCIDENT_TYPE_ID)
   const incidentHintId = useId()
+  const [standardError, setStandardError] = useState('')
+  const [addingStandard, setAddingStandard] = useState(false)
+  const putStandard = usePutRecordType()
+  const missingStandard = missingStandardTypes(list)
+  const standardHintId = useId()
+
+  // Create-only: a type that appeared meanwhile (409) is already there, which is the goal.
+  const addStandard = async () => {
+    setStandardError('')
+    setAddingStandard(true)
+    const added: string[] = []
+    const failed: string[] = []
+    for (const rt of missingStandard) {
+      try {
+        added.push((await putStandard.mutateAsync(rt)).name)
+      } catch (err) {
+        if (!(err instanceof ApiError && err.status === 409)) failed.push(`${rt.name}: ${errorsFrom(err).general.join(' ')}`)
+      }
+    }
+    setAddingStandard(false)
+    setNotice(added.length > 0 ? `Added ${andList(added)}.` : failed.length === 0 ? 'The standard types already exist.' : '')
+    if (failed.length > 0) setStandardError(`Could not add every standard type. ${failed.join(' ')}`)
+  }
 
   const addIncident = async () => {
     setIncidentError('')
@@ -974,6 +1002,20 @@ export function RecordTypesPage() {
         <div className="ml-auto flex flex-wrap items-center gap-2">
           {types.data && (
             <>
+              {missingStandard.length === 0 && (
+                <span id={standardHintId} className="text-xs text-ink/70">
+                  The standard types exist.
+                </span>
+              )}
+              <button
+                type="button"
+                className={secondaryButton}
+                disabled={missingStandard.length === 0 || addingStandard}
+                aria-describedby={missingStandard.length === 0 ? standardHintId : undefined}
+                onClick={() => void addStandard()}
+              >
+                Add standard types
+              </button>
               {hasIncident && (
                 <span id={incidentHintId} className="text-xs text-ink/70">
                   An incident type exists.
@@ -1009,6 +1051,11 @@ export function RecordTypesPage() {
           </FormDialog>
         </div>
       </div>
+      {standardError && (
+        <p role="alert" className="text-sm text-status-r">
+          {standardError}
+        </p>
+      )}
       {incidentError && (
         <p role="alert" className="text-sm text-status-r">
           {incidentError}

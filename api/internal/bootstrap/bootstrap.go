@@ -281,8 +281,8 @@ func (f File) validate(opts LoadOptions) []error {
 	return errs
 }
 
-// Apply writes f into st, which must not have the tenant yet. Every
-// membership is bound by user ID. now stamps what the file leaves unstamped.
+// Apply writes f into st, which must not have the tenant yet, and gives the
+// new tenant the standard record types. Every membership is bound by user ID. now stamps what the file leaves unstamped.
 // It stops at the first store error; a half-applied tenant should be
 // discarded (the devserver keeps it in memory, so a restart does).
 func Apply(ctx context.Context, st store.Store, f File, now time.Time) error {
@@ -301,6 +301,9 @@ func Apply(ctx context.Context, st store.Store, f File, now time.Time) error {
 	}
 	if err := st.CreateTenant(ctx, t); err != nil {
 		return fmt.Errorf("bootstrap: create tenant: %w", err)
+	}
+	if _, err := store.AddStandardRecordTypes(ctx, st, tid); err != nil {
+		return fmt.Errorf("bootstrap: standard record types: %w", err)
 	}
 	if err := st.PutLevels(ctx, tid, f.Levels); err != nil {
 		return fmt.Errorf("bootstrap: levels: %w", err)

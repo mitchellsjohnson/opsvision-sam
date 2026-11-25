@@ -259,6 +259,9 @@ func Seed(ctx context.Context, st store.Store, cal period.Calendar) (string, err
 	if err := seedIncidents(ctx, st, tenant); err != nil {
 		return "", err
 	}
+	if _, err := store.AddStandardRecordTypes(ctx, st, TenantID); err != nil {
+		return "", fmt.Errorf("demo: standard record types: %w", err)
+	}
 	if err := seedSummaries(ctx, st); err != nil {
 		return "", err
 	}

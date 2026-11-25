@@ -81,12 +81,21 @@ func (s *Server) CreateOperatorTenant(ctx context.Context, req CreateOperatorTen
 	if err := s.store.PutMembership(ctx, tenant.ID, invite); err != nil {
 		return nil, err
 	}
+	types, err := store.AddStandardRecordTypes(ctx, s.store, tenant.ID)
+	if err != nil {
+		return nil, err
+	}
 
 	if err := s.audit(ctx, p, tenant.ID, "tenant.create", "tenant", tenant.ID, nil, apiTenant(tenant)); err != nil {
 		return nil, err
 	}
 	if err := s.audit(ctx, p, tenant.ID, "member.create", "member", invite.UserID, nil, apiMembership(invite)); err != nil {
 		return nil, err
+	}
+	for _, rt := range types {
+		if err := s.audit(ctx, p, tenant.ID, "record_type.put", "record_type", rt.ID, nil, apiRecordType(rt)); err != nil {
+			return nil, err
+		}
 	}
 	return CreateOperatorTenant201JSONResponse(apiTenant(tenant)), nil
 }
