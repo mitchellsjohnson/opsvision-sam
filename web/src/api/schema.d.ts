@@ -1724,11 +1724,19 @@ export interface components {
             /**
              * @description The newest month with any stored data point for this scorecard,
              *     looking at the tenant's current and previous fiscal years. Null
-             *     when there is none. Clients open on this month when no period is
-             *     chosen.
+             *     when there is none.
              * @example 2026-M08
              */
             latestDataMonth: string | null;
+            /**
+             * @description The newest month before the current fiscal month with any stored
+             *     data point for this scorecard, looking at that month's fiscal year
+             *     and the one before. Null when there is none. When no period is
+             *     chosen, clients open on this month, or on latestDataMonth when
+             *     only the current month has data.
+             * @example 2026-M07
+             */
+            latestPastDataMonth: string | null;
         };
         /** @enum {string} */
         VersionStatus: "draft" | "in_review" | "published" | "superseded";

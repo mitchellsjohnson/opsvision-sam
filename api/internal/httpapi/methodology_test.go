@@ -685,9 +685,10 @@ func putMonthPoint(t *testing.T, e *testEnv, sc string, p period.Period) {
 }
 
 type scorecardSummaryJSON struct {
-	ID              string  `json:"id"`
-	Name            string  `json:"name"`
-	LatestDataMonth *string `json:"latestDataMonth"`
+	ID                  string  `json:"id"`
+	Name                string  `json:"name"`
+	LatestDataMonth     *string `json:"latestDataMonth"`
+	LatestPastDataMonth *string `json:"latestPastDataMonth"`
 }
 
 func listSummaries(t *testing.T, e *testEnv) map[string]scorecardSummaryJSON {
@@ -734,11 +735,44 @@ func TestScorecardsListLatestDataMonth(t *testing.T) {
 	}
 }
 
+func TestScorecardsListLatestPastDataMonth(t *testing.T) {
+	e := newTestEnv(t) // testNow is 2026-M10
+	for _, id := range []string{"empty", "past", "inprogress", "onlynow"} {
+		seedScorecard(t, e, id)
+	}
+	month := func(fy, idx int) period.Period { return period.Period{Grain: period.Month, FY: fy, Index: idx} }
+	putMonthPoint(t, e, "past", month(2026, 8))
+	putMonthPoint(t, e, "inprogress", month(2026, 10))
+	putMonthPoint(t, e, "inprogress", month(2026, 7))
+	putMonthPoint(t, e, "onlynow", month(2026, 10))
+
+	got := listSummaries(t, e)
+	want := map[string][2]string{
+		"past":       {"2026-M08", "2026-M08"},
+		"inprogress": {"2026-M10", "2026-M07"},
+		"onlynow":    {"2026-M10", ""},
+		"empty":      {"", ""},
+	}
+	str := func(p *string) string {
+		if p == nil {
+			return ""
+		}
+		return *p
+	}
+	for id, w := range want {
+		if l, p := str(got[id].LatestDataMonth), str(got[id].LatestPastDataMonth); l != w[0] || p != w[1] {
+			t.Errorf("%s latestDataMonth, latestPastDataMonth = %q, %q; want %q, %q", id, l, p, w[0], w[1])
+		}
+	}
+}
+
 func TestScorecardsListNullLatestDataMonthOnTheWire(t *testing.T) {
 	e := newTestEnv(t)
 	seedScorecard(t, e, "empty")
 	_, raw := e.call(t, e.tokens["t1-viewer"], "GET", "/scorecards", nil)
-	if !strings.Contains(string(raw), `"latestDataMonth":null`) {
-		t.Fatalf("response %s must carry an explicit null latestDataMonth", raw)
+	for _, field := range []string{"latestDataMonth", "latestPastDataMonth"} {
+		if !strings.Contains(string(raw), `"`+field+`":null`) {
+			t.Fatalf("response %s must carry an explicit null %s", raw, field)
+		}
 	}
 }

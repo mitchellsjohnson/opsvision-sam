@@ -12,7 +12,7 @@ export function HomeRedirect() {
   const { search } = useLocation()
   const scorecards = useScorecards()
   const params = new URLSearchParams(search)
-  const defaultScope = useDefaultScope(params.get('period'))
+  const defaultScope = useDefaultScope(params.get('period'), scorecards.data?.scorecards[0]?.id)
 
   if (scorecards.isPending || !defaultScope.ready) return <p role="status">Loading…</p>
   if (scorecards.isError) {

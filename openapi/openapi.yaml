@@ -2677,7 +2677,7 @@ components:
         name: { type: string, minLength: 1 }
     ScorecardSummary:
       type: object
-      required: [id, name, latestDataMonth]
+      required: [id, name, latestDataMonth, latestPastDataMonth]
       properties:
         id: { $ref: '#/components/schemas/Id' }
         name: { type: string, minLength: 1 }
@@ -2689,8 +2689,18 @@ components:
           description: |
             The newest month with any stored data point for this scorecard,
             looking at the tenant's current and previous fiscal years. Null
-            when there is none. Clients open on this month when no period is
-            chosen.
+            when there is none.
+        latestPastDataMonth:
+          type: string
+          nullable: true
+          pattern: '^\d{4}-M(0[1-9]|1[0-2])$'
+          example: 2026-M07
+          description: |
+            The newest month before the current fiscal month with any stored
+            data point for this scorecard, looking at that month's fiscal year
+            and the one before. Null when there is none. When no period is
+            chosen, clients open on this month, or on latestDataMonth when
+            only the current month has data.
     VersionStatus:
       type: string
       enum: [draft, in_review, published, superseded]

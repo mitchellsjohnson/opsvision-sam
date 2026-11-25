@@ -29,27 +29,45 @@ export interface PeriodView extends PeriodState {
   ready: boolean
 }
 
-/**
- * The latest month with data: the named scorecard's, or, when the page is not
- * about one scorecard, the newest across all of them. Null when there is none.
- */
-function defaultMonth(
-  cards: { id: string; latestDataMonth: string | null }[] | undefined,
-  scorecardId: string | null | undefined,
-): string | null {
-  const named = cards?.find((c) => c.id === scorecardId)
-  const months = (named ? [named] : (cards ?? []))
-    .map((c) => c.latestDataMonth)
-    .filter((m): m is string => m !== null && parsePeriod(m)?.grain === 'month')
+export interface ScorecardMonths {
+  id: string
+  latestDataMonth: string | null
+  latestPastDataMonth: string | null
+}
+
+/** The newest valid month period, or null. */
+function newest(months: (string | null)[]): string | null {
   // Zero-padded month periods sort chronologically as strings.
-  return months.reduce<string | null>((a, b) => (a === null || b > a ? b : a), null)
+  return months
+    .filter((m): m is string => m !== null && parsePeriod(m)?.grain === 'month')
+    .reduce<string | null>((a, b) => (a === null || b > a ? b : a), null)
+}
+
+/**
+ * The month a view opens on without `?period=`: the latest month with data,
+ * skipping the fiscal month in progress unless no earlier month has data,
+ * else the current fiscal month. Data is the named scorecard's, or, when the
+ * page is not about one scorecard, the newest across all of them.
+ */
+export function defaultPeriod(
+  cards: ScorecardMonths[] | undefined,
+  scorecardId: string | null | undefined,
+  fiscalYearStartMonth: number,
+  now: Date = new Date(),
+): string {
+  const named = cards?.find((c) => c.id === scorecardId)
+  const pool = named ? [named] : (cards ?? [])
+  const current = currentMonth(fiscalYearStartMonth, now)
+  const latest = newest(pool.map((c) => c.latestDataMonth))
+  if (latest === null) return current
+  if (latest < current) return latest
+  return newest(pool.map((c) => c.latestPastDataMonth)) ?? latest
 }
 
 /**
  * The shell's period, YTD and subject selection. It lives in the URL
  * (`?period=2026-M10&ytd=1&subject=a&subject=b`; periods are fiscal) so views
- * are linkable. Without `?period=` it defaults to the latest month that has
- * data (see `latestDataMonth`), or the current fiscal month when none does.
+ * are linkable. Without `?period=` it defaults to `defaultPeriod`.
  */
 export function usePeriodState(): [PeriodView, (patch: PeriodPatch) => void] {
   const [params, setParams] = useSearchParams()
@@ -66,9 +84,7 @@ export function usePeriodState(): [PeriodView, (patch: PeriodPatch) => void] {
     const raw = p.get('period')
     const valid = raw !== null && parsePeriod(raw) !== null
     return {
-      period: valid
-        ? raw
-        : (defaultMonth(cards, sc ?? p.get('scorecard')) ?? currentMonth(fiscalYearStartMonth)),
+      period: valid ? raw : defaultPeriod(cards, sc ?? p.get('scorecard'), fiscalYearStartMonth),
       ytd: p.get('ytd') === '1',
       subjects: p.getAll('subject'),
       scope: p.get('scope') ?? '',

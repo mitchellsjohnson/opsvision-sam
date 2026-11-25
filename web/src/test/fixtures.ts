@@ -33,7 +33,7 @@ export function meFor(role: 'admin' | 'contributor' | 'viewer'): Me {
 }
 
 export const scorecards: Scorecard[] = [
-  { id: 'sc-main', name: 'Main scorecard', latestDataMonth: null },
+  { id: 'sc-main', name: 'Main scorecard', latestDataMonth: null, latestPastDataMonth: null },
 ]
 
 export const orgUnits: components['schemas']['OrgUnit'][] = [

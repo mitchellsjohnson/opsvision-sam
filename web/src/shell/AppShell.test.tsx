@@ -425,8 +425,8 @@ describe('AppShell focus indicators', () => {
       http.get(`${API}/v1/scorecards`, () =>
         HttpResponse.json({
           scorecards: [
-            { id: 'sc-main', name: 'Main scorecard', latestDataMonth: null },
-            { id: 'sc-ops', name: 'Ops scorecard', latestDataMonth: null },
+            { id: 'sc-main', name: 'Main scorecard', latestDataMonth: null, latestPastDataMonth: null },
+            { id: 'sc-ops', name: 'Ops scorecard', latestDataMonth: null, latestPastDataMonth: null },
           ],
         }),
       ),

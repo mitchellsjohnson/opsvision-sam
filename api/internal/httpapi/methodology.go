@@ -149,7 +149,8 @@ func (s *Server) ListScorecards(ctx context.Context, _ ListScorecardsRequestObje
 	if err != nil {
 		return nil, err
 	}
-	thisMonth := s.calendar(*p.Tenant).MonthOf(s.now())
+	cal := s.calendar(*p.Tenant)
+	thisMonth := cal.MonthOf(s.now())
 	out := make([]ScorecardSummary, 0, len(scs))
 	for _, sc := range scs {
 		summary := ScorecardSummary{Id: sc.ID, Name: sc.Name}
@@ -160,6 +161,16 @@ func (s *Server) ListScorecards(ctx context.Context, _ ListScorecardsRequestObje
 		if ok {
 			m := latest.String()
 			summary.LatestDataMonth = &m
+		}
+		past, pastOK := latest, ok && latest != thisMonth
+		if ok && latest == thisMonth {
+			if past, pastOK, err = s.store.LatestDataMonth(ctx, p.Tenant.ID, sc.ID, cal.Prev(thisMonth)); err != nil {
+				return nil, err
+			}
+		}
+		if pastOK {
+			m := past.String()
+			summary.LatestPastDataMonth = &m
 		}
 		out = append(out, summary)
 	}
