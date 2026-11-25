@@ -96,6 +96,24 @@ func TestProviderRequestShape(t *testing.T) {
 	}
 }
 
+func TestThinkingBlocksReplayUnchanged(t *testing.T) {
+	reply := `[{"type":"thinking","thinking":"Check the view.","signature":"sig-1"},` +
+		`{"type":"thinking","thinking":"","signature":"sig-2"},` +
+		`{"type":"redacted_thinking","data":"opaque"},` +
+		`{"type":"tool_use","id":"toolu_1","name":"get_scorecard_view","input":{"sc":"delivery"}}]`
+	var content []Block
+	if err := json.Unmarshal([]byte(reply), &content); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(replayable(content))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != reply {
+		t.Fatalf("replayed =\n%s\nwant\n%s", raw, reply)
+	}
+}
+
 func TestProviderOmitsEmptyOptionalFields(t *testing.T) {
 	var raw []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

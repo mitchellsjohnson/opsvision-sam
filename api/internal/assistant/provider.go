@@ -95,7 +95,10 @@ type Message struct {
 }
 
 // Block is a content block. Type "text" uses Text; "tool_use" uses ID, Name
-// and Input; "tool_result" uses ToolUseID, Content and IsError.
+// and Input; "tool_result" uses ToolUseID, Content and IsError; "thinking"
+// uses Thinking and Signature; "redacted_thinking" uses Data. Thinking
+// blocks must go back to the provider unchanged on the next round of a
+// turn.
 type Block struct {
 	Type      string          `json:"type"`
 	Text      string          `json:"text,omitempty"`
@@ -105,14 +108,27 @@ type Block struct {
 	ToolUseID string          `json:"tool_use_id,omitempty"`
 	Content   string          `json:"content,omitempty"`
 	IsError   bool            `json:"is_error,omitempty"`
+	Thinking  string          `json:"thinking,omitempty"`
+	Signature string          `json:"signature,omitempty"`
+	Data      string          `json:"data,omitempty"`
 }
 
 // MarshalJSON implements json.Marshaler: a tool_use block always carries
-// input, {} when it has none, as the provider requires.
+// input, {} when it has none, and a thinking block always carries thinking
+// and signature, even empty, as the provider requires.
 func (b Block) MarshalJSON() ([]byte, error) {
 	type plain Block
-	if b.Type == "tool_use" && len(bytes.TrimSpace(b.Input)) == 0 {
-		b.Input = json.RawMessage("{}")
+	switch b.Type {
+	case "tool_use":
+		if len(bytes.TrimSpace(b.Input)) == 0 {
+			b.Input = json.RawMessage("{}")
+		}
+	case "thinking":
+		return json.Marshal(struct {
+			Type      string `json:"type"`
+			Thinking  string `json:"thinking"`
+			Signature string `json:"signature"`
+		}{b.Type, b.Thinking, b.Signature})
 	}
 	return json.Marshal(plain(b))
 }
